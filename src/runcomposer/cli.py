@@ -55,7 +55,20 @@ def main(argv: list[str] | None = None) -> int:
     p_spec.add_argument("-o", "--out", help="write the spec to this file instead of stdout")
     p_spec.add_argument("--export", action="store_true",
                         help="mint an export dispatch for the emitted document (DESIGN.md §4)")
+    p_spec.add_argument("--runner", dest="runner_section", metavar="RUNNER_ID",
+                        help="embed this runner's configured options as the spec's "
+                        "runner section (the one open section, DESIGN.md §3)")
+    p_spec.add_argument("--expect-format", default="runcomposer-verdicts", metavar="FORMAT",
+                        help="results format the run expects back (registered "
+                        "ResultParser id, e.g. robot-output-xml)")
     _add_config_arg(p_spec)
+
+    p_dispatch = sub.add_parser(
+        "dispatch", help="dispatch a runspec file to an in-process runner (DESIGN.md §9)"
+    )
+    p_dispatch.add_argument("spec", help="path to the runspec file (YAML or JSON)")
+    p_dispatch.add_argument("--runner", required=True, help="runner plugin id (e.g. robot-pool, demo)")
+    _add_config_arg(p_dispatch)
 
     p_runs = sub.add_parser("runs", help="list stored runs")
     p_runs.add_argument("--state", help="filter by lifecycle state (e.g. COMPLETE)")
@@ -100,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         "runs": _cmd_runs,
         "ingest": _cmd_ingest,
         "gc": _cmd_gc,
+        "dispatch": _cmd_dispatch,
         "serve": _cmd_serve,
     }
     from runcomposer.config import ConfigError
@@ -240,12 +254,17 @@ def _cmd_spec(args: argparse.Namespace) -> int:
     from runcomposer.core.selection import SelectionError
 
     service = _service(args)
+    runner_section = None
+    if args.runner_section:
+        runner_section = {args.runner_section: service.config.runner_options(args.runner_section)}
     try:
         result = service.compose_run(
             _selection_data(args),
             title=args.title,
             labels=_parse_labels(args.label),
             origin="cli",
+            runner_section=runner_section,
+            expect_format=args.expect_format,
         )
     except (FilterError, SelectionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -328,6 +347,38 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     print(f"{report.run_id} shard {report.shard}: {outcome} ({report.verdict_count} verdict(s))")
     completion = f" ({report.completion})" if report.completion else ""
     print(f"run state: {report.run_state}{completion}")
+    return 0
+
+
+def _cmd_dispatch(args: argparse.Namespace) -> int:
+    from runcomposer.core.ports import DispatchRefused
+    from runcomposer.core.spec import SpecLoadError, load_document
+    from runcomposer.service import ServiceError
+
+    service = _service(args)
+    try:
+        doc = load_document(args.spec)
+    except (OSError, SpecLoadError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
+        run_id = service.import_spec(doc, origin="cli")
+        dispatch = service.dispatch_runner(run_id, args.runner)
+    except ServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except DispatchRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    if service.last_dispatch_plan:
+        print(service.last_dispatch_plan)
+    run = service.store.get_run(run_id)
+    summary = service.verdict_summary(run_id, dispatch.dispatch_id)
+    counts = ", ".join(f"{n} {status}" for status, n in sorted(summary.items())) or "no verdicts"
+    print(f"run {run_id}: dispatch {dispatch.dispatch_id} via '{args.runner}' "
+          f"({dispatch.declared_shards} shard(s))")
+    completion = f" ({run.completion})" if run.completion else ""
+    print(f"state: {run.state}{completion} — {counts}")
     return 0
 
 

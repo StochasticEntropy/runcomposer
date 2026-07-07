@@ -44,6 +44,24 @@ jobs:
           /tmp/rt/bin/runcomposer runs --config rt-config.yaml | tee runs.out
           grep -q COMPLETE runs.out
 
+  robot:
+    # The robot extra (robotframework source, robot-pool, robot-output-xml).
+    # The plain `tests` matrix runs WITHOUT the extra, proving the robot
+    # tests skip cleanly when Robot Framework is absent.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install with the robot extra
+        run: python -m pip install -e ".[dev,robot]"
+      - name: Test (robot tests included)
+        run: |
+          python -m pytest -q
+          python -m pytest tests/test_robot_plugins.py -q | tee robot.out
+          grep -q "passed" robot.out
+
   ui:
     # The committed pre-built assets must match the UI source exactly.
     runs-on: ubuntu-latest

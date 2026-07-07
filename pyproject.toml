@@ -35,6 +35,9 @@ Homepage = "https://github.com/StochasticEntropy/runcomposer"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
+# Robot Framework is a dependency of the robotframework/robot-pool PLUGINS,
+# never of the core (DESIGN.md §6.1) — hence an extra.
+robot = ["robotframework>=6.1"]
 
 [project.scripts]
 runcomposer = "runcomposer.cli:main"
@@ -45,15 +48,18 @@ runcomposer-exec = "runcomposer_exec:main"
 # first-class loading paths; the other is an import-path config declaration).
 [project.entry-points."runcomposer.sources"]
 manifest = "runcomposer.plugins.manifest_source:ManifestSource"
+robotframework = "runcomposer.plugins.robot_source:RobotFrameworkSource"
 
 [project.entry-points."runcomposer.runners"]
 demo = "runcomposer.plugins.demo_runner:DemoRunner"
+robot-pool = "runcomposer.plugins.robot_pool:RobotPoolRunner"
 
 [project.entry-points."runcomposer.stores"]
 sqlite = "runcomposer.plugins.sqlite_store:SqliteRunStore"
 
 [project.entry-points."runcomposer.parsers"]
 runcomposer-verdicts = "runcomposer.plugins.verdicts_parser:VerdictsParser"
+robot-output-xml = "runcomposer.plugins.robot_output_parser:RobotOutputXmlParser"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runcomposer"]

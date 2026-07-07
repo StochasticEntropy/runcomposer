@@ -8,8 +8,16 @@ import { useI18n } from "../i18n.jsx";
 
 function RunDetail({ run }) {
   const { t } = useI18n();
+  const done = (run.verdicts ?? []).length;
+  const planned = run.planned_count ?? 0;
   return (
     <div className="run-detail">
+      {run.state === "RUNNING" && (
+        <p className="live-progress">
+          <span className="state state-RUNNING">{t("runs.detail.live")}</span>{" "}
+          {t("runs.detail.progress", { done, planned })}
+        </p>
+      )}
       <h3>{t("runs.detail.dispatches")}</h3>
       {run.dispatches.length === 0 && <p className="muted">{t("runs.detail.none")}</p>}
       {run.dispatches.map((dispatch) => (
@@ -31,6 +39,17 @@ function RunDetail({ run }) {
           .map(([status, count]) => `${count} ${status}`)
           .join(", ") || t("runs.detail.none")}
       </p>
+      {(run.verdicts ?? []).length > 0 && (
+        <ul className="verdict-list">
+          {run.verdicts.map((verdict) => (
+            <li key={verdict.item_id} className="mono small">
+              <span className={`verdict verdict-${verdict.status}`}>{verdict.status}</span>{" "}
+              {verdict.item_id}
+              {verdict.message ? ` — ${verdict.message}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -46,6 +65,23 @@ export default function RunsView({ onError }) {
       .catch((error) => onError(error.message));
   };
   useEffect(refresh, []);
+
+  // Live lifecycle (§6.2a/§10): poll while any run is still moving, and keep
+  // an open detail fresh so streamed verdicts appear as they land.
+  const hasActive = runs.some((run) => run.state === "RUNNING" || run.state === "DISPATCHED");
+  useEffect(() => {
+    if (!hasActive) return undefined;
+    const timer = setInterval(() => {
+      refresh();
+      setOpenRun((current) => {
+        if (current) {
+          getRun(current.id).then(setOpenRun).catch(() => {});
+        }
+        return current;
+      });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [hasActive]);
 
   const toggle = (runId) => {
     if (openRun?.id === runId) {

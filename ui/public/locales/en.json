@@ -64,7 +64,9 @@
       "shards": "shards",
       "shard": "shard",
       "format": "format",
-      "none": "none yet"
+      "none": "none yet",
+      "live": "live",
+      "progress": "{done} of {planned} verdicts in"
     }
   },
   "errors": {

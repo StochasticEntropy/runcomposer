@@ -35,13 +35,21 @@ executor (CI checkout, air-gapped host) and it renders the spec's materialized
 item list, runs your command, and writes the `runcomposer_run.json` correlation
 marker beside the results.
 
-What P1 ships: the sqlite run store with the full run lifecycle
-(COMPOSED → AWAITING_RESULTS → COMPLETE), `runcomposer compile | spec | runs |
-ingest | serve`, the compose/preview HTTP API, the localized React UI
-(taxonomy tree, SVAR filter builder, auto-compiled preview, runner-aware
-compose footer) pre-bundled in the wheel, and the export round-trip above.
-Framework runners (`robot-pool`), the ingestion push API, and the file-drop
-inbox arrive with P2 (DESIGN.md §14).
+Shipped so far (P0–P2): the sqlite run store with the full run lifecycle
+(COMPOSED → RUNNING → AWAITING_RESULTS → COMPLETE), `runcomposer compile |
+spec | dispatch | runs | ingest | gc | serve`, the compose/preview HTTP API
+with the token-guarded results push, the file-drop inbox, the quarantine
+inbox (attach/promote), the localized React UI (taxonomy tree, SVAR filter
+builder, auto-compiled preview, runner-aware compose footer, live run status,
+quarantine view) pre-bundled in the wheel, and the export round-trip above.
+
+With the `robot` extra (`pip install "runcomposer[robot]"`): the
+`robotframework` test source (ids = Robot longnames), the `robot-pool` runner
+(process pool, partition fan-out, duration-balanced chunking with a documented
+round-robin cold start, listener-streamed live verdicts, §3.3 drift refusal),
+and the defused `robot-output-xml` result parser — demonstrated against the
+neutral suite in [examples/robot-shop](examples/robot-shop). The `ci-trigger`
+runner and `junit-xml` parser arrive with P3 (DESIGN.md §14).
 
 ## Developing
 

@@ -109,6 +109,7 @@ def bundle_content_hash(path: Path) -> str:
 class Service:
     def __init__(self, config: Config):
         self.config = config
+        self.last_dispatch_plan: str = ""
 
     @cached_property
     def store(self):
@@ -142,10 +143,12 @@ class Service:
         labels: Mapping[str, str] | None = None,
         derived_from: list[Mapping[str, Any]] | None = None,
         mint_token: bool = False,
+        runner_section: Mapping[str, Any] | None = None,
+        expect_format: str = REFERENCE_FORMAT,
     ) -> ComposeResult:
         items, warnings = self.preview(selection_data)
         results: dict[str, Any] = {
-            "expect": [{"format": REFERENCE_FORMAT}],
+            "expect": [{"format": expect_format}],
             "shards": 1,
             "deliver": "none",
         }
@@ -162,6 +165,7 @@ class Service:
             source_provider=self.source.provider_id,
             snapshot=self.source.snapshot(),
             results=results,
+            runner=dict(runner_section) if runner_section else None,
             labels=labels,
         )
         report = validate_document(spec, for_dispatch=True)
@@ -176,14 +180,37 @@ class Service:
         title: str,
         labels: Mapping[str, str] | None = None,
         origin: str,
+        runner_section: Mapping[str, Any] | None = None,
+        expect_format: str = REFERENCE_FORMAT,
     ) -> ComposeResult:
-        result = self.build_spec_document(selection_data, title=title, labels=labels, mint_token=True)
+        result = self.build_spec_document(
+            selection_data,
+            title=title,
+            labels=labels,
+            mint_token=True,
+            runner_section=runner_section,
+            expect_format=expect_format,
+        )
         token = result.spec.get("results", {}).get("token")
         token_sha = hashlib.sha256(token.encode()).hexdigest() if token else None
         result.run = self.store.create_run(result.spec, origin=origin, ingest_token_sha256=token_sha)
         return result
 
     # -- dispatch --------------------------------------------------------------
+
+    def import_spec(self, doc: Mapping[str, Any], *, origin: str) -> str:
+        """Register an externally produced spec document (the dispatch CLI's
+        path for spec files composed elsewhere). Validates for dispatch;
+        no-op when the run id is already stored."""
+        report = validate_document(doc, for_dispatch=True)
+        if not report.ok:
+            raise ServiceError(
+                "spec document is not dispatchable: " + "; ".join(report.errors)
+            )
+        run_id = doc["run"]["id"]
+        if self.store.get_run(run_id) is None:
+            self.store.create_run(doc, origin=origin)
+        return run_id
 
     def export_dispatch(self, run_id: str, *, spec_bytes: bytes) -> DispatchRecord:
         """An export download mints a dispatch (§4). ``spec_bytes`` are the
@@ -202,19 +229,35 @@ class Service:
         return dispatch
 
     def dispatch_runner(self, run_id: str, runner_id: str) -> DispatchRecord:
-        """In-process dispatch: hand the document to a Runner plugin. A runner
-        that delivers synchronously (the demo runner) gets its deliveries
-        recorded immediately; real transports arrive with P2."""
+        """In-process dispatch: hand the document to a Runner plugin.
+
+        A runner exposing ``bind`` gets the store/source injected so it can
+        stream live status, read duration history, and run the §3.3 drift
+        check (robot-pool). A runner exposing a ``deliveries`` list (the demo
+        runner) gets those recorded here instead."""
         spec = self._require_spec(run_id)
         runner = self.config.build_runner(runner_id)
-        handle = runner.dispatch(spec)
+        if hasattr(runner, "bind"):
+            # A FRESH source, not the compose-time cached one: the §3.3 drift
+            # check compares the spec's snapshot against the corpus as it is NOW.
+            runner.bind(
+                store=self.store,
+                source=self.config.build_source(),
+                artifact_root=self.config.artifact_dir,
+            )
+        self.store.set_run_state(run_id, "DISPATCHED")
+        try:
+            handle = runner.dispatch(spec)
+        except Exception:
+            self.store.set_run_state(run_id, "COMPOSED")  # dispatch never happened
+            raise
+        self.last_dispatch_plan = getattr(runner, "last_plan", "")
         dispatch = self.store.add_dispatch(
             run_id,
             dispatch_id=handle.dispatch_id,
             mode=runner_id,
             declared_shards=handle.shards,
         )
-        self.store.set_run_state(run_id, "DISPATCHED")
         for delivery in getattr(runner, "deliveries", []):
             verdicts = delivery["verdicts"]
             payload = json.dumps(

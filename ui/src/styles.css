@@ -355,3 +355,42 @@ body {
   cursor: pointer;
   font-size: 12px;
 }
+
+.state-RUNNING {
+  background: #e0e7ff;
+  color: #3730a3;
+  border-color: #c7d2fe;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.live-progress {
+  margin: 4px 0 8px;
+}
+
+.verdict-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.verdict {
+  display: inline-block;
+  min-width: 42px;
+  text-align: center;
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.verdict-PASS { background: #dcfce7; color: #166534; }
+.verdict-FAIL { background: #fee2e2; color: #b91c1c; }
+.verdict-SKIP { background: #fef3c7; color: #92400e; }
+.verdict-ERROR { background: #fee2e2; color: #7f1d1d; }

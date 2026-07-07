@@ -230,7 +230,25 @@ def create_app(config: Config) -> FastAPI:
         run = service.store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"unknown run id {run_id!r}")
-        return _run_json(run, summary=service.verdict_summary(run_id))
+        data = _run_json(run, summary=service.verdict_summary(run_id))
+        # Live per-item progress (§6.2a): while a listener-equipped run is
+        # RUNNING these are the streamed verdicts; afterwards the reconciled
+        # terminal ones.
+        latest = run.dispatches[-1].dispatch_id if run.dispatches else None
+        data["verdicts"] = [
+            {
+                "item_id": v.item_id,
+                "status": v.status,
+                "duration_ms": v.duration_ms,
+                "message": v.message,
+            }
+            for v in service.store.verdicts_for(run_id, latest)
+        ]
+        spec = service.store.get_spec_document(run_id)
+        data["planned_count"] = (
+            spec.get("selection", {}).get("materialized", {}).get("count", 0) if spec else 0
+        )
+        return data
 
     @app.get("/api/v1/runs/{run_id}/items")
     def run_items(run_id: str) -> dict[str, Any]:

@@ -14,6 +14,10 @@ from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 from .model import DeliveryRecord, DispatchRecord, Item, RunRecord, Verdict
 
 
+class DispatchRefused(RuntimeError):
+    """Raised by a Runner that refuses a dispatch (e.g. the §3.3 drift check)."""
+
+
 @dataclass(frozen=True)
 class RunnerInfo:
     """Runner identity + capability flags (e.g. live_status, cancel)."""
@@ -135,6 +139,14 @@ class RunStore(Protocol):
     ) -> str: ...
 
     def delivered_shards(self, run_id: str, dispatch_id: str | None) -> set[str]: ...
+
+    def record_live_verdict(self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict) -> None: ...
+
+    def clear_live_verdicts(self, run_id: str, dispatch_id: str) -> None: ...
+
+    def duration_aggregates(
+        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+    ) -> dict[str, float]: ...
 
     def verdicts_for(self, run_id: str, dispatch_id: str | None = None) -> list[Verdict]: ...
 

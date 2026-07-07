@@ -64,7 +64,9 @@
       "shards": "Shards",
       "shard": "Shard",
       "format": "Format",
-      "none": "noch keine"
+      "none": "noch keine",
+      "live": "live",
+      "progress": "{done} von {planned} Ergebnissen da"
     }
   },
   "errors": {

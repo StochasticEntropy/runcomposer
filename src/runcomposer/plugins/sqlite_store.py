@@ -286,6 +286,72 @@ class SqliteRunStore:
             )
         return outcome
 
+    def record_live_verdict(self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict) -> None:
+        """Streamed by a runner's listener DURING execution (§6.2a). Live rows
+        use a sentinel delivery id and are cleared when the shard's terminal
+        delivery reconciles them — no schema beyond the normative tables."""
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO verdicts (run_id, dispatch_id, shard, delivery_id, item_id, status,"
+                " duration_ms, message, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    dispatch_id,
+                    shard,
+                    f"live-{dispatch_id}",
+                    verdict.item_id,
+                    verdict.status,
+                    verdict.duration_ms,
+                    verdict.message,
+                    verdict.attempt,
+                ),
+            )
+
+    def clear_live_verdicts(self, run_id: str, dispatch_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM verdicts WHERE run_id = ? AND delivery_id = ?",
+                (run_id, f"live-{dispatch_id}"),
+            )
+
+    def duration_aggregates(
+        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+    ) -> dict[str, float]:
+        """§6.3 history surface: average duration per item id over the last N
+        completed dispatches of runs matching the label selector. A dispatch
+        counts as completed when it has delivered (the deliveries join below);
+        the run's *current* state is irrelevant — a re-dispatch of the same
+        run must still see its own earlier history."""
+        with self._conn() as conn:
+            runs = conn.execute(
+                "SELECT id, labels FROM runs ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+            matching_run_ids = []
+            for row in runs:
+                run_labels = json.loads(row["labels"])
+                if labels and not all(run_labels.get(k) == v for k, v in labels.items()):
+                    continue
+                matching_run_ids.append(row["id"])
+            if not matching_run_ids:
+                return {}
+            marks = ",".join("?" for _ in matching_run_ids)
+            dispatches = conn.execute(
+                f"SELECT DISTINCT d.dispatch_id, d.created_at FROM dispatches d"
+                f" JOIN deliveries dv ON dv.dispatch_id = d.dispatch_id"
+                f" WHERE d.run_id IN ({marks}) ORDER BY d.created_at DESC LIMIT ?",
+                (*matching_run_ids, last_n),
+            ).fetchall()
+            if not dispatches:
+                return {}
+            dispatch_ids = [row["dispatch_id"] for row in dispatches]
+            marks = ",".join("?" for _ in dispatch_ids)
+            rows = conn.execute(
+                f"SELECT item_id, AVG(duration_ms) AS avg_ms FROM verdicts"
+                f" WHERE dispatch_id IN ({marks}) AND duration_ms > 0 GROUP BY item_id",
+                dispatch_ids,
+            ).fetchall()
+        return {row["item_id"]: float(row["avg_ms"]) for row in rows}
+
     def delivered_shards(self, run_id: str, dispatch_id: str | None) -> set[str]:
         with self._conn() as conn:
             rows = conn.execute(
