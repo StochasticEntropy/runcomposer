@@ -120,11 +120,14 @@ class TestPytestLoopEndToEnd:
     def test_id_space_invariant(self, tmp_path):
         """§2: every native name the parser emits resolves to exactly ONE id."""
         out_dir = tmp_path / "junit-out"
+        ids_file = tmp_path / "ids.txt"
+        ids_file.write_text(
+            "\n".join(i.id for i in ManifestSource(PYTEST_SHOP / "manifest.json").items()) + "\n",
+            encoding="utf-8",
+        )
         subprocess.run(
-            [sys.executable, str(PYTEST_SHOP / "run_pytest.py"),
-             "/dev/stdin", str(out_dir)],
-            input="\n".join(i.id for i in ManifestSource(PYTEST_SHOP / "manifest.json").items()),
-            text=True, check=False,
+            [sys.executable, str(PYTEST_SHOP / "run_pytest.py"), str(ids_file), str(out_dir)],
+            check=False,
         )
         source = ManifestSource(PYTEST_SHOP / "manifest.json")
         parsed = JunitXmlParser().parse(out_dir / "junit.xml")
