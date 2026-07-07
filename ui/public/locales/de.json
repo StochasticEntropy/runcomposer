@@ -5,7 +5,8 @@
   },
   "nav": {
     "compose": "Komponieren",
-    "runs": "Läufe"
+    "runs": "Läufe",
+    "quarantine": "Quarantäne"
   },
   "language": {
     "label": "Sprache"
@@ -68,5 +69,26 @@
   },
   "errors": {
     "request": "Anfrage fehlgeschlagen: {message}"
+  },
+  "quarantine": {
+    "title": "Quarantäne",
+    "refresh": "Aktualisieren",
+    "hint": "Nicht zugeordnete Lieferungen warten hier — nichts wird automatisch zugeordnet. Einem Lauf zuordnen, zu neuem Lauf befördern oder verwerfen.",
+    "empty": "Quarantäne ist leer — jede Lieferung passte zu ihrem Lauf",
+    "runIdPlaceholder": "Lauf-ID",
+    "attach": "Zuordnen",
+    "promote": "Befördern",
+    "discard": "Verwerfen",
+    "attached": "Lieferung dem Lauf {id} zugeordnet",
+    "promoted": "Zu neuem Lauf {id} befördert (Origin: ingested)",
+    "discarded": "Quarantäne-Eintrag verworfen",
+    "columns": {
+      "entry": "Eintrag",
+      "received": "Empfangen",
+      "reason": "Grund",
+      "transport": "Transport",
+      "claimedRun": "Beanspruchter Lauf",
+      "actions": "Aktionen"
+    }
   }
 }

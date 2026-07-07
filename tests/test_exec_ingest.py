@@ -122,7 +122,7 @@ class TestRoundTrip:
         (results / "results.json").write_text(
             json.dumps({"format": "runcomposer-verdicts", "verdicts": []}), encoding="utf-8"
         )
-        with pytest.raises(IngestError, match="no --run"):
+        with pytest.raises(IngestError, match="no run id was given"):
             service.ingest(results)
 
     def test_unknown_native_names_warn_but_do_not_invent_items(self, tmp_path, service):

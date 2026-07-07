@@ -8,11 +8,16 @@ usable.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +27,15 @@ from runcomposer.config import Config
 from runcomposer.core.filter import FilterError
 from runcomposer.core.selection import SelectionError
 from runcomposer.core.model import Item, RunRecord
-from runcomposer.service import Service, ServiceError
+from runcomposer.quarantine import QuarantineError
+from runcomposer.service import (
+    IngestError,
+    IngestReport,
+    QuarantineReport,
+    Service,
+    ServiceError,
+    bundle_content_hash,
+)
 
 __all__ = ["create_app"]
 
@@ -72,6 +85,19 @@ def _run_json(run: RunRecord, *, summary: dict[str, int] | None = None) -> dict[
     return data
 
 
+def _ingest_json(report: IngestReport) -> dict[str, Any]:
+    return {
+        "run_id": report.run_id,
+        "dispatch_id": report.dispatch_id,
+        "shard": report.shard,
+        "outcome": report.outcome,
+        "verdict_count": report.verdict_count,
+        "run_state": report.run_state,
+        "completion": report.completion,
+        "warnings": report.warnings,
+    }
+
+
 def create_app(config: Config) -> FastAPI:
     service = Service(config)
     # §8: unknown active plugin ids fail startup loudly. Resolve every
@@ -82,7 +108,23 @@ def create_app(config: Config) -> FastAPI:
     for runner_id in config.configured_runner_ids():
         config.resolve_runner_class(runner_id)
 
-    app = FastAPI(title="runcomposer", version=__version__)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # File-drop inbox (§5): a polling loop inside serve — not a scheduler
+        # (§13). Disabled with `core.ingestion.inbox: null`.
+        watcher = None
+        if config.inbox_dir is not None:
+            from runcomposer.inbox import InboxWatcher
+
+            watcher = InboxWatcher(
+                service, config.inbox_dir, poll_interval_s=config.ingestion["poll_interval_s"]
+            )
+            watcher.start()
+        yield
+        if watcher is not None:
+            watcher.stop()
+
+    app = FastAPI(title="runcomposer", version=__version__, lifespan=lifespan)
     cors = config.api.get("cors") or []
     if cors:
         app.add_middleware(
@@ -95,6 +137,10 @@ def create_app(config: Config) -> FastAPI:
     async def _bad_request(_, exc: Exception):  # noqa: ANN001 - FastAPI signature
         status = 404 if isinstance(exc, ServiceError) and "unknown run" in str(exc) else 400
         return JSONResponse(status_code=status, content={"detail": str(exc)})
+
+    @app.exception_handler(QuarantineError)
+    async def _quarantine_not_found(_, exc: QuarantineError):  # noqa: ANN001
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     # -- read surfaces ------------------------------------------------------
 
@@ -209,6 +255,109 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/v1/runs/{run_id}/finalize")
     def finalize(run_id: str) -> dict[str, Any]:
         return _run_json(service.finalize(run_id), summary=service.verdict_summary(run_id))
+
+    # -- ingestion push (§5 transport 1, §9) ---------------------------------
+
+    @app.post("/api/v1/runs/{run_id}/results")
+    def push_results(
+        run_id: str,
+        files: list[UploadFile] = File(...),
+        shard: str | None = Form(None),
+        dispatch: str | None = Form(None),
+        format: str | None = Form(None),
+        authorization: str | None = Header(None),
+        x_runcomposer_token: str | None = Header(None),
+    ):
+        """Multipart results push. Auth: `Authorization: Bearer <results.token>`
+        (or X-Runcomposer-Token). The §5 security floor runs before anything
+        is parsed or persisted."""
+        max_bytes = int(config.ingestion["max_upload_mb"]) * 1024 * 1024
+        temp_root = Path(tempfile.mkdtemp(prefix="runcomposer-push-"))
+        try:
+            total = 0
+            for upload in files:
+                name = Path(upload.filename or "artifact").name  # no path traversal
+                with open(temp_root / name, "wb") as out:
+                    while chunk := upload.file.read(1024 * 1024):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"upload exceeds core.ingestion.max_upload_mb "
+                                f"({config.ingestion['max_upload_mb']} MB)",
+                            )
+                        out.write(chunk)
+
+            run = service.store.get_run(run_id)
+            if run is None:
+                # Unsolicited (§4): visible in quarantine, never a run record.
+                entry = service.quarantine.add(
+                    temp_root,
+                    reason="unknown-run",
+                    transport="push",
+                    content_hash=bundle_content_hash(temp_root),
+                    claimed_run_id=run_id,
+                    format=format or "runcomposer-verdicts",
+                )
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "detail": f"unknown run id {run_id!r} — delivery quarantined",
+                        "quarantine_entry": entry.entry_id if entry else None,
+                    },
+                )
+
+            token = x_runcomposer_token
+            if token is None and authorization and authorization.lower().startswith("bearer "):
+                token = authorization[len("bearer "):]
+            token_state = service.verify_ingest_token(run_id, token)
+            if token_state == "missing":
+                raise HTTPException(status_code=401, detail="ingest token required (results.token, §5)")
+            if token_state == "wrong":
+                raise HTTPException(status_code=403, detail="ingest token does not match this run")
+
+            result = service.ingest_or_quarantine(
+                temp_root, transport="push", run_id=run_id, dispatch_id=dispatch, shard=shard
+            )
+            if isinstance(result, QuarantineReport):
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "detail": result.detail,
+                        "reason": result.reason,
+                        "quarantine_entry": result.entry_id,
+                    },
+                )
+            return _ingest_json(result)
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    # -- quarantine (§4, §5, §9) ------------------------------------------------
+
+    @app.get("/api/v1/quarantine")
+    def quarantine_list() -> dict[str, Any]:
+        return {"entries": [asdict(entry) for entry in service.quarantine.entries()]}
+
+    @app.post("/api/v1/quarantine/{entry_id}/attach")
+    def quarantine_attach(entry_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        run_id = body.get("run_id")
+        if not run_id:
+            raise HTTPException(status_code=400, detail="attach requires a run_id")
+        try:
+            return _ingest_json(service.attach_quarantined(entry_id, run_id))
+        except IngestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @app.post("/api/v1/quarantine/{entry_id}/promote")
+    def quarantine_promote(entry_id: str) -> dict[str, Any]:
+        try:
+            return _ingest_json(service.promote_quarantined(entry_id))
+        except IngestError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @app.delete("/api/v1/quarantine/{entry_id}", status_code=204)
+    def quarantine_discard(entry_id: str) -> None:
+        service.quarantine.remove(entry_id)
 
     # -- UI (§10): pre-bundled static assets, if present ------------------------
 

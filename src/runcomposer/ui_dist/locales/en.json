@@ -5,7 +5,8 @@
   },
   "nav": {
     "compose": "Compose",
-    "runs": "Runs"
+    "runs": "Runs",
+    "quarantine": "Quarantine"
   },
   "language": {
     "label": "Language"
@@ -68,5 +69,26 @@
   },
   "errors": {
     "request": "Request failed: {message}"
+  },
+  "quarantine": {
+    "title": "Quarantine",
+    "refresh": "Refresh",
+    "hint": "Unmatched deliveries wait here — nothing is auto-attached. Attach to a run, promote to a new run, or discard.",
+    "empty": "Quarantine is empty — every delivery matched its run",
+    "runIdPlaceholder": "Run id",
+    "attach": "Attach",
+    "promote": "Promote",
+    "discard": "Discard",
+    "attached": "Delivery attached to run {id}",
+    "promoted": "Promoted to new run {id} (origin: ingested)",
+    "discarded": "Quarantine entry discarded",
+    "columns": {
+      "entry": "Entry",
+      "received": "Received",
+      "reason": "Reason",
+      "transport": "Transport",
+      "claimedRun": "Claimed run",
+      "actions": "Actions"
+    }
   }
 }

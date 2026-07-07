@@ -71,7 +71,19 @@ def main(argv: list[str] | None = None) -> int:
     p_ingest.add_argument("--run", help="run id (required when the bundle has no marker)")
     p_ingest.add_argument("--dispatch", help="dispatch id (default: from marker, else latest)")
     p_ingest.add_argument("--shard", help="shard label (default: from marker, else '1')")
+    p_ingest.add_argument(
+        "--allow-unsolicited",
+        action="store_true",
+        help="promote an unsolicited bundle (no marker / unknown run) to its own "
+        "run with origin 'ingested' (DESIGN.md §4)",
+    )
     _add_config_arg(p_ingest)
+
+    p_gc = sub.add_parser(
+        "gc", help="apply retention: bound the quarantine, expire processed inbox "
+        "entries, artifacts, and old runs (DESIGN.md §5, §6.4)"
+    )
+    _add_config_arg(p_gc)
 
     p_serve = sub.add_parser("serve", help="run the API + UI server")
     p_serve.add_argument("--host", help="bind host (default: from config, 127.0.0.1)")
@@ -87,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         "spec": _cmd_spec,
         "runs": _cmd_runs,
         "ingest": _cmd_ingest,
+        "gc": _cmd_gc,
         "serve": _cmd_serve,
     }
     from runcomposer.config import ConfigError
@@ -295,8 +308,16 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             args.bundle, run_id=args.run, dispatch_id=args.dispatch, shard=args.shard
         )
     except IngestError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        if args.allow_unsolicited and exc.reason in ("unsolicited", "unknown-run"):
+            try:
+                report = service.promote_bundle(args.bundle)
+            except IngestError as promote_exc:
+                print(f"error: {promote_exc}", file=sys.stderr)
+                return 1
+            print(f"unsolicited bundle promoted to run {report.run_id} (origin: ingested)")
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     for warning in report.warnings:
         print(f"warning: {warning}")
     outcome = {
@@ -307,6 +328,19 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     print(f"{report.run_id} shard {report.shard}: {outcome} ({report.verdict_count} verdict(s))")
     completion = f" ({report.completion})" if report.completion else ""
     print(f"run state: {report.run_state}{completion}")
+    return 0
+
+
+def _cmd_gc(args: argparse.Namespace) -> int:
+    service = _service(args)
+    report = service.gc()
+    quarantine_removed = report["quarantine_removed"]
+    print(f"quarantine: removed {len(quarantine_removed)} entr(y/ies) beyond the configured bound")
+    for entry_id in quarantine_removed:
+        print(f"  removed {entry_id}")
+    print(f"inbox/processed: removed {report['inbox_processed_removed']} expired bundle(s)")
+    print(f"artifacts: removed {report['artifacts_removed']} expired file(s)")
+    print(f"store: pruned {len(report['runs_removed'])} run(s) past retention")
     return 0
 
 

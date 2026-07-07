@@ -6,6 +6,7 @@ import { AVAILABLE_LOCALES, useI18n } from "./i18n.jsx";
 import ComposeFooter from "./components/ComposeFooter.jsx";
 import FilterPanel from "./components/FilterPanel.jsx";
 import PreviewTable from "./components/PreviewTable.jsx";
+import QuarantineView from "./components/QuarantineView.jsx";
 import RunsView from "./components/RunsView.jsx";
 import TaxonomyTree from "./components/TaxonomyTree.jsx";
 
@@ -129,6 +130,12 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
           <button className={tab === "runs" ? "tab active" : "tab"} onClick={() => setTab("runs")}>
             {t("nav.runs")}
           </button>
+          <button
+            className={tab === "quarantine" ? "tab active" : "tab"}
+            onClick={() => setTab("quarantine")}
+          >
+            {t("nav.quarantine")}
+          </button>
         </nav>
         <label className="locale-switch">
           <span className="muted small">{t("language.label")}</span>
@@ -184,9 +191,16 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
             onCompose={compose}
           />
         </>
-      ) : (
+      ) : tab === "runs" ? (
         <main className="runs-grid">
           <RunsView onError={(message) => setError(message)} />
+        </main>
+      ) : (
+        <main className="runs-grid">
+          <QuarantineView
+            onError={(message) => setError(message)}
+            onNotice={(message) => setNotice(message)}
+          />
         </main>
       )}
     </div>

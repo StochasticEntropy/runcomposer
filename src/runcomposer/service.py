@@ -39,7 +39,18 @@ class ServiceError(ValueError):
 
 
 class IngestError(ValueError):
-    """Raised when a bundle is refused (marker mismatch, unknown run)."""
+    """Raised when a bundle is refused. ``reason`` classifies the refusal so
+    transports can route it: unsolicited | unknown-run | sha-mismatch |
+    marker-conflict | bad-bundle."""
+
+    def __init__(self, message: str, *, reason: str = "bad-bundle"):
+        super().__init__(message)
+        self.reason = reason
+
+
+# Refusal reasons that §4/§5 route to the quarantine inbox when the bundle
+# arrived over a transport (file-drop, push) rather than an explicit CLI call.
+QUARANTINE_REASONS = ("unsolicited", "unknown-run", "sha-mismatch", "marker-conflict", "bad-bundle")
 
 
 @dataclass
@@ -61,6 +72,17 @@ class IngestReport:
     run_state: str
     completion: str | None
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class QuarantineReport:
+    """Outcome of a transport delivery that was quarantined instead of
+    ingested. ``entry_id`` is None when an identical bundle was already
+    quarantined (deduplicated)."""
+
+    entry_id: str | None
+    reason: str
+    detail: str
 
 
 def _utc_now() -> str:
@@ -95,6 +117,12 @@ class Service:
     @cached_property
     def source(self):
         return self.config.build_source()
+
+    @cached_property
+    def quarantine(self):
+        from runcomposer.quarantine import Quarantine
+
+        return Quarantine(self.config.quarantine_dir)
 
     # -- selection & compose -------------------------------------------------
 
@@ -212,33 +240,42 @@ class Service:
         run_id: str | None = None,
         dispatch_id: str | None = None,
         shard: str | None = None,
+        verify_sha: bool = True,
     ) -> IngestReport:
+        """Ingest a results bundle. ``verify_sha=False`` is the explicit
+        human-attach override (quarantine attach): the marker's spec hash is
+        no longer trusted evidence once a person has decided the binding."""
         bundle = Path(bundle_path)
         if not bundle.exists():
-            raise IngestError(f"bundle not found: {bundle}")
+            raise IngestError(f"bundle not found: {bundle}", reason="bad-bundle")
         warnings: list[str] = []
 
         marker = self._read_marker(bundle)
         if marker is None and run_id is None:
             raise IngestError(
-                f"bundle has no {MARKER_FILENAME} marker and no --run was given — "
-                "unsolicited bundles are not auto-attached (DESIGN.md §4/§5; "
-                "the quarantine inbox arrives with P2)"
+                f"bundle has no {MARKER_FILENAME} marker and no run id was given — "
+                "unsolicited bundles are not auto-attached (DESIGN.md §4/§5); "
+                "quarantine it, or promote explicitly (--allow-unsolicited)",
+                reason="unsolicited",
             )
         marker = marker or {}
         if run_id and marker.get("run_id") and marker["run_id"] != run_id:
             raise IngestError(
-                f"--run {run_id} contradicts the bundle marker's run_id {marker['run_id']!r}"
+                f"run id {run_id} contradicts the bundle marker's run_id {marker['run_id']!r}",
+                reason="marker-conflict",
             )
         resolved_run_id = run_id or marker.get("run_id")
         run = self.store.get_run(resolved_run_id)
         if run is None:
-            raise IngestError(f"unknown run id {resolved_run_id!r} — refusing bundle")
+            raise IngestError(
+                f"unknown run id {resolved_run_id!r} — refusing bundle", reason="unknown-run"
+            )
 
         dispatch = self._resolve_dispatch(run, dispatch_id or marker.get("dispatch_id"), warnings)
-        self._verify_marker_sha(marker, dispatch, warnings)
+        if verify_sha:
+            self._verify_marker_sha(marker, dispatch, warnings)
 
-        parsed = self._parse_results(resolved_run_id, bundle)
+        parsed = self._parse_results(bundle, self._expected_format(resolved_run_id))
         verdicts, resolve_warnings = self._correlate(parsed)
         warnings.extend(resolve_warnings)
 
@@ -265,6 +302,162 @@ class Service:
             completion=after.completion,
             warnings=warnings,
         )
+
+    def ingest_or_quarantine(
+        self,
+        bundle_path: str | Path,
+        *,
+        transport: str,
+        run_id: str | None = None,
+        dispatch_id: str | None = None,
+        shard: str | None = None,
+    ) -> IngestReport | QuarantineReport:
+        """The transport entry point (file-drop, push): a refused bundle is
+        never dropped on the floor — it lands in the quarantine inbox
+        (DESIGN.md §4/§5) instead of silently entering a watched run."""
+        bundle = Path(bundle_path)
+        try:
+            return self.ingest(bundle, run_id=run_id, dispatch_id=dispatch_id, shard=shard)
+        except IngestError as exc:
+            if exc.reason not in QUARANTINE_REASONS:
+                raise
+            marker = {}
+            try:
+                marker = self._read_marker(bundle) or {}
+            except IngestError:
+                pass
+            entry = self.quarantine.add(
+                bundle,
+                reason=exc.reason,
+                transport=transport,
+                content_hash=bundle_content_hash(bundle),
+                claimed_run_id=run_id or marker.get("run_id"),
+            )
+            return QuarantineReport(
+                entry_id=entry.entry_id if entry else None,
+                reason=exc.reason,
+                detail=str(exc),
+            )
+
+    def attach_quarantined(self, entry_id: str, run_id: str) -> IngestReport:
+        """Explicit human action: bind a quarantined delivery to an existing
+        run. Normal §5 delivery semantics apply; the marker's spec hash is not
+        re-verified — the human binding overrides it."""
+        bundle = self.quarantine.bundle_path(entry_id)
+        report = self.ingest(bundle, run_id=run_id, verify_sha=False)
+        self.quarantine.remove(entry_id)
+        return report
+
+    def promote_quarantined(self, entry_id: str) -> IngestReport:
+        """Explicit human action: promote a quarantined delivery to its own
+        run with origin 'ingested' (DESIGN.md §4)."""
+        entry = self.quarantine.get(entry_id)
+        report = self.promote_bundle(
+            self.quarantine.bundle_path(entry_id),
+            format_id=entry.format,
+            claimed_run_id=entry.claimed_run_id,
+        )
+        self.quarantine.remove(entry_id)
+        return report
+
+    def promote_bundle(
+        self,
+        bundle_path: str | Path,
+        *,
+        format_id: str = REFERENCE_FORMAT,
+        claimed_run_id: str | None = None,
+    ) -> IngestReport:
+        """Create an `origin: ingested` run from an unsolicited bundle."""
+        bundle = Path(bundle_path)
+        parsed = self._parse_results(bundle, format_id)
+        verdicts, warnings = self._correlate(parsed)
+        if not verdicts:
+            raise IngestError(
+                "bundle contains no verdicts resolvable against the catalog — cannot promote",
+                reason="bad-bundle",
+            )
+        labels = {"transport": "promoted"}
+        if claimed_run_id:
+            labels["claimed_run_id"] = claimed_run_id
+        spec = build_spec(
+            title="Ingested delivery",
+            materialized_ids=list(dict.fromkeys(v.item_id for v in verdicts)),
+            source_provider=self.source.provider_id,
+            snapshot=self.source.snapshot(),
+            results={"expect": [{"format": format_id}], "shards": 1, "deliver": "none"},
+            labels=labels,
+        )
+        run = self.store.create_run(spec, origin="ingested")
+        outcome = self.store.record_delivery(
+            run.id,
+            dispatch_id=None,
+            shard="1",
+            content_hash=bundle_content_hash(bundle),
+            format=format_id,
+            verdicts=verdicts,
+        )
+        self._recompute_completion(run.id, None)
+        after = self.store.get_run(run.id)
+        assert after is not None
+        return IngestReport(
+            run_id=run.id,
+            dispatch_id=None,
+            shard="1",
+            outcome=outcome,
+            verdict_count=len(verdicts),
+            run_state=after.state,
+            completion=after.completion,
+            warnings=warnings,
+        )
+
+    def verify_ingest_token(self, run_id: str, token: str | None) -> str:
+        """§5 security floor. Returns 'ok' | 'disabled' | 'missing' | 'wrong'."""
+        if self.config.ingestion.get("tokens") == "disabled":
+            return "disabled"
+        stored = self.store.get_ingest_token_sha256(run_id)
+        if stored is None:
+            # Composed while tokens were disabled: nothing to check against.
+            return "disabled"
+        if not token:
+            return "missing"
+        if hashlib.sha256(token.encode()).hexdigest() != stored:
+            return "wrong"
+        return "ok"
+
+    def gc(self) -> dict[str, Any]:
+        """§5/§6.4 housekeeping: bound the quarantine, expire processed inbox
+        entries and artifacts, prune old runs from the store."""
+        import shutil
+        import time
+
+        retention = self.config.retention
+        max_age_days = retention["max_age_days"]
+        cutoff_epoch = time.time() - max_age_days * 86400
+        report: dict[str, Any] = {
+            "quarantine_removed": self.quarantine.prune(self.config.ingestion["quarantine_max"]),
+            "inbox_processed_removed": 0,
+            "artifacts_removed": 0,
+        }
+        inbox = self.config.inbox_dir
+        processed = inbox / "processed" if inbox else None
+        if processed and processed.is_dir():
+            for child in processed.iterdir():
+                if child.stat().st_mtime < cutoff_epoch:
+                    shutil.rmtree(child, ignore_errors=True)
+                    report["inbox_processed_removed"] += 1
+        artifacts = self.config.artifact_dir
+        if artifacts.is_dir():
+            for file in artifacts.rglob("*"):
+                if file.is_file() and file.stat().st_mtime < cutoff_epoch:
+                    file.unlink(missing_ok=True)
+                    report["artifacts_removed"] += 1
+        cutoff_iso = datetime.fromtimestamp(cutoff_epoch, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        report["runs_removed"] = self.store.prune_runs(
+            before=cutoff_iso, max_runs=retention.get("max_runs")
+        )
+        return report
 
     def finalize(self, run_id: str) -> RunRecord:
         run = self._require_run(run_id)
@@ -326,9 +519,13 @@ class Service:
         try:
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise IngestError(f"{marker_path}: marker is not valid JSON: {exc}") from None
+            raise IngestError(
+                f"{marker_path}: marker is not valid JSON: {exc}", reason="bad-bundle"
+            ) from None
         if not isinstance(marker, dict) or not marker.get("run_id"):
-            raise IngestError(f"{marker_path}: marker must be an object with a run_id")
+            raise IngestError(
+                f"{marker_path}: marker must be an object with a run_id", reason="bad-bundle"
+            )
         return marker
 
     def _resolve_dispatch(self, run: RunRecord, dispatch_id: str | None, warnings: list[str]):
@@ -356,18 +553,20 @@ class Service:
         if marker_sha != dispatch.spec_sha256:
             raise IngestError(
                 "marker spec_sha256 does not match the spec bytes exported for dispatch "
-                f"{dispatch.dispatch_id} — refusing bundle (§5 marker verification)"
+                f"{dispatch.dispatch_id} — refusing bundle (§5 marker verification)",
+                reason="sha-mismatch",
             )
 
-    def _parse_results(self, run_id: str, bundle: Path) -> list[ParsedVerdict]:
-        format_id = self._expected_format(run_id)
+    def _parse_results(self, bundle: Path, format_id: str) -> list[ParsedVerdict]:
         try:
             parser_cls = resolve_plugin(format_id, PARSER_GROUP)
         except PluginError as exc:
-            raise IngestError(f"no ResultParser registered for format {format_id!r}: {exc}") from exc
+            raise IngestError(
+                f"no ResultParser registered for format {format_id!r}: {exc}", reason="bad-bundle"
+            ) from exc
         parsed = parser_cls().parse(bundle)
         if not parsed:
-            raise IngestError(f"bundle contains no {format_id!r} results: {bundle}")
+            raise IngestError(f"bundle contains no {format_id!r} results: {bundle}", reason="bad-bundle")
         return parsed
 
     def _correlate(self, parsed: list[ParsedVerdict]) -> tuple[list[Verdict], list[str]]:

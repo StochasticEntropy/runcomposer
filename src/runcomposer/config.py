@@ -78,7 +78,37 @@ class Config:
 
     @property
     def ingestion(self) -> dict[str, Any]:
-        return {"tokens": "required", **(self.core.get("ingestion") or {})}
+        defaults = {
+            "tokens": "required",
+            "inbox": "results_inbox",
+            "quarantine_dir": "quarantine",
+            "quarantine_max": 100,
+            "max_upload_mb": 200,
+            "poll_interval_s": 2.0,
+        }
+        return {**defaults, **(self.core.get("ingestion") or {})}
+
+    @property
+    def retention(self) -> dict[str, Any]:
+        return {"max_age_days": 90, **(self.core.get("retention") or {})}
+
+    def _resolve(self, relative: str) -> Path:
+        base = self.path.parent if self.path else Path(".")
+        return base / relative
+
+    @property
+    def inbox_dir(self) -> Path | None:
+        """The file-drop inbox (§5). ``inbox: null`` disables the watcher."""
+        configured = self.ingestion["inbox"]
+        return self._resolve(configured) if configured else None
+
+    @property
+    def quarantine_dir(self) -> Path:
+        return self._resolve(self.ingestion["quarantine_dir"])
+
+    @property
+    def artifact_dir(self) -> Path:
+        return self._resolve(self.core.get("artifact_dir") or "artifacts")
 
     @property
     def ui(self) -> dict[str, Any]:

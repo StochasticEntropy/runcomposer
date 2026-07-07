@@ -313,6 +313,23 @@ class SqliteRunStore:
             for row in rows
         ]
 
+    def prune_runs(self, *, before: str | None = None, max_runs: int | None = None) -> list[str]:
+        """§6.4 retention: delete runs older than ``before`` and/or beyond the
+        newest ``max_runs``, cascading to all dependent tables."""
+        with self._conn() as conn:
+            rows = conn.execute("SELECT id, created_at FROM runs ORDER BY created_at DESC, id DESC").fetchall()
+            doomed = []
+            for index, row in enumerate(rows):
+                too_old = before is not None and row["created_at"] < before
+                overflow = max_runs is not None and index >= max_runs
+                if too_old or overflow:
+                    doomed.append(row["id"])
+            for run_id in doomed:
+                for table in ("verdicts", "deliveries", "dispatches", "artifact_refs", "specs"):
+                    conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+                conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        return doomed
+
     # -- state & artifacts ---------------------------------------------------
 
     def set_run_state(

@@ -332,3 +332,26 @@ body {
   color: var(--muted);
   margin: 8px 0 4px;
 }
+
+.quarantine-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quarantine-actions input {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  width: 220px;
+}
+
+.quarantine-actions button {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  cursor: pointer;
+  font-size: 12px;
+}

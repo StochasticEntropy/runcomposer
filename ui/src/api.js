@@ -30,3 +30,14 @@ export const compileSelection = (selection) => post("/api/v1/selection/compile",
 export const createRun = (payload) => post("/api/v1/runs", payload);
 export const listRuns = () => request("/api/v1/runs");
 export const getRun = (runId) => request(`/api/v1/runs/${encodeURIComponent(runId)}`);
+export const listQuarantine = () => request("/api/v1/quarantine");
+export const attachQuarantined = (entryId, runId) =>
+  post(`/api/v1/quarantine/${encodeURIComponent(entryId)}/attach`, { run_id: runId });
+export const promoteQuarantined = (entryId) =>
+  post(`/api/v1/quarantine/${encodeURIComponent(entryId)}/promote`, {});
+export const discardQuarantined = (entryId) =>
+  request(`/api/v1/quarantine/${encodeURIComponent(entryId)}`, { method: "DELETE" }).catch((error) => {
+    // 204 has no JSON body; a parse error here means success
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  });
