@@ -1,0 +1,12 @@
+.git
+ui/node_modules
+.venv
+venv
+dist
+build
+*.egg-info
+__pycache__
+*.db
+artifacts
+results_inbox
+.pytest_cache

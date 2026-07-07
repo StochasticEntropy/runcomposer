@@ -66,7 +66,7 @@ source:
   snapshot: sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
 results:
   expect:
-  - format: demo-verdicts
+  - format: runcomposer-verdicts
   shards: 1
   deliver: none
 runner:

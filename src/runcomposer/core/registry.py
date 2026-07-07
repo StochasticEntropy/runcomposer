@@ -16,6 +16,8 @@ from typing import Any
 
 SOURCE_GROUP = "runcomposer.sources"
 RUNNER_GROUP = "runcomposer.runners"
+STORE_GROUP = "runcomposer.stores"
+PARSER_GROUP = "runcomposer.parsers"
 
 
 class PluginError(RuntimeError):

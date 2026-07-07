@@ -1,0 +1,72 @@
+{
+  "app": {
+    "title": "runcomposer",
+    "tagline": "Compose test runs from tags"
+  },
+  "nav": {
+    "compose": "Compose",
+    "runs": "Runs"
+  },
+  "language": {
+    "label": "Language"
+  },
+  "taxonomy": {
+    "title": "Taxonomy",
+    "hint": "Click a node to add its pattern to the filter",
+    "items": "items"
+  },
+  "filter": {
+    "title": "Filter",
+    "quickFilters": "Quick filters",
+    "clear": "Clear",
+    "empty": "No filter yet — everything matches. Add a rule, a quick filter, or click a taxonomy node.",
+    "fieldTag": "Tag"
+  },
+  "preview": {
+    "title": "Preview",
+    "matched": "{count} items matched",
+    "selected": "{selected} of {count} selected",
+    "empty": "No items match the current filter",
+    "loading": "Compiling selection…",
+    "columns": {
+      "id": "Item id",
+      "name": "Name",
+      "tags": "Tags"
+    }
+  },
+  "compose": {
+    "titleLabel": "Run title",
+    "titlePlaceholder": "Untitled run",
+    "runWith": "Run with",
+    "exportSpec": "Export spec",
+    "composing": "Composing…",
+    "runCreated": "Run {id} created — state {state}",
+    "specExported": "Spec exported for run {id} — dispatch {dispatch}",
+    "nothingSelected": "Select at least one item to compose a run"
+  },
+  "runs": {
+    "title": "Runs",
+    "refresh": "Refresh",
+    "empty": "No runs stored yet — compose one from the Compose tab",
+    "columns": {
+      "id": "Run id",
+      "state": "State",
+      "result": "Result",
+      "created": "Created",
+      "title": "Title"
+    },
+    "detail": {
+      "dispatches": "Dispatches",
+      "deliveries": "Deliveries",
+      "verdicts": "Verdicts",
+      "mode": "mode",
+      "shards": "shards",
+      "shard": "shard",
+      "format": "format",
+      "none": "none yet"
+    }
+  },
+  "errors": {
+    "request": "Request failed: {message}"
+  }
+}

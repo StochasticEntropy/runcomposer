@@ -23,7 +23,7 @@ jobs:
         run: python -m pytest -q
 
   quickstart:
-    # The P0 acceptance criterion (DESIGN.md §14): one-command quickstart.
+    # The one-command quickstart acceptance (DESIGN.md §14).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,3 +34,58 @@ jobs:
         run: pipx run --spec . runcomposer demo
       - name: validate the shipped example spec
         run: pipx run --spec . runcomposer validate --for-dispatch examples/webshop-regression.runspec.yaml
+      - name: export round-trip (spec → exec → ingest → COMPLETE)
+        run: |
+          python -m venv /tmp/rt && /tmp/rt/bin/pip install -q .
+          cd /tmp && printf 'store:\n  sqlite: { path: rt.db }\n' > rt-config.yaml
+          /tmp/rt/bin/runcomposer spec 'Regression' --title "CI round trip" --format json -o rt-spec.json --export --config rt-config.yaml
+          /tmp/rt/bin/runcomposer-exec rt-spec.json --out rt-bundle --simulate
+          /tmp/rt/bin/runcomposer ingest rt-bundle --config rt-config.yaml
+          /tmp/rt/bin/runcomposer runs --config rt-config.yaml | tee runs.out
+          grep -q COMPLETE runs.out
+
+  ui:
+    # The committed pre-built assets must match the UI source exactly.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build UI
+        working-directory: ui
+        run: npm ci && npm run build
+      - name: Committed bundle matches source
+        run: git diff --exit-code src/runcomposer/ui_dist
+
+  wheel:
+    # Evaluators need no Node toolchain: the wheel carries the built UI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: pip wheel --no-deps -w dist .
+      - name: Install into a fresh venv and serve the UI
+        run: |
+          python -m venv /tmp/fresh && /tmp/fresh/bin/pip install dist/*.whl
+          /tmp/fresh/bin/runcomposer serve --port 8199 &
+          sleep 3
+          curl -sf localhost:8199/api/v1/health
+          curl -sf localhost:8199/ | grep -q '<div id="root">'
+          asset=$(curl -s localhost:8199/ | grep -o '/assets/index-[^"]*\.js' | head -1)
+          curl -sf -o /dev/null "localhost:8199$asset"
+          curl -sf localhost:8199/locales/de.json > /dev/null
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t runcomposer:ci .
+      - name: docker run … runcomposer demo
+        run: docker run --rm runcomposer:ci demo

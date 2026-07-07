@@ -74,7 +74,7 @@ def _compose_and_run(
         source_provider=source.provider_id,
         source_root="corpus.json",
         snapshot=source.snapshot(),
-        results={"expect": [{"format": "demo-verdicts"}], "shards": 1, "deliver": "none"},
+        results={"expect": [{"format": "runcomposer-verdicts"}], "shards": 1, "deliver": "none"},
         runner={"demo": {"seed": seed}},
         labels={"origin": "demo"},
     )

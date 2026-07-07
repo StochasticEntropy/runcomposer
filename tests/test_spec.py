@@ -21,7 +21,7 @@ def make_spec(**overrides):
         source_provider="manifest",
         source_root="corpus.json",
         snapshot="sha256:" + "ab12cd34" * 8,
-        results={"expect": [{"format": "demo-verdicts"}], "shards": 1, "deliver": "none"},
+        results={"expect": [{"format": "runcomposer-verdicts"}], "shards": 1, "deliver": "none"},
         runner={"demo": {"seed": "s"}},
         labels={"origin": "test"},
     )

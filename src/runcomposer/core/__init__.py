@@ -6,8 +6,24 @@ contains no framework-specific concepts — guarded by a test.
 
 from .filter import BoolOp, FilterError, FilterNode, NotNode, TagPattern, format_filter, parse_filter
 from .ids import new_ulid
-from .model import VERDICT_STATUSES, Item, Verdict
-from .ports import DispatchHandle, Runner, RunnerInfo, TestSource
+from .lifecycle import COMPLETIONS, RUN_STATES, all_shards_delivered, completion_of
+from .model import (
+    VERDICT_STATUSES,
+    DeliveryRecord,
+    DispatchRecord,
+    Item,
+    RunRecord,
+    Verdict,
+)
+from .ports import (
+    DispatchHandle,
+    ParsedVerdict,
+    ResultParser,
+    Runner,
+    RunnerInfo,
+    RunStore,
+    TestSource,
+)
 from .selection import Selection, SelectionError
 from .spec import (
     SPEC_VERSION,
@@ -21,13 +37,21 @@ from .spec import (
 
 __all__ = [
     "BoolOp",
+    "COMPLETIONS",
+    "DeliveryRecord",
     "DispatchHandle",
+    "DispatchRecord",
     "FilterError",
     "FilterNode",
     "Item",
     "NotNode",
+    "ParsedVerdict",
+    "ResultParser",
+    "RUN_STATES",
     "Runner",
     "RunnerInfo",
+    "RunRecord",
+    "RunStore",
     "SPEC_VERSION",
     "Selection",
     "SelectionError",
@@ -37,7 +61,9 @@ __all__ = [
     "ValidationReport",
     "VERDICT_STATUSES",
     "Verdict",
+    "all_shards_delivered",
     "build_spec",
+    "completion_of",
     "format_filter",
     "load_document",
     "new_ulid",

@@ -25,16 +25,19 @@ classifiers = [
 dependencies = [
     "jsonschema>=4.18",
     "PyYAML>=6.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.urls]
 Homepage = "https://github.com/StochasticEntropy/runcomposer"
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]
 runcomposer = "runcomposer.cli:main"
+runcomposer-exec = "runcomposer_exec:main"
 
 # Reference plugins register through the same entry-point groups any
 # third-party plugin would use (DESIGN.md §6: entry points are one of the two
@@ -45,8 +48,19 @@ manifest = "runcomposer.plugins.manifest_source:ManifestSource"
 [project.entry-points."runcomposer.runners"]
 demo = "runcomposer.plugins.demo_runner:DemoRunner"
 
+[project.entry-points."runcomposer.stores"]
+sqlite = "runcomposer.plugins.sqlite_store:SqliteRunStore"
+
+[project.entry-points."runcomposer.parsers"]
+runcomposer-verdicts = "runcomposer.plugins.verdicts_parser:VerdictsParser"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/runcomposer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# runcomposer-exec stays a single self-contained stdlib-only file by
+# construction (DESIGN.md §6.2c) — shipped in the wheel AND vendorable as-is.
+"src/runcomposer_exec.py" = "runcomposer_exec.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

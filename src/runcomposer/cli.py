@@ -1,9 +1,18 @@
-"""runcomposer CLI (DESIGN.md §9) — P0 commands: validate, demo, catalog."""
+"""runcomposer CLI (DESIGN.md §9).
+
+P1 surface: validate · demo · catalog · compile · spec · runs · ingest ·
+serve. The vendorable `runcomposer-exec` consumer is its own entry point
+(see runcomposer_exec.py).
+"""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from typing import Any
+
+import yaml
 
 from runcomposer import __version__
 
@@ -31,16 +40,126 @@ def main(argv: list[str] | None = None) -> int:
     p_catalog.add_argument("--manifest", help="manifest file (default: the bundled demo corpus)")
     p_catalog.add_argument("--limit", type=int, default=0, help="show at most N items")
 
-    args = parser.parse_args(argv)
-    if args.command == "validate":
-        return _cmd_validate(args)
-    if args.command == "demo":
-        from runcomposer.demo.demo import run_demo
+    p_compile = sub.add_parser("compile", help="preview a selection: matched items + warnings")
+    _add_selection_args(p_compile)
+    _add_config_arg(p_compile)
 
-        return run_demo()
-    if args.command == "catalog":
-        return _cmd_catalog(args)
-    return 2  # unreachable: subparsers are required
+    p_spec = sub.add_parser(
+        "spec", help="compose a run and emit its runspec (the export workflow's compose step)"
+    )
+    _add_selection_args(p_spec)
+    p_spec.add_argument("--title", default="Untitled run", help="run title")
+    p_spec.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
+                        help="free-form provenance label (repeatable)")
+    p_spec.add_argument("--format", choices=("yaml", "json"), default="yaml")
+    p_spec.add_argument("-o", "--out", help="write the spec to this file instead of stdout")
+    p_spec.add_argument("--export", action="store_true",
+                        help="mint an export dispatch for the emitted document (DESIGN.md §4)")
+    _add_config_arg(p_spec)
+
+    p_runs = sub.add_parser("runs", help="list stored runs")
+    p_runs.add_argument("--state", help="filter by lifecycle state (e.g. COMPLETE)")
+    p_runs.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
+                        help="filter by label (repeatable; all must match)")
+    p_runs.add_argument("--since", help="only runs created at/after this ISO-8601 UTC time")
+    p_runs.add_argument("--until", help="only runs created at/before this ISO-8601 UTC time")
+    p_runs.add_argument("--limit", type=int, default=20)
+    _add_config_arg(p_runs)
+
+    p_ingest = sub.add_parser("ingest", help="ingest a results bundle (dir or file)")
+    p_ingest.add_argument("bundle", help="path to the results bundle")
+    p_ingest.add_argument("--run", help="run id (required when the bundle has no marker)")
+    p_ingest.add_argument("--dispatch", help="dispatch id (default: from marker, else latest)")
+    p_ingest.add_argument("--shard", help="shard label (default: from marker, else '1')")
+    _add_config_arg(p_ingest)
+
+    p_serve = sub.add_parser("serve", help="run the API + UI server")
+    p_serve.add_argument("--host", help="bind host (default: from config, 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, help="bind port (default: from config, 8100)")
+    _add_config_arg(p_serve)
+
+    args = parser.parse_args(argv)
+    handlers = {
+        "validate": _cmd_validate,
+        "demo": _cmd_demo,
+        "catalog": _cmd_catalog,
+        "compile": _cmd_compile,
+        "spec": _cmd_spec,
+        "runs": _cmd_runs,
+        "ingest": _cmd_ingest,
+        "serve": _cmd_serve,
+    }
+    from runcomposer.config import ConfigError
+
+    try:
+        return handlers[args.command](args)
+    except ConfigError as exc:
+        # Plugin resolution is lazy, so a bad config can surface past
+        # load_config — still a config error, still a clean one-liner (§8).
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _add_config_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", help="config file (default: ./config.yaml if present)")
+
+
+def _add_selection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "filter",
+        nargs="?",
+        help="tag filter: a pattern string ('Payments', 'prefix:Checkout-') or a "
+        "YAML/JSON AST ('{op: AND, items: [Payments, {not: prefix:Quarantine-}]}')",
+    )
+    parser.add_argument("--id", action="append", default=[], dest="item_ids", metavar="ITEM_ID",
+                        help="explicit item pick (repeatable; intersects with the filter)")
+
+
+def _selection_data(args: argparse.Namespace) -> dict[str, Any]:
+    selection: dict[str, Any] = {}
+    if args.filter:
+        try:
+            selection["tag_filter"] = yaml.safe_load(args.filter)
+        except yaml.YAMLError as exc:
+            print(f"error: cannot parse filter: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
+    if args.item_ids:
+        selection["item_ids"] = list(args.item_ids)
+    if not selection:
+        print("error: provide a filter and/or --id picks", file=sys.stderr)
+        raise SystemExit(2)
+    return selection
+
+
+def _service(args: argparse.Namespace):
+    from runcomposer.config import ConfigError, load_config
+    from runcomposer.service import Service
+
+    try:
+        return Service(load_config(args.config))
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+def _parse_labels(pairs: list[str]) -> dict[str, str]:
+    labels = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            print(f"error: --label must be KEY=VALUE, got {pair!r}", file=sys.stderr)
+            raise SystemExit(2)
+        labels[key] = value
+    return labels
+
+
+# -- commands -----------------------------------------------------------------
+
+
+def _cmd_demo(_args: argparse.Namespace) -> int:
+    from runcomposer.demo.demo import run_demo
+
+    return run_demo()
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -82,6 +201,130 @@ def _cmd_catalog(args: argparse.Namespace) -> int:
         print(f"{item.id}  [{', '.join(item.tags)}]")
     if args.limit and len(items) > args.limit:
         print(f"# … {len(items) - args.limit} more (use --limit 0 for all)")
+    return 0
+
+
+def _cmd_compile(args: argparse.Namespace) -> int:
+    from runcomposer.core.filter import FilterError
+    from runcomposer.core.selection import SelectionError
+
+    service = _service(args)
+    try:
+        items, warnings = service.preview(_selection_data(args))
+    except (FilterError, SelectionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for warning in warnings:
+        print(f"warning: {warning}")
+    print(f"# {len(items)} item(s) matched")
+    for item in items:
+        print(f"{item.id}  [{', '.join(item.tags)}]")
+    return 0
+
+
+def _cmd_spec(args: argparse.Namespace) -> int:
+    from runcomposer.core.filter import FilterError
+    from runcomposer.core.selection import SelectionError
+
+    service = _service(args)
+    try:
+        result = service.compose_run(
+            _selection_data(args),
+            title=args.title,
+            labels=_parse_labels(args.label),
+            origin="cli",
+        )
+    except (FilterError, SelectionError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    assert result.run is not None
+    for warning in result.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+    if args.format == "json":
+        payload = json.dumps(result.spec, indent=2, ensure_ascii=False) + "\n"
+    else:
+        payload = yaml.safe_dump(result.spec, sort_keys=False, allow_unicode=True)
+    spec_bytes = payload.encode("utf-8")
+
+    if args.out:
+        with open(args.out, "wb") as fh:
+            fh.write(spec_bytes)
+        print(f"spec written to {args.out}", file=sys.stderr)
+    else:
+        sys.stdout.write(payload)
+
+    print(f"run: {result.run.id} (state COMPOSED)", file=sys.stderr)
+    if args.export:
+        dispatch = service.export_dispatch(result.run.id, spec_bytes=spec_bytes)
+        print(
+            f"export dispatch: {dispatch.dispatch_id} "
+            f"({dispatch.declared_shards} shard(s) declared, state AWAITING_RESULTS)",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _cmd_runs(args: argparse.Namespace) -> int:
+    service = _service(args)
+    runs = service.store.list_runs(
+        state=args.state,
+        labels=_parse_labels(args.label) or None,
+        since=args.since,
+        until=args.until,
+        limit=args.limit,
+    )
+    if not runs:
+        print("no runs stored" + (f" in state {args.state}" if args.state else ""))
+        return 0
+    print(f"{'RUN ID':<26}  {'STATE':<16}  {'RESULT':<6}  {'CREATED':<20}  TITLE")
+    for run in runs:
+        print(
+            f"{run.id:<26}  {run.state:<16}  {run.completion or '-':<6}  "
+            f"{run.created_at:<20}  {run.title}"
+        )
+    return 0
+
+
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    from runcomposer.service import IngestError
+
+    service = _service(args)
+    try:
+        report = service.ingest(
+            args.bundle, run_id=args.run, dispatch_id=args.dispatch, shard=args.shard
+        )
+    except IngestError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for warning in report.warnings:
+        print(f"warning: {warning}")
+    outcome = {
+        "new": "delivery recorded",
+        "duplicate": "byte-identical bundle already ingested — no-op",
+        "replaced": "shard re-delivered — previous verdicts replaced (last-writer-wins)",
+    }[report.outcome]
+    print(f"{report.run_id} shard {report.shard}: {outcome} ({report.verdict_count} verdict(s))")
+    completion = f" ({report.completion})" if report.completion else ""
+    print(f"run state: {report.run_state}{completion}")
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from runcomposer.api import create_app
+    from runcomposer.config import ConfigError, load_config
+
+    try:
+        config = load_config(args.config)
+        app = create_app(config)  # resolves all plugins; fails loudly (§8)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    host = args.host or config.api["host"]
+    port = args.port or config.api["port"]
+    uvicorn.run(app, host=host, port=port, log_level="info")
     return 0
 
 

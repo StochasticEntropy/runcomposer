@@ -1,0 +1,72 @@
+{
+  "app": {
+    "title": "runcomposer",
+    "tagline": "Testläufe aus Tags komponieren"
+  },
+  "nav": {
+    "compose": "Komponieren",
+    "runs": "Läufe"
+  },
+  "language": {
+    "label": "Sprache"
+  },
+  "taxonomy": {
+    "title": "Taxonomie",
+    "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen",
+    "items": "Elemente"
+  },
+  "filter": {
+    "title": "Filter",
+    "quickFilters": "Schnellfilter",
+    "clear": "Leeren",
+    "empty": "Noch kein Filter — alles passt. Regel, Schnellfilter oder Taxonomie-Knoten hinzufügen.",
+    "fieldTag": "Tag"
+  },
+  "preview": {
+    "title": "Vorschau",
+    "matched": "{count} Elemente gefunden",
+    "selected": "{selected} von {count} ausgewählt",
+    "empty": "Kein Element passt zum aktuellen Filter",
+    "loading": "Auswahl wird kompiliert…",
+    "columns": {
+      "id": "Element-ID",
+      "name": "Name",
+      "tags": "Tags"
+    }
+  },
+  "compose": {
+    "titleLabel": "Titel des Laufs",
+    "titlePlaceholder": "Unbenannter Lauf",
+    "runWith": "Ausführen mit",
+    "exportSpec": "Spec exportieren",
+    "composing": "Wird komponiert…",
+    "runCreated": "Lauf {id} angelegt — Status {state}",
+    "specExported": "Spec exportiert für Lauf {id} — Dispatch {dispatch}",
+    "nothingSelected": "Mindestens ein Element auswählen, um einen Lauf zu komponieren"
+  },
+  "runs": {
+    "title": "Läufe",
+    "refresh": "Aktualisieren",
+    "empty": "Noch keine Läufe gespeichert — im Komponieren-Tab einen anlegen",
+    "columns": {
+      "id": "Lauf-ID",
+      "state": "Status",
+      "result": "Ergebnis",
+      "created": "Angelegt",
+      "title": "Titel"
+    },
+    "detail": {
+      "dispatches": "Dispatches",
+      "deliveries": "Lieferungen",
+      "verdicts": "Ergebnisse",
+      "mode": "Modus",
+      "shards": "Shards",
+      "shard": "Shard",
+      "format": "Format",
+      "none": "noch keine"
+    }
+  },
+  "errors": {
+    "request": "Anfrage fehlgeschlagen: {message}"
+  }
+}

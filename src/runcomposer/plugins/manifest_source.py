@@ -32,9 +32,10 @@ class ManifestError(ValueError):
 class ManifestSource:
     provider_id = "manifest"
 
-    def __init__(self, source: Any):
-        """``source``: a path, or any object with ``read_text()`` (e.g. an
-        ``importlib.resources`` traversable)."""
+    def __init__(self, path: Any):
+        """``path``: a filesystem path, or any object with ``read_text()``
+        (e.g. an ``importlib.resources`` traversable)."""
+        source = path
         if hasattr(source, "read_text"):
             text = source.read_text(encoding="utf-8")
             label = getattr(source, "name", str(source))

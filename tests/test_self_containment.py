@@ -14,10 +14,15 @@ import runcomposer.core
 
 CORE_DIR = Path(runcomposer.core.__file__).parent
 
-# Framework/CI vocabulary that must never appear in core code (case-insensitive).
+# Framework/CI/persistence vocabulary that must never appear in core code
+# (case-insensitive). Storage engines and web frameworks live in plugins and
+# the app layer; the core knows only DESIGN.md §2 vocabulary.
 FORBIDDEN_TOKENS = [
     "runcomposer.plugins",
     "runcomposer.demo",
+    "runcomposer.service",
+    "runcomposer.config",
+    "runcomposer.api",
     "robot",  # the reference framework lives in plugins only
     "longname",
     "output.xml",
@@ -25,6 +30,10 @@ FORBIDDEN_TOKENS = [
     "jenkins",
     "pytest",
     "nodeid",
+    "sqlite",
+    "postgres",
+    "fastapi",
+    "uvicorn",
 ]
 
 # Third-party imports the core is allowed (see pyproject dependencies).
