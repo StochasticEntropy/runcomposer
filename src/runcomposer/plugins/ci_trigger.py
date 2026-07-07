@@ -94,8 +94,15 @@ class CiTriggerRunner:
                     "(the URL under which the CI job can reach this runcomposer's API)"
                 )
             callback = f"{self.callback_base}/api/v1/runs/{run_id}/results"
+        spec_json = json.dumps(spec)
+        # The consumer stage writes SPEC_JSON verbatim to spec.json, so this
+        # hash equals the file hash runcomposer-exec puts in the marker —
+        # enabling §5 marker verification on the CI path.
+        import hashlib
+
+        spec_sha256 = hashlib.sha256(spec_json.encode("utf-8")).hexdigest()
         params = {
-            "SPEC_JSON": json.dumps(spec),
+            "SPEC_JSON": spec_json,
             "DISPATCH_ID": dispatch_id,
             "CALLBACK_URL": callback,
             "INGEST_TOKEN": spec.get("results", {}).get("token") or "",
@@ -109,7 +116,10 @@ class CiTriggerRunner:
         if self.completion == "poll":
             self._poll_and_ingest(spec, run_id, dispatch_id, queue_url, job_url)
         return DispatchHandle(
-            dispatch_id=dispatch_id, shards=1, links={"job": job_url, "queue": queue_url or ""}
+            dispatch_id=dispatch_id,
+            shards=1,
+            links={"job": job_url, "queue": queue_url or ""},
+            spec_sha256=spec_sha256,
         )
 
     # -- HTTP plumbing --------------------------------------------------------------

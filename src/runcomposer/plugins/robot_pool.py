@@ -40,7 +40,7 @@ def _run_chunk(payload: dict) -> dict:
 
     out_dir = Path(payload["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    listeners = []
+    listeners: list = list(payload.get("extra_listeners") or [])  # §6.2a `listener` option
     if payload.get("store_path"):
         store = SqliteRunStore(payload["store_path"])
         listeners.append(
@@ -75,6 +75,8 @@ class RobotPoolRunner:
         variables: Mapping[str, str] | None = None,
         live_status: bool = True,
         allow_drift: bool = False,
+        listener: str | list[str] | None = None,
+        pre_run_hooks: list[str] | None = None,
         history_selector: Mapping[str, Any] | None = None,
         history_depth: int = 5,
         output_root: str | None = None,
@@ -85,6 +87,8 @@ class RobotPoolRunner:
             "variables": dict(variables or {}),
             "live_status": live_status,
             "allow_drift": allow_drift,
+            "listener": listener,
+            "pre_run_hooks": list(pre_run_hooks or []),
         }
         self.max_workers = max_workers
         self.history_selector = dict(history_selector or {})
@@ -120,9 +124,14 @@ class RobotPoolRunner:
         dispatch_id = new_ulid()
 
         item_ids, drift_skips = self._check_drift(spec, item_ids, opts)
+        self._run_hooks(opts)
         partitions = list(opts.get("partitions") or ["default"])
         chunks, plan = self._plan(item_ids, partitions)
         self.last_plan = plan
+        user_listener = opts.get("listener")
+        extra_listeners = (
+            [user_listener] if isinstance(user_listener, str) else list(user_listener or [])
+        )
 
         shards: list[dict] = []
         for partition in partitions:
@@ -142,6 +151,7 @@ class RobotPoolRunner:
                         "dispatch_id": dispatch_id,
                         "out_dir": str(out_dir),
                         "store_path": self._live_store_path(opts),
+                        "extra_listeners": extra_listeners,
                     }
                 )
 
@@ -153,6 +163,20 @@ class RobotPoolRunner:
         self._deliver(run_id, dispatch_id, results, drift_skips)
         declared = len(shards) + (1 if drift_skips else 0)
         return DispatchHandle(dispatch_id=dispatch_id, shards=declared)
+
+    def _run_hooks(self, opts) -> None:
+        """§6.2a ``pre_run_hooks``: shell commands run once per dispatch,
+        before any chunk executes (environment prep, readiness checks). A
+        failing hook refuses the dispatch."""
+        import subprocess
+
+        for hook in opts.get("pre_run_hooks") or []:
+            completed = subprocess.run(hook, shell=True, capture_output=True, text=True)
+            if completed.returncode != 0:
+                raise DispatchRefused(
+                    f"pre_run_hook failed (rc {completed.returncode}): {hook!r} — "
+                    f"{(completed.stderr or completed.stdout).strip()[:300]}"
+                )
 
     # -- §3.3 drift -------------------------------------------------------------
 

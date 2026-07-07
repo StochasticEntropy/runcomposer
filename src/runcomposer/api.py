@@ -306,7 +306,16 @@ def create_app(config: Config) -> FastAPI:
                             )
                         out.write(chunk)
 
+            declared_format = format
             run = service.store.get_run(run_id)
+            if run is not None and declared_format:
+                expected = service._expected_format(run_id)  # noqa: SLF001 - same package
+                if declared_format != expected:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"declared format {declared_format!r} does not match the run's "
+                        f"expected results format {expected!r} (results.expect, §3.1)",
+                    )
             if run is None:
                 # Unsolicited (§4): visible in quarantine, never a run record.
                 entry = service.quarantine.add(

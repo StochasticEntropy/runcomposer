@@ -191,6 +191,11 @@ class Service:
         history_query = data.pop("history", None)
         if history_query:
             ids, provenance = self.resolve_history(history_query)
+            if not ids:
+                raise ServiceError(
+                    f"history selection {history_query!r} matched no items in run "
+                    f"{provenance['resolved_run_id']} — nothing to rerun"
+                )
             derived.append(provenance)
             known = {item.id for item in self.source.items()}
             gone = [item_id for item_id in ids if item_id not in known]
@@ -330,6 +335,7 @@ class Service:
             dispatch_id=handle.dispatch_id,
             mode=runner_id,
             declared_shards=handle.shards,
+            spec_sha256=handle.spec_sha256,
         )
         for delivery in getattr(runner, "deliveries", []):
             verdicts = delivery["verdicts"]
@@ -567,6 +573,9 @@ class Service:
                 if file.is_file() and file.stat().st_mtime < cutoff_epoch:
                     file.unlink(missing_ok=True)
                     report["artifacts_removed"] += 1
+            for directory in sorted(artifacts.rglob("*"), reverse=True):
+                if directory.is_dir() and not any(directory.iterdir()):
+                    directory.rmdir()
         cutoff_iso = datetime.fromtimestamp(cutoff_epoch, tz=timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )

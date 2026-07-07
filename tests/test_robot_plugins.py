@@ -253,6 +253,55 @@ class TestLiveStatus:
         assert len(service.store.verdicts_for(run.id, dispatch.dispatch_id)) == len(result.items)
 
 
+class TestListenerPassThroughAndHooks:
+    """§6.2a options: a user-supplied `listener` and `pre_run_hooks`."""
+
+    def test_user_listener_receives_events(self, tmp_path):
+        listener_file = tmp_path / "SentinelListener.py"
+        sentinel = tmp_path / "seen.txt"
+        listener_file.write_text(
+            "class SentinelListener:\n"
+            "    ROBOT_LISTENER_API_VERSION = 3\n"
+            "    def __init__(self, out):\n"
+            "        self.out = out\n"
+            "    def end_test(self, data, result):\n"
+            "        with open(self.out, 'a') as fh:\n"
+            "            fh.write(result.name + '\\n')\n",
+            encoding="utf-8",
+        )
+        config = robot_config(tmp_path, listener=f"{listener_file}:{sentinel}")
+        service = Service(config)
+        result = service.compose_run(
+            {"tag_filter": "Smoke"}, title="Listener pass-through", origin="test",
+            runner_section={"robot-pool": config.runner_options("robot-pool")},
+        )
+        service.dispatch_runner(result.run.id, "robot-pool")
+        seen = sentinel.read_text(encoding="utf-8").splitlines()
+        assert sorted(seen) == sorted(item.name for item in result.items)
+
+    def test_pre_run_hooks_run_before_execution(self, tmp_path):
+        sentinel = tmp_path / "hook-ran.txt"
+        config = robot_config(tmp_path, pre_run_hooks=[f"echo prepared > {sentinel}"])
+        service = Service(config)
+        result = service.compose_run(
+            {"tag_filter": "Smoke"}, title="Hooks", origin="test",
+            runner_section={"robot-pool": config.runner_options("robot-pool")},
+        )
+        service.dispatch_runner(result.run.id, "robot-pool")
+        assert sentinel.read_text(encoding="utf-8").strip() == "prepared"
+
+    def test_failing_hook_refuses_the_dispatch(self, tmp_path):
+        config = robot_config(tmp_path, pre_run_hooks=["echo doomed >&2; exit 3"])
+        service = Service(config)
+        result = service.compose_run(
+            {"tag_filter": "Smoke"}, title="Failing hook", origin="test",
+            runner_section={"robot-pool": config.runner_options("robot-pool")},
+        )
+        with pytest.raises(DispatchRefused, match="pre_run_hook failed .rc 3.*doomed"):
+            service.dispatch_runner(result.run.id, "robot-pool")
+        assert service.store.verdicts_for(result.run.id) == []
+
+
 class TestDurationHistory:
     def _seed_history(self, store, durations, labels=None):
         from runcomposer.core.spec import build_spec

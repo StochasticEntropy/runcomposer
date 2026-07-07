@@ -28,11 +28,15 @@ class RunnerInfo:
 
 @dataclass(frozen=True)
 class DispatchHandle:
-    """Returned by Runner.dispatch: dispatch id, declared shards, links."""
+    """Returned by Runner.dispatch: dispatch id, declared shards, links.
+
+    ``spec_sha256`` is the hash of the exact document bytes the runner handed
+    to the executor — when set, ingestion can verify returned markers (§5)."""
 
     dispatch_id: str
     shards: int = 1
     links: Mapping[str, str] = field(default_factory=dict)
+    spec_sha256: str | None = None
 
 
 @dataclass(frozen=True)
