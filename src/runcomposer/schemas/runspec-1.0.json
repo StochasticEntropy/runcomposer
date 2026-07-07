@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/StochasticEntropy/runcomposer/schemas/runspec-1.0.json",
+  "title": "runspec 1.0",
+  "description": "The runcomposer run spec: a versioned, portable document any executor can fulfill. Known fields validate strictly; unknown fields inside known sections are permitted (they are what a MINOR bump adds). Unknown top-level sections are permitted here and warned about by `runcomposer validate`.",
+  "type": "object",
+  "required": ["runspec", "run", "selection", "source"],
+  "additionalProperties": true,
+  "properties": {
+    "runspec": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$",
+      "description": "Spec version MAJOR.MINOR. This schema accepts any 1.x; consumers refuse a higher MAJOR before schema validation."
+    },
+    "run": {
+      "type": "object",
+      "required": ["id", "created_at"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Correlation key for the run, minted at compose time (ULID by convention; opaque to consumers)."
+        },
+        "title": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "labels": {
+          "type": "object",
+          "description": "Free-form provenance; stored, never interpreted.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": true,
+      "anyOf": [
+        { "required": ["tag_filter"] },
+        { "required": ["item_ids"] },
+        { "required": ["materialized"] }
+      ],
+      "properties": {
+        "tag_filter": { "$ref": "#/$defs/filterNode" },
+        "item_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Optional explicit picks; if tag_filter is also present, the selection is their intersection (fixed AND)."
+        },
+        "materialized": {
+          "type": "object",
+          "required": ["item_ids", "at", "count"],
+          "additionalProperties": true,
+          "description": "THE authoritative executed set. Required for dispatch/export (enforced by `runcomposer validate --for-dispatch`), optional in previews.",
+          "properties": {
+            "item_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "at": { "type": "string", "format": "date-time" },
+            "count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "derived_from": {
+          "type": "array",
+          "description": "Provenance for compile-time-resolved inputs (history queries, taxonomy refs).",
+          "items": {
+            "type": "object",
+            "required": ["provider"],
+            "additionalProperties": true,
+            "properties": {
+              "provider": { "type": "string", "minLength": 1 },
+              "query": { "type": "object" },
+              "resolved_run_id": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["provider", "snapshot"],
+      "additionalProperties": true,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "root": { "type": "string" },
+        "snapshot": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{8,64}$",
+          "description": "Catalog content hash at compose time — an integrity check, not an alternate compile path."
+        }
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "expect": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["format"],
+            "additionalProperties": true,
+            "properties": {
+              "format": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "shards": {
+          "oneOf": [
+            { "const": "runner-declared" },
+            { "type": "integer", "minimum": 1 }
+          ]
+        },
+        "deliver": { "enum": ["api", "file-drop", "none"] },
+        "callback": { "type": "string" },
+        "token": { "type": "string" }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "description": "The single open section: namespaced by plugin id; the core never interprets its contents.",
+      "additionalProperties": { "type": "object" }
+    }
+  },
+  "$defs": {
+    "filterNode": {
+      "description": "Lossless tag-filter AST: pattern string ('literal' | 'prefix:X' | 'regex:E'), {op, items}, or {not}.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "required": ["op", "items"],
+          "additionalProperties": false,
+          "properties": {
+            "op": { "enum": ["AND", "OR"] },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/filterNode" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["not"],
+          "additionalProperties": false,
+          "properties": {
+            "not": { "$ref": "#/$defs/filterNode" }
+          }
+        }
+      ]
+    }
+  }
+}

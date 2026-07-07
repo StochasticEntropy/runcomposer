@@ -1,0 +1,23 @@
+# Demo taxonomy — a curated tree over tag patterns (DESIGN.md §2: data, not code).
+# Each leaf's `filter` is a tag-filter pattern in the runspec grammar
+# (literal | prefix:X | regex:E), so taxonomy nodes and selections share one
+# grammar (§3.1).
+taxonomy:
+  - label: Areas
+    children:
+      - { label: Payments, filter: "Payments" }
+      - { label: Checkout, filter: "Checkout" }
+      - { label: Cart, filter: "regex:^Cart(V2)?$" }
+      - { label: Catalog, filter: "Catalog" }
+      - { label: Auth, filter: "Auth" }
+  - label: Suites
+    children:
+      - { label: Smoke, filter: "Smoke" }
+      - { label: Regression, filter: "Regression" }
+  - label: Sprints
+    children:
+      - { label: Sprint 12, filter: "Sprint-12" }
+      - { label: Sprint 13, filter: "Sprint-13" }
+      - { label: Sprint 14, filter: "Sprint-14" }
+  - label: Quarantine
+    filter: "prefix:Quarantine-"

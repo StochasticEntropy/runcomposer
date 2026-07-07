@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "tests/test_checkout.py::test_guest_checkout",
+      "tags": ["Checkout", "Regression"]
+    },
+    {
+      "id": "tests/test_checkout.py::test_checkout[visa]",
+      "tags": ["Checkout", "Payments", "Regression"]
+    },
+    {
+      "id": "tests/test_checkout.py::test_checkout[mastercard]",
+      "tags": ["Checkout", "Payments", "Regression"]
+    },
+    {
+      "id": "tests/test_cart.py::test_add_item",
+      "tags": ["Cart", "Smoke"]
+    },
+    {
+      "id": "tests/test_cart.py::test_merge_carts",
+      "tags": ["CartV2", "Regression"]
+    },
+    {
+      "id": "tests/test_auth.py::test_login",
+      "tags": ["Auth", "Smoke"]
+    },
+    {
+      "id": "tests/test_auth.py::test_login_lockout",
+      "tags": ["Auth", "Regression", "Quarantine-Flaky"]
+    },
+    {
+      "id": "tests/test_search.py::test_typo_tolerance",
+      "tags": ["Catalog", "Regression"]
+    }
+  ]
+}

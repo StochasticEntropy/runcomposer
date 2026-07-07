@@ -1,0 +1,1109 @@
+{
+  "items": [
+    {
+      "id": "Shop.Payments.Cards.T001",
+      "name": "Visa payment succeeds",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1200"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Cards.T002",
+      "name": "Mastercard payment succeeds",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Cards.T003",
+      "name": "Declined card shows error",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Cards.T004",
+      "name": "3DS challenge completes",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1203"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Cards.T005",
+      "name": "Expired card is rejected",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Cards.T006",
+      "name": "Card network timeout retries",
+      "tags": [
+        "Payments",
+        "Payments-Cards",
+        "Regression",
+        "Sprint-14",
+        "Quarantine-Flaky"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Cards"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Wallets.T001",
+      "name": "Wallet checkout succeeds",
+      "tags": [
+        "Payments",
+        "Payments-Wallets",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1206"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Wallets"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Wallets.T002",
+      "name": "Wallet top-up is applied",
+      "tags": [
+        "Payments",
+        "Payments-Wallets",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Wallets"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Wallets.T003",
+      "name": "Wallet refund restores balance",
+      "tags": [
+        "Payments",
+        "Payments-Wallets",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Wallets"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Wallets.T004",
+      "name": "Wallet with insufficient funds falls back to card",
+      "tags": [
+        "Payments",
+        "Payments-Wallets",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1209"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Wallets"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Refunds.T001",
+      "name": "Full refund completes",
+      "tags": [
+        "Payments",
+        "Payments-Refunds",
+        "Smoke",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Refunds"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Refunds.T002",
+      "name": "Partial refund keeps remainder",
+      "tags": [
+        "Payments",
+        "Payments-Refunds",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Refunds"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Refunds.T003",
+      "name": "Refund after capture window is queued",
+      "tags": [
+        "Payments",
+        "Payments-Refunds",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1212"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Refunds"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Refunds.T004",
+      "name": "Double refund is rejected",
+      "tags": [
+        "Payments",
+        "Payments-Refunds",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Refunds"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Invoicing.T001",
+      "name": "Invoice is generated on purchase",
+      "tags": [
+        "Payments",
+        "Payments-Invoicing",
+        "Smoke",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Invoicing"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Invoicing.T002",
+      "name": "Invoice VAT is itemized",
+      "tags": [
+        "Payments",
+        "Payments-Invoicing",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1215"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Invoicing"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Payments.Invoicing.T003",
+      "name": "Credit note is issued on refund",
+      "tags": [
+        "Payments",
+        "Payments-Invoicing",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Payments",
+        "Invoicing"
+      ],
+      "meta": {
+        "owner": "team-payments"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Express.T001",
+      "name": "One-click order completes",
+      "tags": [
+        "Checkout",
+        "Checkout-Express",
+        "Smoke",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Express"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Express.T002",
+      "name": "Express checkout skips address step",
+      "tags": [
+        "Checkout",
+        "Checkout-Express",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1218"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Express"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Express.T003",
+      "name": "Express checkout uses default payment",
+      "tags": [
+        "Checkout",
+        "Checkout-Express",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Express"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Express.T004",
+      "name": "Express checkout respects stock limits",
+      "tags": [
+        "Checkout",
+        "Checkout-Express",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Express"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T001",
+      "name": "Guest checkout completes",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1221"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T002",
+      "name": "Registered checkout completes",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T003",
+      "name": "Address validation rejects bad postcode",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T004",
+      "name": "Shipping options update totals",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1224",
+        "Quarantine-Flaky"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T005",
+      "name": "Coupon code applies discount",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Standard.T006",
+      "name": "Out-of-stock item blocks order",
+      "tags": [
+        "Checkout",
+        "Checkout-Standard",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Standard"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Gift.T001",
+      "name": "Gift wrapping adds fee",
+      "tags": [
+        "Checkout",
+        "Checkout-Gift",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1227"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Gift"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Gift.T002",
+      "name": "Gift message is stored",
+      "tags": [
+        "Checkout",
+        "Checkout-Gift",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Gift"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Checkout.Gift.T003",
+      "name": "Gift receipt hides prices",
+      "tags": [
+        "Checkout",
+        "Checkout-Gift",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Checkout",
+        "Gift"
+      ],
+      "meta": {
+        "owner": "team-checkout"
+      }
+    },
+    {
+      "id": "Shop.Cart.Core.T001",
+      "name": "Add item to cart",
+      "tags": [
+        "Cart",
+        "Cart-Core",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1230"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "Core"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.Core.T002",
+      "name": "Remove item from cart",
+      "tags": [
+        "Cart",
+        "Cart-Core",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "Core"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.Core.T003",
+      "name": "Update quantity recalculates total",
+      "tags": [
+        "Cart",
+        "Cart-Core",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "Core"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.Core.T004",
+      "name": "Cart persists across sessions",
+      "tags": [
+        "Cart",
+        "Cart-Core",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1233"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "Core"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.Core.T005",
+      "name": "Empty cart shows hint",
+      "tags": [
+        "Cart",
+        "Cart-Core",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "Core"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.V2.T001",
+      "name": "V2 cart merges guest and account carts",
+      "tags": [
+        "CartV2",
+        "Cart-V2",
+        "Smoke",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "V2"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.V2.T002",
+      "name": "V2 cart applies promotions inline",
+      "tags": [
+        "CartV2",
+        "Cart-V2",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1236"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "V2"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.V2.T003",
+      "name": "V2 cart shows delivery estimate",
+      "tags": [
+        "CartV2",
+        "Cart-V2",
+        "Regression",
+        "Sprint-13",
+        "Quarantine-Flaky"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "V2"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Cart.V2.T004",
+      "name": "V2 cart undo restores removed item",
+      "tags": [
+        "CartV2",
+        "Cart-V2",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Cart",
+        "V2"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Search.T001",
+      "name": "Search finds product by title",
+      "tags": [
+        "Catalog",
+        "Catalog-Search",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1239"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Search"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Search.T002",
+      "name": "Search handles typos",
+      "tags": [
+        "Catalog",
+        "Catalog-Search",
+        "Regression",
+        "Sprint-13",
+        "Quarantine-Flaky"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Search"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Search.T003",
+      "name": "Search filters by price range",
+      "tags": [
+        "Catalog",
+        "Catalog-Search",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Search"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Search.T004",
+      "name": "Search pagination is stable",
+      "tags": [
+        "Catalog",
+        "Catalog-Search",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1242"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Search"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Search.T005",
+      "name": "Empty search shows suggestions",
+      "tags": [
+        "Catalog",
+        "Catalog-Search",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Search"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Browse.T001",
+      "name": "Category page lists products",
+      "tags": [
+        "Catalog",
+        "Catalog-Browse",
+        "Smoke",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Browse"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Browse.T002",
+      "name": "Sort by price ascending",
+      "tags": [
+        "Catalog",
+        "Catalog-Browse",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1245"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Browse"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Browse.T003",
+      "name": "Product detail shows variants",
+      "tags": [
+        "Catalog",
+        "Catalog-Browse",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Browse"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Catalog.Browse.T004",
+      "name": "Breadcrumbs reflect category path",
+      "tags": [
+        "Catalog",
+        "Catalog-Browse",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Catalog",
+        "Browse"
+      ],
+      "meta": {
+        "owner": "team-storefront"
+      }
+    },
+    {
+      "id": "Shop.Auth.Login.T001",
+      "name": "Login with valid credentials",
+      "tags": [
+        "Auth",
+        "Auth-Login",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1248"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Login"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Login.T002",
+      "name": "Login with wrong password fails",
+      "tags": [
+        "Auth",
+        "Auth-Login",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Login"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Login.T003",
+      "name": "Account locks after repeated failures",
+      "tags": [
+        "Auth",
+        "Auth-Login",
+        "Regression",
+        "Sprint-14",
+        "Quarantine-Blocked"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Login"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Login.T004",
+      "name": "Password reset email is sent",
+      "tags": [
+        "Auth",
+        "Auth-Login",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1251"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Login"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Login.T005",
+      "name": "Remember-me keeps session",
+      "tags": [
+        "Auth",
+        "Auth-Login",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Login"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Signup.T001",
+      "name": "Signup with valid data",
+      "tags": [
+        "Auth",
+        "Auth-Signup",
+        "Smoke",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Signup"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Signup.T002",
+      "name": "Signup rejects duplicate email",
+      "tags": [
+        "Auth",
+        "Auth-Signup",
+        "Regression",
+        "Sprint-12",
+        "SHOP-1254"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Signup"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Signup.T003",
+      "name": "Signup enforces password policy",
+      "tags": [
+        "Auth",
+        "Auth-Signup",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Signup"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.Signup.T004",
+      "name": "Email verification activates account",
+      "tags": [
+        "Auth",
+        "Auth-Signup",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "Signup"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.SSO.T001",
+      "name": "SSO login via identity provider",
+      "tags": [
+        "Auth",
+        "Auth-SSO",
+        "Smoke",
+        "Sprint-12",
+        "SHOP-1257"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "SSO"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.SSO.T002",
+      "name": "SSO account linking",
+      "tags": [
+        "Auth",
+        "Auth-SSO",
+        "Regression",
+        "Sprint-13"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "SSO"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    },
+    {
+      "id": "Shop.Auth.SSO.T003",
+      "name": "SSO logout terminates session",
+      "tags": [
+        "Auth",
+        "Auth-SSO",
+        "Regression",
+        "Sprint-14"
+      ],
+      "hierarchy": [
+        "Shop",
+        "Auth",
+        "SSO"
+      ],
+      "meta": {
+        "owner": "team-identity"
+      }
+    }
+  ]
+}

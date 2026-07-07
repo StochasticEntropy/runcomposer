@@ -1,0 +1,74 @@
+# A complete, dispatchable runspec 1.0 document (DESIGN.md §3.1), composed
+# against the bundled web-shop demo corpus. Kept true by a test: the
+# materialized item list and snapshot below are re-derived from the corpus
+# and compared exactly.
+runspec: '1.0'
+run:
+  id: 01JZEXAMPLE0000000000000AA
+  title: Web-shop regression without quarantined tests
+  created_at: '2026-07-07T08:00:00Z'
+  labels:
+    requested_by: docs
+    origin: example
+selection:
+  tag_filter:
+    op: AND
+    items:
+    - op: OR
+      items:
+      - Payments
+      - prefix:Checkout-
+      - regex:^Cart(V2)?$
+    - not: prefix:Quarantine-
+  materialized:
+    item_ids:
+    - Shop.Payments.Cards.T001
+    - Shop.Payments.Cards.T002
+    - Shop.Payments.Cards.T003
+    - Shop.Payments.Cards.T004
+    - Shop.Payments.Cards.T005
+    - Shop.Payments.Wallets.T001
+    - Shop.Payments.Wallets.T002
+    - Shop.Payments.Wallets.T003
+    - Shop.Payments.Wallets.T004
+    - Shop.Payments.Refunds.T001
+    - Shop.Payments.Refunds.T002
+    - Shop.Payments.Refunds.T003
+    - Shop.Payments.Refunds.T004
+    - Shop.Payments.Invoicing.T001
+    - Shop.Payments.Invoicing.T002
+    - Shop.Payments.Invoicing.T003
+    - Shop.Checkout.Express.T001
+    - Shop.Checkout.Express.T002
+    - Shop.Checkout.Express.T003
+    - Shop.Checkout.Express.T004
+    - Shop.Checkout.Standard.T001
+    - Shop.Checkout.Standard.T002
+    - Shop.Checkout.Standard.T003
+    - Shop.Checkout.Standard.T005
+    - Shop.Checkout.Standard.T006
+    - Shop.Checkout.Gift.T001
+    - Shop.Checkout.Gift.T002
+    - Shop.Checkout.Gift.T003
+    - Shop.Cart.Core.T001
+    - Shop.Cart.Core.T002
+    - Shop.Cart.Core.T003
+    - Shop.Cart.Core.T004
+    - Shop.Cart.Core.T005
+    - Shop.Cart.V2.T001
+    - Shop.Cart.V2.T002
+    - Shop.Cart.V2.T004
+    at: '2026-07-07T08:00:00Z'
+    count: 36
+source:
+  provider: manifest
+  root: corpus.json
+  snapshot: sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
+results:
+  expect:
+  - format: demo-verdicts
+  shards: 1
+  deliver: none
+runner:
+  demo:
+    seed: example-1
