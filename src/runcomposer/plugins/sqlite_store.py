@@ -191,6 +191,19 @@ class SqliteRunStore:
             row = conn.execute("SELECT document FROM specs WHERE run_id = ?", (run_id,)).fetchone()
         return json.loads(row["document"]) if row else None
 
+    def latest_completed_run(self, *, completed_before: str | None = None) -> RunRecord | None:
+        """§6.3/§7: 'latest' means latest COMPLETED — selected by completion
+        status and completed_at, optionally bounded by a cutoff."""
+        query = "SELECT id FROM runs WHERE state = 'COMPLETE'"
+        params: list[Any] = []
+        if completed_before is not None:
+            query += " AND completed_at <= ?"
+            params.append(completed_before)
+        query += " ORDER BY completed_at DESC, id DESC LIMIT 1"
+        with self._conn() as conn:
+            row = conn.execute(query, params).fetchone()
+        return self.get_run(row["id"]) if row else None
+
     def get_ingest_token_sha256(self, run_id: str) -> str | None:
         with self._conn() as conn:
             row = conn.execute(

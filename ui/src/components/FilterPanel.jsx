@@ -13,7 +13,16 @@ import { useI18n } from "../i18n.jsx";
 
 const SVAR_WORDS = { de: { ...coreDe, ...filterDe } }; // en is SVAR's default
 
-export default function FilterPanel({ value, revision, onChange, quickFilters, onPickPattern, onClear }) {
+export default function FilterPanel({
+  value,
+  revision,
+  onChange,
+  quickFilters,
+  onPickPattern,
+  onClear,
+  historyQuery,
+  onHistory,
+}) {
   const { t, locale } = useI18n();
   const fields = [{ id: "tag", label: t("filter.fieldTag"), type: "text" }];
 
@@ -46,6 +55,18 @@ export default function FilterPanel({ value, revision, onChange, quickFilters, o
           ))}
         </div>
       )}
+      <div className="quick-filters">
+        <span className="muted">{t("filter.historyLabel")}:</span>
+        {historyQuery ? (
+          <button className="chip chip-active" onClick={() => onHistory(null)} title={historyQuery}>
+            {t("filter.historyActive", { query: historyQuery })} ✕
+          </button>
+        ) : (
+          <button className="chip" onClick={() => onHistory("failed@latest")}>
+            {t("filter.historyRerunFailed")}
+          </button>
+        )}
+      </div>
       <Willow fonts={false}>
         {SVAR_WORDS[locale] ? <Locale words={SVAR_WORDS[locale]}>{builder}</Locale> : builder}
       </Willow>

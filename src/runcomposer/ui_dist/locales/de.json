@@ -21,7 +21,10 @@
     "quickFilters": "Schnellfilter",
     "clear": "Leeren",
     "empty": "Noch kein Filter — alles passt. Regel, Schnellfilter oder Taxonomie-Knoten hinzufügen.",
-    "fieldTag": "Tag"
+    "fieldTag": "Tag",
+    "historyLabel": "Historie",
+    "historyRerunFailed": "Fehlgeschlagenes erneut ausführen (letzter Lauf)",
+    "historyActive": "Historie: {query}"
   },
   "preview": {
     "title": "Vorschau",

@@ -128,12 +128,80 @@ class Service:
     # -- selection & compose -------------------------------------------------
 
     def preview(self, selection_data: Mapping[str, Any]) -> tuple[list[Item], list[str]]:
+        selection_data, _derived, warnings = self._prepare_selection(selection_data)
         selection = Selection.from_data(selection_data)
         items = selection.compile(self.source.items())
-        warnings = []
         if not items:
             warnings.append("selection matched 0 items")
         return items, warnings
+
+    # -- history-based selection (§7): a compose-time provider ----------------
+
+    _HISTORY_VERDICTS = {"failed": "FAIL", "passed": "PASS", "skipped": "SKIP", "error": "ERROR"}
+
+    def resolve_history(self, query: str) -> tuple[list[str], dict[str, Any]]:
+        """Resolve '<verdict>@<selector>' (e.g. 'failed@latest',
+        'failed@run:<id>', 'failed@before:<ISO time>') into item ids + the
+        §3.1 derived_from provenance entry. The two-level contract (§6.3):
+        the RUN is selected by completion status, the ITEMS by verdict."""
+        verdict_word, sep, selector = query.partition("@")
+        status = self._HISTORY_VERDICTS.get(verdict_word)
+        if not sep or status is None:
+            raise ServiceError(
+                f"history query must be '<verdict>@<selector>' with verdict in "
+                f"{sorted(self._HISTORY_VERDICTS)}, got {query!r}"
+            )
+        if selector == "latest":
+            run = self.store.latest_completed_run()
+            query_doc: dict[str, Any] = {"run": "LATEST", "verdicts": [status]}
+        elif selector.startswith("run:"):
+            run = self.store.get_run(selector[len("run:"):])
+            query_doc = {"run": selector[len("run:"):], "verdicts": [status]}
+        elif selector.startswith("before:"):
+            cutoff = selector[len("before:"):]
+            run = self.store.latest_completed_run(completed_before=cutoff)
+            query_doc = {"run": {"before": cutoff}, "verdicts": [status]}
+        else:
+            raise ServiceError(
+                f"unknown history selector {selector!r} (expected latest, run:<id>, before:<time>)"
+            )
+        if run is None:
+            raise ServiceError(
+                f"history selection {query!r} matched no completed run — history "
+                "features are dark on a fresh store (DESIGN.md §6.3)"
+            )
+        latest_dispatch = run.dispatches[-1].dispatch_id if run.dispatches else None
+        item_ids = list(
+            dict.fromkeys(
+                v.item_id
+                for v in self.store.verdicts_for(run.id, latest_dispatch)
+                if v.status == status
+            )
+        )
+        return item_ids, {"provider": "history", "query": query_doc, "resolved_run_id": run.id}
+
+    def _prepare_selection(
+        self, selection_data: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+        """Resolve compose-time providers (currently: history) into plain
+        selection inputs + provenance. The executed spec stays static (§7)."""
+        data = dict(selection_data)
+        derived: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        history_query = data.pop("history", None)
+        if history_query:
+            ids, provenance = self.resolve_history(history_query)
+            derived.append(provenance)
+            known = {item.id for item in self.source.items()}
+            gone = [item_id for item_id in ids if item_id not in known]
+            for item_id in gone:
+                warnings.append(f"history item {item_id!r} is no longer in the catalog — dropped")
+            ids = [item_id for item_id in ids if item_id in known]
+            if data.get("item_ids"):
+                picks = set(data["item_ids"])
+                ids = [item_id for item_id in ids if item_id in picks]
+            data["item_ids"] = ids
+        return data, derived, warnings
 
     def build_spec_document(
         self,
@@ -146,7 +214,12 @@ class Service:
         runner_section: Mapping[str, Any] | None = None,
         expect_format: str = REFERENCE_FORMAT,
     ) -> ComposeResult:
-        items, warnings = self.preview(selection_data)
+        selection_data, resolved_derived, warnings = self._prepare_selection(selection_data)
+        derived_from = [*(derived_from or []), *resolved_derived] or None
+        selection = Selection.from_data(selection_data)
+        items = selection.compile(self.source.items())
+        if not items:
+            warnings.append("selection matched 0 items")
         results: dict[str, Any] = {
             "expect": [{"format": expect_format}],
             "shards": 1,
@@ -501,6 +574,47 @@ class Service:
             before=cutoff_iso, max_runs=retention.get("max_runs")
         )
         return report
+
+    def export_ctrf(self, run_id: str) -> dict[str, Any]:
+        """§14 P3: normalized cross-tool result document (CTRF) — fitting for
+        a project whose thesis is document-shaped interfaces (§5)."""
+        run = self._require_run(run_id)
+        dispatch = run.dispatches[-1] if run.dispatches else None
+        verdicts = self.store.verdicts_for(run_id, dispatch.dispatch_id if dispatch else None)
+        status_map = {"PASS": "passed", "FAIL": "failed", "SKIP": "skipped", "ERROR": "other"}
+        tests = []
+        for verdict in verdicts:
+            test: dict[str, Any] = {
+                "name": verdict.item_id,
+                "status": status_map[verdict.status],
+                "duration": verdict.duration_ms,
+            }
+            if verdict.message:
+                test["message"] = verdict.message
+            tests.append(test)
+
+        def _epoch_ms(iso: str | None) -> int:
+            if not iso:
+                return 0
+            return int(datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
+                       .replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+        counts = {name: 0 for name in ("passed", "failed", "skipped", "pending", "other")}
+        for test in tests:
+            counts[test["status"]] += 1
+        return {
+            "results": {
+                "tool": {"name": "runcomposer"},
+                "summary": {
+                    "tests": len(tests),
+                    **counts,
+                    "start": _epoch_ms(run.created_at),
+                    "stop": _epoch_ms(run.completed_at),
+                },
+                "tests": tests,
+                "extra": {"run_id": run.id, "state": run.state, "completion": run.completion},
+            }
+        }
 
     def finalize(self, run_id: str) -> RunRecord:
         run = self._require_run(run_id)

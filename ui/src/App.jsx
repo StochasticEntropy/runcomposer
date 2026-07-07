@@ -19,6 +19,7 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
   const [notice, setNotice] = useState(null);
 
   const [filterValue, setFilterValue] = useState(EMPTY_FILTER);
+  const [historyQuery, setHistoryQuery] = useState(null); // §7 compose-time provider
   const [revision, setRevision] = useState(0); // bumps remount the widget on external edits
   const [items, setItems] = useState([]);
   const [checked, setChecked] = useState(new Set());
@@ -39,9 +40,16 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
       .catch((err) => setError(err.message));
   }, []);
 
+  const selectionPayload = () => {
+    const selection = {};
+    if (ast) selection.tag_filter = ast;
+    if (historyQuery) selection.history = historyQuery;
+    return selection;
+  };
+
   // Auto-compiled preview (DESIGN.md §10): every filter edit recompiles.
   useEffect(() => {
-    if (!ast) {
+    if (!ast && !historyQuery) {
       setItems([]);
       setChecked(new Set());
       setWarnings([]);
@@ -50,7 +58,7 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
     setLoading(true);
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      compileSelection({ tag_filter: ast })
+      compileSelection(selectionPayload())
         .then((body) => {
           setItems(body.items);
           setChecked(new Set(body.items.map((item) => item.id)));
@@ -61,7 +69,7 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
         .finally(() => setLoading(false));
     }, 250);
     return () => clearTimeout(debounceRef.current);
-  }, [ast]);
+  }, [ast, historyQuery]);
 
   const pickPattern = (pattern) => {
     setFilterValue((value) => appendPattern(value, pattern));
@@ -88,7 +96,7 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
       setError(t("compose.nothingSelected"));
       return;
     }
-    const selection = { tag_filter: ast };
+    const selection = selectionPayload();
     if (checked.size < items.length) {
       selection.item_ids = items.filter((item) => checked.has(item.id)).map((item) => item.id);
     }
@@ -172,6 +180,8 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
                 quickFilters={quickFilters}
                 onPickPattern={pickPattern}
                 onClear={clearFilter}
+                historyQuery={historyQuery}
+                onHistory={setHistoryQuery}
               />
               <PreviewTable
                 items={items}
@@ -180,13 +190,13 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
                 onToggleAll={(all) => setChecked(all ? new Set(items.map((i) => i.id)) : new Set())}
                 loading={loading}
                 warnings={warnings}
-                hasFilter={Boolean(ast)}
+                hasFilter={Boolean(ast) || Boolean(historyQuery)}
               />
             </div>
           </main>
           <ComposeFooter
             runners={runners}
-            disabled={!ast || checked.size === 0}
+            disabled={(!ast && !historyQuery) || checked.size === 0}
             busy={busy}
             onCompose={compose}
           />

@@ -1,0 +1,47 @@
+# Jenkins Configuration-as-Code for the runcomposer demo instance.
+# Unsecured on purpose: this container exists only to prove the §6.2b loop
+# locally. Never expose it beyond localhost.
+jenkins:
+  numExecutors: 2
+  authorizationStrategy: "unsecured"
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: admin
+
+jobs:
+  - script: |
+      freeStyleJob('runcomposer-consumer') {
+        description('The thin CI-side consumer stage (runcomposer DESIGN.md §6.2b): runs runcomposer-exec on the passed spec, then POSTs the results bundle back.')
+        parameters {
+          textParam('SPEC_JSON', '', 'the rendered runspec document (JSON)')
+          stringParam('DISPATCH_ID', '', 'dispatch id minted by the ci-trigger runner')
+          stringParam('CALLBACK_URL', '', 'results push endpoint; empty disables the webhook-out POST (polling fallback)')
+          stringParam('INGEST_TOKEN', '', 'per-run ingest token from results.token')
+        }
+        steps {
+          shell('''#!/bin/bash -e
+      rm -rf results spec.json
+      printf '%s' "$SPEC_JSON" > spec.json
+      python3 /opt/runcomposer/runcomposer_exec.py spec.json --out results --simulate --dispatch "$DISPATCH_ID"
+      if [ -n "$CALLBACK_URL" ]; then
+        curl -sf -X POST "$CALLBACK_URL" \\
+          -H "X-Runcomposer-Token: $INGEST_TOKEN" \\
+          -F "files=@results/results.json" \\
+          -F "files=@results/runcomposer_run.json" \\
+          -F "dispatch=$DISPATCH_ID"
+        echo "results POSTed back to runcomposer (webhook-out completion)"
+      else
+        echo "no CALLBACK_URL: results archived for the polling fallback"
+      fi
+      ''')
+        }
+        publishers {
+          archiveArtifacts {
+            pattern('results/**')
+            allowEmpty(false)
+          }
+        }
+      }

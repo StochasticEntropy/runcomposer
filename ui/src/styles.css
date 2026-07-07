@@ -394,3 +394,9 @@ body {
 .verdict-FAIL { background: #fee2e2; color: #b91c1c; }
 .verdict-SKIP { background: #fef3c7; color: #92400e; }
 .verdict-ERROR { background: #fee2e2; color: #7f1d1d; }
+
+.chip-active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}

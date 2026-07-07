@@ -48,8 +48,18 @@ With the `robot` extra (`pip install "runcomposer[robot]"`): the
 (process pool, partition fan-out, duration-balanced chunking with a documented
 round-robin cold start, listener-streamed live verdicts, §3.3 drift refusal),
 and the defused `robot-output-xml` result parser — demonstrated against the
-neutral suite in [examples/robot-shop](examples/robot-shop). The `ci-trigger`
-runner and `junit-xml` parser arrive with P3 (DESIGN.md §14).
+neutral suite in [examples/robot-shop](examples/robot-shop).
+
+P3 (reach): the defused `junit-xml` parser with the pytest example corpus in
+[examples/pytest-shop](examples/pytest-shop) (nodeid ids via manifest aliases —
+the framework-agnosticism proof), history-based selection (`runcomposer runs
+--failed-in latest`, `spec --from-history 'failed@latest'`, and the UI
+quick-pick — provenance recorded in `selection.derived_from`), CTRF export
+(`runcomposer export <run> --format ctrf`), and the `ci-trigger` runner with
+the thin CI-side consumer stage: a reproducible Jenkins-in-docker setup in
+[ci/jenkins](ci/jenkins) whose job runs the vendored single-file
+`runcomposer-exec` and POSTs results back (webhook-out completion), with a
+build-API polling fallback for CI systems that can't call out.
 
 ## Developing
 

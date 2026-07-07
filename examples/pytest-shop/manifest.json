@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "id": "test_cart.py::test_add_item",
+      "tags": ["Cart", "Smoke"],
+      "aliases": ["test_cart.test_add_item"]
+    },
+    {
+      "id": "test_cart.py::test_remove_item",
+      "tags": ["Cart", "Regression"],
+      "aliases": ["test_cart.test_remove_item"]
+    },
+    {
+      "id": "test_cart.py::test_checkout[visa]",
+      "tags": ["Cart", "Payments", "Regression"],
+      "aliases": ["test_cart.test_checkout[visa]"]
+    },
+    {
+      "id": "test_cart.py::test_checkout[wallet]",
+      "tags": ["Cart", "Payments", "Regression"],
+      "aliases": ["test_cart.test_checkout[wallet]"]
+    },
+    {
+      "id": "test_cart.py::test_total_never_negative",
+      "tags": ["Cart", "Regression"],
+      "aliases": ["test_cart.test_total_never_negative"]
+    },
+    {
+      "id": "test_auth.py::test_login",
+      "tags": ["Auth", "Smoke"],
+      "aliases": ["test_auth.test_login"]
+    },
+    {
+      "id": "test_auth.py::test_logout",
+      "tags": ["Auth", "Regression"],
+      "aliases": ["test_auth.test_logout"]
+    }
+  ]
+}

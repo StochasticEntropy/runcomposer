@@ -61,7 +61,16 @@ def main(argv: list[str] | None = None) -> int:
     p_spec.add_argument("--expect-format", default="runcomposer-verdicts", metavar="FORMAT",
                         help="results format the run expects back (registered "
                         "ResultParser id, e.g. robot-output-xml)")
+    p_spec.add_argument("--from-history", metavar="QUERY",
+                        help="history-based selection, resolved at compose time with "
+                        "derived_from provenance (DESIGN.md §7), e.g. 'failed@latest'")
     _add_config_arg(p_spec)
+
+    p_export = sub.add_parser("export", help="export a run's results as a normalized document")
+    p_export.add_argument("run_id", help="run id to export")
+    p_export.add_argument("--format", required=True, help="export format (supported: ctrf)")
+    p_export.add_argument("-o", "--out", help="write to this file instead of stdout")
+    _add_config_arg(p_export)
 
     p_dispatch = sub.add_parser(
         "dispatch", help="dispatch a runspec file to an in-process runner (DESIGN.md §9)"
@@ -71,6 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     _add_config_arg(p_dispatch)
 
     p_runs = sub.add_parser("runs", help="list stored runs")
+    p_runs.add_argument("--failed-in", metavar="SELECTOR",
+                        help="print item ids that FAILED in the selected run "
+                        "(latest | run:<id> | before:<ISO time>) — DESIGN.md §7/§9")
     p_runs.add_argument("--state", help="filter by lifecycle state (e.g. COMPLETE)")
     p_runs.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
                         help="filter by label (repeatable; all must match)")
@@ -114,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         "ingest": _cmd_ingest,
         "gc": _cmd_gc,
         "dispatch": _cmd_dispatch,
+        "export": _cmd_export,
         "serve": _cmd_serve,
     }
     from runcomposer.config import ConfigError
@@ -152,8 +165,10 @@ def _selection_data(args: argparse.Namespace) -> dict[str, Any]:
             raise SystemExit(2) from None
     if args.item_ids:
         selection["item_ids"] = list(args.item_ids)
+    if getattr(args, "from_history", None):
+        selection["history"] = args.from_history
     if not selection:
-        print("error: provide a filter and/or --id picks", file=sys.stderr)
+        print("error: provide a filter, --id picks, and/or --from-history", file=sys.stderr)
         raise SystemExit(2)
     return selection
 
@@ -299,6 +314,18 @@ def _cmd_spec(args: argparse.Namespace) -> int:
 
 def _cmd_runs(args: argparse.Namespace) -> int:
     service = _service(args)
+    if args.failed_in:
+        from runcomposer.service import ServiceError
+
+        try:
+            item_ids, provenance = service.resolve_history(f"failed@{args.failed_in}")
+        except ServiceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"# {len(item_ids)} item(s) FAILED in run {provenance['resolved_run_id']}")
+        for item_id in item_ids:
+            print(item_id)
+        return 0
     runs = service.store.list_runs(
         state=args.state,
         labels=_parse_labels(args.label) or None,
@@ -392,6 +419,28 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"inbox/processed: removed {report['inbox_processed_removed']} expired bundle(s)")
     print(f"artifacts: removed {report['artifacts_removed']} expired file(s)")
     print(f"store: pruned {len(report['runs_removed'])} run(s) past retention")
+    return 0
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    from runcomposer.service import ServiceError
+
+    if args.format != "ctrf":
+        print(f"error: unknown export format {args.format!r} (supported: ctrf)", file=sys.stderr)
+        return 2
+    service = _service(args)
+    try:
+        document = service.export_ctrf(args.run_id)
+    except ServiceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    payload = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        print(f"CTRF report written to {args.out}", file=sys.stderr)
+    else:
+        sys.stdout.write(payload)
     return 0
 
 

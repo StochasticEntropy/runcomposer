@@ -21,7 +21,10 @@
     "quickFilters": "Quick filters",
     "clear": "Clear",
     "empty": "No filter yet — everything matches. Add a rule, a quick filter, or click a taxonomy node.",
-    "fieldTag": "Tag"
+    "fieldTag": "Tag",
+    "historyLabel": "History",
+    "historyRerunFailed": "Rerun what failed (latest run)",
+    "historyActive": "History: {query}"
   },
   "preview": {
     "title": "Preview",
