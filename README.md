@@ -7,7 +7,12 @@ reproducible, portable **run spec** that any executor can fulfill — with
 results flowing back from any transport into a run history that feeds new
 selections ("rerun what failed").
 
-Status: P1 (compose & export). Read [DESIGN.md](DESIGN.md) for the architecture.
+**[stochasticentropy.github.io/runcomposer](https://stochasticentropy.github.io/runcomposer/)** —
+how it works, in one page.
+
+Version 0.1.0. Read [ADOPTING.md](ADOPTING.md) to connect it to your own corpus
+and machines, or [DESIGN.md](DESIGN.md) for the architecture and the reasoning
+behind it.
 
 ## Quickstart
 
