@@ -11,6 +11,12 @@
   "language": {
     "label": "Sprache"
   },
+  "theme": {
+    "label": "Darstellung",
+    "system": "System",
+    "light": "Hell",
+    "dark": "Dunkel"
+  },
   "taxonomy": {
     "title": "Taxonomie",
     "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen",

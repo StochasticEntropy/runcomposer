@@ -53,9 +53,33 @@ class TestRobotSource:
         items = {item.id: item for item in source.items()}
         visa = items["Tests.Payments.Visa Payment Succeeds"]
         assert visa.name == "Visa Payment Succeeds"
-        assert set(visa.tags) == {"Payments", "Smoke"}
+        # area + sub-area + suite + sprint + ticket: the corpus carries the same
+        # tag world as the bundled demo corpus (DESIGN.md §12).
+        assert set(visa.tags) == {"Payments", "Payments-Cards", "Smoke", "Sprint-12", "SHOP-1200"}
         assert visa.hierarchy == ("Tests", "Payments")
         assert any("Quarantine-Flaky" in item.tags for item in items.values())
+
+    def test_corpus_shape(self):
+        """The shipped corpus is big enough to be worth demoing: every area
+        file contributes, and the deliberate fixtures are all present."""
+        items = list(RobotFrameworkSource(root=str(CORPUS)).items())
+        assert len(items) == 58
+        assert {item.hierarchy[1] for item in items} == {
+            "Account",
+            "Auth",
+            "Cart",
+            "Catalog",
+            "Checkout",
+            "Payments",
+        }
+        assert len({tag for item in items for tag in item.tags}) == 50
+
+        def by_tag(tag):
+            return [item.id for item in items if tag in item.tags]
+
+        assert len(by_tag("SlowLane")) == 2  # the sleeping pair (live status)
+        assert by_tag("VarCheck") == ["Tests.Checkout.Stage Variable Reaches The Test"]
+        assert len(by_tag("Quarantine-Flaky")) == 3
 
     def test_snapshot_changes_when_corpus_changes(self, tmp_path):
         copy = tmp_path / "tests"
@@ -137,7 +161,7 @@ class TestRobotPoolEndToEnd:
         assert run.state == "COMPLETE"
         assert run.completion == "FAIL"  # the corpus ships one deliberately failing test
         verdicts = service.store.verdicts_for(run.id, dispatch.dispatch_id)
-        assert len(verdicts) == 5
+        assert len(verdicts) == 13  # every Payments-tagged test in the corpus
         statuses = {v.item_id: v.status for v in verdicts}
         assert statuses["Tests.Payments.Expired Card Is Rejected Loudly"] == "FAIL"
         assert statuses["Tests.Payments.Visa Payment Succeeds"] == "PASS"
@@ -189,7 +213,11 @@ class TestDriftContract:
         service, result = self._compose_then_mutate(tmp_path)
         with pytest.raises(DispatchRefused, match="drift"):
             service.dispatch_runner(result.run.id, "robot-pool")
-        assert service.store.get_run(result.run.id).state == "COMPOSED"
+        refused = service.store.get_run(result.run.id)
+        assert refused.state == "COMPOSED"
+        # the drift check runs before the hand-off, so nothing was dispatched:
+        # a refusal leaves no dispatch row to masquerade as an execution (§4)
+        assert refused.dispatches == ()
 
     def test_allow_drift_executes_intersection_with_skip_verdicts(self, tmp_path):
         service, result = self._compose_then_mutate(tmp_path, allow_drift=True)
@@ -198,14 +226,16 @@ class TestDriftContract:
         assert run.state == "COMPLETE"
         verdicts = service.store.verdicts_for(run.id, dispatch.dispatch_id)
         drifted = [v for v in verdicts if v.status == "SKIP" and v.message == "drift"]
-        assert len(drifted) == 3  # all Catalog tests lived in the deleted file
+        assert len(drifted) == 8  # all Catalog tests lived in the deleted file
         assert {v.item_id for v in drifted} == {i.id for i in result.items}
 
 
 class TestLiveStatus:
     def test_listener_streams_and_terminal_delivery_reconciles(self, tmp_path):
         """Dispatch the sleeping tests in a thread; mid-run the store must show
-        RUNNING with 0 < live verdicts < planned; afterwards COMPLETE."""
+        RUNNING with 0 < live verdicts < planned — and the dispatch those live
+        verdicts belong to (§4: the hand-off is recorded when it happens, not
+        when it finishes); afterwards COMPLETE."""
         import threading
 
         config = robot_config(tmp_path)
@@ -223,17 +253,24 @@ class TestLiveStatus:
         )
         worker.start()
         observed_partial = None
+        observed_dispatch = None
         deadline = time.time() + 30
         while time.time() < deadline and worker.is_alive():
             run = service.store.get_run(result.run.id)
             count = len(service.store.verdicts_for(result.run.id))
             if run.state == "RUNNING" and 0 < count < planned:
                 observed_partial = count
+                observed_dispatch = run.dispatches[-1] if run.dispatches else None
                 break
             time.sleep(0.2)
         worker.join(timeout=60)
         assert observed_partial is not None, "never observed a live partial verdict"
+        assert observed_dispatch is not None, "RUNNING run showed no dispatch record"
+        assert observed_dispatch.mode == "robot-pool"
         run = service.store.get_run(result.run.id)
+        # the in-flight dispatch is the one that completed — same record, and
+        # the live verdicts were already attributed to it
+        assert [d.dispatch_id for d in run.dispatches] == [observed_dispatch.dispatch_id]
         assert run.state == "COMPLETE" and run.completion == "PASS"
         # live rows were reconciled away: exactly the terminal verdicts remain
         assert len(service.store.verdicts_for(result.run.id)) == planned

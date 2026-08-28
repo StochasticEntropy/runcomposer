@@ -27,6 +27,7 @@ REPO = Path(__file__).parent.parent
 KIT = REPO / "examples" / "remote-agent"
 CORPUS = REPO / "examples" / "robot-shop" / "tests"
 
+# A hand-picked subset the adapter tests request explicitly.
 PAYMENTS_IDS = [
     "Tests.Payments.Visa Payment Succeeds",
     "Tests.Payments.Mastercard Payment Succeeds",
@@ -34,6 +35,25 @@ PAYMENTS_IDS = [
     "Tests.Payments.Refund Restores Balance",
     "Tests.Payments.Expired Card Is Rejected Loudly",
 ]
+
+# Everything the default `RC_FILTER=Payments` compose selects — the whole
+# Payments area of the shipped corpus, which the round trip executes for real.
+PAYMENTS_TAG_IDS = [
+    "Tests.Payments.Visa Payment Succeeds",
+    "Tests.Payments.Mastercard Payment Succeeds",
+    "Tests.Payments.Declined Card Shows Error",
+    "Tests.Payments.Three D Secure Challenge Completes",
+    "Tests.Payments.Card Number Is Masked In Receipts",
+    "Tests.Payments.Expired Card Is Rejected Loudly",
+    "Tests.Payments.Wallet Payment Succeeds",
+    "Tests.Payments.Wallet Top Up Is Booked",
+    "Tests.Payments.Wallet Currency Conversion Rounds Half Up",
+    "Tests.Payments.Wallet Timeout Falls Back To Card",
+    "Tests.Payments.Refund Restores Balance",
+    "Tests.Payments.Partial Refund Keeps Remainder",
+    "Tests.Payments.Refund Of A Refund Is Refused",
+]
+FAILING_ID = "Tests.Payments.Expired Card Is Rejected Loudly"
 
 
 def kit_config(work: Path) -> Path:
@@ -95,17 +115,23 @@ def run_adapter(work: Path, item_ids, *, suite_root: Path = CORPUS, **env_extra)
     return process, out_dir
 
 
+def drop_test_case(path: Path, name: str) -> None:
+    """Delete one test case from a .robot file: its name line plus the indented
+    body, up to the next unindented line (the next test case, or EOF)."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.rstrip("\n") == name)
+    after = range(start + 1, len(lines))
+    end = next((i for i in after if lines[i].strip() and not lines[i][:1].isspace()), len(lines))
+    path.write_text("".join(lines[:start] + lines[end:]), encoding="utf-8")
+
+
 @pytest.fixture()
 def drifted_checkout(tmp_path):
     """The executing machine's checkout lost one test after compose time. The
     copy keeps the directory name `tests`: it is part of every longname."""
     checkout = tmp_path / "checkout" / "tests"
     shutil.copytree(CORPUS, checkout)
-    payments = checkout / "payments.robot"
-    text = payments.read_text(encoding="utf-8")
-    start = text.index("Refund Restores Balance")
-    end = text.index("Expired Card Is Rejected Loudly")
-    payments.write_text(text[:start] + text[end:], encoding="utf-8")
+    drop_test_case(checkout / "payments.robot", "Refund Restores Balance")
     return checkout
 
 
@@ -175,11 +201,7 @@ class TestRoundTrip:
         assert run.completion == "FAIL"  # the corpus ships one deliberately failing test
         statuses = {v.item_id: v.status for v in service.store.verdicts_for(run.id)}
         assert statuses == {
-            "Tests.Payments.Visa Payment Succeeds": "PASS",
-            "Tests.Payments.Mastercard Payment Succeeds": "PASS",
-            "Tests.Payments.Declined Card Shows Error": "PASS",
-            "Tests.Payments.Refund Restores Balance": "PASS",
-            "Tests.Payments.Expired Card Is Rejected Loudly": "FAIL",
+            item_id: "FAIL" if item_id == FAILING_ID else "PASS" for item_id in PAYMENTS_TAG_IDS
         }
         assert {d.format for d in run.deliveries} == {"robot-output-xml"}
 

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { compileSelection, createRun, getRunners, getTaxonomy } from "./api.js";
 import { EMPTY_FILTER, appendPattern, svarToAst } from "./filterAdapter.js";
 import { AVAILABLE_LOCALES, useI18n } from "./i18n.jsx";
+import { AVAILABLE_THEMES } from "./prefs.js";
 import ComposeFooter from "./components/ComposeFooter.jsx";
 import FilterPanel from "./components/FilterPanel.jsx";
 import PreviewTable from "./components/PreviewTable.jsx";
@@ -10,7 +11,14 @@ import QuarantineView from "./components/QuarantineView.jsx";
 import RunsView from "./components/RunsView.jsx";
 import TaxonomyTree from "./components/TaxonomyTree.jsx";
 
-export default function App({ uiConfig, locale, onLocaleChange }) {
+export default function App({
+  uiConfig,
+  locale,
+  onLocaleChange,
+  theme,
+  resolvedTheme,
+  onThemeChange,
+}) {
   const { t } = useI18n();
   const [tab, setTab] = useState("compose");
   const [taxonomy, setTaxonomy] = useState([]);
@@ -145,12 +153,22 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
             {t("nav.quarantine")}
           </button>
         </nav>
-        <label className="locale-switch">
+        <label className="header-switch">
           <span className="muted small">{t("language.label")}</span>
           <select value={locale} onChange={(ev) => onLocaleChange(ev.target.value)}>
             {AVAILABLE_LOCALES.map((code) => (
               <option key={code} value={code}>
                 {code.toUpperCase()}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="header-switch">
+          <span className="muted small">{t("theme.label")}</span>
+          <select value={theme} onChange={(ev) => onThemeChange(ev.target.value)}>
+            {AVAILABLE_THEMES.map((name) => (
+              <option key={name} value={name}>
+                {t(`theme.${name}`)}
               </option>
             ))}
           </select>
@@ -176,6 +194,7 @@ export default function App({ uiConfig, locale, onLocaleChange }) {
               <FilterPanel
                 value={filterValue}
                 revision={revision}
+                theme={resolvedTheme}
                 onChange={setFilterValue}
                 quickFilters={quickFilters}
                 onPickPattern={pickPattern}

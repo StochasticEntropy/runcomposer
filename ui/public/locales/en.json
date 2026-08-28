@@ -11,6 +11,12 @@
   "language": {
     "label": "Language"
   },
+  "theme": {
+    "label": "Theme",
+    "system": "System",
+    "light": "Light",
+    "dark": "Dark"
+  },
   "taxonomy": {
     "title": "Taxonomy",
     "hint": "Click a node to add its pattern to the filter",

@@ -1,10 +1,13 @@
 // The one component that talks to the SVAR filter widget (DESIGN.md §10:
 // SVAR stays behind the adapter so it remains swappable). SVAR ships its own
 // label localization (@svar-ui/*-locales, de included) — the P1 spike
-// outcome: built-in localization exists, no override needed.
+// outcome: built-in localization exists, no override needed. It also ships its
+// own themes, which do NOT follow the page: the widget renders light inside a
+// dark app unless the dark variant is selected explicitly, so the app hands it
+// the resolved theme.
 
 import { Locale } from "@svar-ui/react-core";
-import { FilterBuilder, Willow } from "@svar-ui/react-filter";
+import { FilterBuilder, Willow, WillowDark } from "@svar-ui/react-filter";
 import "@svar-ui/react-filter/all.css";
 import { de as coreDe } from "@svar-ui/core-locales";
 import { de as filterDe } from "@svar-ui/filter-locales";
@@ -16,6 +19,7 @@ const SVAR_WORDS = { de: { ...coreDe, ...filterDe } }; // en is SVAR's default
 export default function FilterPanel({
   value,
   revision,
+  theme,
   onChange,
   quickFilters,
   onPickPattern,
@@ -25,6 +29,7 @@ export default function FilterPanel({
 }) {
   const { t, locale } = useI18n();
   const fields = [{ id: "tag", label: t("filter.fieldTag"), type: "text" }];
+  const SvarTheme = theme === "dark" ? WillowDark : Willow;
 
   const builder = (
     <FilterBuilder
@@ -67,9 +72,9 @@ export default function FilterPanel({
           </button>
         )}
       </div>
-      <Willow fonts={false}>
+      <SvarTheme fonts={false}>
         {SVAR_WORDS[locale] ? <Locale words={SVAR_WORDS[locale]}>{builder}</Locale> : builder}
-      </Willow>
+      </SvarTheme>
     </section>
   );
 }
