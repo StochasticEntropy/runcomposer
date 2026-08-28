@@ -716,12 +716,12 @@ pipx run --spec . runcomposer demo</code></pre>
         <span class="k">items:</span> [<span class="v">"Payments"</span>, <span class="v">"prefix:Checkout-"</span>, <span class="v">"regex:^Cart(V2)?$"</span>]
       - <span class="k">not:</span> <span class="v">"prefix:Quarantine-"</span>
   <span class="s">materialized:</span>                        <span class="c"># THE authoritative executed set</span>
-    <span class="k">item_ids:</span> [<span class="v">"Shop.Payments.Cards.T001"</span>, <span class="v">"Shop.Payments.Cards.T002"</span>, <span class="v">…</span>]
-    <span class="k">count:</span> <span class="v">36</span>
+    <span class="k">item_ids:</span> [<span class="v">"Tests.Payments.Visa Payment Succeeds"</span>, <span class="v">"Tests.Payments.Declined Card Shows Error"</span>, <span class="v">…</span>]
+    <span class="k">count:</span> <span class="v">33</span>
 
 <span class="k">source:</span>
-  <span class="k">provider:</span> <span class="v">"robotframework"</span>
-  <span class="s">snapshot:</span> <span class="v">"sha256:734b1c4803268df2…"</span>   <span class="c"># integrity check — drift is detectable</span>
+  <span class="k">provider:</span> <span class="v">"robotframework"</span>            <span class="c"># this source mints ids from Robot longnames</span>
+  <span class="s">snapshot:</span> <span class="v">"sha256:21ee74fed1fcf5e6…"</span>   <span class="c"># integrity check — drift is detectable</span>
 
 <span class="k">results:</span>
   <span class="k">expect:</span> [{ <span class="k">format:</span> <span class="v">"robot-output-xml"</span> }]
@@ -903,7 +903,7 @@ runcomposer runs
 <pre><code>$ runcomposer spec --from-history <span class="v">'failed@latest'</span> --title <span class="v">"Rerun"</span>
 
 <span class="k">selection:</span>
-  <span class="k">item_ids:</span> [<span class="v">"Shop.Checkout.Express.T003"</span>, <span class="v">"Shop.Cart.Core.T005"</span>]
+  <span class="k">item_ids:</span> [<span class="v">"Tests.Payments.Expired Card Is Rejected Loudly"</span>]
   <span class="k">derived_from:</span>
     - <span class="k">provider:</span> <span class="v">"history"</span>
       <span class="k">query:</span> { <span class="k">run:</span> <span class="v">LATEST</span>, <span class="k">verdicts:</span> [<span class="v">FAIL</span>] }
