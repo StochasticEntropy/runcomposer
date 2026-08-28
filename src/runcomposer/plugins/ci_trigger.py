@@ -32,7 +32,12 @@ from typing import Any, Mapping
 
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.model import Verdict
-from runcomposer.core.ports import DispatchHandle, DispatchRefused, RunnerInfo
+from runcomposer.core.ports import (
+    DispatchHandle,
+    DispatchRefused,
+    DispatchReservation,
+    RunnerInfo,
+)
 from runcomposer.core.registry import PARSER_GROUP, resolve_plugin
 
 __all__ = ["CiTriggerRunner"]
@@ -65,6 +70,7 @@ class CiTriggerRunner:
         self.last_plan = ""
         self._store = None
         self._source = None
+        self._reservation = None
         # Jenkins binds CSRF crumbs to the web session — the crumb fetch and
         # the trigger POST must share cookies, hence one opener per runner.
         self._opener = urllib.request.build_opener(
@@ -78,6 +84,13 @@ class CiTriggerRunner:
         self._store = store
         self._source = source
 
+    def bind_dispatch(self, reservation: DispatchReservation) -> None:
+        """Optional hook (§6.2): the dispatch id has to travel to the CI job
+        as a build parameter, so it must exist before the trigger — while the
+        *record* must not, or a job that was never accepted would leave a
+        dispatch behind. The reservation splits exactly that."""
+        self._reservation = reservation
+
     def describe(self) -> RunnerInfo:
         return RunnerInfo(id=self.runner_id, capabilities=("ci-trigger", self.completion))
 
@@ -85,7 +98,7 @@ class CiTriggerRunner:
 
     def dispatch(self, spec: Mapping[str, Any]) -> DispatchHandle:
         run_id = spec["run"]["id"]
-        dispatch_id = new_ulid()
+        dispatch_id = self._reservation.dispatch_id if self._reservation else new_ulid()
         callback = ""
         if self.completion == "callback":
             if not self.callback_base:
@@ -109,6 +122,11 @@ class CiTriggerRunner:
         }
         job_url = f"{self.base_url}/job/{urllib.parse.quote(self.job)}"
         queue_url = self._trigger(job_url, params)
+        # The trigger POST was accepted: the hand-off happened, so the dispatch
+        # is recorded here (§4) — before polling, which blocks for the whole
+        # build. A refused trigger raises above and leaves no dispatch behind.
+        if self._reservation is not None:
+            self._reservation.record(shards=1, spec_sha256=spec_sha256)
         self.last_plan = (
             f"ci-trigger: job {job_url} triggered (dispatch {dispatch_id}, "
             f"completion via {'webhook-out POST' if callback else 'build polling'})"

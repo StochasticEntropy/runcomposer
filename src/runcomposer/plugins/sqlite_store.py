@@ -225,11 +225,30 @@ class SqliteRunStore:
         created_at = _utc_now()
         with self._conn() as conn:
             self._require_run(conn, run_id)
-            conn.execute(
-                "INSERT INTO dispatches (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at),
-            )
+            existing = conn.execute(
+                "SELECT run_id, created_at FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if existing is not None:
+                # Re-declaration of the same dispatch (§6.3): a dispatch is
+                # recorded when the hand-off happens and refined from the
+                # runner's handle afterwards. Same row, original created_at.
+                if existing["run_id"] != run_id:
+                    raise StoreError(
+                        f"dispatch id {dispatch_id!r} already belongs to run "
+                        f"{existing['run_id']!r} — refusing to move it to {run_id!r}"
+                    )
+                created_at = existing["created_at"]
+                conn.execute(
+                    "UPDATE dispatches SET mode = ?, declared_shards = ?, spec_sha256 = ?"
+                    " WHERE dispatch_id = ?",
+                    (mode, declared_shards, spec_sha256, dispatch_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO dispatches (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at),
+                )
         return DispatchRecord(
             dispatch_id=dispatch_id,
             run_id=run_id,

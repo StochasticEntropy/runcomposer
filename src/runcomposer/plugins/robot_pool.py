@@ -26,7 +26,12 @@ from typing import Any, Mapping
 
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.model import Verdict
-from runcomposer.core.ports import DispatchHandle, DispatchRefused, RunnerInfo
+from runcomposer.core.ports import (
+    DispatchHandle,
+    DispatchRefused,
+    DispatchReservation,
+    RunnerInfo,
+)
 
 __all__ = ["RobotPoolRunner"]
 
@@ -97,6 +102,7 @@ class RobotPoolRunner:
         self.last_plan: str = ""
         self._store = None
         self._source = None
+        self._reservation = None
         self._artifact_root: Path | None = Path(output_root) if output_root else None
 
     # Optional in-process binding (the core hands the document only; a bound
@@ -106,6 +112,13 @@ class RobotPoolRunner:
         self._source = source
         if artifact_root is not None and self.output_root is None:
             self._artifact_root = Path(artifact_root)
+
+    def bind_dispatch(self, reservation: DispatchReservation) -> None:
+        """Optional hook (§6.2): take runcomposer's dispatch id and record the
+        hand-off ourselves. This runner blocks for the whole execution, so a
+        dispatch recorded from the returned handle would be invisible exactly
+        while the run is RUNNING — see ``_open_dispatch``."""
+        self._reservation = reservation
 
     def describe(self) -> RunnerInfo:
         return RunnerInfo(id=self.runner_id, capabilities=("live_status", "partitions"))
@@ -121,7 +134,6 @@ class RobotPoolRunner:
             )
         run_id = spec["run"]["id"]
         item_ids = list(spec["selection"]["materialized"]["item_ids"])
-        dispatch_id = new_ulid()
 
         item_ids, drift_skips = self._check_drift(spec, item_ids, opts)
         self._run_hooks(opts)
@@ -133,27 +145,38 @@ class RobotPoolRunner:
             [user_listener] if isinstance(user_listener, str) else list(user_listener or [])
         )
 
+        planned: list[tuple[str, list[str], str]] = [
+            (
+                partition,
+                chunk,
+                f"{partition}-{index}" if len(partitions) > 1 or len(chunks) > 1 else partition,
+            )
+            for partition in partitions
+            for index, chunk in enumerate(chunks, start=1)
+            if chunk
+        ]
+        # The hand-off: drift, hooks and planning are behind us, the shard set
+        # is known, and the pool is about to start. Everything this runner can
+        # refuse has been refused — so this is the moment the dispatch becomes
+        # real and gets recorded (DESIGN.md §4), not when the run finishes.
+        dispatch_id = self._open_dispatch(len(planned) + (1 if drift_skips else 0))
+
         shards: list[dict] = []
-        for partition in partitions:
-            for index, chunk in enumerate(chunks, start=1):
-                if not chunk:
-                    continue
-                shard = f"{partition}-{index}" if len(partitions) > 1 or len(chunks) > 1 else partition
-                out_dir = self._out_dir(run_id, dispatch_id, shard)
-                shards.append(
-                    {
-                        "suite_root": suite_root,
-                        "item_ids": chunk,
-                        "variables": dict(opts.get("variables") or {}),
-                        "partition": partition,
-                        "shard": shard,
-                        "run_id": run_id,
-                        "dispatch_id": dispatch_id,
-                        "out_dir": str(out_dir),
-                        "store_path": self._live_store_path(opts),
-                        "extra_listeners": extra_listeners,
-                    }
-                )
+        for partition, chunk, shard in planned:
+            shards.append(
+                {
+                    "suite_root": suite_root,
+                    "item_ids": chunk,
+                    "variables": dict(opts.get("variables") or {}),
+                    "partition": partition,
+                    "shard": shard,
+                    "run_id": run_id,
+                    "dispatch_id": dispatch_id,
+                    "out_dir": str(self._out_dir(run_id, dispatch_id, shard)),
+                    "store_path": self._live_store_path(opts),
+                    "extra_listeners": extra_listeners,
+                }
+            )
 
         if self._store is not None:
             self._store.set_run_state(run_id, "RUNNING")
@@ -163,6 +186,19 @@ class RobotPoolRunner:
         self._deliver(run_id, dispatch_id, results, drift_skips)
         declared = len(shards) + (1 if drift_skips else 0)
         return DispatchHandle(dispatch_id=dispatch_id, shards=declared)
+
+    def _open_dispatch(self, declared_shards: int) -> str:
+        """Mint/record the dispatch at the hand-off point.
+
+        With a reservation bound (in-process dispatch through the service),
+        runcomposer owns the id and the record is written NOW — before the
+        pool starts — so an executing run shows its dispatch instead of
+        "none yet". Standalone (no service, e.g. a direct unit test), the
+        runner mints its own id and nothing is recorded."""
+        if self._reservation is not None:
+            self._reservation.record(shards=declared_shards)
+            return self._reservation.dispatch_id
+        return new_ulid()
 
     def _run_hooks(self, opts) -> None:
         """§6.2a ``pre_run_hooks``: shell commands run once per dispatch,

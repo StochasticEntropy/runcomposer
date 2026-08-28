@@ -23,7 +23,7 @@ from runcomposer.config import Config
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.lifecycle import all_shards_delivered, completion_of
 from runcomposer.core.model import DispatchRecord, Item, RunRecord, Verdict
-from runcomposer.core.ports import ParsedVerdict
+from runcomposer.core.ports import DispatchReservation, ParsedVerdict
 from runcomposer.core.registry import PARSER_GROUP, PluginError, resolve_plugin
 from runcomposer.core.selection import Selection
 from runcomposer.core.spec import build_spec, validate_document
@@ -87,6 +87,46 @@ class QuarantineReport:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class _DispatchLedger:
+    """Backs one ``DispatchReservation``: mints the dispatch id up front and
+    writes its store record when the runner reports the hand-off.
+
+    The id exists from the start (the runner needs it for artifact paths,
+    listeners and executor parameters); the *record* appears only when the
+    runner calls it — so a refusal raised before the hand-off leaves no
+    dispatch row, and everything after it is a real execution attempt."""
+
+    def __init__(self, store, run_id: str, mode: str):
+        self._store = store
+        self._run_id = run_id
+        self._mode = mode
+        self.dispatch_id = new_ulid()
+        self.record: DispatchRecord | None = None
+        self._closed = False
+
+    def __call__(self, *, shards: int | None = None, spec_sha256: str | None = None) -> None:
+        if self._closed:
+            raise ServiceError(
+                f"dispatch {self.dispatch_id} was recorded outside its dispatch() call — "
+                "a reservation is only valid while the runner is dispatching"
+            )
+        if self.record is not None:
+            raise ServiceError(
+                f"dispatch {self.dispatch_id} is already recorded — one hand-off per "
+                "dispatch() call (re-running a spec is a new dispatch, DESIGN.md §4)"
+            )
+        self.record = self._store.add_dispatch(
+            self._run_id,
+            dispatch_id=self.dispatch_id,
+            mode=self._mode,
+            declared_shards=shards,
+            spec_sha256=spec_sha256,
+        )
+
+    def close(self) -> None:
+        self._closed = True
 
 
 def bundle_content_hash(path: Path) -> str:
@@ -309,10 +349,31 @@ class Service:
     def dispatch_runner(self, run_id: str, runner_id: str) -> DispatchRecord:
         """In-process dispatch: hand the document to a Runner plugin.
 
-        A runner exposing ``bind`` gets the store/source injected so it can
-        stream live status, read duration history, and run the §3.3 drift
-        check (robot-pool). A runner exposing a ``deliveries`` list (the demo
-        runner) gets those recorded here instead."""
+        Two optional runner hooks, both discovered by attribute so a runner
+        that implements only ``describe``/``dispatch`` keeps working:
+
+        - ``bind`` gets the store/source injected so the runner can stream
+          live status, read duration history, and run the §3.3 drift check
+          (robot-pool).
+        - ``bind_dispatch`` receives a ``DispatchReservation``: runcomposer
+          mints the dispatch id (as it does for export dispatches) and the
+          runner records the hand-off at the moment it makes it. That is what
+          keeps a *running* run visible as a dispatch — ``robot-pool``
+          executes inside ``dispatch()``, so a dispatch recorded from the
+          returned handle would only appear once the run is over (§4: a
+          dispatch is the record of a hand-off, not of its completion).
+          Without the hook, the handle's id is recorded on return as before.
+
+        A runner exposing a ``deliveries`` list (the demo runner) gets those
+        recorded here.
+
+        Failure semantics (§4): a runner that refuses *before* the hand-off
+        leaves no dispatch behind and the run returns to COMPOSED — a refused
+        dispatch is not an execution and must not look like one. A failure
+        *after* the hand-off keeps the dispatch (it happened) and leaves the
+        run AWAITING_RESULTS, since whatever was handed over may still
+        deliver — or a human finalizes it.
+        """
         spec = self._require_spec(run_id)
         runner = self.config.build_runner(runner_id)
         if hasattr(runner, "bind"):
@@ -323,20 +384,24 @@ class Service:
                 source=self.config.build_source(),
                 artifact_root=self.config.artifact_dir,
             )
+        ledger = _DispatchLedger(self.store, run_id, runner_id)
+        if hasattr(runner, "bind_dispatch"):
+            runner.bind_dispatch(
+                DispatchReservation(dispatch_id=ledger.dispatch_id, record=ledger)
+            )
         self.store.set_run_state(run_id, "DISPATCHED")
         try:
             handle = runner.dispatch(spec)
         except Exception:
-            self.store.set_run_state(run_id, "COMPOSED")  # dispatch never happened
+            ledger.close()
+            if ledger.record is None:
+                self.store.set_run_state(run_id, "COMPOSED")  # dispatch never happened
+            else:
+                self.store.set_run_state(run_id, "AWAITING_RESULTS")  # handed off, then failed
             raise
+        ledger.close()
         self.last_dispatch_plan = getattr(runner, "last_plan", "")
-        dispatch = self.store.add_dispatch(
-            run_id,
-            dispatch_id=handle.dispatch_id,
-            mode=runner_id,
-            declared_shards=handle.shards,
-            spec_sha256=handle.spec_sha256,
-        )
+        dispatch = self._settle_dispatch(run_id, runner_id, ledger, handle)
         for delivery in getattr(runner, "deliveries", []):
             verdicts = delivery["verdicts"]
             payload = json.dumps(
@@ -344,7 +409,7 @@ class Service:
             ).encode()
             self.store.record_delivery(
                 run_id,
-                dispatch_id=handle.dispatch_id,
+                dispatch_id=dispatch.dispatch_id,
                 shard=delivery.get("shard", "1"),
                 content_hash="sha256:" + hashlib.sha256(payload).hexdigest(),
                 format=REFERENCE_FORMAT,
@@ -352,6 +417,40 @@ class Service:
             )
         self._recompute_completion(run_id, dispatch)
         return dispatch
+
+    def _settle_dispatch(
+        self, run_id: str, runner_id: str, ledger: "_DispatchLedger", handle
+    ) -> DispatchRecord:
+        """Reconcile the returned handle with the reservation. The handle is
+        the runner's final declaration (§4: the shard set is known after
+        planning), so it refines a record written at hand-off time."""
+        recorded = ledger.record
+        if recorded is None:
+            # No reservation used: the runner minted its own dispatch id, and
+            # the dispatch becomes visible now — execution is already over.
+            return self.store.add_dispatch(
+                run_id,
+                dispatch_id=handle.dispatch_id,
+                mode=runner_id,
+                declared_shards=handle.shards,
+                spec_sha256=handle.spec_sha256,
+            )
+        if handle.dispatch_id != recorded.dispatch_id:
+            raise ServiceError(
+                f"runner {runner_id!r} recorded dispatch {recorded.dispatch_id} but returned "
+                f"handle {handle.dispatch_id!r}: the reserved id IS the dispatch id — a "
+                "returned marker naming the other one cannot correlate (DESIGN.md §4)"
+            )
+        spec_sha256 = handle.spec_sha256 or recorded.spec_sha256
+        if handle.shards != recorded.declared_shards or spec_sha256 != recorded.spec_sha256:
+            return self.store.add_dispatch(  # re-declaration: same row, final numbers
+                run_id,
+                dispatch_id=recorded.dispatch_id,
+                mode=runner_id,
+                declared_shards=handle.shards,
+                spec_sha256=spec_sha256,
+            )
+        return recorded
 
     # -- ingestion (§5) ---------------------------------------------------------
 
