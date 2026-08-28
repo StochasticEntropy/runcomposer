@@ -1,0 +1,51 @@
+# runcomposer config for the "bring your own run agent" kit (DESIGN.md §6.2c).
+#
+# Paths here are relative on purpose. `sync.sh` runs every runcomposer command
+# with THIS FILE's directory as the working directory, which makes the two
+# resolution bases agree: plugin options (the sqlite path, the source root)
+# resolve against the working directory, the core's ingestion/artifact dirs
+# against the config file. Everything the round trip writes therefore lands
+# under `state/`, which is gitignored — no runtime state is ever committed.
+#
+# To keep the state somewhere else entirely (a CI workspace, a shared
+# checkout), copy this file, make its paths absolute, and point RC_CONFIG at
+# the copy: sync.sh follows the config, not the repository.
+
+core:
+  ingestion:
+    # The file-drop inbox (DESIGN.md §5, transport 2) — where the RETURNED
+    # bundles land. sync.sh copies each bundle here (keep RC_INBOX and this
+    # key pointing at the same directory: together they ARE the return
+    # transport), and `runcomposer serve` polls the very same directory, so
+    # the loop also works with no ingest command at all.
+    inbox: state/inbox
+    # A bundle whose marker names an unknown run, or whose spec_sha256 does
+    # not match the exported spec bytes, is never silently attached to a
+    # watched run — it lands here for a human (DESIGN.md §4/§5).
+    quarantine_dir: state/quarantine
+    # This loop returns bundles over the file drop, not over HTTP: there is no
+    # ingest endpoint for a token to guard, and disabling tokens also keeps a
+    # secret out of the exported spec document, which travels to the executing
+    # machine in the clear. Set `required` the moment you expose the push API
+    # — then results.token rides along on purpose (§5 security floor).
+    tokens: disabled
+  # Nothing writes artifacts in this pattern (the native output.xml comes home
+  # inside the bundle), but `runcomposer gc` wants a directory to bound.
+  artifact_dir: state/artifacts
+  retention: { max_age_days: 30 }
+
+store:
+  sqlite:
+    path: state/runcomposer.db
+
+sources:
+  robotframework:
+    # The COMPOSER's view of the corpus: what the filters select over and what
+    # `source.snapshot` is computed from. The executing machine has its own
+    # checkout (RC_SUITE_ROOT in sync.sh) and the two are correlated by item
+    # id, never by path — an id minted here resolves there or it is drift.
+    root: ../robot-shop/tests
+
+# No `runners:` section on purpose. This pattern has no in-process runner: the
+# spec is EXPORTED (`runcomposer spec --export`) and fulfilled by an executor
+# runcomposer never talks to. Composing and ingesting is all it does here.

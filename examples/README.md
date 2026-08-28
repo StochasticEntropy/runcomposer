@@ -18,3 +18,14 @@
   ```
   runcomposer catalog --manifest examples/manifest-pytest.json
   ```
+
+- **`remote-agent/`** — the "bring your own run agent" adopter kit
+  (DESIGN.md §6.2c): compose here, carry the spec to a machine runcomposer
+  never talks to, execute it there with the vendored single-file
+  `runcomposer-exec`, carry the bundle back, ingest. A documented config, an
+  agent that needs only `python3` + `robot`, and a transport-agnostic driver
+  whose local-directory default runs the whole loop on one machine. Try:
+
+  ```
+  cd examples/remote-agent && ./sync.sh
+  ```

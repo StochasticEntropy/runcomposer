@@ -35,6 +35,13 @@ executor (CI checkout, air-gapped host) and it renders the spec's materialized
 item list, runs your command, and writes the `runcomposer_run.json` correlation
 marker beside the results.
 
+[examples/remote-agent](examples/remote-agent) turns that into a complete
+adopter kit for the remote round trip: a documented config, an agent that
+needs only `python3` + `robot` on the executing machine, and a
+transport-agnostic driver whose local-directory default runs the whole loop —
+compose, carry, execute, carry back, ingest — on one machine. It is the
+neutral template a private adopter package (DESIGN.md §14 P4) copies.
+
 Shipped so far (P0–P2): the sqlite run store with the full run lifecycle
 (COMPOSED → RUNNING → AWAITING_RESULTS → COMPLETE), `runcomposer compile |
 spec | dispatch | runs | ingest | gc | serve`, the compose/preview HTTP API
