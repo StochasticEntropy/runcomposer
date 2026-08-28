@@ -315,6 +315,50 @@
     padding: 2.5rem 0 0;
   }
 
+  /* ---- video ---- */
+  .player {
+    margin: 1.75rem 0 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #000;
+    box-shadow: var(--shadow);
+  }
+
+  .player video {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .watch-note {
+    margin-top: 1rem;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+
+  .watch-link {
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    margin-top: 1.5rem;
+    padding: .55rem 1rem;
+    border: 1px solid var(--signal);
+    border-radius: 4px;
+    color: var(--signal);
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .78rem;
+    font-weight: 500;
+    letter-spacing: -.02em;
+    text-decoration: none;
+  }
+
+  .watch-link:hover {
+    background: var(--signal-soft);
+    color: var(--signal);
+  }
+
   /* ---- the handoff diagram ---- */
   .handoff {
     margin: 2rem 0 1rem;
@@ -626,6 +670,25 @@ pipx run --spec . runcomposer demo</code></pre>
         cross-instance queue, no ambition to replace the thing that already runs your builds.
         Compose, dispatch, ingest, browse — that is the entire product.
       </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker" id="watch">Watch</div>
+    <div class="body">
+      <h2>Sixty seconds, if you'd rather see it</h2>
+      <p>
+        The same argument as the rest of this page, drawn out: the awkwardness of selecting
+        precisely, what changes when the selection becomes a document, and where that document can
+        travel afterwards.
+      </p>
+      <div class="player">
+        <video controls preload="metadata" poster="teaser-poster.jpg" width="1920" height="1080">
+          <source src="teaser.mp4" type="video/mp4">
+          Your browser cannot play this video. <a href="teaser.mp4">Download it instead.</a>
+        </video>
+      </div>
+      <p class="watch-note">69 seconds, narrated</p>
     </div>
   </section>
 
