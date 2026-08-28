@@ -1,5 +1,9 @@
 # runcomposer
 
+[![CI](https://github.com/StochasticEntropy/runcomposer/actions/workflows/ci.yml/badge.svg)](https://github.com/StochasticEntropy/runcomposer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10 – 3.13](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.13-blue.svg)](pyproject.toml)
+
 **runcomposer** is an open-source, tag-based test run composer & orchestrator:
 see your test corpus through a curated tag taxonomy, compose precise
 selections with a real filter language, and turn a selection into a
@@ -10,19 +14,79 @@ selections ("rerun what failed").
 **[stochasticentropy.github.io/runcomposer](https://stochasticentropy.github.io/runcomposer/)** —
 how it works, in one page.
 
+### Or watch it
+
+- **[The 69-second teaser](https://stochasticentropy.github.io/runcomposer/#watch)** —
+  narrated: why precise selection is awkward, and what changes when the
+  selection becomes a document.
+- **[The 6-minute explainer](https://stochasticentropy.github.io/runcomposer/#watch)** —
+  seven chapters: the catalog, composing a selection, freezing it into a spec,
+  the document itself, the three ways to execute it, results returning from any
+  transport, and rerunning what failed.
+
 Version 0.1.0. Read [ADOPTING.md](ADOPTING.md) to connect it to your own corpus
-and machines, or [DESIGN.md](DESIGN.md) for the architecture and the reasoning
-behind it.
+and machines, [DESIGN.md](DESIGN.md) for the architecture and the reasoning
+behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
 
 ## Quickstart
 
+There is **no published package yet** — runcomposer installs from a clone, and
+`pip install runcomposer` will not find anything.
+
 ```bash
+git clone https://github.com/StochasticEntropy/runcomposer && cd runcomposer
+
 pipx run --spec . runcomposer demo    # boot the neutral web-shop demo end-to-end
 pipx run --spec . runcomposer serve   # web UI (EN/DE) + API at http://127.0.0.1:8100
 # or: docker build -t runcomposer . && docker run -p 8100:8100 runcomposer
 ```
 
-## The export round-trip (P1's core workflow)
+## What it does
+
+**Catalog.** A *test source* enumerates your tests as items — an opaque stable
+id plus tags — and content-hashes the catalog. Two ship: `manifest` (a plain
+JSON or YAML list, zero dependencies, the adoption path for any framework) and
+`robotframework` (walks `.robot` files, ids are longnames).
+
+**Compose.** Navigate a curated taxonomy, build a filter, watch the preview
+recompile. The filter language is small and lossless: a bare word is a literal
+tag, `prefix:Checkout-` is sugar for an anchored regex, `regex:` is the escape
+hatch, and the operators are `AND`, `OR`, `NOT`. Available in the web UI and
+from the CLI.
+
+**Freeze.** The filter is compiled against the catalog snapshot and the
+resulting item list is written *into* a versioned run spec document — so a
+dispatched spec is self-sufficient, and the snapshot makes corpus drift
+detectable. Core sections are generic and closed; exactly one section,
+`runner`, is open, and the core never looks inside it. `runcomposer validate`
+checks a document against the published JSON Schema.
+
+**Execute — three ways, one document.** In-process on a `robot-pool` (partition
+fan-out, duration-balanced chunking, listener-streamed live verdicts, drift
+refusal); on *your own agent anywhere* via `runcomposer-exec`; or by triggering
+an existing parameterized CI job with `ci-trigger`.
+
+**Ingest.** Results return over a token-guarded HTTP push, a watched file-drop
+directory, or `runcomposer ingest` on the command line. Redelivery rules are
+explicit — a byte-identical bundle is a no-op, a different bundle replaces that
+shard. A bundle whose marker matches no dispatched run lands in a visible
+quarantine inbox rather than quietly entering history.
+
+**Reuse.** Once runs accrue, history becomes a selection source:
+`runcomposer runs --failed-in latest --label suite=nightly`, `spec
+--from-history 'failed@latest?suite=nightly'`, and a UI quick-pick. The label
+scope keeps "latest" from meaning somebody else's run, and the resolved
+reference run is recorded in `selection.derived_from`.
+
+**Hand off.** `runcomposer export <run> --format ctrf` for tools that speak
+CTRF; `robot-output-xml` and `junit-xml` parse results coming the other way
+(both refuse documents carrying entity or DTD declarations).
+
+The web UI ships pre-built inside the wheel in English and German, so
+evaluating it needs no Node toolchain. Persistence is sqlite by default, and
+`runcomposer gc` keeps runs, quarantine and artifacts bounded.
+
+## The export round trip
 
 Compose a run spec, execute it *anywhere* with the vendorable single-file
 consumer, and ingest the results bundle back — no coupling between composer
@@ -45,35 +109,23 @@ adopter kit for the remote round trip: a documented config, an agent that
 needs only `python3` + `robot` on the executing machine, and a
 transport-agnostic driver whose local-directory default runs the whole loop —
 compose, carry, execute, carry back, ingest — on one machine. It is the
-neutral template a private adopter package (DESIGN.md §14 P4) copies.
+neutral template a private adopter package copies.
 
-Shipped so far (P0–P2): the sqlite run store with the full run lifecycle
-(COMPOSED → RUNNING → AWAITING_RESULTS → COMPLETE), `runcomposer compile |
-spec | dispatch | runs | ingest | gc | serve`, the compose/preview HTTP API
-with the token-guarded results push, the file-drop inbox, the quarantine
-inbox (attach/promote), the localized React UI (taxonomy tree, SVAR filter
-builder, auto-compiled preview, runner-aware compose footer, live run status,
-quarantine view) pre-bundled in the wheel, and the export round-trip above.
+## Examples
 
-With the `robot` extra (`pip install "runcomposer[robot]"`): the
-`robotframework` test source (ids = Robot longnames), the `robot-pool` runner
-(process pool, partition fan-out, duration-balanced chunking with a documented
-round-robin cold start, listener-streamed live verdicts, §3.3 drift refusal),
-and the defused `robot-output-xml` result parser — demonstrated against the
-neutral suite in [examples/robot-shop](examples/robot-shop).
+| | |
+|---|---|
+| [examples/robot-shop](examples/robot-shop) | 58 Robot Framework tests over a fictional web shop — the corpus behind the screenshot and the specs on the homepage. |
+| [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids — the framework-agnosticism proof. |
+| [examples/remote-agent](examples/remote-agent) | The full remote round trip on one machine. |
+| [ci/jenkins](ci/jenkins) | A reproducible Jenkins-in-Docker setup whose job runs the vendored consumer and posts results back. |
+| [examples/webshop-regression.runspec.yaml](examples/webshop-regression.runspec.yaml) | A complete run spec you can read. |
 
-P3 (reach): the defused `junit-xml` parser with the pytest example corpus in
-[examples/pytest-shop](examples/pytest-shop) (nodeid ids via manifest aliases —
-the framework-agnosticism proof), history-based selection (`runcomposer runs
---failed-in latest --label suite=nightly`, `spec --from-history
-'failed@latest?suite=nightly'`, and the UI quick-pick — the label scope keeps
-"latest" from meaning somebody else's run, and the resolved reference run is
-recorded in `selection.derived_from`), CTRF export
-(`runcomposer export <run> --format ctrf`), and the `ci-trigger` runner with
-the thin CI-side consumer stage: a reproducible Jenkins-in-docker setup in
-[ci/jenkins](ci/jenkins) whose job runs the vendored single-file
-`runcomposer-exec` and POSTs results back (webhook-out completion), with a
-build-API polling fallback for CI systems that can't call out.
+Executing Robot Framework in-process needs one extra, still from the clone:
+
+```bash
+pip install ".[robot]"
+```
 
 ## Developing
 
@@ -82,5 +134,8 @@ pip install -e ".[dev]" && pytest         # Python 3.10–3.13
 cd ui && npm ci && npm run dev            # UI dev server (proxies to :8100)
 npm run build                             # rebuild src/runcomposer/ui_dist
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the boundaries that matter, and
+[SECURITY.md](SECURITY.md) to report a vulnerability.
 
 License: [MIT](LICENSE).

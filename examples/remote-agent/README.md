@@ -20,8 +20,8 @@ cd examples/remote-agent
 That runs the whole loop against a local directory transport, so the example
 works on one machine, in CI, and in the test suite (`tests/test_remote_agent.py`).
 It needs `runcomposer` with the robot extra on the composing side
-(`pip install "runcomposer[robot]"`) and `python3` + `robot` on the executing
-side — deliberately *not* runcomposer, which is what the vendored consumer
+(`pip install ".[robot]"` from a clone of this repository) and `python3` +
+`robot` on the executing side — deliberately *not* runcomposer, which is what the vendored consumer
 buys.
 
 ## What travels

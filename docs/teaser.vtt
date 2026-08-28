@@ -1,0 +1,64 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:02.780
+Every test corpus of any size has the same problem.
+
+00:00:03.360 --> 00:00:05.980
+You can run everything, or you can run one thing.
+
+00:00:06.540 --> 00:00:12.320
+Running exactly the right subset, and proving later which subset that was, is the awkward part.
+
+00:00:13.300 --> 00:00:13.920
+Tags help.
+
+00:00:14.480 --> 00:00:19.760
+Until the tag query lives in a CI job parameter that nobody can reconstruct three weeks later.
+
+00:00:20.760 --> 00:00:27.020
+runcomposer makes the selection a document, a run spec, the filter, kept for provenance,
+
+00:00:27.020 --> 00:00:32.640
+the exact list of tests, embedded, and the hash of the catalog it was cut from.
+
+00:00:33.600 --> 00:00:34.820
+Then hand it to anything.
+
+00:00:35.440 --> 00:00:36.560
+A process pool here.
+
+00:00:37.140 --> 00:00:39.000
+A parameterized CI job.
+
+00:00:39.400 --> 00:00:44.480
+Or one small standard library Python file on a machine run Composer cannot even reach,
+
+00:00:44.900 --> 00:00:47.220
+running your own command against exactly those IDs.
+
+00:00:48.100 --> 00:00:50.000
+Results come back however you like.
+
+00:00:50.560 --> 00:00:51.940
+An HTTP push.
+
+00:00:52.380 --> 00:00:53.300
+A watch directory.
+
+00:00:53.800 --> 00:00:55.420
+A bundle you commit to a branch.
+
+00:00:55.420 --> 00:01:00.140
+The marker inside carries the run ID, so the transport is your business.
+
+00:01:01.180 --> 00:01:03.920
+The interface is a document, not a protocol.
+
+00:01:05.020 --> 00:01:05.740
+runcomposer.
+
+00:01:06.320 --> 00:01:06.980
+Open Source.
+
+00:01:07.320 --> 00:01:07.680
+MIT.

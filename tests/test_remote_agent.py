@@ -2,7 +2,7 @@
 agent's Robot adapter, its §3.3 obligations, and the full transport round trip
 — compose → carry → execute → carry back → ingest → COMPLETE.
 
-These need Robot Framework (`pip install 'runcomposer[robot]'`) and skip
+These need Robot Framework (`pip install '.[robot]'`) and skip
 cleanly without it, like the rest of the robot plugin family.
 """
 

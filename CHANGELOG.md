@@ -67,12 +67,90 @@
   `created_at`) instead of failing, so a dispatch recorded at hand-off time
   can be refined from the handle the runner returns.
 
+### Documentation
+- **`docs/cli.md` — the CLI reference**, covering every subcommand and every
+  flag of both `runcomposer` and `runcomposer-exec`, each with a worked
+  example. Several implemented flags were documented nowhere until now, most
+  importantly `--config` (on eight subcommands, and the only way to select a
+  config file — there is no environment-variable fallback), plus `--id`,
+  `runs --state/--since/--until/--label/--limit`, `spec --expect-format`, and
+  `serve --host/--port`. It also records that `core.*` paths resolve relative
+  to the config file's directory while `store.sqlite.path` resolves relative
+  to the working directory, which silently creates a second database when one
+  config is invoked from two directories.
+- **DESIGN.md now marks design intent as such.** A clause marked `[planned]`
+  has no implementation in the repository; everything unmarked describes what
+  the code does today (`grep -n '\[planned\]' DESIGN.md` lists them). Seventeen
+  passages were reconciled against the source — among them the `postgres`
+  store, the `STALE` expiry policy, the optional `Runner` `status`/`cancel`/
+  `health` capabilities, per-verdict `artifacts`, `results.callback`, UI
+  result upload, the full history picker, and
+  `POST /api/v1/runners/{id}/actions/<action>`, none of which exist. Where the
+  document and the code differed on a detail rather than on existence, the
+  document was corrected instead: the drift override is a runner option
+  (`allow_drift` / `RC_ALLOW_DRIFT`), not a `--allow-drift` CLI flag; there is
+  no core `materialize(spec)` helper, since every runner reads
+  `selection.materialized.item_ids` from the document; `ci-trigger` builds its
+  job URL from config rather than templating it from the spec; and
+  `runcomposer demo` demonstrates history in memory without persisting it, so
+  it does not light up `--failed-in` afterwards. §9's endpoint and CLI lists
+  gained the quarantine actions and `runcomposer export` respectively.
+- **Every documented install now works from a clone.** `pip install
+  "runcomposer[robot]"` was printed in the README, the homepage, the
+  remote-agent example and two plugin error messages, but nothing is published
+  to PyPI (`pypi.org/pypi/runcomposer/json` → 404), so the one documented way
+  to get the Robot extra failed. All occurrences are now `pip install
+  ".[robot]"`, and the README, homepage and DESIGN.md say plainly that there is
+  no published package yet.
+- **The homepage links its own artefacts.** The page named ADOPTING.md,
+  DESIGN.md, docs/taxonomy.md, the examples, ci/jenkins, the schema and the
+  licence without linking any of them; a reader had one exit, in the footer.
+  They are now linked inline, plus a "where next" block of six destinations.
+- **The homepage colophon attributed its examples to the wrong corpus.** It
+  claimed they "boot with `runcomposer demo`". The screenshot and both plates
+  use `Tests.Payments.…` longnames from `examples/robot-shop` (58 Robot tests);
+  `runcomposer demo` boots the 60-item *manifest* corpus with `Shop.…` ids.
+  Both plates are now captioned with the corpus that produced them.
+- **Light-theme contrast meets WCAG AA.** `--signal` was 3.92:1 on `--bg` and
+  4.30:1 on `--surface` at 0.82rem (the plugin table's first column, `.lane-id`,
+  `.marker .num`), `.chip-skip` 4.15:1 and the `.plate-head` meta 4.43:1.
+  `--signal` is now `#8A5208` and `--ink-3`/`--skip` `#525F73`; every light
+  token pair clears 4.5:1. The dark theme already passed and is unchanged.
+- **Community health files**: `CONTRIBUTING.md`, a `SECURITY.md` written around
+  the real surface (defused XML from result bundles, same-origin artifact bytes,
+  the per-run ingest token, quarantine) with an explicit not-a-vulnerability
+  list, and `.github/ISSUE_TEMPLATE/` bug-report and feature-request forms.
+- **Social preview**: a 1200×630 PNG card (`docs/og-card.png`) replaces the
+  1760×1100 WebP `og:image`, which X and LinkedIn do not reliably render, plus
+  `og:url` and `twitter:card`. The page also has a favicon and captions on both
+  videos, and the README has CI/licence/Python badges and links to the videos.
+- **Release notes stop containing the whole changelog.** `release.yml` used
+  `--notes-file CHANGELOG.md`; it now extracts just the tagged version's
+  section and fails the release if that section is missing.
+
+- **`ci/jenkins/README.md` says that the demo job runs no tests.** The shipped
+  build step uses `runcomposer_exec.py --simulate`, which fabricates verdicts —
+  so a green build proves the transport, not any test. The README now leads
+  with that and shows the one-line change (`--command`) that makes the stage
+  real, with the placeholder contract and the two things to adjust on the
+  runcomposer side. The demo job keeps simulating on purpose: the container
+  has no test corpus.
+
+### Removed
+- **`reserve_name/`** — the PyPI/npm placeholder packages and their `RESERVE.md`
+  owner checklist, which told the reader to delete the directory after the first
+  release. Reserving a name with a squat advertises that the name is unclaimed,
+  and every documented path installs from a clone anyway. DESIGN.md §1 and the
+  decision log record the reversal.
+
 ## 0.1.0 — 2026-07-07
 
-First release: DESIGN.md phases P0–P3 complete, each independently
-judge-verified against the design.
+First release. The whole loop works end to end: catalogue a tagged corpus,
+compose a selection, freeze it into a portable run spec, execute it in-process
+/ on your own remote agent / in a CI job, and ingest the results back from any
+transport into a history that feeds the next selection.
 
-### Core & spec (P0/P1)
+### Core & spec
 - runspec 1.0: versioned, JSON-isomorphic run spec with published JSON
   Schema; `runcomposer validate` (incl. the `--for-dispatch` profile) with
   the §3 versioning policy (strict known fields, MINOR-forward tolerance,
@@ -89,13 +167,13 @@ judge-verified against the design.
   filter builder behind an adapter, auto-compiled preview, runner-aware
   compose footer — pre-bundled in the wheel, no Node needed to evaluate.
 
-### Ingestion transports (P2a)
+### Ingestion transports
 - Token-guarded results push API (`POST /api/v1/runs/{id}/results`),
   file-drop inbox watcher, quarantine inbox with attach/promote, content-hash
   idempotency (byte-identical = no-op, same-shard redelivery = last-writer-
   wins), marker `spec_sha256` verification, `runcomposer gc` retention.
 
-### Execution (P2b)
+### Execution
 - `robotframework` TestSource (`id = longname`) and `robot-pool` runner:
   shared process pool, partition fan-out, duration-balanced chunking with
   documented round-robin cold start, live verdicts via the injected Robot
@@ -103,7 +181,7 @@ judge-verified against the design.
   `allow_drift` intersection with SKIP-reason-drift. Defused
   `robot-output-xml` parser. All behind the `runcomposer[robot]` extra.
 
-### Reach (P3)
+### Reach — CI, pytest, history, CTRF
 - Defused `junit-xml` parser + pytest example corpus (manifest `aliases`
   map native junit names onto nodeids — the framework-agnosticism proof).
 - History-based selection (`failed@latest`, `run:<id>`, `before:<time>`)
@@ -114,7 +192,7 @@ judge-verified against the design.
   Jenkins-in-docker under `ci/jenkins/`): webhook-out completion and a
   build-API polling fallback; session-bound CSRF crumb handling.
 
-### Post-P3 polish
+### Polish
 - ci-trigger dispatches record the SPEC_JSON hash so §5 marker verification
   works on the CI path.
 - robot-pool: user `listener` pass-through and `pre_run_hooks` (completing

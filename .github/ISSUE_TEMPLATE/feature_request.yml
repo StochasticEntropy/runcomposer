@@ -1,0 +1,76 @@
+name: Feature request
+description: Something runcomposer should do that it does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you write: runcomposer has a deliberately small scope. It is
+        **not** a CI system, a scheduler, or a test framework, and
+        [DESIGN.md §13](https://github.com/StochasticEntropy/runcomposer/blob/main/DESIGN.md)
+        lists what is explicitly out of scope for v1 — cron and scheduling,
+        cross-instance queues, HA, analytics dashboards, taxonomy editing in the
+        UI, config hot-reload, and full authN/authZ.
+
+        That list is not a challenge, but it is not sacred either. If your case
+        is strong, make it — just make it knowing the default answer is "that
+        belongs in a plugin or in the thing that already runs your builds".
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do, and where does runcomposer stop you? Describe
+        the situation, not the solution you have in mind.
+      placeholder: |
+        We ship from three repos with separate corpora. Composing across them
+        means three runcomposer instances and three run histories, so "rerun what
+        failed" can never span a release.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do today instead
+      description: The current workaround, however ugly — it usually shows the real shape of the need.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shape
+    attributes:
+      label: Where do you think this belongs
+      description: >
+        The core stays generic and closed; only `runner.*` in the run spec is open.
+        A guess is fine — being wrong here will not get the issue closed.
+      options:
+        - A new plugin (test source, runner, or result parser)
+        - The core, because no plugin boundary can express it
+        - The run spec document
+        - The CLI
+        - The web UI
+        - Docs or examples
+        - No idea
+    validations:
+      required: true
+
+  - type: textarea
+    id: corpus
+    attributes:
+      label: Your corpus, roughly
+      description: >
+        Size, framework, and how tags are organised. Scale changes which answers
+        are reasonable. No real names needed.
+      placeholder: "~4,000 pytest tests, tags for area + sprint + a quarantine prefix."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read the out-of-scope list and this is not obviously on it (or I explained why it should not be).
+          required: true
+        - label: I would be willing to help implement this.
+          required: false

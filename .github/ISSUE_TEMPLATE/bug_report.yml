@@ -1,0 +1,105 @@
+name: Bug report
+description: Something behaves differently from what the docs say
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Two things before you start:
+
+        - **Security issues do not go here.** Use
+          [private reporting](https://github.com/StochasticEntropy/runcomposer/security/advisories/new)
+          — see [SECURITY.md](https://github.com/StochasticEntropy/runcomposer/blob/main/SECURITY.md).
+        - **Please scrub your corpus.** Internal test names, hostnames, ticket
+          ids and job names are not needed. If you can reproduce on the demo
+          corpus (`runcomposer demo`), that is ideal.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what runcomposer did instead of what you expected.
+      placeholder: |
+        I composed a selection over ~400 items and dispatched it to robot-pool.
+        The run went to RUNNING and stayed there; no verdicts ever arrived.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The commands, in order. Paste the actual output, not a summary of it.
+      render: shell
+      placeholder: |
+        $ runcomposer spec 'Payments' --title "repro" --format json -o spec.json --export
+        $ runcomposer dispatch spec.json
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what told you to expect it
+      description: >
+        A line in the README, ADOPTING.md, DESIGN.md, the homepage, or `--help`.
+        If nothing promised the behaviour, say so — that may itself be the bug.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      multiple: true
+      options:
+        - CLI
+        - Web UI
+        - HTTP API / ingestion
+        - Run spec / validate / schema
+        - Test source (manifest / robotframework)
+        - Runner (robot-pool / ci-trigger / demo)
+        - Result parser (robot-output-xml / junit-xml)
+        - Store, history, or gc
+        - runcomposer-exec (the vendored single file)
+        - Docs, examples, or the homepage
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: runcomposer version
+      description: "`runcomposer --version`, or the commit sha if you are on a clone."
+      placeholder: "0.1.0 (or 7a6628b)"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: "Python 3.12.4, macOS 15 / Ubuntu 24.04 / Docker image"
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config (optional)
+      description: >
+        The relevant part of your config file, with paths and hostnames replaced.
+        Say if you are running the Docker image or the bundled demo instead.
+      render: yaml
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed internal names, hosts and ticket ids from everything above.
+          required: true
+        - label: This is not a security issue.
+          required: true

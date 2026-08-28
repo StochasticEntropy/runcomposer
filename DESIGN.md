@@ -5,6 +5,19 @@ An open-source, tag-based test run composer & orchestrator.
 Status: rev 3 — 2026-07-06. Decisions final unless marked open.
 This document supersedes all notes in the private predecessor prototype.
 
+**Reading this document.** This is a design document, and not everything
+designed here is built. A clause marked `[planned]` records a decision that
+stands but has **no implementation in this repository today** — read it as
+intent, and expect nothing in the code to honour it. Every statement *not* so
+marked describes what the code does now.
+
+```bash
+grep -n '\[planned\]' DESIGN.md      # the full list, in document order
+```
+
+That grep is the contract: implementing one of these means deleting its marker
+in the same change, and adding an unbuilt idea means marking it.
+
 ---
 
 ## 0. Why runcomposer exists
@@ -57,9 +70,11 @@ history that itself feeds new selections ("rerun what failed").
 
 **Name — decided: `runcomposer`.** The exchange document is the **run spec**
 (`runspec`). Availability verified 2026-07-06: PyPI free (JSON API + simple
-index), npm free. Name reservation = publish the prepared 0.0.1 placeholders
-in `reserve_name/` (owner action, needs account tokens). Runner naming axis is
-*what-it-drives*: `robot-pool` (in-process Robot Framework execution),
+index), npm free — and still unpublished as of 0.1.0, so every documented
+install runs from a clone (`pip install ".[robot]"`, `pipx run --spec .`). The
+release workflow's PyPI job is gated behind the `PYPI_PUBLISH` repository
+variable; publishing is a deliberate owner action, not a default. Runner naming
+axis is *what-it-drives*: `robot-pool` (in-process Robot Framework execution),
 `ci-trigger` (drives an external CI job).
 
 **License — decided: MIT.**
@@ -77,7 +92,7 @@ in `reserve_name/` (owner action, needs account tokens). Runner naming axis is
 | **Selection** | The lossless filter: `tag_filter` AST + optional explicit `item_ids`. Compiled against a catalog snapshot into a **materialized item list**. |
 | **Run spec** | The versioned document: identity + selection (incl. materialization) + source snapshot + results contract + one opaque runner section. |
 | **Run / Dispatch / Delivery** | A **Run** is the stored lifecycle record for one spec. Each hand-off to an executor is a **Dispatch** (`dispatch_id`). Each results bundle that arrives is a **Delivery** (content-hashed). One run may have several dispatches (re-runs) and several deliveries (shards, retries). |
-| **Verdict** | Per-item result: `PASS / FAIL / SKIP / ERROR`, duration, message, artifacts, `attempt` (per-dispatch retry counter; `flaky` is derivable, not stored), and the `shard` it was delivered under. The shard is assigned by the *delivery*, not the producer: a parser emits verdicts without one, `record_delivery(shard=…)` labels the bundle, and every verdict read back carries it — a selection fanned out over two partitions is otherwise two indistinguishable rows per item. |
+| **Verdict** | Per-item result: `PASS / FAIL / SKIP / ERROR`, duration, message, `attempt` (per-dispatch retry counter; `flaky` is derivable, not stored), and the `shard` it was delivered under. Per-verdict `artifacts` are `[planned]`: the field is on the dataclass, but nothing populates it, the store has no column for it, and the run detail does not serve it — run- and dispatch-level artifact references (§6.4) are the real path today. The shard is assigned by the *delivery*, not the producer: a parser emits verdicts without one, `record_delivery(shard=…)` labels the bundle, and every verdict read back carries it — a selection fanned out over two partitions is otherwise two indistinguishable rows per item. |
 | **Runner** | Anything that fulfills a run spec. In-process runners are plugins; external runners just consume the document. |
 
 Framework-specific concepts (suites, Robot `longname`, stage fan-out,
@@ -89,8 +104,10 @@ Framework-specific concepts (suites, Robot `longname`, stage fan-out,
 
 Versioned YAML — **JSON-isomorphic and accepted everywhere**; the CLI can emit
 either (`runcomposer spec --format json|yaml`), so zero-dependency consumers can
-read the spec with nothing but a JSON parser. Published JSON Schema. Design
-rules:
+read the spec with nothing but a JSON parser. The JSON Schema ships inside the
+package (`runcomposer/schemas/runspec-1.0.json`) and is what `runcomposer
+validate` checks against; publishing it at a resolvable URL is `[planned]`, so
+treat its `$id` as an identifier rather than a location. Design rules:
 
 - **Core sections are generic and closed** within a spec version (see
   versioning policy below).
@@ -150,9 +167,15 @@ source:
 results:
   expect:
     - format: "robot-output-xml"    # registered ResultParser id
-  shards: "runner-declared"         # or an integer when known at compose time (see §4)
-  deliver: "api"                    # api | file-drop | none (advisory)
+  shards: "runner-declared"         # or an integer when known at compose time (see §4).
+                                    #   The schema accepts both; the composer emits 1,
+                                    #   and a non-integer is read back as 1.
+  deliver: "none"                   # api | file-drop | none — advisory, and nothing
+                                    #   reads it; the composer always emits "none"
   callback: "https://runcomposer.example.internal/api/v1/runs/{run.id}/results"
+                                    # [planned] — schema-accepted, but nothing writes or
+                                    #   reads it. ci-trigger builds its callback URL from
+                                    #   the runner's own `callback_base` config instead.
   token: "rct_..."                  # per-run ingest token (see §5); omit only if deployment disables tokens
 
 runner:                             # ONE opaque namespaced section
@@ -203,10 +226,13 @@ A conforming executor MUST:
    runners may fetch the list via `GET /runs/{id}/items` — same data, same
    authority.)
 2. **Check drift before executing:** if the live corpus snapshot differs from
-   `source.snapshot`, refuse by default. With an explicit override
-   (`--allow-drift` / runner option), execute the intersection of
-   `materialized.item_ids` with the live corpus and report the difference as
-   `SKIP` verdicts with reason `drift`.
+   `source.snapshot`, refuse by default. With an explicit override, execute
+   the intersection of `materialized.item_ids` with the live corpus and report
+   the difference as `SKIP` verdicts with reason `drift`. The override belongs
+   to the executor, not to the core: `robot-pool` takes it as the
+   `allow_drift` runner option, and the remote-agent example takes it as
+   `RC_ALLOW_DRIFT=1`. There is deliberately no core CLI flag — the core never
+   executes anything, so it has nothing to overrule.
 3. **Deliver results that reference `run.id`** — and, when the execution is
    split, a `shard` label per bundle (§4/§5).
 
@@ -249,9 +275,12 @@ COMPOSED ──dispatch(runner)──► DISPATCHED ──(optional live status)
   its expected shard set/count (after planning); the run reaches `COMPLETE`
   when all declared shards have delivered, or on explicit
   `POST /runs/{id}/finalize`. Export-mode dispatches default to `shards: 1`
-  unless the spec says otherwise; `finalize` is always available. A
-  store-level expiry policy (`AWAITING_RESULTS` > N days → `STALE`) handles
-  abandonment.
+  unless the spec says otherwise; `finalize` is always available. Handling
+  abandonment with a store-level expiry policy (`AWAITING_RESULTS` > N days →
+  `STALE`) is `[planned]`: `STALE` is reserved in the lifecycle's state set,
+  but nothing sets it — a bundle that never arrives leaves its run in
+  `AWAITING_RESULTS` until someone finalizes it, or until `runcomposer gc`
+  prunes the run outright at the end of its retention window.
 - **Live status** (`RUNNING`, per-item progress) is an optional runner
   capability. For `robot-pool` it comes from the runcomposer Robot listener
   streaming verdicts during the run (§6.2a) — not from the pool itself. UIs
@@ -272,8 +301,10 @@ pluggable parsers.
 
 **Transports:** (1) API push — `POST /api/v1/runs/{id}/results` (multipart:
 artifacts + declared format + optional `shard`); (2) **file-drop inbox** — a
-watched directory for git-transported or air-gapped bundles; (3) manual — UI
-upload or `runcomposer ingest <path> [--run <id>]`.
+watched directory for git-transported or air-gapped bundles; (3) manual —
+`runcomposer ingest <path> [--run <id>]`. Upload from the UI is `[planned]`:
+the quarantine view can attach, promote and discard what already arrived, but
+there is no file-upload control, so the CLI is the manual path.
 
 **Correlation & the bundle marker.** Every delivery must carry `run.id`. For
 transports that can't set HTTP fields, the bundle contains a
@@ -344,18 +375,29 @@ Reference impls:
 ### 6.2 `Runner`
 
 ```python
-def describe() -> RunnerInfo                 # id, capabilities (live_status, cancel, health)
+def describe() -> RunnerInfo                 # id, capabilities (free-form flags)
 def dispatch(spec: RunSpec) -> DispatchHandle
-# DispatchHandle carries: dispatch_id, declared shards (set/count), links
-# optional capabilities:
+# DispatchHandle carries: dispatch_id, declared shards (set/count), spec_sha256,
+#   and links — though links are [planned]: a runner may set them (ci-trigger
+#   puts its job URL there) and nothing reads, stores, or serves them yet.
+
+# optional hooks, discovered by attribute — these are real (see below):
+def bind(*, store, source, artifact_root) -> None
+def bind_dispatch(reservation: DispatchReservation) -> None
+
+# [planned] — nothing calls these, so implementing one has no effect today:
 def status(handle) -> RunnerStatus
 def cancel(handle) -> None
 def health() -> dict                         # runner-defined, displayed verbatim; NO mandated keys
 ```
 
-`dispatch` takes **the document only**. A core helper `materialize(spec)`
-exists for in-process runners that want the item list as objects; external
-consumers read the spec.
+`dispatch` takes **the document only**, and every runner — in-process or not —
+reads `selection.materialized.item_ids` straight out of it. There is no core
+materializer to call. What an in-process runner may take *additionally* is the
+optional `bind` hook: it hands over the store and a **live** catalog, which is
+how `robot-pool` resolves native names and runs the §3.3 drift check (the
+catalog it is given is fresh, so drift is measured against the corpus as it is
+now, not as it was at compose time).
 
 **Dispatch identity is runcomposer's, the shard declaration is the runner's.**
 `describe` + `dispatch` remain the whole required contract, but a runner that
@@ -381,8 +423,10 @@ handle is the final declaration and refines that record (§6.3 `add_dispatch`
 re-declares rather than duplicates). Runners without the hook are unchanged:
 their handle's id is recorded when `dispatch` returns.
 
-**a) `robot-pool`** — in-process Robot Framework execution: shared process
-pool; partition fan-out; duration-balanced chunking; per-run artifact
+**a) `robot-pool`** — in-process Robot Framework execution: a process pool per
+dispatch, shared across that dispatch's chunks (it is created and torn down
+inside `dispatch`, not held between runs); partition fan-out;
+duration-balanced chunking; per-run artifact
 isolation (unique output paths per dispatch) and any readiness markers are
 **this runner's** policy. Its `runner.robot-pool` options include:
 `suite_root`, `partitions`, `variables`, `listener`, `pre_run_hooks`, and
@@ -399,9 +443,13 @@ duration-history tuning. Two explicit facts:
   listener, the UI shows planned items + final results — stated, not hidden.
 
 **b) `ci-trigger`** — triggers an existing parameterized CI job (Jenkins
-first): templates the job URL/params from the spec, passes the rendered spec
-+ `run.id` as a build artifact/param, and receives results. **The CI side
-needs a thin consumer** — a job stage that runs `runcomposer-exec spec.json`
+first). The job URL is built from the runner's own config (`base_url` + `job`),
+not templated from the spec, and the parameter set is a fixed four:
+`SPEC_JSON` (the rendered document, which is how `run.id` travels),
+`DISPATCH_ID`, `CALLBACK_URL`, `INGEST_TOKEN`. Templating either from spec
+content is `[planned]`.
+
+**The CI side needs a thin consumer** — a job stage that runs `runcomposer-exec spec.json`
 (§6.2c, same tool) and a post step that POSTs the results bundle (with marker
 + token) back to `/runs/{id}/results`. Completion signal = that webhook-out
 POST; runcomposer-side polling of the CI build API is the fallback for CI systems
@@ -411,10 +459,15 @@ assumed away.
 **c) Export / remote round-trip** — for executors runcomposer never talks to
 directly (e.g. a remote checkout that receives code via git and returns
 result bundles the same way). A deliberately tiny consumer, **`runcomposer-exec`**,
-reads the spec → renders the runner-native invocation (for Robot Framework:
-`--test <id>` args from `materialized.item_ids`, plus
-`runner.robot-pool.variables`) → runs it → writes the `runcomposer_run.json`
-marker next to the outputs so any bundle-transport carries correlation home.
+reads the spec → writes `materialized.item_ids` one per line into an ids file
+→ expands a caller-supplied command template (`--command`, placeholders
+`{ids_file}`, `{run_id}`, `{out_dir}`) and runs it → writes the
+`runcomposer_run.json` marker next to the outputs so any bundle-transport
+carries correlation home. It stays framework-agnostic on purpose: rendering a
+*runner-native* invocation (for Robot Framework, `--test <id>` args) is the
+job of the command it calls — `examples/remote-agent/` does exactly that.
+Passing `runner.robot-pool.variables` through to that command is `[planned]`;
+nothing on the exec path reads the `runner` section today.
 The compose side exports the spec; the file-drop inbox ingests the returned
 bundle; marker mismatch → quarantine. Zero *core interface* changes for new
 transports; zero *code* on the executing side was never realistic — the
@@ -454,9 +507,12 @@ The history-query surface is explicit because §7 depends on it:
 keyword-only parameters with defaults on existing ones. No existing signature
 changes shape.
 
-Reference impls: `sqlite` (default, zero-setup) and `postgres`. Stated
+Reference impl: `sqlite` (default, zero-setup). A second one over `postgres`
+is `[planned]`; until it exists, an adopter who must live in an existing
+database writes their own against this port (ADOPTING.md §4). Stated
 plainly: **history features are dark on a fresh store** — failed-rerun and
-duration-balancing activate as runs accrue; the demo pre-seeds both levels
+duration-balancing activate as runs accrue, and `runcomposer demo` does not
+change that: it demonstrates both levels in memory and persists nothing
 (§12). runcomposer starts fresh everywhere; there is no migration machinery in
 the core (a private adopter can seed its store with its own scripts if it
 wants warm history).
@@ -514,10 +570,14 @@ A **selection provider** resolved at compose time — the same
 resolve-then-materialize pattern taxonomy refs use:
 
 ```
-UI: "Select items by history: [failed] in [latest completed run | run <id> | last run before <date>] (filter: labels)"
-→ compose-time: RunStore query → item ids materialized into selection
-→ spec records derived_from provenance (§3.1)
+compose-time: RunStore query → item ids materialized into selection
+            → spec records derived_from provenance (§3.1)
 ```
+
+The full picker — `Select items by history: [failed] in [latest completed run
+| run <id> | last run before <date>] (filter: labels)` — is `[planned]` in the
+UI, which today offers one fixed `failed@latest` button. Every selector and
+scope below is already reachable from the CLI and the API.
 
 The executed spec stays static and reproducible; provenance keeps it
 auditable. Locale date words are UI sugar, never spec content. The
@@ -577,8 +637,10 @@ core:
   api: { host: 127.0.0.1, port: 8100, cors: [...] }
   taxonomy_file: taxonomy.yaml        # curated tree over tag patterns; format: docs/taxonomy.md
   artifact_dir: artifacts/
-  retention: { max_age_days: 90 }
-  ingestion: { tokens: required, inbox: results_inbox/, max_upload_mb: 200 }
+  retention: { max_age_days: 90, max_runs: null }
+  ingestion: { tokens: required, inbox: results_inbox/, max_upload_mb: 200,
+               quarantine_dir: quarantine/, quarantine_max: 100,
+               poll_interval_s: 2.0 }
   locale_default: en
 store:
   sqlite: { path: runcomposer.db }
@@ -589,13 +651,24 @@ runners:
   robot-pool: { max_workers: 20, history_selector: { labels: {...} } }
   ci-trigger: { base_url: ..., job: ..., callback_base: ..., completion: callback }
 ui:                                  # served at /api/v1/ui-config
-  examples: {...}
   quick_filters: [...]
+  examples: {...}                    # [planned] — served, not yet read by the UI
 ```
 
 Rules: plugin sections are owned and validated by the plugin; the core
 validates only `core`; unknown active plugin ids fail startup loudly. Plugin
-*selection* lives here (import path or entry-point name) — no env vars.
+*selection* lives here (import path or entry-point name) — no env vars. The
+file is chosen with `--config`, and there is no environment-variable override
+by the same reasoning.
+
+That ownership split has a consequence worth stating: paths the **core** reads
+(`taxonomy_file`, `artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`)
+resolve relative to the **config file's directory**, so a config directory is
+portable, while plugin options are passed to the plugin verbatim and resolve
+however the plugin resolves them — `store.sqlite.path` therefore resolves
+relative to the **working directory**. Making the two agree is `[planned]`;
+until then an absolute `store.sqlite.path` is the way to invoke one config from
+more than one directory.
 
 **The taxonomy file is validated on the same terms** — it is the other thing a
 deployment writes by hand, and an unvalidated one used to be served verbatim
@@ -632,8 +705,13 @@ GET  /api/v1/runs/{id}/items            # materialized selection
 GET  /api/v1/runs/{id}/spec             # the exact runspec document
 POST /api/v1/runs/{id}/results          # ingestion push (multipart; shard + token)
 POST /api/v1/runs/{id}/finalize
-GET  /api/v1/quarantine                 # unmatched deliveries; attach/promote actions
-GET  /api/v1/runners                    # registry + capabilities + health (verbatim)
+GET  /api/v1/quarantine                 # unmatched deliveries
+POST /api/v1/quarantine/{id}/attach     # bind one to an existing run
+POST /api/v1/quarantine/{id}/promote    # promote to its own `origin: ingested` run
+DELETE /api/v1/quarantine/{id}          # discard
+GET  /api/v1/runners                    # registry + capabilities; serving each
+                                        #   runner's health verbatim is [planned]
+                                        #   (an unloadable runner reports `error`)
 GET  /api/v1/health                     # core health only
 GET  /api/v1/ui-config
 
@@ -649,9 +727,10 @@ The fan-out question is answered next to it by `shards`, a per-shard roll-up
 (`count`, status counts, computed `completion`) — so "green on partition A,
 red on partition B" is read, not aggregated.
 
-Runner-specific admin actions (e.g. a pool reload) are
-`POST /api/v1/runners/{id}/actions/<action>`, capability-gated — never core
-endpoints.
+Runner-specific admin actions (e.g. a pool reload) are `[planned]`, and when
+they arrive they go to `POST /api/v1/runners/{id}/actions/<action>`,
+capability-gated — never core endpoints. No such route exists yet, and neither
+does the capability gate.
 
 **CLI** (adoption-critical): `runcomposer serve` · `runcomposer demo` (§12) ·
 `runcomposer compile` (preview) · `runcomposer spec [--format json|yaml]` (emit a
@@ -660,8 +739,11 @@ robot-pool spec.yaml` · `runcomposer ingest` · `runcomposer runs` / `runcompos
 --failed-in latest [--label suite=nightly]` (§7 — the label scope is what keeps
 "latest" from meaning somebody else's run) · `runcomposer catalog`
 (list/snapshot the corpus) · `runcomposer
-validate spec.yaml` · `runcomposer gc`. Plus the vendorable **`runcomposer-exec`**
-consumer (§6.2c) shipped as its own tiny artifact.
+validate spec.yaml` · `runcomposer export --format ctrf` (§5) · `runcomposer gc`.
+Eight of them take `--config` — the only way to select a config file, since
+there is no environment-variable fallback (§8). Plus the vendorable
+**`runcomposer-exec`** consumer (§6.2c) shipped as its own tiny artifact.
+The complete flag-level reference is [docs/cli.md](docs/cli.md).
 
 ---
 
@@ -673,8 +755,10 @@ selection):
 
 1. **i18n** — every literal in locale files; `en` + `de` shipped; locale date
    sugar lives here.
-2. **Config-driven environment** — partition pickers, examples, quick filters
-   come from `/api/v1/ui-config`, never hardcoded.
+2. **Config-driven environment** — whatever the deployment puts under `ui:` is
+   served from `/api/v1/ui-config`, never hardcoded. The UI reads
+   `quick_filters` today; `examples` and partition pickers are `[planned]`, so
+   a key the UI does not yet read is served and silently ignored.
 3. **Runner-aware compose footer** — "Run with: [robot-pool ▾] | Export spec";
    runs list shows dispatch mode + lifecycle state incl. `AWAITING_RESULTS`;
    a quarantine view for unmatched deliveries.
@@ -719,10 +803,16 @@ appears here, in code, history, examples, or docs.
 `runcomposer demo` boots a neutral corpus — a fictional web-shop suite (~60
 items: `Payments`, `Checkout`, `Catalog`, `Auth`; sprint/ticket/quarantine
 tag patterns) via the `manifest` source, a matching taxonomy, a `demo` runner
-faking executions, and **pre-seeded history at both levels** (completed runs
-*and* per-item verdicts/durations) so failed-rerun selection and
-duration-balanced planning are demonstrable immediately. The demo corpus
-doubles as the E2E fixture. A pytest-flavored manifest example ships
+faking executions, and **history at both levels** (completed runs *and*
+per-item verdicts/durations) so failed-rerun selection is demonstrable
+immediately: the command composes, runs, then re-composes from what those runs
+returned, and prints the whole cycle.
+
+That history lives **in memory for the length of the command** — `demo` writes
+to no store and leaves no files, so it changes nothing about a subsequent
+`runcomposer runs --failed-in latest`, which still reports a fresh store.
+Seeding a real store so history features light up before any run of your own
+is `[planned]`. The demo corpus doubles as the E2E fixture. A pytest-flavored manifest example ships
 alongside (§6.1).
 
 ---
@@ -741,8 +831,7 @@ alongside (§6.1).
 
 ## 14. Phasing
 
-- **P0 — reservations & skeleton:** publish the PyPI/npm name reservations
-  (`reserve_name/`); scaffold `core/` + `plugins/`; runspec 1.0 schema +
+- **P0 — skeleton:** scaffold `core/` + `plugins/`; runspec 1.0 schema +
   `runcomposer validate`; neutral demo corpus; CI. **Acceptance criterion:
   one-command quickstart** — `pipx run runcomposer demo` *and*
   `docker run ... runcomposer demo`, UI pre-bundled (no Node toolchain for
@@ -770,7 +859,7 @@ Each phase ends runnable + demoable.
 
 | # | Question | Decision (2026-07-06) |
 |---|---|---|
-| 1 | Name | **`runcomposer`** — verified free on PyPI + npm; placeholders in `reserve_name/` pending owner upload. |
+| 1 | Name | **`runcomposer`** — verified free on PyPI + npm 2026-07-06, still unclaimed at 0.1.0. Placeholder-package reservation was **dropped** (2026-08-28): a squat advertises the gap it fills, and every documented path installs from a clone anyway. Publishing for real is the owner's call, gated behind the `PYPI_PUBLISH` repo variable. |
 | 2 | Warm history at adopters | **Start fresh everywhere**; no migration machinery in core; private adopters may seed their own stores. |
 | 3 | UI stack | **Refresh to current React/Vite at P1; keep SVAR** behind the adapter; localization spike noted. |
 | 4 | License | **MIT.** |

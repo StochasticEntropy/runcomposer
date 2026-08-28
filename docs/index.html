@@ -8,8 +8,23 @@
 <meta property="og:title" content="runcomposer">
 <meta property="og:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
 <meta property="og:type" content="website">
-<meta property="og:image" content="https://stochasticentropy.github.io/runcomposer/hero-compose.webp">
+<meta property="og:site_name" content="runcomposer">
+<meta property="og:url" content="https://stochasticentropy.github.io/runcomposer/">
+<!-- 1200x630 PNG: X and LinkedIn do not reliably render WebP cards, and the
+     1.6:1 hero screenshot is the wrong aspect for a link preview. -->
+<meta property="og:image" content="https://stochasticentropy.github.io/runcomposer/og-card.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="runcomposer — the interface is a document, not a protocol. Beside the wordmark, a screenshot of the compose view listing thirteen matched Payments tests.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="runcomposer">
+<meta name="twitter:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
+<meta name="twitter:image" content="https://stochasticentropy.github.io/runcomposer/og-card.png">
 <title>runcomposer</title>
+<!-- A selection, not a corpus: three rows, one picked, one trimmed. Inline so
+     the page stays self-contained and the artifact preview keeps it too. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230E141B'/%3E%3Crect%20x='7'%20y='8'%20width='18'%20height='3.5'%20rx='1.75'%20fill='%235A697F'/%3E%3Crect%20x='7'%20y='14.25'%20width='18'%20height='3.5'%20rx='1.75'%20fill='%23E8A33D'/%3E%3Crect%20x='7'%20y='20.5'%20width='11'%20height='3.5'%20rx='1.75'%20fill='%235A697F'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;500;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
@@ -22,16 +37,16 @@
     --plate: #DFE6ED;
     --ink: #0E141B;
     --ink-2: #35414F;
-    --ink-3: #5A697F;
+    --ink-3: #525F73;
     --rule: #C3CEDA;
     --rule-soft: #D6DEE7;
-    --signal: #A9660A;
+    --signal: #8A5208;
     --signal-soft: #F0DCBC;
     --pass: #1F6F4E;
     --pass-bg: #D4E7DC;
     --fail: #A93A30;
     --fail-bg: #F2D9D6;
-    --skip: #5A697F;
+    --skip: #525F73;
     --skip-bg: #D8DFE7;
     --shadow: 0 1px 0 rgba(14, 20, 27, .06);
 
@@ -450,6 +465,11 @@
     color: var(--ink-3);
   }
 
+  /* the same card, used as an exit rather than an execution lane — the signal
+     top rule stays reserved for the three ways to run a spec */
+  .lane-exit { border-top: 1px solid var(--rule); }
+  .lane-exit .lane-name a { text-decoration-thickness: 2px; }
+
   /* ---- contract list: the three obligations ---- */
   .contract {
     list-style: none;
@@ -645,7 +665,9 @@ pipx run --spec . runcomposer demo</code></pre>
                 the left; a filter built from a tag rule; and a preview table listing thirteen matched
                 Payments tests with their tags, above a footer offering the robot-pool runner or a
                 spec export.">
-      <figcaption>Compose: pick from the taxonomy, watch the selection recompile, then run it or export it.</figcaption>
+      <figcaption>Compose: pick from the taxonomy, watch the selection recompile, then run it or
+        export it. Corpus: <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a>
+        through the <code>robotframework</code> source.</figcaption>
     </figure>
   </div>
 
@@ -685,6 +707,7 @@ pipx run --spec . runcomposer demo</code></pre>
       <div class="player">
         <video controls preload="metadata" poster="teaser-poster.jpg" width="1920" height="1080">
           <source src="teaser.mp4" type="video/mp4">
+          <track kind="captions" src="teaser.vtt" srclang="en" label="English" default>
           Your browser cannot play this video. <a href="teaser.mp4">Download it instead.</a>
         </video>
       </div>
@@ -699,6 +722,7 @@ pipx run --spec . runcomposer demo</code></pre>
       <div class="player">
         <video controls preload="metadata" poster="explainer-poster.jpg" width="1920" height="1080">
           <source src="explainer.mp4" type="video/mp4">
+          <track kind="captions" src="explainer.vtt" srclang="en" label="English" default>
           Your browser cannot play this video. <a href="explainer.mp4">Download it instead.</a>
         </video>
       </div>
@@ -731,7 +755,10 @@ pipx run --spec . runcomposer demo</code></pre>
 
       <h3>2 · Compose</h3>
       <p>
-        Navigate the taxonomy, build a filter, watch the preview recompile as you type. The filter
+        Navigate the
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/docs/taxonomy.md">taxonomy</a>
+        — a curated tree over tag patterns, data rather than code — build a filter, and watch the
+        preview recompile as you type. The filter
         language is small and lossless: a bare word is a literal tag, <code>prefix:Checkout-</code>
         is sugar for an anchored regex, <code>regex:</code> is the escape hatch, and the three
         operators are <code>AND</code>, <code>OR</code>, <code>NOT</code>.
@@ -769,13 +796,14 @@ pipx run --spec . runcomposer demo</code></pre>
     <div class="body">
       <h2>The run spec</h2>
       <p>
-        Versioned YAML, JSON-isomorphic and accepted either way, with a published JSON Schema. The
+        Versioned YAML, JSON-isomorphic and accepted either way, with a published
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/src/runcomposer/schemas/runspec-1.0.json">JSON Schema</a>. The
         core sections are generic and closed. Exactly one section is open — <code>runner</code> —
         and the core never looks inside it.
       </p>
 
       <div class="plate full">
-        <div class="plate-head"><b>payments-regression.runspec.yaml</b><span>runspec 1.0</span></div>
+        <div class="plate-head"><b>payments-regression.runspec.yaml</b><span>runspec 1.0 · ids from <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a></span></div>
 <pre><code><span class="k">runspec:</span> <span class="v">"1.0"</span>
 
 <span class="k">run:</span>
@@ -858,8 +886,11 @@ pipx run --spec . runcomposer demo</code></pre>
             <div class="lane-name">Your own agent</div>
             <div class="lane-id">runcomposer-exec</div>
             <p>
-              One vendored Python file on the far side reads the spec, runs your command against
+              <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/src/runcomposer_exec.py">One
+              vendored Python file</a> on the far side reads the spec, runs your command against
               exactly the listed ids, and writes a correlation marker beside the output.
+              <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/remote-agent">A
+              complete adopter kit</a> runs the loop end to end.
             </p>
             <div class="lane-where">runs on: anywhere you can copy a file</div>
           </div>
@@ -868,7 +899,9 @@ pipx run --spec . runcomposer demo</code></pre>
             <div class="lane-id">ci-trigger</div>
             <p>
               Triggers a parameterized job, passing the spec as a build parameter. The job's own
-              stage runs the same vendored consumer and posts the bundle back.
+              stage runs the same vendored consumer and posts the bundle back — there is a
+              <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/ci/jenkins">reproducible
+              Jenkins-in-Docker setup</a> you can run yourself.
             </p>
             <div class="lane-where">runs on: your existing CI</div>
           </div>
@@ -900,7 +933,8 @@ pipx run --spec . runcomposer demo</code></pre>
       <p>
         The consumer is deliberately tiny: a single, self-contained, standard-library-only Python
         file. There is nothing to install on the executing side — copy it in with your code, or
-        fetch it from a release. It reads the spec as JSON, so a machine with nothing but
+        fetch it from a <a href="https://github.com/StochasticEntropy/runcomposer/releases">release</a>,
+        where it ships as its own asset. It reads the spec as JSON, so a machine with nothing but
         <code>python3</code> can run it.
       </p>
 
@@ -976,7 +1010,7 @@ runcomposer runs
         with a provenance record of how the list was derived.
       </p>
       <div class="plate full">
-        <div class="plate-head"><b>history as a selection</b><span>resolved once, then frozen</span></div>
+        <div class="plate-head"><b>history as a selection</b><span>resolved once, then frozen · ids from <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a></span></div>
 <pre><code>$ runcomposer spec --from-history <span class="v">'failed@latest'</span> --title <span class="v">"Rerun"</span>
 
 <span class="k">selection:</span>
@@ -1014,13 +1048,17 @@ runcomposer runs
               <td>manifest<span class="role">source</span></td>
               <td>Test source</td>
               <td>A JSON or YAML catalog needing only <code>id</code> and <code>tags</code>. The
-                zero-dependency adoption path; ships a pytest example using node ids.</td>
+                zero-dependency adoption path; ships a
+                <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/pytest-shop">pytest
+                example</a> using node ids.</td>
             </tr>
             <tr>
               <td>robotframework<span class="role">source</span></td>
               <td>Test source</td>
               <td>Walks <code>.robot</code> files, mints ids from longnames, and owns every
-                name-normalisation quirk so the core never has to.</td>
+                name-normalisation quirk so the core never has to. Demonstrated against the
+                <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">robot-shop
+                suite</a>.</td>
             </tr>
             <tr>
               <td>robot-pool<span class="role">runner</span></td>
@@ -1084,15 +1122,85 @@ pipx run --spec . runcomposer serve
 docker build -t runcomposer . &amp;&amp; docker run -p 8100:8100 runcomposer
 
 <span class="c"># executing Robot Framework in-process needs one extra</span>
-pip install <span class="v">"runcomposer[robot]"</span></code></pre>
+pip install <span class="v">".[robot]"</span></code></pre>
       </div>
-      <p>
-        The CLI is the whole product without the browser:
-        <code>compile</code> to preview a selection, <code>spec</code> to compose one,
-        <code>dispatch</code> to run it, <code>ingest</code> to take results back,
-        <code>runs</code> to browse, <code>export</code> to hand results to another tool, and
-        <code>gc</code> to keep it all bounded.
+      <p class="note">
+        <b>There is no published package yet.</b> runcomposer 0.1.0 is installed from a clone —
+        that is what every command on this page assumes. Nothing is on PyPI or npm, so
+        <code>pip install runcomposer</code> will not find it; watch
+        <a href="https://github.com/StochasticEntropy/runcomposer/releases">releases</a> for when
+        that changes.
       </p>
+      <p>
+        The CLI is the whole product without the browser. All eleven commands:
+        <code>demo</code> to boot the sample world, <code>catalog</code> to list the corpus and its
+        snapshot, <code>compile</code> to preview a selection, <code>spec</code> to compose one,
+        <code>validate</code> to check a document against the schema, <code>dispatch</code> to run
+        it, <code>ingest</code> to take results back, <code>runs</code> to browse,
+        <code>export</code> to hand results to another tool, <code>gc</code> to keep it all
+        bounded, and <code>serve</code> for the web UI and API.
+      </p>
+      <p>
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md">ADOPTING.md</a>
+        walks through pointing it at your own corpus and your own machines;
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/DESIGN.md">DESIGN.md</a>
+        is the architecture and the reasoning behind every decision here.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker" id="next">Where next</div>
+    <div class="body">
+      <h2>Six ways out of this page</h2>
+      <p>
+        Everything described above lives in one public repository. It is a young project with a
+        single maintainer, so the issue tracker is the front door for anything that does not fit.
+      </p>
+      <div class="lanes full">
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md">Adopt it</a></div>
+          <p>
+            <code>ADOPTING.md</code> — connect it to your own corpus, your own runner and your own
+            machines, one decision at a time.
+          </p>
+        </div>
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/blob/main/DESIGN.md">Read the design</a></div>
+          <p>
+            <code>DESIGN.md</code> — the architecture, the boundaries, and a decision log that
+            records what was rejected and why.
+          </p>
+        </div>
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples">Run the examples</a></div>
+          <p>
+            <code>examples/</code> — the Robot suite, the pytest corpus, the remote-agent adopter
+            kit, and a complete run spec.
+          </p>
+        </div>
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/releases">Get a release</a></div>
+          <p>
+            Wheel, sdist, and the vendorable single-file <code>runcomposer_exec.py</code> as its
+            own download.
+          </p>
+        </div>
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/issues">Report something</a></div>
+          <p>
+            Bugs, a corpus shape that does not fit, or a plugin the boundary should allow — issues
+            are the place.
+          </p>
+        </div>
+        <div class="lane lane-exit">
+          <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/blob/main/LICENSE">Check the licence</a></div>
+          <p>
+            MIT. Use it, fork it, ship a closed-source plugin against it — the plugin boundary
+            exists for exactly that.
+          </p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -1100,10 +1208,18 @@ pip install <span class="v">"runcomposer[robot]"</span></code></pre>
     <div class="marker">Colophon</div>
     <div>
       <p>
-        runcomposer is open source under the MIT licence. Version 0.1.0 covers composing,
-        exporting, executing, and ingesting — the complete loop described on this page. The
-        examples throughout use the project's own fictional web-shop corpus, which ships with the
-        tool and boots with <code>runcomposer demo</code>.
+        runcomposer is open source under the
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/LICENSE">MIT licence</a>.
+        Version 0.1.0 covers composing, exporting, executing, and ingesting — the complete loop
+        described on this page.
+      </p>
+      <p>
+        The screenshot and both plates above come from the 58-test Robot suite in
+        <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a>
+        — that is where the <code>Tests.Payments.…</code> ids come from, and why the preview reads
+        13 of 13. <code>runcomposer demo</code> boots a <em>different</em> corpus from the same
+        fictional web-shop world: a 60-item manifest catalogue with <code>Shop.…</code> ids, which
+        is the zero-dependency path that needs no Robot Framework. Two corpora, one world.
       </p>
       <p>
         <a href="https://github.com/StochasticEntropy/runcomposer">Source on GitHub</a>

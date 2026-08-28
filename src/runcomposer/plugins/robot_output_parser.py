@@ -28,8 +28,8 @@ def _require_robot():
         from robot.api import ExecutionResult, ResultVisitor
     except ImportError as exc:
         raise ImportError(
-            "the robot-output-xml parser needs Robot Framework — install the extra: "
-            "pip install 'runcomposer[robot]'"
+            "the robot-output-xml parser needs Robot Framework — install the extra "
+            "from a checkout: pip install '.[robot]'"
         ) from exc
     return ExecutionResult, ResultVisitor
 

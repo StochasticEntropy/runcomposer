@@ -1,0 +1,304 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:02.880
+Every test corpus of any size has the same problem.
+
+00:00:03.440 --> 00:00:06.040
+You can run everything, or you can run one thing.
+
+00:00:06.600 --> 00:00:10.680
+Running exactly the right subset, and being able to prove later which subset
+
+00:00:10.680 --> 00:00:12.600
+that was, is the awkward part.
+
+00:00:13.560 --> 00:00:14.200
+Tags help.
+
+00:00:14.760 --> 00:00:18.540
+Until the tag query lives in a CI job parameter that nobody can
+
+00:00:18.540 --> 00:00:19.880
+reconstruct three weeks later.
+
+00:00:20.880 --> 00:00:23.080
+runcomposer splits that problem in two.
+
+00:00:23.640 --> 00:00:27.880
+Composing the selection is a first-class, reviewable act that produces a document.
+
+00:00:27.880 --> 00:00:31.800
+Executing it is somebody else's job, deliberately so.
+
+00:00:32.760 --> 00:00:33.800
+That is the thesis.
+
+00:00:34.400 --> 00:00:37.240
+The interface is a document, not a protocol.
+
+00:00:38.367 --> 00:00:39.627
+It starts with a catalog.
+
+00:00:40.207 --> 00:00:46.087
+A test source enumerates your tests as items, an opaque, stable ID, plus tags.
+
+00:00:46.607 --> 00:00:49.567
+Then it content hashes the whole catalog into a snapshot.
+
+00:00:50.527 --> 00:00:52.667
+The ID space belongs to the source.
+
+00:00:53.247 --> 00:00:56.647
+A robot framework source mints IDs from suite longnames.
+
+00:00:57.227 --> 00:01:03.007
+A manifest source takes a plain JSON list, so a pytest corpus arrives as node ids.
+
+00:01:03.967 --> 00:01:05.827
+The core never parses an ID.
+
+00:01:05.827 --> 00:01:09.047
+It compares IDs for equality, and that is all.
+
+00:01:10.233 --> 00:01:11.613
+Now compose.
+
+00:01:11.613 --> 00:01:15.693
+Navigate the taxonomy, a curated tree over tag patterns,
+
+00:01:15.693 --> 00:01:17.553
+data rather than code.
+
+00:01:17.553 --> 00:01:21.693
+Build a filter and watch the preview recompile as you type.
+
+00:01:21.693 --> 00:01:24.293
+The filter language is deliberately small.
+
+00:01:24.293 --> 00:01:26.753
+A bare word is a literal tag.
+
+00:01:26.753 --> 00:01:30.153
+A prefix pattern is sugar for an anchored regular expression.
+
+00:01:30.153 --> 00:01:32.493
+And regex is the escape hatch.
+
+00:01:32.493 --> 00:01:36.353
+Three operators, and, or, not.
+
+00:01:36.353 --> 00:01:38.153
+Small but lossless.
+
+00:01:38.153 --> 00:01:40.953
+The filter stays a tree, and that tree survives
+
+00:01:40.953 --> 00:01:42.953
+into the document unchanged.
+
+00:01:42.953 --> 00:01:47.273
+In the demo corpus, 60 tag tests from a fictional webshop,
+
+00:01:47.273 --> 00:01:49.353
+this one matches 36.
+
+00:01:50.033 --> 00:01:51.113
+Then materialize.
+
+00:01:51.673 --> 00:01:54.913
+The filter is compiled against the catalog snapshot and the resulting
+
+00:01:54.913 --> 00:01:56.813
+list of IDs is written into the document.
+
+00:01:57.373 --> 00:01:59.613
+This is the step that makes a run reproducible.
+
+00:02:00.173 --> 00:02:01.973
+The filter stays for provenance.
+
+00:02:02.553 --> 00:02:04.813
+The embedded list is what actually runs.
+
+00:02:05.793 --> 00:02:07.353
+The result is the run spec.
+
+00:02:07.913 --> 00:02:11.833
+Versioned YAML JSON isomorphic with a published schema.
+
+00:02:12.833 --> 00:02:17.433
+A run ID minted at composed time, the correlation key for everything that
+
+00:02:17.433 --> 00:02:23.653
+follows, the selection and its materialized list, the source snapshot, the result
+
+00:02:23.653 --> 00:02:26.973
+format to expect, and a per run ingest token.
+
+00:02:27.933 --> 00:02:29.853
+The core sections are generic and closed.
+
+00:02:30.393 --> 00:02:34.633
+Exactly, one section is open, runner, and the core never looks inside it.
+
+00:02:35.767 --> 00:02:41.187
+Now, the part the whole design exists to make possible, runcomposer does not need to reach your test machines.
+
+00:02:41.767 --> 00:02:45.887
+No credentials on them, no network route, no agent it controls.
+
+00:02:46.447 --> 00:02:49.547
+It hands out a document and something on the other side runs it.
+
+00:02:50.487 --> 00:02:51.147
+Three ways.
+
+00:02:51.727 --> 00:03:02.727
+In process, the robot-pool runner executes the tests itself with partition fan out, duration balance chunking, and live verdicts streaming from an injected listener while the run is still going.
+
+00:03:03.707 --> 00:03:05.227
+Your own agent anywhere.
+
+00:03:05.227 --> 00:03:10.687
+runcomposer exec is one self-contained, standard library-only Python file.
+
+00:03:11.347 --> 00:03:12.507
+Copy it next to your code.
+
+00:03:13.147 --> 00:03:20.147
+It reads the spec as JSON, runs your command against exactly the listed IDs, and writes a correlation marker beside the output.
+
+00:03:20.787 --> 00:03:21.667
+Nothing to install.
+
+00:03:22.707 --> 00:03:23.847
+Or a CI job.
+
+00:03:24.287 --> 00:03:31.887
+The ci-trigger runner drives an existing parameterized job whose own stage runs that same vendored file and posts the bundle back.
+
+00:03:31.887 --> 00:03:35.267
+Whatever executes owes exactly three things.
+
+00:03:35.267 --> 00:03:38.767
+Execute the materialized list, not the filter.
+
+00:03:38.767 --> 00:03:41.507
+Executors do not recompile selections.
+
+00:03:41.507 --> 00:03:42.927
+Check for drift.
+
+00:03:42.927 --> 00:03:47.387
+If the live catalog hash differs from the one in the spec, refuse by default.
+
+00:03:47.387 --> 00:03:50.327
+And reference the run ID in the results.
+
+00:03:51.007 --> 00:03:52.467
+Three obligations.
+
+00:03:53.207 --> 00:03:53.867
+One document.
+
+00:03:54.527 --> 00:03:58.087
+Everything else, including the entire runner section, may be ignored.
+
+00:03:58.087 --> 00:04:09.847
+Continue copy again.
+
+00:04:10.027 --> 00:04:18.107
+ρέ tagged fingers across court line row OR
+
+00:03:59.367 --> 00:04:01.767
+Results come back decoupled from dispatch.
+
+00:04:02.307 --> 00:04:08.387
+Three transports, one pipeline, an HTTP push guarded by the run's own ingest token,
+
+00:04:08.947 --> 00:04:14.387
+a watched file drop directory for get transported or air gapped bundles, and
+
+00:04:14.387 --> 00:04:17.447
+plain runcomposer ingest from the command line.
+
+00:04:18.407 --> 00:04:20.087
+The bundle is just a directory.
+
+00:04:20.667 --> 00:04:24.247
+Commit it to a results branch, rsync it, attach it to a build.
+
+00:04:24.247 --> 00:04:30.307
+The marker inside carries the run ID and a hash of the exact spec bytes that were handed out,
+
+00:04:30.607 --> 00:04:33.067
+so the transport is your business and none of ours.
+
+00:04:33.647 --> 00:04:35.547
+The marker is also the safety.
+
+00:04:36.267 --> 00:04:40.667
+A bundle whose hash does not match, or that claims a run nobody dispatched,
+
+00:04:41.107 --> 00:04:43.007
+does not quietly enter your history.
+
+00:04:43.707 --> 00:04:48.927
+It lands in a visible quarantine inbox for a human to attach, promote, or discard.
+
+00:04:50.027 --> 00:04:53.007
+Redelivery is expected, so the rules are explicit.
+
+00:04:53.007 --> 00:04:55.987
+A byte identical bundle is a no-op.
+
+00:04:56.407 --> 00:04:59.867
+A different bundle for the same shard replaces that shard's verdicts.
+
+00:05:00.487 --> 00:05:04.947
+Last writer wins, because a correction has to be able to turn a fail back into a pass.
+
+00:05:05.967 --> 00:05:08.707
+Verdicts are pass, fail, skip, error.
+
+00:05:09.347 --> 00:05:12.867
+When every declared shard has delivered, the run is complete.
+
+00:05:13.567 --> 00:05:15.727
+Completion is computed, never guessed.
+
+00:05:16.933 --> 00:05:21.673
+and the loop closes. Once runs accrue, history becomes a selection source.
+
+00:05:22.253 --> 00:05:25.693
+Ask for the failures of the latest completed run, and they resolve at
+
+00:05:25.693 --> 00:05:29.753
+composed time into a normal static reproducible spec with a record of how
+
+00:05:29.753 --> 00:05:30.793
+the list was derived.
+
+00:05:31.753 --> 00:05:36.593
+Latest means latest completed. A run still awaiting results is not silently
+
+00:05:36.593 --> 00:05:40.873
+treated as an answer. And on a fresh install, these features are simply dark,
+
+00:05:41.113 --> 00:05:45.313
+which the tool says out loud, rather than returning a confidently empty list.
+
+00:05:45.313 --> 00:05:51.313
+Everything specific is a plugin. The sources, the runners, the parsers, the store.
+
+00:05:51.853 --> 00:05:56.933
+The core knows items, tags, selections, specs, runs, and verdicts, and a guard
+
+00:05:56.933 --> 00:06:01.133
+test fails the build if core code so much as mentions a framework's vocabulary.
+
+00:06:02.073 --> 00:06:06.013
+runcomposer. Self-hosted MIT. One command to try.
+
+00:06:06.933 --> 00:06:09.613
+The interface is a document, not a protocol.

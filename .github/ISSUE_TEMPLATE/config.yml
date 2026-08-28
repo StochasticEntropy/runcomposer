@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/StochasticEntropy/runcomposer/security/advisories/new
+    about: Report privately, never in a public issue. See SECURITY.md for what is in scope.
+  - name: Adopting it for your own corpus
+    url: https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md
+    about: Config, sources, runners and the remote round trip — read this before filing a "how do I" issue.
+  - name: Why it works this way
+    url: https://github.com/StochasticEntropy/runcomposer/blob/main/DESIGN.md
+    about: Architecture, the plugin boundary, the out-of-scope list, and a decision log of what was rejected.

@@ -1,6 +1,6 @@
 """Robot plugin family tests (DESIGN.md §6.1, §6.2a, §5, §3.3).
 
-These need Robot Framework (`pip install 'runcomposer[robot]'`) and skip
+These need Robot Framework (`pip install '.[robot]'`) and skip
 cleanly without it — the extra is a plugin dependency, never a core one.
 """
 
