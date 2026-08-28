@@ -21,6 +21,7 @@ adopters stop in the first half.
 | Any framework, tests executed on the runcomposer host | A `--command` wrapper script. Config: `manifest` source + the export loop. |
 | Tests executed on machines runcomposer cannot reach | **A shell script.** Copy `runcomposer_exec.py` there; return the bundle. See [§6](#6-when-your-tests-run-somewhere-runcomposer-cannot-reach). |
 | Tests executed by an existing CI job | Config: `ci-trigger` + a job stage that runs `runcomposer-exec`. |
+| The taxonomy tree should show *your* structure, not the demo's | **A YAML file, no code.** `core.taxonomy_file`; format and a worked example in [docs/taxonomy.md](docs/taxonomy.md). |
 | Your test ids don't match the names in your result files | A `TestSource` — or, often, just `aliases` in a manifest. See [§3](#3-the-rule-that-matters-most-the-id-space). |
 | A result format nobody has written a parser for | A `ResultParser`. ~60 lines. |
 | Something genuinely exotic in how runs are dispatched | A `Runner`. |
@@ -54,6 +55,7 @@ configuration rather than Python:
 ```yaml
 core:
   api: { host: 127.0.0.1, port: 8100 }
+  taxonomy_file: taxonomy.yaml  # the curated tree in the UI's left panel
   artifact_dir: artifacts/
   ingestion:
     tokens: required          # the per-run ingest token; "disabled" on closed networks
@@ -79,6 +81,19 @@ The core validates only the `core` section. Everything under `sources`,
 `runners`, and `store` is owned and validated by the plugin named by the key —
 and an unknown plugin id **fails startup loudly** rather than surfacing later
 as a broken request.
+
+The taxonomy is the other thing you write instead of code: `taxonomy_file` is
+a YAML tree of tag patterns that the UI renders on the left and clicks into
+the filter builder. Nothing validates it — a file with the wrong shape is
+parsed, served, and rendered as an empty panel with no error anywhere — so
+write it against [docs/taxonomy.md](docs/taxonomy.md), which has the node
+format, the one-pattern-per-leaf limitation, and a worked example.
+
+**One rule before you write any pattern**, in a taxonomy leaf or a filter: a
+bare literal is matched case-**insensitively**, but `regex:` is compiled
+without flags and `prefix:X` is exactly `regex:^X` — so both of those are
+case-**sensitive**. Rules carried over from a case-insensitive tool match
+nothing, silently, until you write `regex:(?i)…`.
 
 ---
 
@@ -159,15 +174,53 @@ def describe(self) -> RunnerInfo                    # id + capability flags
 def dispatch(self, spec: Mapping) -> DispatchHandle # takes the DOCUMENT only
 ```
 
-`dispatch` receives the run spec, nothing else. If your runner also wants the
-store and the live catalog — for live status, duration history, or the drift
-check — expose an optional `bind(*, store, source, artifact_root)` and the
-service will call it before dispatching.
+`dispatch` receives the run spec, nothing else. Those two methods are the
+whole required contract; everything below is optional, looked up on your
+runner object by name and skipped when it is not there.
+
+- **`bind(*, store, source, artifact_root)`** — called before `dispatch` if
+  you want the store and the live catalog: live status, duration history, the
+  drift check of [§7](#7-the-executor-contract). The source you are handed is
+  a *fresh* one, so a drift check compares against the corpus as it is now,
+  not as it was at compose time.
+- **`deliveries`** — a list the service drains *after* `dispatch` returns.
+  Each entry is a mapping `{"shard": "1", "verdicts": [Verdict, …]}` — `shard`
+  defaults to `"1"`, `verdicts` holds `runcomposer.core.model.Verdict` objects
+  — and each becomes one delivery under the dispatch, in the
+  `runcomposer-verdicts` format. It is the short path for a runner that
+  already holds its verdicts in memory; a runner that records deliveries into
+  the store itself does not need it. Your runner is built fresh for every
+  dispatch, so the list starts empty each time.
+- **`last_plan`** — a string, read after `dispatch`. `runcomposer dispatch`
+  prints it verbatim, so put in it whatever a human should see about the
+  hand-off: `robot-pool` writes its chunk plan there (including the
+  round-robin cold-start note), `ci-trigger` the job URL it triggered.
+- **`bind_dispatch(reservation)`** — called before `dispatch` with a
+  `DispatchReservation`: use its `dispatch_id` as your dispatch id, and call
+  its `record(...)` at the moment you hand the work to your executor. Worth
+  implementing when `dispatch` blocks while the work runs — without it the
+  dispatch is recorded from the handle you return, so the hand-off is
+  invisible for exactly as long as the run lasts. The contract, as always, is
+  in [`core/ports.py`](src/runcomposer/core/ports.py).
 
 Return a `DispatchHandle` with the number of shards you will deliver. Setting
 `spec_sha256` to the hash of the exact bytes you handed out enables marker
 verification when the results come back. Refuse a dispatch by raising
 `DispatchRefused` with a message that says what to do about it.
+
+**`dispatch` is called synchronously, and everything waits for it.** The
+service calls it inline, so `POST /api/v1/runs` with `dispatch: {runner: …}`
+returns only when your `dispatch` does — and `robot-pool` runs the entire
+suite in there, which means the HTTP request stays open for the whole
+execution: two seconds for a two-second suite, forty minutes for a forty-minute
+nightly. Plan for that. If your executor is long-running, return the handle as
+soon as the work has *started* and let the results come back through
+ingestion, the way `ci-trigger` does with `completion: callback` — that is
+also what makes a run observable in `AWAITING_RESULTS` at all, since a runner
+that delivers inline is already `COMPLETE` by the time it returns.
+Live progress during a blocking dispatch is still possible, but only for other
+readers: take `bind`, stream verdicts into the store, and a concurrent
+`GET /runs/{id}` shows `RUNNING` while the dispatching call is still open.
 
 Ships: `robot-pool` (in-process pool, partitions, duration-balanced chunking,
 live verdicts), `ci-trigger` (parameterized CI job, webhook or polling
@@ -204,6 +257,12 @@ The idempotency contract lives here and is not optional: a byte-identical
 bundle is a no-op, a new bundle for the same `(run, dispatch, shard)` replaces
 that shard's verdicts, and there is no monotonic merge — a correction must be
 able to turn a `FAIL` back into a `PASS`.
+
+`add_dispatch` is a *declaration*, not an append: called again with a
+`dispatch_id` you already hold, it updates that same row and keeps its
+original `created_at`. A dispatch is recorded when the hand-off happens — when
+the shard count may still be provisional — and refined from the handle the
+runner returns.
 
 ---
 

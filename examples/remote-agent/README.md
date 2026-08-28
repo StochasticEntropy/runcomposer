@@ -128,7 +128,7 @@ Copy the directory into your own repository and change four things:
 
 - **`config.yaml`** — your corpus root, your store, your inbox. A private
   `TestSource` or `Runner` loads from the same file by import path
-  (`module: mypkg.sources.MySource`) or entry point; no env vars, no forks
+  (`module: "mypkg.sources:MySource"`) or entry point; no env vars, no forks
   (§6, §8).
 - **`agent/robot_command.py`** — your framework's invocation. It is the only
   file that knows what a test *is*: swap `robot.run` for pytest, a Makefile,

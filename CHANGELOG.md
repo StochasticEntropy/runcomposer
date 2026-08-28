@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- A run that is executing now carries its dispatch record. `dispatch_runner`
+  recorded the dispatch only from the returned `DispatchHandle`, so a runner
+  that executes inside `dispatch()` (`robot-pool`) left the run RUNNING with
+  "no dispatches" for the whole execution, contradicting DESIGN.md §4.
+  runcomposer now mints the dispatch id and offers it to the runner as a
+  `DispatchReservation` (new optional `bind_dispatch` hook — `describe` +
+  `dispatch` remain the whole required `Runner` contract); the runner records
+  the hand-off when it makes it. `ci-trigger` records after the trigger POST
+  is accepted, so a polled build is visible while it runs. A refused dispatch
+  still leaves no dispatch row and returns the run to COMPOSED.
+- `RunStore.add_dispatch` re-declares an existing dispatch id (same row, same
+  `created_at`) instead of failing, so a dispatch recorded at hand-off time
+  can be refined from the handle the runner returns.
+
 ## 0.1.0 — 2026-07-07
 
 First release: DESIGN.md phases P0–P3 complete, each independently

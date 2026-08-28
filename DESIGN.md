@@ -143,7 +143,8 @@ selection:
 
 source:
   provider: "robotframework"
-  root: "tests/"
+  root: "tests/"                    # OPTIONAL provenance the builder may pass; the compose path
+                                    # does not, so consumers must not require it
   snapshot: "sha256:9f2c..."        # catalog hash at compose time — an INTEGRITY CHECK, not an alternate compile path
 
 results:
@@ -168,6 +169,12 @@ Filter grammar notes (deliberate, not inherited):
 - `prefix:X` is a filter primitive defined as pure sugar for `regex:^X`
   (the prototype's filter grammar had literal + `regex:` only; `prefix`
   existed only as a taxonomy rule type — adopting it unifies the grammars).
+- **Case handling is asymmetric, and both halves are load-bearing.** A bare
+  literal is compared case-insensitively (tags are written by people). A
+  `regex:` expression is compiled with no flags and therefore matches
+  case-**sensitively** — and so does `prefix:X`, being sugar for `regex:^X`.
+  The opt-out is inline: `regex:(?i)^cart`. Stated here because the failure
+  mode is silent: rules ported from a case-insensitive tool match nothing.
 - The prototype's `combine_op` between `tag_filter` and `item_names` is
   **dropped**: its code only ever produced AND, and fine-selection
   semantically *narrows* a filter result. Fixed rule: both present →
@@ -220,6 +227,19 @@ COMPOSED ──dispatch(runner)──► DISPATCHED ──(optional live status)
                                           COMPLETE(PASS | FAIL | ERROR)
 ```
 
+- **In-process dispatch is synchronous — the diagram is a state model, not a
+  timeline.** `Service.dispatch_runner` calls the plugin's `dispatch()`
+  inline, and a runner that executes the work itself (`robot-pool`, `demo`)
+  returns only after the last chunk has run and its verdicts are recorded. So
+  `POST /api/v1/runs` with `dispatch: {runner: ...}` — and `runcomposer
+  dispatch` — hold for the whole execution: a 40-minute suite, 40 minutes, and
+  the response already reads `COMPLETE`. The intermediate states are real but
+  belong to *other* readers: a concurrent `GET /runs/{id}` shows `RUNNING`
+  with live verdicts while the dispatching call is still open, and on this
+  path a successful run never rests in `AWAITING_RESULTS`, because the
+  deliveries land before `dispatch()` returns. Only runners whose completion
+  is out-of-band — `ci-trigger` with `completion: callback`, and export mode —
+  return immediately and wait in `AWAITING_RESULTS`.
 - **Identity is layered:** `run.id` (the spec) → `dispatch_id` (each execution
   attempt; an `export` download also mints one) → `shard` (a runner-declared
   partition/chunk label on each delivery). Re-running the same spec = a new
@@ -297,9 +317,11 @@ project whose thesis is document-shaped interfaces.
 ## 6. Ports (in-process plugin protocols)
 
 Four small protocols. **Plugin loading:** a config declaration
-`module: mypkg.MyRunner` (import path — the hack-it-in-an-afternoon,
-self-hosted path) **or** Python entry points (`runcomposer.*` groups — the
-packaged-distribution path). Both first-class. No env-var module loading.
+`module: "mypkg.runners:MyRunner"` — an import path, always
+`package.module:ClassName`, the dotted-only form is refused (the
+hack-it-in-an-afternoon, self-hosted path) — **or** Python entry points
+(`runcomposer.*` groups — the packaged-distribution path). Both first-class.
+No env-var module loading.
 
 ### 6.1 `TestSource`
 
@@ -334,6 +356,30 @@ def health() -> dict                         # runner-defined, displayed verbati
 `dispatch` takes **the document only**. A core helper `materialize(spec)`
 exists for in-process runners that want the item list as objects; external
 consumers read the spec.
+
+**Dispatch identity is runcomposer's, the shard declaration is the runner's.**
+`describe` + `dispatch` remain the whole required contract, but a runner that
+*blocks* while the work executes cannot be the first to name its dispatch: a
+dispatch recorded from the returned handle would not exist for exactly as long
+as the run lasts, contradicting §4 (a dispatch is the record of a hand-off,
+not of its completion). So the service mints the dispatch id — as it already
+does for export dispatches — and offers it through an optional hook:
+
+```python
+def bind_dispatch(reservation: DispatchReservation) -> None   # optional
+# reservation.dispatch_id  — use it as the dispatch id (artifact paths,
+#                            listeners, executor parameters)
+# reservation.record(shards=…, spec_sha256=…)
+#                          — call at the moment work is handed over
+```
+
+Recording is the runner's *timing* decision, and that is the point: refusals
+raised before it (drift, readiness hooks, a rejected CI trigger) leave **no
+dispatch row** — no hand-off, no dispatch — while everything after it is a
+real execution attempt that stays visible even if it then fails. The returned
+handle is the final declaration and refines that record (§6.3 `add_dispatch`
+re-declares rather than duplicates). Runners without the hook are unchanged:
+their handle's id is recorded when `dispatch` returns.
 
 **a) `robot-pool`** — in-process Robot Framework execution: shared process
 pool; partition fan-out; duration-balanced chunking; per-run artifact
@@ -437,7 +483,7 @@ contract.
 # config.yaml (single file, layered sections; hot-reload out of scope for v1)
 core:
   api: { host: 127.0.0.1, port: 8100, cors: [...] }
-  taxonomy_file: taxonomy.yaml
+  taxonomy_file: taxonomy.yaml        # curated tree over tag patterns; format: docs/taxonomy.md
   artifact_dir: artifacts/
   retention: { max_age_days: 90 }
   ingestion: { tokens: required, inbox: results_inbox/, max_upload_mb: 200 }
@@ -446,10 +492,10 @@ store:
   sqlite: { path: runcomposer.db }
 sources:
   robotframework: { root: tests/ }
-  # my-source: { module: mypkg.sources.MySource, ... }     # import-path plugin
+  # my-source: { module: "mypkg.sources:MySource", ... }   # import-path plugin
 runners:
   robot-pool: { max_workers: 20, history_selector: { labels: {...} } }
-  ci-trigger: { base_url: ..., job_template: ... }
+  ci-trigger: { base_url: ..., job: ..., callback_base: ..., completion: callback }
 ui:                                  # served at /api/v1/ui-config
   examples: {...}
   quick_filters: [...]
@@ -604,3 +650,4 @@ Each phase ends runnable + demoable.
 | 3 | UI stack | **Refresh to current React/Vite at P1; keep SVAR** behind the adapter; localization spike noted. |
 | 4 | License | **MIT.** |
 | 5 | `runcomposer-exec` distribution | **Both by construction**: stdlib-only single file, also pipx-installable; JSON spec input so zero deps. |
+| 6 | Who mints the dispatch id (2026-08-28) | **runcomposer does**, offered to the runner as a `DispatchReservation` via the optional `bind_dispatch` hook (§6.2); the runner decides *when* the hand-off is recorded, and the returned handle refines the declaration. Rejected: passing the id into `dispatch()` (breaks the published signature), and letting bound runners write their own dispatch rows (duplicates the ledger, unavailable to unbound runners, and lets a runner's own id drift from its configured `mode`). A refused dispatch — refusal always precedes the recording — leaves **no** row. |
