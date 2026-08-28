@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="runcomposer — compose a precise test selection from your tag taxonomy, freeze it into a portable run spec, and let anything execute it: a local process pool, your own agent on a remote machine, or a CI job.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="runcomposer">
+<meta property="og:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
+<meta property="og:type" content="website">
+<title>runcomposer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wght@400;500;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+  /* ---- tokens: light is the base; both dark paths redefine only tokens ---- */
+  :root {
+    --bg: #E9EEF3;
+    --surface: #F6F8FA;
+    --plate: #DFE6ED;
+    --ink: #0E141B;
+    --ink-2: #35414F;
+    --ink-3: #5A697F;
+    --rule: #C3CEDA;
+    --rule-soft: #D6DEE7;
+    --signal: #A9660A;
+    --signal-soft: #F0DCBC;
+    --pass: #1F6F4E;
+    --pass-bg: #D4E7DC;
+    --fail: #A93A30;
+    --fail-bg: #F2D9D6;
+    --skip: #5A697F;
+    --skip-bg: #D8DFE7;
+    --shadow: 0 1px 0 rgba(14, 20, 27, .06);
+
+    --measure: 40rem;
+    --gutter: 6.5rem;
+
+    --step--1: clamp(.78rem, .76rem + .1vw, .84rem);
+    --step-0: clamp(1rem, .97rem + .16vw, 1.09rem);
+    --step-1: clamp(1.2rem, 1.13rem + .35vw, 1.42rem);
+    --step-2: clamp(1.5rem, 1.36rem + .68vw, 1.95rem);
+    --step-3: clamp(2rem, 1.66rem + 1.7vw, 3.1rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E141B;
+      --surface: #151D27;
+      --plate: #1A232E;
+      --ink: #E6ECF2;
+      --ink-2: #B4C0CD;
+      --ink-3: #7F8FA1;
+      --rule: #263140;
+      --rule-soft: #1E2734;
+      --signal: #E8A33D;
+      --signal-soft: #3A2C15;
+      --pass: #58BE90;
+      --pass-bg: #16301F;
+      --fail: #E4736A;
+      --fail-bg: #35191A;
+      --skip: #8695A6;
+      --skip-bg: #1E2734;
+      --shadow: 0 1px 0 rgba(0, 0, 0, .3);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0E141B;
+    --surface: #151D27;
+    --plate: #1A232E;
+    --ink: #E6ECF2;
+    --ink-2: #B4C0CD;
+    --ink-3: #7F8FA1;
+    --rule: #263140;
+    --rule-soft: #1E2734;
+    --signal: #E8A33D;
+    --signal-soft: #3A2C15;
+    --pass: #58BE90;
+    --pass-bg: #16301F;
+    --fail: #E4736A;
+    --fail-bg: #35191A;
+    --skip: #8695A6;
+    --skip-bg: #1E2734;
+    --shadow: 0 1px 0 rgba(0, 0, 0, .3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Public Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: var(--step-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: calc(var(--measure) + var(--gutter) + 4rem);
+    margin: 0 auto;
+    padding: 0 1.5rem 6rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead {
+    padding: 5.5rem 0 3.5rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem .75rem;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+    margin-bottom: 2rem;
+  }
+
+  .stamp span:not(:last-child)::after {
+    content: "·";
+    margin-left: .75rem;
+    color: var(--rule);
+  }
+
+  h1 {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-weight: 700;
+    font-size: var(--step-3);
+    letter-spacing: -.045em;
+    line-height: 1.02;
+    margin: 0 0 1.5rem;
+    text-wrap: balance;
+  }
+
+  h1 .dot { color: var(--signal); }
+
+  .thesis {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-weight: 500;
+    font-size: var(--step-1);
+    line-height: 1.4;
+    letter-spacing: -.03em;
+    max-width: 30ch;
+    margin: 0 0 1.75rem;
+    padding-left: 1.15rem;
+    border-left: 3px solid var(--signal);
+    text-wrap: balance;
+  }
+
+  .lede {
+    max-width: var(--measure);
+    font-size: var(--step-1);
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin: 0 0 2.5rem;
+  }
+
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- sections with gutter markers ---- */
+  section {
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    gap: 0 2rem;
+    padding: 3.5rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    align-items: start;
+  }
+
+  .marker {
+    position: sticky;
+    top: 1.5rem;
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .68rem;
+    font-weight: 500;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    line-height: 1.5;
+    padding-top: .55rem;
+  }
+
+  .marker .num {
+    display: block;
+    color: var(--signal);
+    font-weight: 700;
+    font-size: .78rem;
+    letter-spacing: .04em;
+  }
+
+  .body > * { max-width: var(--measure); }
+  .body > .full { max-width: none; }
+
+  h2 {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-weight: 700;
+    font-size: var(--step-2);
+    letter-spacing: -.035em;
+    line-height: 1.15;
+    margin: 0 0 1rem;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: "Public Sans", sans-serif;
+    font-weight: 600;
+    font-size: var(--step-0);
+    letter-spacing: -.005em;
+    margin: 2rem 0 .5rem;
+  }
+
+  p { margin: 0 0 1.05rem; }
+  p:last-child { margin-bottom: 0; }
+
+  .body a, .foot a {
+    color: var(--ink);
+    text-decoration-color: var(--signal);
+    text-underline-offset: .18em;
+    text-decoration-thickness: 1.5px;
+  }
+  .body a:hover, .foot a:hover { color: var(--signal); }
+
+  code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: .88em;
+    background: var(--plate);
+    padding: .1em .35em;
+    border-radius: 3px;
+  }
+
+  /* ---- plates: spec + terminal ---- */
+  .plate {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    margin: 1.75rem 0;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .plate-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: .6rem .95rem;
+    border-bottom: 1px solid var(--rule);
+    background: var(--plate);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+
+  .plate-head b {
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+
+  .plate pre {
+    margin: 0;
+    padding: 1rem .95rem;
+    overflow-x: auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: .82rem;
+    line-height: 1.75;
+    tab-size: 2;
+  }
+
+  .plate pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+  }
+
+  .k { color: var(--ink-3); }
+  .v { color: var(--ink); }
+  .s { color: var(--signal); }
+  .c { color: var(--ink-3); font-style: italic; }
+  .pass { color: var(--pass); }
+  .fail { color: var(--fail); }
+
+  /* ---- the handoff diagram ---- */
+  .handoff {
+    margin: 2rem 0 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .node {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .85rem 1rem;
+    text-align: center;
+  }
+
+  .node .node-t {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .8rem;
+    font-weight: 700;
+    letter-spacing: -.02em;
+  }
+
+  .node .node-s {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+
+  .node-spec { border-color: var(--signal); border-width: 2px; }
+
+  .drop {
+    width: 1px;
+    height: 1.5rem;
+    background: var(--rule);
+    margin: 0 auto;
+  }
+
+  .lanes {
+    display: grid;
+    /* three lanes or one — never a stranded 2+1 */
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+    position: relative;
+  }
+
+  @media (min-width: 52rem) {
+    .lanes { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
+  .lane {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--signal);
+    border-radius: 4px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+
+  .lane-name {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: -.02em;
+  }
+
+  .lane-id {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--signal);
+  }
+
+  .lane p {
+    margin: 0;
+    font-size: .88rem;
+    line-height: 1.55;
+    color: var(--ink-2);
+  }
+
+  .lane-where {
+    margin-top: auto;
+    padding-top: .6rem;
+    border-top: 1px dashed var(--rule);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+
+  /* ---- contract list: the three obligations ---- */
+  .contract {
+    list-style: none;
+    counter-reset: ob;
+    margin: 1.5rem 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: .9rem;
+  }
+
+  .contract li {
+    counter-increment: ob;
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: 0 .85rem;
+    align-items: baseline;
+  }
+
+  .contract li::before {
+    content: counter(ob);
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .78rem;
+    font-weight: 700;
+    color: var(--signal);
+    border: 1px solid var(--signal);
+    border-radius: 3px;
+    text-align: center;
+    padding: .05rem 0;
+  }
+
+  .contract b { font-weight: 600; }
+
+  /* ---- lifecycle strip ---- */
+  .states {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .4rem;
+    margin: 1.5rem 0;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+  }
+
+  .st {
+    border: 1px solid var(--rule);
+    background: var(--plate);
+    border-radius: 999px;
+    padding: .15rem .6rem;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+
+  .st-end { border-color: var(--pass); color: var(--pass); background: var(--pass-bg); }
+  .arr { color: var(--ink-3); }
+
+  /* ---- verdict chips ---- */
+  .chip {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    font-weight: 500;
+    border-radius: 3px;
+    padding: .05rem .4rem;
+  }
+  .chip-pass { background: var(--pass-bg); color: var(--pass); }
+  .chip-fail { background: var(--fail-bg); color: var(--fail); }
+  .chip-skip { background: var(--skip-bg); color: var(--skip); }
+
+  /* ---- registry table ---- */
+  .tablewrap { overflow-x: auto; margin: 1.5rem 0; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .9rem;
+    min-width: 34rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: .55rem .7rem;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+
+  th {
+    font-family: "Martian Mono", ui-monospace, monospace;
+    font-size: .66rem;
+    font-weight: 500;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  td:first-child {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: .82rem;
+    color: var(--signal);
+    white-space: nowrap;
+  }
+
+  td .role {
+    display: block;
+    font-family: "Public Sans", sans-serif;
+    font-size: .74rem;
+    color: var(--ink-3);
+  }
+
+  /* ---- callout ---- */
+  .note {
+    border-left: 3px solid var(--rule);
+    padding: .1rem 0 .1rem 1.15rem;
+    margin: 1.5rem 0;
+    color: var(--ink-2);
+    font-size: .93rem;
+  }
+
+  .note b { color: var(--ink); font-weight: 600; }
+
+  /* ---- footer ---- */
+  .foot {
+    padding: 3rem 0 0;
+    display: grid;
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+    gap: 0 2rem;
+    font-size: .9rem;
+    color: var(--ink-3);
+  }
+
+  .foot p { max-width: var(--measure); }
+
+  :where(a, button):focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  @media (max-width: 46rem) {
+    :root { --gutter: 0px; }
+    section, .foot { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .marker { position: static; padding: 0 0 1rem; }
+    .marker .num { display: inline; margin-right: .6rem; }
+    .masthead { padding-top: 3.5rem; }
+  }
+
+  /* ---- theme toggle ---- */
+  .theme-toggle {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 10;
+    width: 2.25rem;
+    height: 2.25rem;
+    display: grid;
+    place-items: center;
+    background: var(--surface);
+    color: var(--ink-2);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: .9rem;
+    line-height: 1;
+  }
+  .theme-toggle:hover { color: var(--signal); border-color: var(--signal); }
+  @media (max-width: 46rem) { .theme-toggle { top: .6rem; right: .6rem; } }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" type="button" aria-label="Toggle colour theme"></button>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="stamp">
+      <span>v0.1.0</span><span>MIT</span><span>Python 3.10+</span><span>self-hosted</span>
+    </div>
+    <h1>runcomposer<span class="dot">.</span></h1>
+    <p class="thesis">The interface is a document, not a protocol.</p>
+    <p class="lede">
+      A tag-based test run composer and orchestrator. See your test corpus through a curated
+      taxonomy, compose a precise selection with a real filter language, and freeze it into a
+      portable <strong>run spec</strong> — a versioned document that anything can execute: a local
+      process pool, <strong>your own agent on a remote machine</strong>, or a CI job. Results flow
+      back from any transport into a run history that feeds the next selection.
+    </p>
+    <div class="plate">
+      <div class="plate-head"><b>try it</b><span>~30 seconds, no config</span></div>
+<pre><code><span class="c"># boots a fictional web-shop corpus and runs the whole loop</span>
+pipx run --spec . runcomposer demo</code></pre>
+    </div>
+  </header>
+
+  <section>
+    <div class="marker">The idea</div>
+    <div class="body">
+      <h2>Selection is the hard part. Execution is somebody else's.</h2>
+      <p>
+        Every test corpus of any size has the same problem: you can run everything, or you can run
+        one thing, but running <em>exactly the right subset</em> — and being able to prove later
+        which subset that was — is awkward. Tags help, until the tag query lives in a CI job
+        parameter that nobody can reconstruct three weeks later.
+      </p>
+      <p>
+        runcomposer splits the problem in two. Composing the selection is a first-class,
+        reviewable act that produces a document. Executing it is somebody else's job — and
+        deliberately so. The document is the whole interface: an executor needs to understand
+        three fields, not an API.
+      </p>
+      <p class="note">
+        <b>What it is not:</b> a CI system, a scheduler, or a test framework. There is no cron, no
+        cross-instance queue, no ambition to replace the thing that already runs your builds.
+        Compose, dispatch, ingest, browse — that is the entire product.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker"><span class="num">01–06</span>The pipeline</div>
+    <div class="body">
+      <h2>From a tag to a completed run</h2>
+      <p>
+        Six steps, and the run's lifecycle state is computed at every one of them — never guessed.
+      </p>
+
+      <div class="states">
+        <span class="st">COMPOSED</span><span class="arr">→</span>
+        <span class="st">DISPATCHED</span><span class="arr">→</span>
+        <span class="st">RUNNING</span><span class="arr">→</span>
+        <span class="st">AWAITING_RESULTS</span><span class="arr">→</span>
+        <span class="st st-end">COMPLETE</span>
+      </div>
+
+      <h3>1 · Catalog</h3>
+      <p>
+        A <em>test source</em> enumerates your tests as items — an opaque stable id plus tags —
+        and content-hashes the catalog. A Robot Framework source mints ids from longnames; a
+        manifest source takes a plain JSON list, so a pytest corpus arrives as node ids.
+      </p>
+
+      <h3>2 · Compose</h3>
+      <p>
+        Navigate the taxonomy, build a filter, watch the preview recompile as you type. The filter
+        language is small and lossless: a bare word is a literal tag, <code>prefix:Checkout-</code>
+        is sugar for an anchored regex, <code>regex:</code> is the escape hatch, and the three
+        operators are <code>AND</code>, <code>OR</code>, <code>NOT</code>.
+      </p>
+
+      <h3>3 · Materialize</h3>
+      <p>
+        The filter is compiled against the catalog snapshot and the resulting item list is written
+        <em>into</em> the document. This is the step that makes a run reproducible: the filter
+        stays for provenance, but the embedded list is what actually runs.
+      </p>
+
+      <h3>4 · Dispatch</h3>
+      <p>
+        Hand the document to a runner, or export it and hand it to anything at all. Each hand-off
+        mints a <em>dispatch</em>; re-running the same spec is a new dispatch under the same run.
+      </p>
+
+      <h3>5 · Deliver</h3>
+      <p>
+        Results come back as a bundle carrying a correlation marker. Push it over HTTP, drop it in
+        a watched directory, or pass it on the command line. Every delivery is content-hashed.
+      </p>
+
+      <h3>6 · Complete</h3>
+      <p>
+        When every declared shard has delivered, the run completes and its verdicts become
+        history — which is where the next selection starts.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">The document</div>
+    <div class="body">
+      <h2>The run spec</h2>
+      <p>
+        Versioned YAML, JSON-isomorphic and accepted either way, with a published JSON Schema. The
+        core sections are generic and closed. Exactly one section is open — <code>runner</code> —
+        and the core never looks inside it.
+      </p>
+
+      <div class="plate full">
+        <div class="plate-head"><b>payments-regression.runspec.yaml</b><span>runspec 1.0</span></div>
+<pre><code><span class="k">runspec:</span> <span class="v">"1.0"</span>
+
+<span class="k">run:</span>
+  <span class="k">id:</span> <span class="v">"01JZ9GQ2W8KJ3F6M4P5R7T9V"</span>      <span class="c"># minted at compose time; the correlation key</span>
+  <span class="k">title:</span> <span class="v">"Payments regression without quarantined tests"</span>
+  <span class="k">created_at:</span> <span class="v">"2026-07-06T09:14:03Z"</span>
+  <span class="k">labels:</span>                              <span class="c"># free-form provenance; stored, never interpreted</span>
+    <span class="k">requested_by:</span> <span class="v">"alex"</span>
+
+<span class="k">selection:</span>
+  <span class="s">tag_filter:</span>                          <span class="c"># kept for provenance — not re-compiled by executors</span>
+    <span class="k">op:</span> <span class="v">AND</span>
+    <span class="k">items:</span>
+      - <span class="k">op:</span> <span class="v">OR</span>
+        <span class="k">items:</span> [<span class="v">"Payments"</span>, <span class="v">"prefix:Checkout-"</span>, <span class="v">"regex:^Cart(V2)?$"</span>]
+      - <span class="k">not:</span> <span class="v">"prefix:Quarantine-"</span>
+  <span class="s">materialized:</span>                        <span class="c"># THE authoritative executed set</span>
+    <span class="k">item_ids:</span> [<span class="v">"Shop.Payments.Cards.T001"</span>, <span class="v">"Shop.Payments.Cards.T002"</span>, <span class="v">…</span>]
+    <span class="k">count:</span> <span class="v">36</span>
+
+<span class="k">source:</span>
+  <span class="k">provider:</span> <span class="v">"robotframework"</span>
+  <span class="s">snapshot:</span> <span class="v">"sha256:734b1c4803268df2…"</span>   <span class="c"># integrity check — drift is detectable</span>
+
+<span class="k">results:</span>
+  <span class="k">expect:</span> [{ <span class="k">format:</span> <span class="v">"robot-output-xml"</span> }]
+  <span class="k">deliver:</span> <span class="v">"api"</span>
+  <span class="k">token:</span> <span class="v">"rct_…"</span>                       <span class="c"># per-run ingest token</span>
+
+<span class="s">runner:</span>                                <span class="c"># the ONE open section — plugin's own vocabulary</span>
+  <span class="k">robot-pool:</span>
+    <span class="k">suite_root:</span> <span class="v">"tests/"</span>
+    <span class="k">partitions:</span> [<span class="v">"env1"</span>, <span class="v">"env2"</span>]
+    <span class="k">variables:</span> { <span class="k">STAGE:</span> <span class="v">"test"</span> }</code></pre>
+      </div>
+
+      <p>
+        Because the item list travels inside the document, a dispatched spec is self-sufficient.
+        The machine that runs it needs no access to your catalog, your database, or your network.
+        And because the catalog snapshot travels with it, an executor can tell whether the corpus
+        moved underneath the plan.
+      </p>
+      <p>
+        A consumer must accept any spec of the same major version: unknown fields inside known
+        sections are ignored, unknown top-level sections warn, a higher major is refused outright.
+        <code>runcomposer validate</code> checks a document against the schema; adding
+        <code>--for-dispatch</code> additionally demands everything execution requires.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">The centrepiece</div>
+    <div class="body">
+      <h2>Bring your own run agent</h2>
+      <p>
+        This is the part worth understanding, because it is what the whole design exists to make
+        possible. runcomposer does not need to reach your test machines. It does not need
+        credentials on them, a network route to them, or an agent it controls. It hands out a
+        document; something on the other side runs it and sends a bundle back, in its own time.
+      </p>
+
+      <div class="handoff full">
+        <div class="node node-spec">
+          <div class="node-t">run spec</div>
+          <div class="node-s">composed &amp; materialized · one document</div>
+        </div>
+        <div class="drop"></div>
+        <div class="lanes">
+          <div class="lane">
+            <div class="lane-name">In-process</div>
+            <div class="lane-id">robot-pool</div>
+            <p>
+              runcomposer executes the tests itself on a process pool: partition fan-out,
+              duration-balanced chunking, live verdicts streaming in while the run is still going.
+            </p>
+            <div class="lane-where">runs on: the runcomposer host</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">Your own agent</div>
+            <div class="lane-id">runcomposer-exec</div>
+            <p>
+              One vendored Python file on the far side reads the spec, runs your command against
+              exactly the listed ids, and writes a correlation marker beside the output.
+            </p>
+            <div class="lane-where">runs on: anywhere you can copy a file</div>
+          </div>
+          <div class="lane">
+            <div class="lane-name">A CI job</div>
+            <div class="lane-id">ci-trigger</div>
+            <p>
+              Triggers a parameterized job, passing the spec as a build parameter. The job's own
+              stage runs the same vendored consumer and posts the bundle back.
+            </p>
+            <div class="lane-where">runs on: your existing CI</div>
+          </div>
+        </div>
+        <div class="drop"></div>
+        <div class="node">
+          <div class="node-t">results ingested → run COMPLETE</div>
+          <div class="node-s">push API · file-drop inbox · CLI</div>
+        </div>
+      </div>
+
+      <h3>The executor contract</h3>
+      <p>
+        Whatever runs the spec — our runner, your script, a CI job, a colleague on a laptop — owes
+        exactly three things. Everything else in the document, including the entire
+        <code>runner</code> section, may be ignored.
+      </p>
+      <ul class="contract">
+        <li><span><b>Execute exactly the materialized item list.</b> Not the filter. Executors do
+          not re-compile selections — that is what makes the run reproducible.</span></li>
+        <li><span><b>Check for drift before executing.</b> If the live corpus hash differs from the
+          one in the spec, refuse by default. With an explicit override, run the intersection and
+          report the difference as skips.</span></li>
+        <li><span><b>Reference the run id in the results.</b> That, plus a shard label when the
+          work was split, is all correlation needs.</span></li>
+      </ul>
+
+      <h3>What "your own agent" actually looks like</h3>
+      <p>
+        The consumer is deliberately tiny: a single, self-contained, standard-library-only Python
+        file. There is nothing to install on the executing side — copy it in with your code, or
+        fetch it from a release. It reads the spec as JSON, so a machine with nothing but
+        <code>python3</code> can run it.
+      </p>
+
+      <div class="plate full">
+        <div class="plate-head"><b>the round trip</b><span>three commands, two machines</span></div>
+<pre><code><span class="c"># 1 — here: compose and freeze the plan</span>
+runcomposer spec <span class="v">'Regression'</span> --title <span class="v">"Nightly"</span> \
+    --format json -o spec.json --export
+
+<span class="c"># 2 — there: one vendored file, no install, your own runner command</span>
+python3 runcomposer_exec.py spec.json --out results \
+    --command <span class="v">"./run-tests.sh {ids_file} {out_dir}"</span>
+
+<span class="c">#      → results/output.xml            (whatever your tests produced)</span>
+<span class="c">#      → results/runcomposer_run.json  (run id + spec hash — the marker)</span>
+
+<span class="c"># 3 — here: the bundle comes back however you like, then</span>
+runcomposer ingest results
+runcomposer runs
+<span class="c">#      RUN ID                      STATE     RESULT</span>
+<span class="c">#      01JZ9GQ2W8KJ3F6M4P5R7T9V    COMPLETE  </span><span class="fail">FAIL</span></code></pre>
+      </div>
+
+      <p>
+        Step 3's "however you like" is the point. The bundle is a directory. Commit it to a
+        results branch, <code>rsync</code> it, drop it on a share, attach it to a build — the
+        marker inside carries the correlation, so the transport is your business and none of ours.
+      </p>
+      <p class="note">
+        <b>The marker is what makes this safe.</b> It carries the run id and a hash of the exact
+        spec bytes that were handed out. A bundle whose hash does not match, or that claims a run
+        nobody dispatched, does not quietly enter your history — it lands in a visible quarantine
+        inbox for a human to attach, promote, or discard.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">Coming back</div>
+    <div class="body">
+      <h2>Results, from anywhere, more than once</h2>
+      <p>
+        Dispatch and result-return are fully decoupled. Three transports feed one pipeline: an
+        HTTP push guarded by the run's own ingest token, a watched file-drop directory for
+        git-transported or air-gapped bundles, and plain <code>runcomposer ingest</code> from the
+        command line.
+      </p>
+      <p>
+        Redelivery is not an edge case — pollers re-poll, CI retries webhooks, git re-pulls. So the
+        rules are explicit: a byte-identical bundle is a <strong>no-op</strong>. A different bundle
+        for the same shard <strong>replaces</strong> that shard's verdicts, last writer wins. There
+        is no monotonic merge, because a correction has to be able to turn a
+        <span class="chip chip-fail">FAIL</span> back into a
+        <span class="chip chip-pass">PASS</span>.
+      </p>
+      <p>
+        Per-item verdicts are <span class="chip chip-pass">PASS</span>
+        <span class="chip chip-fail">FAIL</span> <span class="chip chip-skip">SKIP</span>
+        <span class="chip chip-skip">ERROR</span>, each with duration, message, artifacts, and an
+        attempt counter — so a retry inside a run is representable and flakiness is derivable
+        rather than stored as a guess.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">The loop closes</div>
+    <div class="body">
+      <h2>Rerun what failed</h2>
+      <p>
+        Once runs accrue, history becomes a selection source. Ask for the failures of the latest
+        completed run and they resolve at compose time into a normal, static, reproducible spec —
+        with a provenance record of how the list was derived.
+      </p>
+      <div class="plate full">
+        <div class="plate-head"><b>history as a selection</b><span>resolved once, then frozen</span></div>
+<pre><code>$ runcomposer spec --from-history <span class="v">'failed@latest'</span> --title <span class="v">"Rerun"</span>
+
+<span class="k">selection:</span>
+  <span class="k">item_ids:</span> [<span class="v">"Shop.Checkout.Express.T003"</span>, <span class="v">"Shop.Cart.Core.T005"</span>]
+  <span class="k">derived_from:</span>
+    - <span class="k">provider:</span> <span class="v">"history"</span>
+      <span class="k">query:</span> { <span class="k">run:</span> <span class="v">LATEST</span>, <span class="k">verdicts:</span> [<span class="v">FAIL</span>] }
+      <span class="k">resolved_run_id:</span> <span class="v">"01JZ8ZZ…"</span></code></pre>
+      </div>
+      <p>
+        "Latest" means latest <em>completed</em> — a run still awaiting results is not silently
+        treated as an answer. And on a fresh install these features are simply dark, which the
+        tool says out loud rather than returning a confidently empty list.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">Extending</div>
+    <div class="body">
+      <h2>Everything specific is a plugin</h2>
+      <p>
+        The core knows about items, tags, selections, specs, runs, and verdicts. It knows nothing
+        about Robot Framework, pytest, Jenkins, or XML. Those live in plugins, loaded either by
+        entry point or by a plain <code>module:</code> path in your config — no environment
+        variables, no magic discovery.
+      </p>
+      <div class="tablewrap full">
+        <table>
+          <thead>
+            <tr><th>Plugin</th><th>Kind</th><th>What it does</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>manifest<span class="role">source</span></td>
+              <td>Test source</td>
+              <td>A JSON or YAML catalog needing only <code>id</code> and <code>tags</code>. The
+                zero-dependency adoption path; ships a pytest example using node ids.</td>
+            </tr>
+            <tr>
+              <td>robotframework<span class="role">source</span></td>
+              <td>Test source</td>
+              <td>Walks <code>.robot</code> files, mints ids from longnames, and owns every
+                name-normalisation quirk so the core never has to.</td>
+            </tr>
+            <tr>
+              <td>robot-pool<span class="role">runner</span></td>
+              <td>Runner</td>
+              <td>In-process execution: process pool, partition fan-out, duration-balanced
+                chunking, live verdicts, pre-run hooks, your own listeners.</td>
+            </tr>
+            <tr>
+              <td>ci-trigger<span class="role">runner</span></td>
+              <td>Runner</td>
+              <td>Drives an existing parameterized CI job. Completion arrives by webhook, or by
+                polling the build API for systems that cannot call out.</td>
+            </tr>
+            <tr>
+              <td>robot-output-xml<span class="role">parser</span></td>
+              <td>Result parser</td>
+              <td>Robot's <code>output.xml</code> → verdicts. Defused: documents carrying entity
+                or DTD declarations are refused outright.</td>
+            </tr>
+            <tr>
+              <td>junit-xml<span class="role">parser</span></td>
+              <td>Result parser</td>
+              <td>The lingua franca — pytest, and most everything else that reports.</td>
+            </tr>
+            <tr>
+              <td>sqlite<span class="role">store</span></td>
+              <td>Run store</td>
+              <td>Zero-setup persistence for runs, specs, dispatches, deliveries, and verdicts.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The boundary is enforced, not merely intended: a guard test fails the build if core code
+        so much as mentions a framework's vocabulary. Native result names always travel through
+        the source that owns the id space, so no normalisation quirk can leak inward.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="marker">Getting it</div>
+    <div class="body">
+      <h2>Run it in a minute</h2>
+      <p>
+        Self-hosted, single config file, sqlite by default. The web UI ships pre-built inside the
+        wheel in English and German, so evaluating it needs no Node toolchain.
+      </p>
+      <div class="plate full">
+        <div class="plate-head"><b>install</b><span>Python 3.10 – 3.13</span></div>
+<pre><code>git clone https://github.com/StochasticEntropy/runcomposer
+cd runcomposer
+
+<span class="c"># the guided demo — 60 tagged tests, a full compose → run → rerun loop</span>
+pipx run --spec . runcomposer demo
+
+<span class="c"># the web UI and API on http://127.0.0.1:8100</span>
+pipx run --spec . runcomposer serve
+
+<span class="c"># or in a container</span>
+docker build -t runcomposer . &amp;&amp; docker run -p 8100:8100 runcomposer
+
+<span class="c"># executing Robot Framework in-process needs one extra</span>
+pip install <span class="v">"runcomposer[robot]"</span></code></pre>
+      </div>
+      <p>
+        The CLI is the whole product without the browser:
+        <code>compile</code> to preview a selection, <code>spec</code> to compose one,
+        <code>dispatch</code> to run it, <code>ingest</code> to take results back,
+        <code>runs</code> to browse, <code>export</code> to hand results to another tool, and
+        <code>gc</code> to keep it all bounded.
+      </p>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <div class="marker">Colophon</div>
+    <div>
+      <p>
+        runcomposer is open source under the MIT licence. Version 0.1.0 covers composing,
+        exporting, executing, and ingesting — the complete loop described on this page. The
+        examples throughout use the project's own fictional web-shop corpus, which ships with the
+        tool and boots with <code>runcomposer demo</code>.
+      </p>
+      <p>
+        <a href="https://github.com/StochasticEntropy/runcomposer">Source on GitHub</a>
+      </p>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.querySelector(".theme-toggle");
+    var stored = null;
+    try { stored = localStorage.getItem("rc-theme"); } catch (e) { /* private mode */ }
+    if (stored === "dark" || stored === "light") root.setAttribute("data-theme", stored);
+    function current() {
+      var explicit = root.getAttribute("data-theme");
+      if (explicit) return explicit;
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    function paint() { btn.textContent = current() === "dark" ? "\u25D1" : "\u25D0"; }
+    btn.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("rc-theme", next); } catch (e) { /* ignore */ }
+      paint();
+    });
+    paint();
+  })();
+</script>
+</body>
+</html>
