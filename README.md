@@ -65,8 +65,10 @@ neutral suite in [examples/robot-shop](examples/robot-shop).
 P3 (reach): the defused `junit-xml` parser with the pytest example corpus in
 [examples/pytest-shop](examples/pytest-shop) (nodeid ids via manifest aliases —
 the framework-agnosticism proof), history-based selection (`runcomposer runs
---failed-in latest`, `spec --from-history 'failed@latest'`, and the UI
-quick-pick — provenance recorded in `selection.derived_from`), CTRF export
+--failed-in latest --label suite=nightly`, `spec --from-history
+'failed@latest?suite=nightly'`, and the UI quick-pick — the label scope keeps
+"latest" from meaning somebody else's run, and the resolved reference run is
+recorded in `selection.derived_from`), CTRF export
 (`runcomposer export <run> --format ctrf`), and the `ci-trigger` runner with
 the thin CI-side consumer stage: a reproducible Jenkins-in-docker setup in
 [ci/jenkins](ci/jenkins) whose job runs the vendored single-file

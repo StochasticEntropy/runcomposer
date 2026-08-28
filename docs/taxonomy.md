@@ -19,8 +19,9 @@ core:
 
 With no `taxonomy_file` configured, runcomposer serves the bundled demo
 taxonomy, so the panel is never empty on a fresh install. The file is served
-at `GET /api/v1/taxonomy`, parsed and otherwise untouched — the UI receives
-exactly what you wrote.
+at `GET /api/v1/taxonomy`, validated (see
+[below](#what-is-validated-and-when)) and otherwise untouched — the UI
+receives exactly what you wrote.
 
 ---
 
@@ -38,7 +39,12 @@ possible keys:
 A node with `children` and no `filter` is a **group** — a heading that only
 opens. A node with `filter` and no `children` is a plain leaf, at any level
 including the top. A node may carry both: it is then clickable *and* has
-children under it.
+children under it. A node with **neither** is refused: it would render as a
+heading that never opens, which nobody means on purpose.
+
+Keys beyond those three are ignored, so you may annotate nodes for your own
+tooling — but see the `pattern:` trap in
+[what is validated](#what-is-validated-and-when).
 
 ---
 
@@ -124,35 +130,60 @@ keeps the resulting `selection.tag_filter`, not the node it came from.
 
 ---
 
-## When the panel comes up empty
+## What is validated, and when
 
-Nothing validates this file. It is parsed and served as it is, so a document
-in the wrong shape produces a perfectly successful request and a panel with
-nothing in it — no error in the UI, nothing in the log but a `200`. If the
-taxonomy panel is empty, read what is actually being served:
+This file is checked, and a wrong-shaped one fails loudly instead of
+rendering as an empty panel. The rules:
+
+| Rule | Refused example |
+|---|---|
+| the document is a mapping with a top-level `taxonomy` key | `nodes:`, `tree:`, `groups:` at the top; a bare list of nodes; an empty file |
+| `taxonomy` holds a **list** of nodes | `taxonomy: {label: Areas}` |
+| every node is a mapping with a non-empty **`label`** string | `taxonomy: ["Payments"]` |
+| `filter`, when present, is **one pattern string** the grammar can parse | `filter: ["Visa", "MC"]`, `filter: {op: OR, …}`, `filter: "regex:^(unclosed"` |
+| `children`, when present, is a **list** | `children: {}` |
+| sibling labels are **distinct** — the tree keys its nodes by label | two `- {label: Payments, …}` under one parent |
+| every node has `filter`, `children`, or both | `- {label: Payments, pattern: "Payments"}` |
+
+That last rule is what catches the trap: only `filter` is read, so a node
+spelled `pattern:`, `tags:` or `rule:` would otherwise render as a
+non-clickable heading and look like a *layout* mistake rather than a typo.
+Because such a node has no `children` either, it is refused — and the message
+names the key you actually wrote:
+
+```
+taxonomy.yaml: taxonomy[0].children[0] ('Payments') has neither 'filter' nor
+'children', so it would render as a heading that never opens — did you mean
+'filter'? (this node's other key(s): ['pattern'])
+```
+
+Every message names the offending node by its path in the document, so you can
+go straight to the line.
+
+**Checked in two places**, for one reason each:
+
+- **at startup** — a broken taxonomy stops `runcomposer serve` with that
+  message and exit code 2, the same way an unknown plugin id does
+  (DESIGN.md §8). A server that boots healthy and serves a broken tree is
+  precisely what this exists to prevent.
+- **on every request** — `GET /api/v1/taxonomy` re-reads the file per request,
+  so it can break under a running server. Then the response is a `500`
+  carrying the same message, and the UI shows an error banner. Never a `200`
+  with an empty tree.
+
+Per-request re-reading means an edit shows up on the next page load. Treat
+that as a convenience rather than a promise — hot-reload is explicitly out of
+scope (DESIGN.md §13), and nothing else in the config behaves this way. The
+bundled demo taxonomy is served only when `taxonomy_file` is unset — never as
+a fallback for a file that is broken.
+
+If something still looks wrong, read what is actually being served:
 
 ```bash
 curl -s localhost:8100/api/v1/taxonomy
 ```
 
-It must be a mapping with a `taxonomy` key holding a **list of nodes**; the UI
-reads `body.taxonomy` and renders an empty tree when that key is missing. The
-two silent causes:
-
-1. the top-level key is something else — `nodes:`, `tree:`, `groups:`. The
-   request returns `200` with your document in it, and nothing renders.
-2. a node spells the pattern differently — `tags:`, `pattern:`, `rule:`. Only
-   `filter` is read, so the node renders as a non-clickable group instead of a
-   leaf.
-
-The neighbouring mistakes fail loudly instead, which is worth knowing so you
-can tell them apart: a `taxonomy_file` that does not exist relative to the
-config file, an empty file, and a file whose top level is a bare list all make
-`GET /api/v1/taxonomy` answer `500`, and the UI shows an error banner. The
-bundled demo taxonomy is served only when `taxonomy_file` is unset — never as
-a fallback for a file that is broken.
-
-`GET /api/v1/taxonomy` re-reads the file per request, so an edit shows up on
-the next page load. Treat that as a convenience rather than a promise —
-hot-reload is explicitly out of scope (DESIGN.md §13), and nothing else in the
-config behaves this way.
+What remains *legal but useless* is a tree whose patterns match nothing — a
+valid document renders a valid, empty-looking tree if every leaf's pattern is
+wrong. That is the case-sensitivity trap above, not a shape problem: check a
+leaf's pattern with `runcomposer compile 'prefix:Checkout-'`.

@@ -29,7 +29,17 @@ class Item:
 
 @dataclass(frozen=True)
 class Verdict:
-    """Per-item result. `flaky` is derivable from attempts, never stored."""
+    """Per-item result. `flaky` is derivable from attempts, never stored.
+
+    ``shard`` is the runner-declared partition/chunk label the verdict was
+    delivered under (DESIGN.md §4: run → dispatch → shard). It is **assigned
+    by the delivery, not by the producer**: a parser or runner builds verdicts
+    without it and ``RunStore.record_delivery(shard=…)`` labels the whole
+    bundle, so it is empty on the write path and always filled on the read
+    path (``RunStore.verdicts_for``). Without it a selection fanned out over
+    two partitions returns two rows per item with nothing to tell them apart —
+    the one question fan-out exists to answer.
+    """
 
     item_id: str
     status: str
@@ -37,6 +47,7 @@ class Verdict:
     message: str = ""
     artifacts: tuple[str, ...] = ()
     attempt: int = 1
+    shard: str = ""
 
     def __post_init__(self) -> None:
         if self.status not in VERDICT_STATUSES:
@@ -68,6 +79,25 @@ class DeliveryRecord:
     content_hash: str
     format: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class ArtifactRef:
+    """A reference to one result artifact of a run (DESIGN.md §6.4).
+
+    ``url_or_path`` is either an absolute ``http(s)`` URL — a remote artifact
+    (a CI build link) that passes through untouched and is never fetched by
+    runcomposer — or a filesystem path written by whatever executed the run.
+    Which of the two it is, and whether a local path is servable, is decided
+    by the app layer against the configured artifact directory; the core
+    records the string.
+    """
+
+    run_id: str
+    dispatch_id: str | None
+    name: str
+    media_type: str
+    url_or_path: str
 
 
 @dataclass(frozen=True)

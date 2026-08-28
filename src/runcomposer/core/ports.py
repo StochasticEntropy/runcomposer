@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
-from .model import DeliveryRecord, DispatchRecord, Item, RunRecord, Verdict
+from .model import ArtifactRef, DeliveryRecord, DispatchRecord, Item, RunRecord, Verdict
 
 
 class DispatchRefused(RuntimeError):
@@ -148,7 +148,22 @@ class RunStore(Protocol):
 
     def get_ingest_token_sha256(self, run_id: str) -> str | None: ...
 
-    def latest_completed_run(self, *, completed_before: str | None = None) -> RunRecord | None: ...
+    def latest_completed_run(
+        self,
+        *,
+        completed_before: str | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> RunRecord | None:
+        """§6.3/§7: 'latest' means latest COMPLETED — by completion status and
+        ``completed_at``, optionally bounded by ``completed_before``.
+
+        ``labels`` scopes the search to runs carrying all the given label
+        pairs (the same matching ``list_runs`` uses). Without a scope,
+        "latest" means the latest completed run of *anything* in the store, so
+        on a shared deployment somebody else's ad-hoc selection becomes the
+        reference for a rerun — silently, and with a plausible-looking result
+        (§7). Callers that mean a specific stream of runs pass their labels."""
+        ...
 
     def prune_runs(self, *, before: str | None = None, max_runs: int | None = None) -> list[str]: ...
 
@@ -203,7 +218,14 @@ class RunStore(Protocol):
         self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
     ) -> dict[str, float]: ...
 
-    def verdicts_for(self, run_id: str, dispatch_id: str | None = None) -> list[Verdict]: ...
+    def verdicts_for(
+        self, run_id: str, dispatch_id: str | None = None, *, shard: str | None = None
+    ) -> list[Verdict]:
+        """Verdicts of a run, optionally narrowed to one dispatch and one
+        shard. Every returned ``Verdict`` carries the ``shard`` it was
+        delivered under — that is what makes a partition fan-out readable
+        ("green on env1, red on env2") without reaching past this port."""
+        ...
 
     def set_run_state(
         self,
@@ -223,3 +245,9 @@ class RunStore(Protocol):
         media_type: str,
         url_or_path: str,
     ) -> None: ...
+
+    def artifact_refs(self, run_id: str, dispatch_id: str | None = None) -> list[ArtifactRef]:
+        """Read back what ``add_artifact_ref`` wrote (DESIGN.md §6.4), newest
+        last, optionally narrowed to one dispatch. The write half without this
+        one is a dead end: a failed shard whose log file nothing can name."""
+        ...

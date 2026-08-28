@@ -84,10 +84,13 @@ as a broken request.
 
 The taxonomy is the other thing you write instead of code: `taxonomy_file` is
 a YAML tree of tag patterns that the UI renders on the left and clicks into
-the filter builder. Nothing validates it — a file with the wrong shape is
-parsed, served, and rendered as an empty panel with no error anywhere — so
-write it against [docs/taxonomy.md](docs/taxonomy.md), which has the node
-format, the one-pattern-per-leaf limitation, and a worked example.
+the filter builder. It is validated on the same terms as the rest of the
+config — a wrong-shaped file **fails the boot** with a message naming the
+offending node, and a file broken under a running server answers `500` with
+that same message rather than `200` with an empty panel. Write it against
+[docs/taxonomy.md](docs/taxonomy.md), which has the node format, the
+one-pattern-per-leaf limitation, the rules the validator enforces, and a
+worked example.
 
 **One rule before you write any pattern**, in a taxonomy leaf or a filter: a
 bare literal is matched case-**insensitively**, but `regex:` is compiled
@@ -263,6 +266,39 @@ able to turn a `FAIL` back into a `PASS`.
 original `created_at`. A dispatch is recorded when the hand-off happens — when
 the shard count may still be provisional — and refined from the handle the
 runner returns.
+
+**Read paths are as much of the contract as write paths.** Three members exist
+because the write half alone leaves a question nobody can answer:
+
+```python
+def verdicts_for(self, run_id, dispatch_id=None, *, shard=None) -> list[Verdict]
+def artifact_refs(self, run_id, dispatch_id=None) -> list[ArtifactRef]
+def latest_completed_run(self, *, completed_before=None, labels=None) -> RunRecord | None
+```
+
+- Every `Verdict` you return **must carry the `shard` it was delivered
+  under**. `record_delivery` is what assigns it (the producer never knows it),
+  and one selection fanned out over two partitions is otherwise two
+  indistinguishable rows per item. `attempt` likewise round-trips.
+- `artifact_refs` reads back what `add_artifact_ref` wrote. Without it a
+  failed shard's log file is recorded and unreachable.
+- `latest_completed_run` takes a **label scope**. Unscoped, "latest" is the
+  latest completed run of anything in your store — on a shared instance that
+  is somebody else's selection, and a `failed@latest` rerun then executes the
+  wrong set while looking entirely healthy.
+
+**This port grows by addition only.** New members are added; existing
+signatures gain keyword-only parameters with defaults, never a changed shape.
+If you implemented `RunStore` before 0.2.0, adding `artifact_refs`, the
+`shard=` keyword, the `labels=` keyword, and the `shard` field on returned
+verdicts is the whole upgrade — nothing you already had needs rewriting.
+
+Until you do, a 0.1.0-era store keeps running, and what it cannot do is
+visible rather than faked: no `artifact_refs` means an empty `artifacts` list
+in the run detail (not a 500); verdicts without a `shard` all group under one
+unnamed bucket; an *unscoped* `failed@latest` still resolves, because the core
+passes `labels=` only when there is a scope — while a *scoped* one fails
+loudly, since a store that cannot honour the scope must not appear to.
 
 ---
 

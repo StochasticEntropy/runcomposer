@@ -8,6 +8,7 @@ usable.
 
 from __future__ import annotations
 
+import mimetypes
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from runcomposer.config import Config
 from runcomposer.core.filter import FilterError
 from runcomposer.core.selection import SelectionError
 from runcomposer.core.model import Item, RunRecord
+from runcomposer.core.taxonomy import TaxonomyError
 from runcomposer.quarantine import QuarantineError
 from runcomposer.service import (
     IngestError,
@@ -107,6 +109,11 @@ def create_app(config: Config) -> FastAPI:
     service.source
     for runner_id in config.configured_runner_ids():
         config.resolve_runner_class(runner_id)
+    # Same rule, same reason, for the other thing a deployment writes by hand:
+    # a malformed taxonomy refuses the boot instead of serving an empty tree
+    # with a 200. It is re-checked per request too, because the file is
+    # re-read per request (docs/taxonomy.md). Raises TaxonomyError.
+    service.taxonomy()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -141,6 +148,14 @@ def create_app(config: Config) -> FastAPI:
     @app.exception_handler(QuarantineError)
     async def _quarantine_not_found(_, exc: QuarantineError):  # noqa: ANN001
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(TaxonomyError)
+    async def _bad_taxonomy(_, exc: TaxonomyError):  # noqa: ANN001
+        # The taxonomy is validated at startup, so reaching here means the
+        # file changed under a running server (it is re-read per request).
+        # Still a server-side misconfiguration — but a 500 that says which
+        # node is wrong, never a 200 with an empty tree.
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
 
     # -- read surfaces ------------------------------------------------------
 
@@ -234,6 +249,13 @@ def create_app(config: Config) -> FastAPI:
         # Live per-item progress (§6.2a): while a listener-equipped run is
         # RUNNING these are the streamed verdicts; afterwards the reconciled
         # terminal ones.
+        #
+        # Each row carries its `shard` and `attempt` (§2, §4): one selection
+        # fanned out over two partitions delivers two verdicts per item, and
+        # without the shard label nothing distinguishes them. The flat list
+        # stays flat — grouping it would break every existing reader — and
+        # `shards` below is the roll-up that answers "green on env1, red on
+        # env2" without the caller aggregating anything itself.
         latest = run.dispatches[-1].dispatch_id if run.dispatches else None
         data["verdicts"] = [
             {
@@ -241,9 +263,16 @@ def create_app(config: Config) -> FastAPI:
                 "status": v.status,
                 "duration_ms": v.duration_ms,
                 "message": v.message,
+                "shard": v.shard,
+                "attempt": v.attempt,
             }
             for v in service.store.verdicts_for(run_id, latest)
         ]
+        data["shards"] = service.shard_summaries(run_id, latest)
+        # §6.4: the artifact references the runner recorded, each resolved to
+        # a followable href (local file → the /artifacts route below, remote
+        # CI link → itself).
+        data["artifacts"] = service.artifacts(run_id)
         spec = service.store.get_spec_document(run_id)
         data["planned_count"] = (
             spec.get("selection", {}).get("materialized", {}).get("count", 0) if spec else 0
@@ -358,6 +387,47 @@ def create_app(config: Config) -> FastAPI:
             return _ingest_json(result)
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
+
+    # -- artifacts (§6.4) --------------------------------------------------------
+
+    @app.get("/artifacts/{artifact_path:path}")
+    def artifact_file(artifact_path: str):
+        """Serve one file out of the built-in local artifact directory —
+        `/artifacts/{run_id}/{dispatch_id}/…` for every runner that writes
+        under `core.artifact_dir` per dispatch, which is what `robot-pool`'s
+        per-dispatch isolation produces (§6.2a).
+
+        Two safety properties, both deliberate:
+
+        1. **Containment.** The path is attacker-influenced — it comes from
+           result bundles and from whatever a runner chose to name its files.
+           `Service.resolve_artifact_file` resolves it fully and refuses
+           anything that does not end up strictly inside the configured
+           directory, so `..` segments, absolute paths and symlinks pointing
+           out of the tree are one rule, not three. A refusal is a 404, the
+           same as a miss: probing learns nothing.
+        2. **Sandboxed delivery.** Artifact bytes are untrusted content served
+           from the same origin as the API and the UI. They go out with
+           `sandbox` + `default-src 'none'` and `nosniff`, so an HTML artifact
+           cannot script against this origin. Documents, XML, images and logs
+           render; a report that needs its own JavaScript does not, and the
+           §6.4 answer for those is to host them elsewhere and record the
+           remote URL, which passes through untouched.
+        """
+        try:
+            file = service.resolve_artifact_file(artifact_path)
+        except ServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        media_type, _ = mimetypes.guess_type(file.name)
+        return FileResponse(
+            str(file),
+            media_type=media_type or "application/octet-stream",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; sandbox; base-uri 'none'",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
 
     # -- quarantine (§4, §5, §9) ------------------------------------------------
 

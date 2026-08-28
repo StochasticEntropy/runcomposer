@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import quote, unquote, urlparse
 
 import yaml
 
@@ -27,11 +28,52 @@ from runcomposer.core.ports import DispatchReservation, ParsedVerdict
 from runcomposer.core.registry import PARSER_GROUP, PluginError, resolve_plugin
 from runcomposer.core.selection import Selection
 from runcomposer.core.spec import build_spec, validate_document
+from runcomposer.core.taxonomy import TaxonomyError, validate_taxonomy
 
-__all__ = ["ComposeResult", "IngestError", "IngestReport", "Service", "ServiceError", "MARKER_FILENAME"]
+__all__ = [
+    "ARTIFACT_ROUTE_PREFIX",
+    "ComposeResult",
+    "IngestError",
+    "IngestReport",
+    "Service",
+    "ServiceError",
+    "MARKER_FILENAME",
+]
 
 MARKER_FILENAME = "runcomposer_run.json"
 REFERENCE_FORMAT = "runcomposer-verdicts"
+
+# The built-in local artifact route (DESIGN.md §6.4). Runners that write under
+# ``core.artifact_dir`` per dispatch land at /artifacts/{run_id}/{dispatch_id}/…
+ARTIFACT_ROUTE_PREFIX = "/artifacts/"
+
+
+def _is_http_url(value: str) -> bool:
+    """True only for absolute http(s) URLs — the §6.4 pass-through case.
+
+    Deliberately narrow: ``file:``, ``data:`` and ``javascript:`` also parse
+    as URLs, and none of them is a remote artifact anyone should be handed as
+    a link."""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _relative_to_root(candidate_path: str, root: Path | None) -> str | None:
+    """POSIX-relative location of a recorded path inside the artifact root, or
+    None when it is outside. Symlinks are resolved on both sides first, so a
+    link pointing out of the tree is outside."""
+    if root is None:
+        return None
+    try:
+        resolved = Path(candidate_path).resolve()
+    except OSError:
+        return None
+    if resolved == root or root not in resolved.parents:
+        return None
+    return resolved.relative_to(root).as_posix()
 
 
 class ServiceError(ValueError):
@@ -179,35 +221,72 @@ class Service:
 
     _HISTORY_VERDICTS = {"failed": "FAIL", "passed": "PASS", "skipped": "SKIP", "error": "ERROR"}
 
-    def resolve_history(self, query: str) -> tuple[list[str], dict[str, Any]]:
+    def resolve_history(
+        self, query: str, *, labels: Mapping[str, str] | None = None
+    ) -> tuple[list[str], dict[str, Any]]:
         """Resolve '<verdict>@<selector>' (e.g. 'failed@latest',
         'failed@run:<id>', 'failed@before:<ISO time>') into item ids + the
         §3.1 derived_from provenance entry. The two-level contract (§6.3):
-        the RUN is selected by completion status, the ITEMS by verdict."""
-        verdict_word, sep, selector = query.partition("@")
+        the RUN is selected by completion status, the ITEMS by verdict.
+
+        A **label scope** narrows which runs count as candidates, written as a
+        query-string suffix on the selector:
+        ``failed@latest?suite=nightly&env=staging``. Without one, "latest"
+        means the latest completed run of anything in the store — on a shared
+        deployment the next person's ad-hoc five-test selection becomes the
+        reference for the nightly rerun, which then executes five tests
+        instead of the sixty that failed and looks entirely healthy doing it.
+        ``labels`` (the keyword argument) is the programmatic equivalent and
+        merges with the inline scope; a key given twice with different values
+        is refused rather than silently resolved.
+        """
+        verdict_word, sep, selector_text = query.partition("@")
         status = self._HISTORY_VERDICTS.get(verdict_word)
         if not sep or status is None:
             raise ServiceError(
                 f"history query must be '<verdict>@<selector>' with verdict in "
                 f"{sorted(self._HISTORY_VERDICTS)}, got {query!r}"
             )
+        selector, scope = self._split_history_scope(selector_text, query)
+        for key, value in (labels or {}).items():
+            if key in scope and scope[key] != value:
+                raise ServiceError(
+                    f"label scope {key!r} is {scope[key]!r} in the history query {query!r} but "
+                    f"{value!r} was passed alongside it — refusing to guess which one is meant"
+                )
+            scope[key] = value
+
+        # ``labels`` is only passed when there IS a scope, so an unscoped query
+        # still works against a RunStore written before the keyword existed
+        # (ADOPTING.md §4). A *scoped* query against such a store fails loudly
+        # — a store that cannot honour the scope must not appear to.
+        scope_kwargs: dict[str, Any] = {"labels": dict(scope)} if scope else {}
         if selector == "latest":
-            run = self.store.latest_completed_run()
+            run = self.store.latest_completed_run(**scope_kwargs)
             query_doc: dict[str, Any] = {"run": "LATEST", "verdicts": [status]}
         elif selector.startswith("run:"):
+            if scope:
+                raise ServiceError(
+                    f"history selector {selector!r} already names one run, so the label scope "
+                    f"{scope!r} could only be ignored — drop one of the two"
+                )
             run = self.store.get_run(selector[len("run:"):])
             query_doc = {"run": selector[len("run:"):], "verdicts": [status]}
         elif selector.startswith("before:"):
             cutoff = selector[len("before:"):]
-            run = self.store.latest_completed_run(completed_before=cutoff)
+            run = self.store.latest_completed_run(completed_before=cutoff, **scope_kwargs)
             query_doc = {"run": {"before": cutoff}, "verdicts": [status]}
         else:
             raise ServiceError(
-                f"unknown history selector {selector!r} (expected latest, run:<id>, before:<time>)"
+                f"unknown history selector {selector!r} (expected latest, run:<id>, "
+                "before:<time>, each optionally scoped with '?key=value&…')"
             )
+        if scope:
+            query_doc["labels"] = dict(scope)
         if run is None:
+            scoped = f" scoped to labels {dict(scope)}" if scope else ""
             raise ServiceError(
-                f"history selection {query!r} matched no completed run — history "
+                f"history selection {query!r} matched no completed run{scoped} — history "
                 "features are dark on a fresh store (DESIGN.md §6.3)"
             )
         latest_dispatch = run.dispatches[-1].dispatch_id if run.dispatches else None
@@ -218,7 +297,43 @@ class Service:
                 if v.status == status
             )
         )
-        return item_ids, {"provider": "history", "query": query_doc, "resolved_run_id": run.id}
+        # Provenance answers both halves of "which run, and why that one":
+        # the query (selector + scope) is the why, the resolved run and the
+        # labels it actually carried are the which (§3.1 derived_from).
+        provenance: dict[str, Any] = {
+            "provider": "history",
+            "query": query_doc,
+            "resolved_run_id": run.id,
+        }
+        if run.completed_at:
+            provenance["resolved_run_completed_at"] = run.completed_at
+        if run.labels:
+            provenance["resolved_run_labels"] = dict(run.labels)
+        return item_ids, provenance
+
+    @staticmethod
+    def _split_history_scope(selector_text: str, query: str) -> tuple[str, dict[str, str]]:
+        """Split ``<selector>?key=value&…`` into the selector and its label
+        scope. '?' and '&' appear in neither ISO-8601 timestamps nor run ids,
+        so the suffix is unambiguous; percent-escapes are decoded, so a label
+        value may itself contain '&' or '='."""
+        selector, sep, scope_text = selector_text.partition("?")
+        if not sep:
+            return selector, {}
+        scope: dict[str, str] = {}
+        for pair in scope_text.split("&"):
+            if not pair:
+                continue
+            key, has_value, value = pair.partition("=")
+            if not has_value or not key:
+                raise ServiceError(
+                    f"history label scope must be 'key=value' pairs joined by '&', got {pair!r} "
+                    f"in {query!r}"
+                )
+            scope[unquote(key)] = unquote(value)
+        if not scope:
+            raise ServiceError(f"history query {query!r} has an empty label scope after '?'")
+        return selector, scope
 
     def _prepare_selection(
         self, selection_data: Mapping[str, Any]
@@ -738,7 +853,27 @@ class Service:
     # -- misc surfaces -----------------------------------------------------------
 
     def taxonomy(self) -> dict[str, Any]:
-        return yaml.safe_load(self.config.taxonomy_source.read_text(encoding="utf-8"))
+        """Read and validate the configured taxonomy file (DESIGN.md §2, §8).
+
+        Validated on **every** read, not once at boot, because the file is
+        re-read per request — but ``create_app`` also calls this at startup,
+        so a deployment whose taxonomy is malformed refuses to boot the way an
+        unknown plugin id does (§8), instead of coming up healthy and serving
+        an empty tree with a 200."""
+        source = self.config.taxonomy_source
+        origin = str(source)
+        try:
+            text = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise TaxonomyError(
+                f"{origin}: taxonomy file cannot be read ({exc.strerror or exc}) — "
+                "core.taxonomy_file is resolved relative to the config file's directory"
+            ) from None
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise TaxonomyError(f"{origin}: taxonomy file is not valid YAML: {exc}") from None
+        return validate_taxonomy(document, origin=origin)
 
     def runner_infos(self) -> list[dict[str, Any]]:
         infos = []
@@ -756,6 +891,118 @@ class Service:
         for verdict in verdicts:
             summary[verdict.status] = summary.get(verdict.status, 0) + 1
         return summary
+
+    def shard_summaries(
+        self, run_id: str, dispatch_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The fan-out roll-up (§4 identity layering): one entry per shard of
+        the dispatch, in delivery order, each with its own verdict counts and
+        computed completion.
+
+        This is what makes "green on partition A, red on partition B" a
+        readable answer instead of an aggregation the caller has to do itself
+        over rows that used to carry no shard at all."""
+        grouped: dict[str, list[Verdict]] = {}
+        for verdict in self.store.verdicts_for(run_id, dispatch_id):
+            grouped.setdefault(verdict.shard, []).append(verdict)
+        summaries = []
+        for shard, verdicts in grouped.items():
+            summary: dict[str, int] = {}
+            for verdict in verdicts:
+                summary[verdict.status] = summary.get(verdict.status, 0) + 1
+            summaries.append(
+                {
+                    "shard": shard,
+                    "count": len(verdicts),
+                    "summary": summary,
+                    "completion": completion_of(verdicts),
+                }
+            )
+        return summaries
+
+    # -- artifacts (§6.4) ----------------------------------------------------
+
+    def artifacts(self, run_id: str, dispatch_id: str | None = None) -> list[dict[str, Any]]:
+        """Read back the run's artifact references, each resolved to something
+        a reader can actually follow (DESIGN.md §6.4).
+
+        ``url_or_path`` is one string with two meanings, and they are handled
+        differently on purpose:
+
+        - an absolute ``http``/``https`` URL is a **remote** artifact (a CI
+          build link). It passes through verbatim as the href; runcomposer
+          never fetches, proxies, or validates it. Any other scheme —
+          ``file:``, ``data:``, ``javascript:`` — is *not* treated as a URL:
+          those would be a link-injection vector for any UI rendering the
+          href, and none of them is an artifact runcomposer can serve.
+        - anything else is a **local path**. It gets an href only when it
+          really lies inside ``core.artifact_dir`` (symlinks resolved), in
+          which case the built-in route below serves it. A path outside stays
+          visible — a runner may legitimately write elsewhere — but is not
+          servable, and says so instead of offering a dead link.
+        """
+        # Feature-detected, like the store's duration history is: a RunStore
+        # written against an older revision of the port has no reader, and a
+        # run detail without artifacts is a better answer than a 500 on every
+        # run (ADOPTING.md §4 says what to add).
+        reader = getattr(self.store, "artifact_refs", None)
+        if reader is None:
+            return []
+        root = self._artifact_root()
+        resolved = []
+        for ref in reader(run_id, dispatch_id):
+            kind, href = "external-path", None
+            if _is_http_url(ref.url_or_path):
+                kind, href = "url", ref.url_or_path
+            else:
+                relative = _relative_to_root(ref.url_or_path, root)
+                if relative is not None:
+                    kind = "local"
+                    href = ARTIFACT_ROUTE_PREFIX + quote(relative)
+            resolved.append(
+                {
+                    "name": ref.name,
+                    "media_type": ref.media_type,
+                    "dispatch_id": ref.dispatch_id,
+                    "url_or_path": ref.url_or_path,
+                    "kind": kind,
+                    "href": href,
+                }
+            )
+        return resolved
+
+    def _artifact_root(self) -> Path | None:
+        """The configured artifact directory, fully resolved. ``None`` when it
+        does not exist yet — nothing can be inside a directory that is not
+        there, so every local path is then simply not servable."""
+        root = Path(self.config.artifact_dir)
+        try:
+            return root.resolve(strict=True)
+        except OSError:
+            return None
+
+    def resolve_artifact_file(self, artifact_path: str) -> Path:
+        """Map a request path under ``/artifacts/`` to a real file, or refuse.
+
+        Artifact paths are attacker-influenced: they come from result bundles
+        and from whatever a runner chose to write. The rule is containment,
+        checked after full resolution so ``..`` segments, absolute paths and
+        symlinks out of the tree are all covered by the same check — and the
+        refusal is deliberately indistinguishable from "not found", so probing
+        for files outside the root learns nothing.
+        """
+        root = self._artifact_root()
+        if root is None or not artifact_path:
+            raise ServiceError(f"unknown artifact {artifact_path!r}")
+        candidate = (root / artifact_path).resolve()
+        if candidate == root or root not in candidate.parents:
+            raise ServiceError(f"unknown artifact {artifact_path!r}")
+        if not candidate.is_file():
+            raise ServiceError(
+                f"unknown artifact {artifact_path!r} — the reference is recorded but the file "
+                "is gone (retention, `core.retention` / `runcomposer gc`, may have expired it)"
+            )
+        return candidate
 
     # -- internals ----------------------------------------------------------------
 

@@ -82,10 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     p_runs = sub.add_parser("runs", help="list stored runs")
     p_runs.add_argument("--failed-in", metavar="SELECTOR",
                         help="print item ids that FAILED in the selected run "
-                        "(latest | run:<id> | before:<ISO time>) — DESIGN.md §7/§9")
+                        "(latest | run:<id> | before:<ISO time>, each optionally scoped "
+                        "with '?key=value&…' or with --label) — DESIGN.md §7/§9")
     p_runs.add_argument("--state", help="filter by lifecycle state (e.g. COMPLETE)")
     p_runs.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
-                        help="filter by label (repeatable; all must match)")
+                        help="restrict to runs carrying this label (repeatable; all must "
+                        "match). Filters the listing — and, with --failed-in, scopes which "
+                        "runs 'latest' may choose from")
     p_runs.add_argument("--since", help="only runs created at/after this ISO-8601 UTC time")
     p_runs.add_argument("--until", help="only runs created at/before this ISO-8601 UTC time")
     p_runs.add_argument("--limit", type=int, default=20)
@@ -130,12 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         "serve": _cmd_serve,
     }
     from runcomposer.config import ConfigError
+    from runcomposer.core.taxonomy import TaxonomyError
 
     try:
         return handlers[args.command](args)
-    except ConfigError as exc:
+    except (ConfigError, TaxonomyError) as exc:
         # Plugin resolution is lazy, so a bad config can surface past
         # load_config — still a config error, still a clean one-liner (§8).
+        # A malformed taxonomy is the same class of problem: hand-written
+        # deployment data that must fail loudly, not quietly serve nothing.
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -317,12 +323,21 @@ def _cmd_runs(args: argparse.Namespace) -> int:
     if args.failed_in:
         from runcomposer.service import ServiceError
 
+        # --label scopes which runs 'latest' may pick from — without it,
+        # "latest" is the latest completed run of ANYTHING in the store, and
+        # on a shared instance that is somebody else's selection (§7).
         try:
-            item_ids, provenance = service.resolve_history(f"failed@{args.failed_in}")
+            item_ids, provenance = service.resolve_history(
+                f"failed@{args.failed_in}", labels=_parse_labels(args.label) or None
+            )
         except ServiceError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(f"# {len(item_ids)} item(s) FAILED in run {provenance['resolved_run_id']}")
+        scope = provenance["query"].get("labels")
+        print(
+            f"# {len(item_ids)} item(s) FAILED in run {provenance['resolved_run_id']}"
+            + (f" (scope: {scope})" if scope else "")
+        )
         for item_id in item_ids:
             print(item_id)
         return 0
@@ -449,11 +464,13 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     from runcomposer.api import create_app
     from runcomposer.config import ConfigError, load_config
+    from runcomposer.core.taxonomy import TaxonomyError
 
     try:
         config = load_config(args.config)
-        app = create_app(config)  # resolves all plugins; fails loudly (§8)
-    except ConfigError as exc:
+        # Resolves all plugins AND validates the taxonomy; fails loudly (§8).
+        app = create_app(config)
+    except (ConfigError, TaxonomyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     host = args.host or config.api["host"]

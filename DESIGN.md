@@ -77,7 +77,7 @@ in `reserve_name/` (owner action, needs account tokens). Runner naming axis is
 | **Selection** | The lossless filter: `tag_filter` AST + optional explicit `item_ids`. Compiled against a catalog snapshot into a **materialized item list**. |
 | **Run spec** | The versioned document: identity + selection (incl. materialization) + source snapshot + results contract + one opaque runner section. |
 | **Run / Dispatch / Delivery** | A **Run** is the stored lifecycle record for one spec. Each hand-off to an executor is a **Dispatch** (`dispatch_id`). Each results bundle that arrives is a **Delivery** (content-hashed). One run may have several dispatches (re-runs) and several deliveries (shards, retries). |
-| **Verdict** | Per-item result: `PASS / FAIL / SKIP / ERROR`, duration, message, artifacts, `attempt` (per-dispatch retry counter; `flaky` is derivable, not stored). |
+| **Verdict** | Per-item result: `PASS / FAIL / SKIP / ERROR`, duration, message, artifacts, `attempt` (per-dispatch retry counter; `flaky` is derivable, not stored), and the `shard` it was delivered under. The shard is assigned by the *delivery*, not the producer: a parser emits verdicts without one, `record_delivery(shard=…)` labels the bundle, and every verdict read back carries it — a selection fanned out over two partitions is otherwise two indistinguishable rows per item. |
 | **Runner** | Anything that fulfills a run spec. In-process runners are plugins; external runners just consume the document. |
 
 Framework-specific concepts (suites, Robot `longname`, stage fan-out,
@@ -437,9 +437,22 @@ lesson: leaked runtime keys calcified into persisted state).
 The history-query surface is explicit because §7 depends on it:
 
 - runs carry **completion status + completed_at** (the LATEST / by-date
-  selectors operate on these — "latest" means latest *completed*);
-- verdicts are queryable by `(run selector, verdict filter)` → item ids;
+  selectors operate on these — "latest" means latest *completed*) **and a
+  label scope**: `latest_completed_run(*, completed_before=None, labels=None)`
+  — unscoped, "latest" means the latest completed run of *anything* in the
+  store, which is wrong on any shared instance (§7);
+- verdicts are queryable by `(run selector, verdict filter)` → item ids, and
+  narrowable per dispatch **and per shard** —
+  `verdicts_for(run_id, dispatch_id=None, *, shard=None)`, every returned
+  verdict carrying its own `shard` and `attempt`;
+- artifact references are readable, not only writable:
+  `artifact_refs(run_id, dispatch_id=None)` (§6.4);
 - duration aggregates by item id over recent completed dispatches (§6.2a).
+
+**Port evolution rule.** `RunStore` is implemented by third parties
+(ADOPTING.md §4), so it grows by *addition*: new protocol members, and
+keyword-only parameters with defaults on existing ones. No existing signature
+changes shape.
 
 Reference impls: `sqlite` (default, zero-setup) and `postgres`. Stated
 plainly: **history features are dark on a fresh store** — failed-rerun and
@@ -451,10 +464,47 @@ wants warm history).
 ### 6.4 Artifacts
 
 Not a port: the store records artifact references
-`(name, media_type, url_or_path)`; a built-in local artifact directory serves
-`/artifacts/{run_id}/{dispatch_id}/`; remote URLs (CI links) pass through.
+`(name, media_type, url_or_path)` and **reads them back** —
+`add_artifact_ref` without `artifact_refs` is a dead end, a failed shard whose
+log file nothing can name. They surface in `GET /api/v1/runs/{id}` under
+`artifacts`, each entry resolved to something a reader can follow.
+
+**`url_or_path` is one field with two meanings**, and the resolution is
+explicit about which:
+
+- an absolute **`http`/`https` URL** is a remote artifact (a CI build link).
+  It passes through as the href verbatim; runcomposer never fetches, proxies,
+  or validates it. Any other scheme — `file:`, `data:`, `javascript:` — is
+  deliberately *not* treated as a URL: none of them is an artifact this tool
+  can serve, and handing one out as a link is a link-injection vector.
+- anything else is a **local path**, servable only when it really lies inside
+  `core.artifact_dir`. A path outside stays visible in the payload (a runner
+  may legitimately write elsewhere) with no href, rather than offering a link
+  that cannot work.
+
+A built-in local artifact directory serves `/artifacts/{run_id}/{dispatch_id}/`
+— the layout every runner writing per dispatch produces, `robot-pool`
+included. Two safety properties, both deliberate:
+
+1. **Containment, checked after resolution.** Artifact paths are
+   attacker-influenced: they come out of result bundles and out of whatever a
+   runner chose to name its files. The request path is resolved fully and
+   refused unless it lands strictly inside the configured directory, so `..`
+   segments, absolute paths, and symlinks pointing out of the tree are one
+   rule rather than three patches. A refusal is a `404`, identical to a miss:
+   probing for files outside the root learns nothing.
+2. **Sandboxed delivery.** Artifact bytes are untrusted content served from
+   the same origin as the API and the UI. They go out with
+   `Content-Security-Policy: default-src 'none'; sandbox` and
+   `X-Content-Type-Options: nosniff`, so an HTML artifact cannot script
+   against this origin. XML, text, logs, and images render; a report that
+   needs its own JavaScript does not — and the answer for those is the
+   pass-through above: host them where they belong and record the URL.
+
 **Retention is config, not an afterthought:** max age / max runs per store
 with a `runcomposer gc` command; quarantine and artifact dirs are bounded (§5).
+`gc` expires artifact *files*; a reference whose file is gone answers `404`
+with a message naming retention as the likely cause.
 
 ---
 
@@ -474,6 +524,48 @@ auditable. Locale date words are UI sugar, never spec content. The
 run-completion vs. item-verdict distinction (select the run by *completion
 status*, filter items by *verdict*) is carried by §6.3's two-level history
 contract.
+
+**The label scope is not optional decoration.** "Latest" without one means
+the latest completed run of *anything* in the store, which stops being true
+the moment a second person composes a run: someone's ad-hoc five-test
+selection becomes the reference for the nightly rerun, which then executes
+five tests instead of the sixty that failed — and nothing about the result
+looks wrong. So the machine-readable query syntax carries the scope:
+
+```
+<verdict>@<selector>[?key=value&key2=value2]
+
+failed@latest                            # every completed run is a candidate
+failed@latest?suite=nightly              # only runs labelled suite=nightly
+failed@before:2026-07-02T00:00:00Z?suite=nightly&env=staging
+failed@run:01JZ8ZZ…                      # explicit run; a scope here is REFUSED,
+                                         #   not ignored — it could only mislead
+```
+
+`?` and `&` occur in neither ISO-8601 timestamps nor run ids, so the suffix is
+unambiguous; percent-escapes are decoded, so a label value may contain either.
+The same scope is available as `runcomposer runs --failed-in latest --label
+suite=nightly` and as the `labels=` argument of `Service.resolve_history`; a
+key supplied twice with different values is refused rather than silently
+resolved.
+
+Provenance records both halves of "which run, and why that one" — the query
+(selector **and** scope) plus the run it resolved to, its `completed_at`, and
+the labels it actually carried:
+
+```yaml
+derived_from:
+  - provider: history
+    query: { run: LATEST, verdicts: [FAIL], labels: { suite: nightly } }
+    resolved_run_id: "01JZ8ZZ..."
+    resolved_run_completed_at: "2026-07-02T03:14:00Z"
+    resolved_run_labels: { suite: nightly, env: staging }
+```
+
+The idiom for a recurring stream is to scope the lookup and label the new run
+the same way, so the rerun joins the stream it reran:
+`runcomposer spec --from-history 'failed@latest?suite=nightly' --label
+suite=nightly`.
 
 ---
 
@@ -505,6 +597,24 @@ Rules: plugin sections are owned and validated by the plugin; the core
 validates only `core`; unknown active plugin ids fail startup loudly. Plugin
 *selection* lives here (import path or entry-point name) — no env vars.
 
+**The taxonomy file is validated on the same terms** — it is the other thing a
+deployment writes by hand, and an unvalidated one used to be served verbatim
+as a `200` with an empty panel and nothing in the log. Top-level `taxonomy`
+must be a list; each node needs a non-empty `label`, a `filter` (when present)
+that is a single pattern string the §3.1 grammar accepts, and a `children`
+(when present) that is a list; sibling labels must be distinct (the tree keys
+nodes by label); a node with neither `filter` nor `children` is refused,
+because that is exactly what a misspelled `pattern:`/`tags:` key produces.
+Unknown *extra* node keys are ignored, matching §3's stance on unknown fields
+inside a known section.
+
+Checked in **both** places, for one reason each: at startup, so a malformed
+taxonomy refuses the boot the way an unknown plugin id does; and on every
+request, because `GET /api/v1/taxonomy` re-reads the file per request and can
+therefore see it rot under a running server. Same validator, same message — a
+`500` naming the offending node by its path in the document, never a `200`
+with an empty tree.
+
 ---
 
 ## 9. API & CLI surface
@@ -515,7 +625,9 @@ POST /api/v1/selection/compile          # preview: matched items + warnings
 POST /api/v1/selection/spec-preview     # render the would-be runspec
 POST /api/v1/runs                       # compose (+ dispatch: {runner: id} | {mode: export})
 GET  /api/v1/runs                       # list (filter: state, labels, time)
-GET  /api/v1/runs/{id}                  # detail incl. dispatches + deliveries
+GET  /api/v1/runs/{id}                  # detail incl. dispatches + deliveries,
+                                        #   shard-labelled verdicts, a per-shard
+                                        #   roll-up, and artifact references (§6.4)
 GET  /api/v1/runs/{id}/items            # materialized selection
 GET  /api/v1/runs/{id}/spec             # the exact runspec document
 POST /api/v1/runs/{id}/results          # ingestion push (multipart; shard + token)
@@ -524,7 +636,18 @@ GET  /api/v1/quarantine                 # unmatched deliveries; attach/promote a
 GET  /api/v1/runners                    # registry + capabilities + health (verbatim)
 GET  /api/v1/health                     # core health only
 GET  /api/v1/ui-config
+
+GET  /artifacts/{run_id}/{dispatch_id}/…  # the built-in local artifact
+                                          #   directory (§6.4) — outside
+                                          #   /api/v1: it serves files, not JSON
 ```
+
+The run-detail payload keeps its verdict list **flat** and labels every row
+(`shard`, `attempt`) rather than nesting it by shard: grouping would break
+every existing reader, and the flat list is still what a per-item view wants.
+The fan-out question is answered next to it by `shards`, a per-shard roll-up
+(`count`, status counts, computed `completion`) — so "green on partition A,
+red on partition B" is read, not aggregated.
 
 Runner-specific admin actions (e.g. a pool reload) are
 `POST /api/v1/runners/{id}/actions/<action>`, capability-gated — never core
@@ -534,7 +657,9 @@ endpoints.
 `runcomposer compile` (preview) · `runcomposer spec [--format json|yaml]` (emit a
 runspec — the export workflow's compose step) · `runcomposer dispatch --runner
 robot-pool spec.yaml` · `runcomposer ingest` · `runcomposer runs` / `runcomposer runs
---failed-in latest` · `runcomposer catalog` (list/snapshot the corpus) · `runcomposer
+--failed-in latest [--label suite=nightly]` (§7 — the label scope is what keeps
+"latest" from meaning somebody else's run) · `runcomposer catalog`
+(list/snapshot the corpus) · `runcomposer
 validate spec.yaml` · `runcomposer gc`. Plus the vendorable **`runcomposer-exec`**
 consumer (§6.2c) shipped as its own tiny artifact.
 
@@ -651,3 +776,6 @@ Each phase ends runnable + demoable.
 | 4 | License | **MIT.** |
 | 5 | `runcomposer-exec` distribution | **Both by construction**: stdlib-only single file, also pipx-installable; JSON spec input so zero deps. |
 | 6 | Who mints the dispatch id (2026-08-28) | **runcomposer does**, offered to the runner as a `DispatchReservation` via the optional `bind_dispatch` hook (§6.2); the runner decides *when* the hand-off is recorded, and the returned handle refines the declaration. Rejected: passing the id into `dispatch()` (breaks the published signature), and letting bound runners write their own dispatch rows (duplicates the ledger, unavailable to unbound runners, and lets a runner's own id drift from its configured `mode`). A refused dispatch — refusal always precedes the recording — leaves **no** row. |
+| 7 | Shape of the shard in run detail (2026-08-28) | **Label the flat verdict list, add a sibling roll-up** (§9). Rejected: nesting verdicts by shard — it breaks every existing reader for a view a per-item table does not want; and leaving the aggregation to clients — the fan-out question is the reason shards exist, so answering it is the payload's job. |
+| 8 | Serving local artifacts (2026-08-28) | **Containment + sandbox** (§6.4): resolve the path fully and refuse anything not strictly inside `core.artifact_dir` (one rule covering `..`, absolute paths and symlinks), refuse as `404` so probing is uninformative, and serve with `sandbox`/`default-src 'none'`/`nosniff` because the bytes are attacker-influenced and share an origin with the UI. Accepted cost: a scripted HTML report renders inert; the §6.4 pass-through (host it elsewhere, record the URL) is the answer for those. Rejected: a bare static mount (no containment story, scripts live), and forcing `Content-Disposition: attachment` on everything (kills the one-click log the feature exists for). |
+| 9 | History scope syntax (2026-08-28) | **A query-string suffix on the selector**, `<verdict>@<selector>?key=value&…` (§7), because `?`/`&` cannot occur in an ISO-8601 time or a run id, it survives a shell, an HTTP body and a spec field unchanged, and it composes with every existing selector. A scope on `run:<id>` is **refused, not ignored** — it can only mislead. Rejected: a second CLI-only flag (invisible in the API and in `derived_from`), and bracket/semicolon forms (quoting hazards, no established reading). |

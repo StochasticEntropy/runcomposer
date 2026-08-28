@@ -15,7 +15,13 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from runcomposer.core.ids import new_ulid
-from runcomposer.core.model import DeliveryRecord, DispatchRecord, RunRecord, Verdict
+from runcomposer.core.model import (
+    ArtifactRef,
+    DeliveryRecord,
+    DispatchRecord,
+    RunRecord,
+    Verdict,
+)
 
 __all__ = ["SqliteRunStore", "StoreError"]
 
@@ -191,18 +197,37 @@ class SqliteRunStore:
             row = conn.execute("SELECT document FROM specs WHERE run_id = ?", (run_id,)).fetchone()
         return json.loads(row["document"]) if row else None
 
-    def latest_completed_run(self, *, completed_before: str | None = None) -> RunRecord | None:
+    def latest_completed_run(
+        self,
+        *,
+        completed_before: str | None = None,
+        labels: Mapping[str, str] | None = None,
+    ) -> RunRecord | None:
         """§6.3/§7: 'latest' means latest COMPLETED — selected by completion
-        status and completed_at, optionally bounded by a cutoff."""
-        query = "SELECT id FROM runs WHERE state = 'COMPLETE'"
+        status and completed_at, optionally bounded by a cutoff and scoped to
+        runs carrying all of ``labels``.
+
+        The label scope is not a nicety: unscoped, "latest" is the latest
+        completed run of anything in the store, so on a shared deployment the
+        next person's five-test selection silently becomes the reference for
+        the nightly rerun. Labels are matched in Python, exactly as
+        ``list_runs`` does — they live in a JSON column, and a run's label set
+        is small."""
+        query = "SELECT id, labels FROM runs WHERE state = 'COMPLETE'"
         params: list[Any] = []
         if completed_before is not None:
             query += " AND completed_at <= ?"
             params.append(completed_before)
-        query += " ORDER BY completed_at DESC, id DESC LIMIT 1"
+        query += " ORDER BY completed_at DESC, id DESC"
         with self._conn() as conn:
-            row = conn.execute(query, params).fetchone()
-        return self.get_run(row["id"]) if row else None
+            rows = conn.execute(query, params).fetchall()
+        for row in rows:
+            if labels:
+                run_labels = json.loads(row["labels"])
+                if not all(run_labels.get(key) == value for key, value in labels.items()):
+                    continue
+            return self.get_run(row["id"])
+        return None
 
     def get_ingest_token_sha256(self, run_id: str) -> str | None:
         with self._conn() as conn:
@@ -392,12 +417,21 @@ class SqliteRunStore:
             ).fetchall()
         return {row["shard"] for row in rows}
 
-    def verdicts_for(self, run_id: str, dispatch_id: str | None = None) -> list[Verdict]:
+    def verdicts_for(
+        self, run_id: str, dispatch_id: str | None = None, *, shard: str | None = None
+    ) -> list[Verdict]:
+        """Verdicts of a run, narrowable to one dispatch and one shard. The
+        shard column has always been stored; returning it is what makes a
+        partition fan-out readable through the port instead of by opening the
+        database file (§4 identity layering: run → dispatch → shard)."""
         query = "SELECT * FROM verdicts WHERE run_id = ?"
         params: tuple[Any, ...] = (run_id,)
         if dispatch_id is not None:
             query += " AND dispatch_id = ?"
             params += (dispatch_id,)
+        if shard is not None:
+            query += " AND shard = ?"
+            params += (shard,)
         with self._conn() as conn:
             rows = conn.execute(query + " ORDER BY rowid", params).fetchall()
         return [
@@ -407,6 +441,7 @@ class SqliteRunStore:
                 duration_ms=row["duration_ms"],
                 message=row["message"],
                 attempt=row["attempt"],
+                shard=row["shard"],
             )
             for row in rows
         ]
@@ -461,6 +496,27 @@ class SqliteRunStore:
                 " VALUES (?, ?, ?, ?, ?)",
                 (run_id, dispatch_id, name, media_type, url_or_path),
             )
+
+    def artifact_refs(self, run_id: str, dispatch_id: str | None = None) -> list[ArtifactRef]:
+        """§6.4: read back the references ``add_artifact_ref`` writes, in
+        insertion order, optionally narrowed to one dispatch."""
+        query = "SELECT * FROM artifact_refs WHERE run_id = ?"
+        params: tuple[Any, ...] = (run_id,)
+        if dispatch_id is not None:
+            query += " AND dispatch_id = ?"
+            params += (dispatch_id,)
+        with self._conn() as conn:
+            rows = conn.execute(query + " ORDER BY rowid", params).fetchall()
+        return [
+            ArtifactRef(
+                run_id=row["run_id"],
+                dispatch_id=row["dispatch_id"],
+                name=row["name"],
+                media_type=row["media_type"],
+                url_or_path=row["url_or_path"],
+            )
+            for row in rows
+        ]
 
     # -- helpers -------------------------------------------------------------
 

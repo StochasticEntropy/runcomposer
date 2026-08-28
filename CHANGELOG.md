@@ -2,7 +2,57 @@
 
 ## Unreleased
 
+### Added
+- **`RunStore` read paths** (DESIGN.md §6.3). The port grows by addition only —
+  new members, and keyword-only parameters with defaults on existing ones:
+  `artifact_refs(run_id, dispatch_id=None)`, the `shard=` keyword on
+  `verdicts_for`, and the `labels=` keyword on `latest_completed_run`.
+  Returned `Verdict`s carry a new `shard` field. Third-party stores written
+  against 0.1.0 need exactly those four additions and no rewrites
+  (ADOPTING.md §4).
+- **`GET /artifacts/{run_id}/{dispatch_id}/…`** — the built-in local artifact
+  route DESIGN.md §6.4 has always promised. Paths are resolved and refused
+  unless strictly inside `core.artifact_dir` (one rule covering `..`,
+  absolute paths and symlinks; a refusal is a `404`, identical to a miss), and
+  bytes are served with `sandbox` / `default-src 'none'` / `nosniff` because
+  they are attacker-influenced content on the app's own origin.
+- **A label scope for history selection** (§7):
+  `<verdict>@<selector>?key=value&…`, `runcomposer runs --failed-in latest
+  --label suite=nightly`, and `labels=` on `Service.resolve_history`. A scope
+  on `run:<id>` is refused rather than ignored. `derived_from` now records the
+  scope alongside the run it resolved to, its `completed_at`, and the labels
+  that run carried.
+- **Taxonomy validation** (§8, docs/taxonomy.md): shape, node keys, and each
+  leaf's pattern are checked at startup *and* per request, with messages
+  naming the offending node by its path in the document.
+
 ### Fixed
+- **Verdicts carry their shard.** `verdicts.shard` was stored but never read
+  back, so one selection fanned out over two partitions produced two verdict
+  rows per item with nothing to tell them apart — the single question fan-out
+  exists to answer, and the only way to get at it was to open the sqlite file.
+  `GET /api/v1/runs/{id}` now labels every verdict with its `shard` and
+  `attempt` (the flat list stays flat; existing readers are unaffected) and
+  adds a `shards` roll-up with per-shard counts and computed completion.
+- **Artifact references are readable.** `add_artifact_ref` had no reader
+  anywhere except `gc`'s deletion loop: `robot-pool` faithfully recorded an
+  `output.xml` per shard that nothing could name, let alone fetch. They now
+  appear in the run-detail payload, each resolved to a followable href — the
+  new route for a local file, the URL itself for a remote CI link, and no
+  href (but still visible) for a local path outside the artifact directory.
+  Only `http`/`https` count as remote; `file:`/`data:`/`javascript:` are never
+  handed out as links.
+- **`failed@latest` had no scope.** DESIGN.md §7's flagship feature resolved
+  through an unscoped `latest_completed_run`, so "latest" meant the latest
+  completed run of *anything* in the store. On any shared deployment the next
+  ad-hoc selection silently became the reference for the nightly rerun, which
+  then executed the wrong item set and looked entirely healthy doing it.
+- **A malformed taxonomy failed silently.** `service.taxonomy()` served
+  whatever the YAML parsed to: a wrong-shaped file was a `200` with an empty
+  UI panel and no error anywhere, and a missing or empty file was an uncaught
+  exception behind a bare `500`. Both now fail with a message naming the file
+  and the node — at startup like an unknown plugin id, and per request because
+  the file is re-read per request.
 - A run that is executing now carries its dispatch record. `dispatch_runner`
   recorded the dispatch only from the returned `DispatchHandle`, so a runner
   that executes inside `dispatch()` (`robot-pool`) left the run RUNNING with
