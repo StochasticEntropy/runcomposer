@@ -8,6 +8,7 @@
 <meta property="og:title" content="runcomposer">
 <meta property="og:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://stochasticentropy.github.io/runcomposer/hero-compose.webp">
 <title>runcomposer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -285,6 +286,35 @@
   .pass { color: var(--pass); }
   .fail { color: var(--fail); }
 
+  /* ---- product shot ---- */
+  .shot {
+    margin: 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .shot figcaption {
+    padding: .6rem .95rem;
+    border-top: 1px solid var(--rule);
+    background: var(--plate);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+  }
+
+  .shot-band {
+    padding: 2.5rem 0 0;
+  }
+
   /* ---- the handoff diagram ---- */
   .handoff {
     margin: 2rem 0 1rem;
@@ -528,22 +558,11 @@
 
   /* ---- theme toggle ---- */
   .theme-toggle {
-    position: fixed;
-    top: 1rem;
-    right: 1rem;
-    z-index: 10;
-    width: 2.25rem;
-    height: 2.25rem;
-    display: grid;
-    place-items: center;
-    background: var(--surface);
-    color: var(--ink-2);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-size: .9rem;
-    line-height: 1;
+    position: fixed; top: 1rem; right: 1rem; z-index: 10;
+    width: 2.25rem; height: 2.25rem; display: grid; place-items: center;
+    background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--rule); border-radius: 4px; cursor: pointer;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .9rem; line-height: 1;
   }
   .theme-toggle:hover { color: var(--signal); border-color: var(--signal); }
   @media (max-width: 46rem) { .theme-toggle { top: .6rem; right: .6rem; } }
@@ -574,6 +593,17 @@
 pipx run --spec . runcomposer demo</code></pre>
     </div>
   </header>
+
+  <div class="shot-band">
+    <figure class="shot">
+      <img src="hero-compose.webp" width="1760" height="1100" loading="eager" fetchpriority="high" decoding="async"
+           alt="The runcomposer compose view: a taxonomy tree of areas, suites, sprints and lanes on
+                the left; a filter built from a tag rule; and a preview table listing thirteen matched
+                Payments tests with their tags, above a footer offering the robot-pool runner or a
+                spec export.">
+      <figcaption>Compose: pick from the taxonomy, watch the selection recompile, then run it or export it.</figcaption>
+    </figure>
+  </div>
 
   <section>
     <div class="marker">The idea</div>
