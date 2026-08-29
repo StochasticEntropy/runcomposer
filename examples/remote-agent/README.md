@@ -145,13 +145,20 @@ config instead.
 
 ## Paths and state
 
-Every runcomposer command runs with `config.yaml`'s directory as the working
-directory, because plugin options (the sqlite path, the source root) resolve
-against the working directory while the core's ingestion and artifact dirs
-resolve against the config file. That single `cd` in `sync.sh` makes both
-bases agree, so a config of relative paths keeps all state in one place:
-`state/`, which is gitignored and which `runcomposer gc` bounds.
+`config.yaml` is written entirely in relative paths, and every one of them —
+the store, the corpus root, the inbox, the quarantine and artifact dirs —
+resolves against **that file's own directory** (DESIGN.md §8). So all the
+state this loop produces lands in one place, `state/` next to the config,
+which is gitignored and which `runcomposer gc` bounds. `sync.sh` can be
+invoked from anywhere.
+
+> Earlier versions of this kit had to `cd` into the config's directory first,
+> because plugin options (the sqlite path, the source root) resolved against
+> the *working* directory while the core's ingestion and artifact dirs
+> resolved against the config file. The two bases now agree, and that `cd` is
+> gone from `sync.sh`.
 
 To put the state somewhere else — a CI workspace, a shared checkout — copy
-`config.yaml`, make its paths absolute, and point `RC_CONFIG` at the copy.
-`sync.sh` follows the config, not the repository.
+`config.yaml` somewhere else and point `RC_CONFIG` at the copy: the relative
+paths follow it. Absolute paths still work as written if you prefer to spell
+one out. `sync.sh` follows the config, not the repository.

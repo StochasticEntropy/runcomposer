@@ -57,12 +57,15 @@ FAILING_ID = "Tests.Payments.Expired Card Is Rejected Loudly"
 
 
 def kit_config(work: Path) -> Path:
-    """The kit's own config.yaml with the corpus root and the store path made
-    absolute — the README's recipe for keeping the state somewhere other than
-    next to the shipped example. Everything else is the committed file."""
+    """The kit's own config.yaml, copied to a scratch directory with only the
+    corpus root repointed at this repository's example suite (the executing
+    machine's checkout is a separate thing). The store path stays exactly as
+    shipped — relative — so the round trip below exercises the §8 rule that
+    it lands next to *this* config file rather than next to whatever
+    directory sync.sh happened to be invoked from."""
     data = yaml.safe_load((KIT / "config.yaml").read_text(encoding="utf-8"))
     data["sources"]["robotframework"]["root"] = str(CORPUS)
-    data["store"]["sqlite"]["path"] = str(work / "state" / "runcomposer.db")
+    assert data["store"]["sqlite"]["path"] == "state/runcomposer.db"  # as shipped
     path = work / "config.yaml"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return path
@@ -91,7 +94,12 @@ def run_sync(work: Path, *, suite_root: Path = CORPUS, **env_extra):
         "RC_ALLOW_DRIFT": "0",
         **env_extra,
     }
-    return subprocess.run([str(KIT / "sync.sh")], env=env, capture_output=True, text=True)
+    # Deliberately NOT the config's directory: sync.sh used to have to `cd`
+    # there, and the loop must now work from anywhere (DESIGN.md §8).
+    elsewhere = work.parent
+    return subprocess.run(
+        [str(KIT / "sync.sh")], env=env, cwd=str(elsewhere), capture_output=True, text=True
+    )
 
 
 def run_adapter(work: Path, item_ids, *, suite_root: Path = CORPUS, **env_extra):
@@ -180,6 +188,40 @@ class TestRobotAdapter:
         assert process.returncode == 3
         assert "5 of 5 requested item id(s)" in process.stderr
         assert "top-level suite name" in process.stderr
+
+
+class TestShippedConfigIsDirectoryIndependent:
+    """§8: the kit ships a config of relative paths. Every one of them — the
+    core's inbox/quarantine/artifacts *and* the plugin sections — resolves
+    against the config file's directory, which is why `sync.sh` no longer has
+    to `cd` there first."""
+
+    def test_relative_paths_all_land_in_the_kit_directory(self, tmp_path, monkeypatch):
+        from runcomposer.plugins.sqlite_store import SqliteRunStore
+
+        monkeypatch.chdir(tmp_path)  # anywhere but the config's directory
+        config = load_config(str(KIT / "config.yaml"))
+
+        assert config.inbox_dir == KIT / "state" / "inbox"
+        assert config.quarantine_dir == KIT / "state" / "quarantine"
+        assert config.artifact_dir == KIT / "state" / "artifacts"
+
+        # The store path, resolved the way build_store() resolves it — without
+        # creating the file, which would drop runtime state into the repo.
+        store_options = SqliteRunStore.resolve_config_paths(
+            dict(config.data["store"]["sqlite"]), config.resolve_path
+        )
+        assert Path(store_options["path"]) == KIT / "state" / "runcomposer.db"
+
+        # The source root: pre-fix this raised "robotframework source root not
+        # found: ../robot-shop/tests" from any directory but the kit's.
+        items = {item.id for item in config.build_source().items()}
+        assert "Tests.Payments.Visa Payment Succeeds" in items
+
+    def test_sync_sh_does_not_cd_into_the_config_directory(self):
+        """The workaround is gone, and stays gone."""
+        script = (KIT / "sync.sh").read_text(encoding="utf-8")
+        assert 'cd "$config_dir"' not in script
 
 
 @pytest.fixture(scope="module")

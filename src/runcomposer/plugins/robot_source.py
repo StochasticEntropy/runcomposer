@@ -31,6 +31,15 @@ def _require_robot():
 class RobotFrameworkSource:
     provider_id = "robotframework"
 
+    @staticmethod
+    def resolve_config_paths(options, resolve):
+        """§8 opt-in: ``root`` is the test checkout, relative to the config
+        file's directory — so the same ``--config`` sees the same corpus from
+        any working directory."""
+        if "root" in options:
+            options["root"] = resolve(options["root"])
+        return options
+
     def __init__(self, root: str):
         builder_cls = _require_robot()
         self._root = Path(root)

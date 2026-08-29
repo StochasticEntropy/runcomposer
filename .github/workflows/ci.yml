@@ -32,6 +32,12 @@ jobs:
           python-version: "3.12"
       - name: pipx quickstart
         run: pipx run --spec . runcomposer demo
+      - name: the demo's own next step works when pasted (DESIGN.md §12)
+        run: |
+          pipx run --spec . runcomposer runs --config runcomposer-demo/config.yaml \
+            --failed-in latest --label suite=nightly | tee failed.out
+          grep -q "item(s) FAILED in run" failed.out
+          grep -q "^Shop\." failed.out
       - name: validate the shipped example spec
         run: pipx run --spec . runcomposer validate --for-dispatch examples/webshop-regression.runspec.yaml
       - name: export round-trip (spec → exec → ingest → COMPLETE)

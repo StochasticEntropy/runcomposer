@@ -40,10 +40,10 @@ config_dir=$(cd "$(dirname "$RC_CONFIG")" && pwd)
 : "${RC_PYTHON:=python3}"
 : "${RUNCOMPOSER:=runcomposer}"
 
-# runcomposer resolves the store path and the source root against the working
-# directory, the ingestion dirs against the config file. One cd makes the two
-# agree, so a config of relative paths keeps all state in one place.
-cd "$config_dir"
+# No `cd` here on purpose. runcomposer resolves every relative path in a config
+# file against that file's own directory (DESIGN.md §8), so a config of
+# relative paths keeps all state in one place — `state/` next to config.yaml —
+# no matter which directory this script is invoked from.
 
 say() { printf '\n=== %s\n' "$*"; }
 

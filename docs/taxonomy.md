@@ -14,8 +14,13 @@ This page is the format. For everything around it, see
 
 ```yaml
 core:
-  taxonomy_file: taxonomy.yaml     # path relative to the config file's directory
+  taxonomy_file: taxonomy.yaml     # relative to the config file's directory
 ```
+
+That is the rule for *every* relative path in a config file — the `core:` keys
+and the plugin sections both — so the taxonomy travels with the config
+directory rather than depending on where the command was typed
+([docs/cli.md](cli.md#--config--the-only-way-to-point-at-another-config-file)).
 
 With no `taxonomy_file` configured, runcomposer serves the bundled demo
 taxonomy, so the panel is never empty on a fresh install. The file is served

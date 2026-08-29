@@ -72,6 +72,27 @@ def _run_chunk(payload: dict) -> dict:
 class RobotPoolRunner:
     runner_id = "robot-pool"
 
+    @staticmethod
+    def resolve_config_paths(options, resolve):
+        """§8 opt-in: two of this runner's options are directories on this
+        machine — the suite checkout and the artifact root — and both resolve
+        against the config file's directory.
+
+        The rest deliberately do not. ``listener`` and ``pre_run_hooks`` look
+        path-ish and are not: a listener is a Robot listener *spec*
+        (``MyListener:arg``, or a class name on ``PYTHONPATH``) and a hook is
+        a shell command line. That distinction is this plugin's to make,
+        which is why the core does not guess.
+
+        Note the scope: this resolves *configured* options. A ``suite_root``
+        that arrives inside a runspec document is the document's own value —
+        specs travel (§3.3), and the core never rewrites one.
+        """
+        for key in ("suite_root", "output_root"):
+            if key in options:
+                options[key] = resolve(options[key])
+        return options
+
     def __init__(
         self,
         suite_root: str | None = None,

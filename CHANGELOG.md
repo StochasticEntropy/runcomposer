@@ -25,8 +25,66 @@
 - **Taxonomy validation** (§8, docs/taxonomy.md): shape, node keys, and each
   leaf's pattern are checked at startup *and* per request, with messages
   naming the offending node by its path in the document.
+- **`resolve_config_paths(options, resolve)`** — the opt-in hook a plugin
+  defines to say which of its options are filesystem paths, so the core can
+  anchor them to the config file without interpreting a section it does not
+  own (§8, ADOPTING.md §5). All four bundled plugins that take a path
+  implement it; a plugin that does not is constructed with its options
+  verbatim, exactly as in 0.1.0.
+- **`runcomposer demo --workspace DIR`** — where the demo seeds its config and
+  store (default `./runcomposer-demo`). The directory must be empty, absent,
+  or a previous demo workspace; anything else is refused rather than
+  overwritten.
+- **A per-run seed for the `demo` runner**, read from the spec's one open
+  section (`runner: {demo: {seed: …}}`, §3) and falling back to the configured
+  one. That is what lets `runcomposer demo` seed several *different* completed
+  runs through a single configured runner.
 
 ### Fixed
+- **`runcomposer demo` seeds a real store, as §12 always promised.** It printed
+  `Seeded history: 3 completed runs over 'Regression'` and persisted nothing:
+  the runs, verdicts and durations lived in memory for the length of the
+  command, so the very next thing a reader tried — `runcomposer runs
+  --failed-in latest`, the flagship loop the demo had just narrated — answered
+  *"history features are dark on a fresh store"*. The demo now runs through the
+  real machinery (`compose_run` → `dispatch_runner` → the store) instead of an
+  in-process imitation of it, reads its own summaries back out of the store,
+  and resolves the rerun with a real scoped history query
+  (`failed@latest?suite=nightly`) whose provenance is recorded in the stored
+  spec.
+
+  It writes into **one directory it names and prints** — `./runcomposer-demo`,
+  holding a generated `config.yaml` and the sqlite file that config points at.
+  Deliberately *not* `./runcomposer.db`: that is the zero-config default store,
+  and a demo writing there would leave fake `Shop.…` runs for an adopter's
+  first real command to trip over. A directory holding a `config.yaml` the
+  demo did not write is refused, not overwritten; an unwritable working
+  directory falls back to a temp directory and says so; re-running re-seeds
+  from scratch, so the output stays deterministic. Every command in the
+  printed "Next steps" carries that workspace's `--config` and works when
+  pasted, from any directory — `rm -rf runcomposer-demo` is the whole
+  uninstall.
+- **One path base for the whole config file** (§8). `core:` paths resolved
+  against the config file's directory while everything under `store:`,
+  `sources:` and `runners:` resolved against the *working* directory, and the
+  gap was expensive in practice: the same `--config` invoked from two
+  directories silently created a second, empty sqlite database; a source root
+  that worked from one directory failed from another with `robotframework
+  source root not found`; and `examples/remote-agent/sync.sh` had to `cd` into
+  the config's directory, with the trap written up as documentation in three
+  places. Every relative path in a config file now resolves against that
+  file's own directory; absolute paths are used exactly as written.
+
+  The core still does not interpret plugin config to do it. Which options are
+  paths is the plugin's call — `listener: MyListener:arg`, `pre_run_hooks`,
+  `base_url` and sqlite's `:memory:` all look path-shaped and are not — so a
+  plugin opts in with `resolve_config_paths` (above) and decides for itself.
+  **Nothing written against 0.1.0 changes behaviour**: a plugin without the
+  hook still gets its options verbatim, and a config that spelled its store
+  path out absolutely as the old workaround is unaffected. Paths inside a
+  *runspec document* are untouched — specs travel, and the executor contract
+  (§3.3) is between the document and whoever fulfills it. `sync.sh` lost its
+  `cd`.
 - **Verdicts carry their shard.** `verdicts.shard` was stored but never read
   back, so one selection fanned out over two partitions produced two verdict
   rows per item with nothing to tell them apart — the single question fan-out

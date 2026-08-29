@@ -25,6 +25,10 @@ from runcomposer.core.model import (
 
 __all__ = ["SqliteRunStore", "StoreError"]
 
+#: sqlite spellings for ``store.sqlite.path`` that name something other than a
+#: file on disk, and must therefore survive path resolution untouched (§8).
+_NOT_A_PATH = (":memory:", "file:")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -93,6 +97,17 @@ def _utc_now() -> str:
 
 class SqliteRunStore:
     store_id = "sqlite"
+
+    @staticmethod
+    def resolve_config_paths(options, resolve):
+        """§8 opt-in: ``path`` is a file, and relative means "next to the
+        config file". ``:memory:`` and the ``file:`` URI form name no file on
+        disk, so they are handed back as written — which is exactly why this
+        decision lives in the store and not in the core."""
+        path = options.get("path")
+        if isinstance(path, str) and not path.startswith(_NOT_A_PATH):
+            options["path"] = resolve(path)
+        return options
 
     def __init__(self, path: str = "runcomposer.db"):
         self._path = str(path)

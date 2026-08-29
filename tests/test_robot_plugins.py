@@ -59,6 +59,26 @@ class TestRobotSource:
         assert visa.hierarchy == ("Tests", "Payments")
         assert any("Quarantine-Flaky" in item.tags for item in items.values())
 
+    def test_a_relative_root_is_found_from_any_working_directory(self, tmp_path, monkeypatch):
+        """§8: the source root resolves against the config file's directory.
+        It used to resolve against the cwd, so the same `--config` failed with
+        `robotframework source root not found` from anywhere else."""
+        from runcomposer.config import load_config
+
+        shutil.copytree(CORPUS, tmp_path / "suite" / "tests")
+        config_file = tmp_path / "suite" / "config.yaml"
+        config_file.write_text(
+            "sources: {robotframework: {root: tests}}\n"
+            "store: {sqlite: {path: runcomposer.db}}\n",
+            encoding="utf-8",
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        source = load_config(str(config_file)).build_source()
+        assert "Tests.Payments.Visa Payment Succeeds" in {item.id for item in source.items()}
+
     def test_corpus_shape(self):
         """The shipped corpus is big enough to be worth demoing: every area
         file contributes, and the deliberate fixtures are all present."""
@@ -231,14 +251,14 @@ class TestDriftContract:
 
 
 class TestLiveStatus:
-    def test_listener_streams_and_terminal_delivery_reconciles(self, tmp_path):
+    def test_listener_streams_and_terminal_delivery_reconciles(self, tmp_path, slow_lane_suite):
         """Dispatch the sleeping tests in a thread; mid-run the store must show
         RUNNING with 0 < live verdicts < planned — and the dispatch those live
         verdicts belong to (§4: the hand-off is recorded when it happens, not
         when it finishes); afterwards COMPLETE."""
         import threading
 
-        config = robot_config(tmp_path)
+        config = robot_config(tmp_path, corpus=slow_lane_suite)
         service = Service(config)
         result = service.compose_run(
             {"tag_filter": "SlowLane"},

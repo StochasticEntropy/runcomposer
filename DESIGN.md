@@ -511,11 +511,13 @@ Reference impl: `sqlite` (default, zero-setup). A second one over `postgres`
 is `[planned]`; until it exists, an adopter who must live in an existing
 database writes their own against this port (ADOPTING.md §4). Stated
 plainly: **history features are dark on a fresh store** — failed-rerun and
-duration-balancing activate as runs accrue, and `runcomposer demo` does not
-change that: it demonstrates both levels in memory and persists nothing
-(§12). runcomposer starts fresh everywhere; there is no migration machinery in
-the core (a private adopter can seed its store with its own scripts if it
-wants warm history).
+duration-balancing activate as runs accrue. The one store that starts warm is
+the demo's: `runcomposer demo` seeds its own workspace (§12) with completed
+runs and per-item verdicts, so both features are live *there* from the first
+command, and nowhere else — it never writes to a store you configured.
+runcomposer otherwise starts fresh everywhere; there is no migration
+machinery in the core (a private adopter can seed its store with its own
+scripts if it wants warm history).
 
 ### 6.4 Artifacts
 
@@ -661,14 +663,43 @@ validates only `core`; unknown active plugin ids fail startup loudly. Plugin
 file is chosen with `--config`, and there is no environment-variable override
 by the same reasoning.
 
-That ownership split has a consequence worth stating: paths the **core** reads
-(`taxonomy_file`, `artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`)
-resolve relative to the **config file's directory**, so a config directory is
-portable, while plugin options are passed to the plugin verbatim and resolve
-however the plugin resolves them — `store.sqlite.path` therefore resolves
-relative to the **working directory**. Making the two agree is `[planned]`;
-until then an absolute `store.sqlite.path` is the way to invoke one config from
-more than one directory.
+**One path base.** Every relative path in the config file resolves against the
+**config file's own directory** — the core's keys (`taxonomy_file`,
+`artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`) and the plugin
+sections (`store.sqlite.path`, `sources.robotframework.root`,
+`runners.robot-pool.suite_root`, …) alike. A config directory is therefore
+portable, and one `--config` behaves identically from every working directory.
+Absolute paths are left exactly as written.
+
+Getting there without breaking the ownership split is the interesting part,
+because the core must not decide what a plugin's options *mean*, and "which
+of these strings are paths" is exactly that kind of decision: `listener:
+MyListener:arg` is a Robot listener spec, `pre_run_hooks` are shell commands,
+`base_url` is a URL, and sqlite's `:memory:` names no file at all. So the core
+does not guess — it *offers*. A plugin that wants its relative paths anchored
+to the config file exposes
+
+```python
+@staticmethod
+def resolve_config_paths(options: dict, resolve: Callable[[Any], Any]) -> dict
+```
+
+and the core hands it its own options plus `Config.resolve_path`, which
+returns non-strings, empty strings and absolute paths untouched and joins
+everything else onto the config's directory. The plugin decides which keys go
+through it and returns the options it wants to be constructed with. All four
+bundled plugins that take a path opt in (`sqlite`, `manifest`,
+`robotframework`, `robot-pool`). **The hook is optional by
+construction**: a plugin without it — every third-party plugin written against
+0.1.0 — receives its options verbatim, exactly as it always did, so nothing
+outside this repository has to change. Resolution happens once, when the
+options are read out of the config, so `runcomposer spec --runner <id>` embeds
+resolved options too.
+
+The scope is the *config file*. A path inside a **runspec document** is the
+document's own value and is never rewritten: specs travel to machines with
+their own filesystems, and the executor contract (§3.3) is between the
+document and whoever fulfills it.
 
 **The taxonomy file is validated on the same terms** — it is the other thing a
 deployment writes by hand, and an unvalidated one used to be served verbatim
@@ -732,7 +763,8 @@ they arrive they go to `POST /api/v1/runners/{id}/actions/<action>`,
 capability-gated — never core endpoints. No such route exists yet, and neither
 does the capability gate.
 
-**CLI** (adoption-critical): `runcomposer serve` · `runcomposer demo` (§12) ·
+**CLI** (adoption-critical): `runcomposer serve` · `runcomposer demo
+[--workspace DIR]` (§12) ·
 `runcomposer compile` (preview) · `runcomposer spec [--format json|yaml]` (emit a
 runspec — the export workflow's compose step) · `runcomposer dispatch --runner
 robot-pool spec.yaml` · `runcomposer ingest` · `runcomposer runs` / `runcomposer runs
@@ -804,16 +836,41 @@ appears here, in code, history, examples, or docs.
 items: `Payments`, `Checkout`, `Catalog`, `Auth`; sprint/ticket/quarantine
 tag patterns) via the `manifest` source, a matching taxonomy, a `demo` runner
 faking executions, and **history at both levels** (completed runs *and*
-per-item verdicts/durations) so failed-rerun selection is demonstrable
-immediately: the command composes, runs, then re-composes from what those runs
-returned, and prints the whole cycle.
+per-item verdicts/durations) so failed-rerun selection and duration-balanced
+planning are demonstrable immediately: the command composes, runs, then
+re-composes from what those runs returned, and prints the whole cycle.
 
-That history lives **in memory for the length of the command** — `demo` writes
-to no store and leaves no files, so it changes nothing about a subsequent
-`runcomposer runs --failed-in latest`, which still reports a fresh store.
-Seeding a real store so history features light up before any run of your own
-is `[planned]`. The demo corpus doubles as the E2E fixture. A pytest-flavored manifest example ships
-alongside (§6.1).
+That history is **persisted**, because the last thing the demo shows —
+"rerun what failed" — is exactly the thing a fresh store cannot answer, and a
+demo that narrates history it did not write leaves the reader's very next
+command contradicting it. So the demo runs through the real machinery
+(`Service.compose_run` → `dispatch_runner` → the store) rather than an
+in-process imitation of it, and the summaries it prints are read back out of
+the store.
+
+**Where it writes is part of the promise.** `demo` seeds one directory,
+`./runcomposer-demo` (or `--workspace DIR`), holding a generated `config.yaml`
+and the sqlite file that config points at. Three properties, each chosen
+against an alternative:
+
+- *Not* a bare `runcomposer.db` in the working directory. That is the
+  zero-config default store (§8), so a demo writing there would leave fake
+  runs in the store an adopter's first real run then shares — `--failed-in
+  latest` answering with `Shop.Payments.Cards.T003`.
+- *Not* a temp directory that a reader cannot find again, and *not* a
+  configured store of yours: the demo has no `--config` and must never touch
+  a real deployment's data.
+- Refused rather than forced: a directory holding a `config.yaml` the demo
+  did not write, or any other non-empty directory, is somebody's deployment,
+  and re-seeding it would delete their store. The demo says so and exits `2`.
+  A working directory that is not writable at all (a container) falls back to
+  a temp directory and prints which.
+
+Every command the demo prints as a next step carries that workspace's
+`--config` and works when pasted, from any directory. `rm -rf` on the
+workspace is the complete uninstall; re-running re-seeds it from scratch, so
+the output stays deterministic. The demo corpus doubles as the E2E fixture. A
+pytest-flavored manifest example ships alongside (§6.1).
 
 ---
 

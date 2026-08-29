@@ -5,9 +5,20 @@ validates only ``core``; unknown active plugin ids fail startup loudly.
 Plugin *selection* lives here — an entry-point name (the section key) or an
 explicit ``module: "pkg.mod:Class"`` inside the section — never env vars.
 
+**One path base.** Every relative path in the config file resolves against the
+config file's own directory, so a config directory is portable and the same
+``--config`` behaves identically from any working directory. The core applies
+that to the keys it owns; for the keys it does not own it cannot — a plugin
+section is opaque to the core, and guessing which of its values are paths
+would be the core interpreting plugin config. Instead the plugin says so
+itself, by exposing ``resolve_config_paths(options, resolve)``
+(:meth:`Config._plugin_options`). A plugin without that hook gets its options
+verbatim, exactly as before.
+
 With no config file at all, runcomposer runs on built-in defaults: the sqlite
 store in ``./runcomposer.db`` and the bundled demo corpus/taxonomy, so every
-command works out of the box.
+command works out of the box — there is no config file to anchor to, so the
+base is the working directory.
 """
 
 from __future__ import annotations
@@ -72,8 +83,7 @@ class Config:
         demo taxonomy when none is configured."""
         configured = self.core.get("taxonomy_file")
         if configured:
-            base = self.path.parent if self.path else Path(".")
-            return base / configured
+            return self._resolve(configured)
         return resources.files("runcomposer.demo") / "taxonomy.yaml"
 
     @property
@@ -92,9 +102,64 @@ class Config:
     def retention(self) -> dict[str, Any]:
         return {"max_age_days": 90, **(self.core.get("retention") or {})}
 
+    # -- path resolution (§8: one base — the config file's directory) --------
+
+    @property
+    def base_dir(self) -> Path:
+        """The directory relative paths in this config resolve against: the
+        config file's own directory, or the working directory when running on
+        built-in defaults (there is no file to anchor to)."""
+        return self.path.parent if self.path else Path(".")
+
+    def resolve_path(self, value: Any) -> Any:
+        """Anchor one configured relative path to :attr:`base_dir`.
+
+        The public helper plugins are handed in ``resolve_config_paths``.
+        Deliberately total and conservative — the *caller* decides what is a
+        path, this only decides where a relative one points:
+
+        - a non-string (``None``, a number, a list) is returned untouched;
+        - an empty string is returned untouched (``inbox: ""`` is not a path);
+        - an absolute path is returned untouched;
+        - anything else is joined onto the base.
+
+        Returns a ``str``, never a ``Path``: a resolved plugin option can end
+        up in a runspec document, and those are serialized as YAML/JSON.
+        """
+        if not isinstance(value, str) or not value:
+            return value
+        if Path(value).is_absolute():
+            return value
+        return str(self.base_dir / value)
+
     def _resolve(self, relative: str) -> Path:
-        base = self.path.parent if self.path else Path(".")
-        return base / relative
+        return Path(self.resolve_path(relative))
+
+    def _plugin_options(self, cls: Any, options: dict[str, Any]) -> dict[str, Any]:
+        """Let a plugin anchor its own path options to the config file (§8).
+
+        The core does not know which of a plugin's options are filesystem
+        paths — that section is owned by the plugin, and several of them are
+        deliberately *not* paths (a Robot listener spec, a shell hook, a base
+        URL, sqlite's ``:memory:``). So the core does not guess. It offers:
+        a plugin that defines ``resolve_config_paths(options, resolve)``
+        receives a copy of its own options plus :meth:`resolve_path`, and
+        returns the options it wants to be constructed with.
+
+        Opt-in by design: a plugin written against 0.1.0 has no such
+        attribute, so its options are passed through untouched and its
+        behaviour is bit-for-bit what it was.
+        """
+        hook = getattr(cls, "resolve_config_paths", None)
+        if hook is None:
+            return options
+        resolved = hook(dict(options), self.resolve_path)
+        if not isinstance(resolved, dict):
+            raise ConfigError(
+                f"{getattr(cls, '__name__', cls)}.resolve_config_paths must return a dict "
+                f"of options, got {type(resolved).__name__}"
+            )
+        return resolved
 
     @property
     def inbox_dir(self) -> Path | None:
@@ -130,28 +195,53 @@ class Config:
     def build_store(self) -> RunStore:
         plugin_id, options = self._single_section("store", {"sqlite": {"path": "runcomposer.db"}})
         cls = self._load(plugin_id, options, STORE_GROUP)
-        return cls(**options)
+        return cls(**self._plugin_options(cls, options))
 
     def build_source(self) -> TestSource:
         plugin_id, options = self._single_section("sources", {"manifest": {}})
         cls = self._load(plugin_id, options, SOURCE_GROUP)
+        options = self._plugin_options(cls, options)
         if plugin_id == "manifest" and not options.get("path"):
-            # Zero-config default: the bundled demo corpus.
+            # Zero-config default: the bundled demo corpus. Not a configured
+            # path, so it is never resolved — it is a package resource.
             options = {**options, "path": resources.files("runcomposer.demo") / "corpus.json"}
         return cls(**options)
 
-    def runner_options(self, runner_id: str) -> dict[str, Any]:
+    def _raw_runner_options(self, runner_id: str) -> dict[str, Any]:
         runners = self.data.get("runners") or {}
         return dict(runners.get(runner_id) or {})
 
+    def _runner(self, runner_id: str) -> tuple[Any, dict[str, Any]]:
+        """The runner's class plus its resolved options. ``_load`` pops
+        ``module``, so it gets a copy: the key stays in the options the
+        caller sees, as it always has."""
+        raw = self._raw_runner_options(runner_id)
+        cls = self._load(runner_id, dict(raw), RUNNER_GROUP)
+        return cls, self._plugin_options(cls, raw)
+
+    def runner_options(self, runner_id: str) -> dict[str, Any]:
+        """This runner's configured options, paths resolved (§8).
+
+        Composing *for* a runner this installation does not have is
+        legitimate — the export workflow hands the spec to an executor
+        runcomposer never talks to (§6.2c) — so an unresolvable plugin is not
+        an error here; it only means there is nobody to say which options are
+        paths. ``build_runner``/``resolve_runner_class`` still fail loudly."""
+        try:
+            _cls, options = self._runner(runner_id)
+        except ConfigError:
+            return self._raw_runner_options(runner_id)
+        return options
+
     def build_runner(self, runner_id: str) -> Any:
-        options = self.runner_options(runner_id)
-        cls = self._load(runner_id, options, RUNNER_GROUP)
+        cls, options = self._runner(runner_id)
+        options.pop("module", None)
         return cls(**options)
 
     def resolve_runner_class(self, runner_id: str) -> Any:
         """Resolve without instantiating — the startup validation path."""
-        return self._load(runner_id, self.runner_options(runner_id), RUNNER_GROUP)
+        cls, _options = self._runner(runner_id)
+        return cls
 
     def configured_runner_ids(self) -> list[str]:
         configured = list((self.data.get("runners") or {}).keys())

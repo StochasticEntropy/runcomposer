@@ -82,6 +82,16 @@ The core validates only the `core` section. Everything under `sources`,
 and an unknown plugin id **fails startup loudly** rather than surfacing later
 as a broken request.
 
+**Every relative path above is relative to this file's directory** — the
+`core:` keys and the plugin sections alike. So a config directory is a
+portable unit: `envs/staging/config.yaml` finds `envs/staging/tests/` and
+writes `envs/staging/runcomposer.db` whether you invoke it from the repository
+root, from a CI workspace, or from `/`. Absolute paths are used as written.
+(In 0.1.0 the plugin sections resolved against the *working* directory
+instead, which quietly produced a second, empty database the first time
+somebody ran the same `--config` from somewhere else. If you added an absolute
+`store.sqlite.path` to work around that, it still behaves identically.)
+
 The taxonomy is the other thing you write instead of code: `taxonomy_file` is
 a YAML tree of tag patterns that the UI renders on the left and clicks into
 the filter builder. It is validated on the same terms as the rest of the
@@ -328,6 +338,33 @@ sources:
     module: "mypkg.sources:MySource"
     root: /some/where          # every other key is passed to your __init__
 ```
+
+### Paths in your plugin's options
+
+Your options reach your `__init__` exactly as written, and a relative path
+among them means "relative to the process's working directory" — which makes
+your plugin behave differently depending on where the operator stood when they
+typed the command. To get the same rule the rest of the config follows
+("relative to the config file"), say which of your options are paths:
+
+```python
+class MySource:
+    @staticmethod
+    def resolve_config_paths(options: dict, resolve) -> dict:
+        if "root" in options:
+            options["root"] = resolve(options["root"])
+        return options
+```
+
+`resolve` returns absolute paths, empty strings, and non-strings untouched,
+and joins anything else onto the config file's directory. You decide which
+keys go through it — the core deliberately does not guess, because plenty of
+plugin options look path-shaped and are not (a listener spec, a shell hook, a
+URL, sqlite's `:memory:`).
+
+**This is opt-in, and nothing breaks without it.** A plugin with no
+`resolve_config_paths` — which is every plugin written against 0.1.0 — is
+constructed with its options verbatim, exactly as before.
 
 ---
 

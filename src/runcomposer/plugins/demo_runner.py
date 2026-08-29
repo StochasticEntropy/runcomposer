@@ -5,6 +5,11 @@ Verdicts are deterministic in ``(seed, item id)``: re-dispatching with the
 same seed reproduces the same delivery byte-for-byte, while a different seed
 lets re-runs flip FAIL→PASS the way real re-runs do. Durations are stable per
 item (hash-derived), so duration-based features have consistent demo data.
+
+The seed is a per-run knob, so a spec may carry its own in the one open
+section — ``runner: {demo: {seed: nightly-2}}`` (§3) — which is how
+``runcomposer demo`` seeds several *different* completed runs through one
+configured runner. Absent from the spec, the constructor's seed stands.
 """
 
 from __future__ import annotations
@@ -44,15 +49,16 @@ class DemoRunner:
                 "spec is not dispatchable: run.id and selection.materialized.item_ids required "
                 "(executor contract, DESIGN.md §3.3)"
             ) from None
+        seed = ((spec.get("runner") or {}).get("demo") or {}).get("seed") or self.seed
         dispatch_id = new_ulid()
-        verdicts = [self._fake_verdict(item_id) for item_id in item_ids]
+        verdicts = [self._fake_verdict(item_id, seed) for item_id in item_ids]
         self.deliveries.append(
             {"run_id": run_id, "dispatch_id": dispatch_id, "shard": "1", "verdicts": verdicts}
         )
         return DispatchHandle(dispatch_id=dispatch_id, shards=1)
 
-    def _fake_verdict(self, item_id: str) -> Verdict:
-        roll = random.Random(f"{self.seed}|{item_id}").random()
+    def _fake_verdict(self, item_id: str, seed: str | None = None) -> Verdict:
+        roll = random.Random(f"{seed or self.seed}|{item_id}").random()
         digest = hashlib.sha256(item_id.encode("utf-8")).digest()
         duration_ms = 80 + int.from_bytes(digest[:2], "big") % 3920
         if roll < _FAIL_RATE:

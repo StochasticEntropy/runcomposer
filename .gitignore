@@ -17,6 +17,9 @@ node_modules/
 artifacts/
 results_inbox/
 config.yaml
+# `runcomposer demo` seeds its whole workspace here when run from a clone
+# (DESIGN.md §12); `rm -rf runcomposer-demo` undoes it.
+runcomposer-demo/
 # ... except the remote-agent kit's reference config, which IS the example
 # (DESIGN.md §6.2c); everything that kit writes goes under its state/ dir.
 !examples/remote-agent/config.yaml

@@ -713,20 +713,21 @@ pipx run --spec . runcomposer demo</code></pre>
       </div>
       <p class="watch-note">69 seconds, narrated</p>
 
-      <h3>Or the whole thing, properly</h3>
+      <h3>Or watch someone use it</h3>
       <p>
-        Six minutes, seven chapters: the catalog, composing a selection, freezing it into a spec,
-        the document itself, the three ways to execute it, results coming back from any transport,
-        and rerunning what failed.
+        Four and a half minutes over the shoulder, in the actual interface: picking out tonight's
+        tests area by area, leaving the known-broken ones behind, watching verdicts arrive one at a
+        time until the run says complete — and the next morning, rerunning the single test that
+        failed. One idea about how it works underneath, at the point where the story needs it.
       </p>
       <div class="player">
-        <video controls preload="metadata" poster="explainer-poster.jpg" width="1920" height="1080">
-          <source src="explainer.mp4" type="video/mp4">
-          <track kind="captions" src="explainer.vtt" srclang="en" label="English" default>
-          Your browser cannot play this video. <a href="explainer.mp4">Download it instead.</a>
+        <video controls preload="metadata" poster="walkthrough-poster.jpg" width="1920" height="1080">
+          <source src="walkthrough.mp4" type="video/mp4">
+          <track kind="captions" src="walkthrough.vtt" srclang="en" label="English" default>
+          Your browser cannot play this video. <a href="walkthrough.mp4">Download it instead.</a>
         </video>
       </div>
-      <p class="watch-note">6 minutes 11 seconds, narrated</p>
+      <p class="watch-note">4 minutes 36 seconds, narrated · captions</p>
     </div>
   </section>
 
@@ -1112,7 +1113,8 @@ runcomposer runs
 <pre><code>git clone https://github.com/StochasticEntropy/runcomposer
 cd runcomposer
 
-<span class="c"># the guided demo — 60 tagged tests, a full compose → run → rerun loop</span>
+<span class="c"># the guided demo — 60 tagged tests, a full compose → run → rerun loop,</span>
+<span class="c"># seeded into ./runcomposer-demo/ (rm -rf it to undo)</span>
 pipx run --spec . runcomposer demo
 
 <span class="c"># the web UI and API on http://127.0.0.1:8100</span>

@@ -234,7 +234,7 @@ class TestRobotPoolInFlight:
     dispatch(), so its dispatch used to appear only after the run finished —
     the UI showed a RUNNING run with "Dispatches: none yet"."""
 
-    def test_dispatch_is_visible_while_the_pool_is_running(self, tmp_path):
+    def test_dispatch_is_visible_while_the_pool_is_running(self, tmp_path, slow_lane_suite):
         pytest.importorskip("robot", reason="requires the runcomposer[robot] extra")
         config = Config(
             data={
@@ -243,13 +243,15 @@ class TestRobotPoolInFlight:
                     "artifact_dir": str(tmp_path / "artifacts"),
                     "ingestion": {"inbox": None, "quarantine_dir": str(tmp_path / "q")},
                 },
-                "sources": {"robotframework": {"root": str(CORPUS)}},
-                "runners": {"robot-pool": {"suite_root": str(CORPUS), "max_workers": 2}},
+                "sources": {"robotframework": {"root": str(slow_lane_suite)}},
+                "runners": {
+                    "robot-pool": {"suite_root": str(slow_lane_suite), "max_workers": 2}
+                },
             }
         )
         service = Service(config)
         result = service.compose_run(
-            {"tag_filter": "SlowLane"},  # the corpus' deliberately sleeping tests
+            {"tag_filter": "SlowLane"},  # the fixture's deliberately sleeping pair
             title="In-flight dispatch",
             origin="test",
             runner_section={"robot-pool": config.runner_options("robot-pool")},

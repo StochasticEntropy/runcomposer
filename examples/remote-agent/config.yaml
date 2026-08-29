@@ -1,15 +1,14 @@
 # runcomposer config for the "bring your own run agent" kit (DESIGN.md §6.2c).
 #
-# Paths here are relative on purpose. `sync.sh` runs every runcomposer command
-# with THIS FILE's directory as the working directory, which makes the two
-# resolution bases agree: plugin options (the sqlite path, the source root)
-# resolve against the working directory, the core's ingestion/artifact dirs
-# against the config file. Everything the round trip writes therefore lands
-# under `state/`, which is gitignored — no runtime state is ever committed.
+# Paths here are relative on purpose. Every relative path in a runcomposer
+# config — the store, the source root, the ingestion dirs — resolves against
+# THIS FILE's directory (DESIGN.md §8), so everything the round trip writes
+# lands under `state/` next to this file, which is gitignored, no matter which
+# directory sync.sh was invoked from. No runtime state is ever committed.
 #
 # To keep the state somewhere else entirely (a CI workspace, a shared
-# checkout), copy this file, make its paths absolute, and point RC_CONFIG at
-# the copy: sync.sh follows the config, not the repository.
+# checkout), copy this file there and point RC_CONFIG at the copy: the
+# relative paths follow it. sync.sh follows the config, not the repository.
 
 core:
   ingestion:

@@ -34,7 +34,14 @@ def main(argv: list[str] | None = None) -> int:
         "materialized selection + results contract (DESIGN.md §3.1)",
     )
 
-    sub.add_parser("demo", help="boot the neutral web-shop demo end-to-end")
+    p_demo = sub.add_parser("demo", help="boot the neutral web-shop demo end-to-end")
+    p_demo.add_argument(
+        "--workspace",
+        metavar="DIR",
+        help="where to seed the demo's config + store (default: ./runcomposer-demo). "
+        "The directory must be empty or a previous demo workspace; delete it to "
+        "undo the demo entirely (DESIGN.md §12)",
+    )
 
     p_catalog = sub.add_parser("catalog", help="list a manifest catalog and its snapshot hash")
     p_catalog.add_argument("--manifest", help="manifest file (default: the bundled demo corpus)")
@@ -204,10 +211,14 @@ def _parse_labels(pairs: list[str]) -> dict[str, str]:
 # -- commands -----------------------------------------------------------------
 
 
-def _cmd_demo(_args: argparse.Namespace) -> int:
-    from runcomposer.demo.demo import run_demo
+def _cmd_demo(args: argparse.Namespace) -> int:
+    from runcomposer.demo.demo import DemoError, run_demo
 
-    return run_demo()
+    try:
+        return run_demo(workspace=args.workspace)
+    except DemoError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:

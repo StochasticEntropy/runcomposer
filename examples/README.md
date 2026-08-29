@@ -27,5 +27,9 @@
   whose local-directory default runs the whole loop on one machine. Try:
 
   ```
-  cd examples/remote-agent && ./sync.sh
+  ./examples/remote-agent/sync.sh
   ```
+
+  Run it from wherever you like: the kit's config is all relative paths, and
+  relative in a runcomposer config means "next to the config file" (DESIGN.md
+  §8), so every byte of state lands in `examples/remote-agent/state/`.

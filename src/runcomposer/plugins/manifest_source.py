@@ -35,6 +35,16 @@ class ManifestError(ValueError):
 class ManifestSource:
     provider_id = "manifest"
 
+    @staticmethod
+    def resolve_config_paths(options, resolve):
+        """§8 opt-in: ``path`` is the catalog file, relative to the config
+        file's directory. Absent (the zero-config default) it stays absent —
+        the core then supplies the bundled demo corpus as a package
+        resource, which is not a configured path at all."""
+        if "path" in options:
+            options["path"] = resolve(options["path"])
+        return options
+
     def __init__(self, path: Any):
         """``path``: a filesystem path, or any object with ``read_text()``
         (e.g. an ``importlib.resources`` traversable)."""

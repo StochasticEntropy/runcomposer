@@ -64,12 +64,12 @@ With no config file at all, runcomposer still works everywhere: the `sqlite`
 store in `./runcomposer.db`, the bundled demo corpus as the `manifest` source,
 the bundled demo taxonomy, and the `demo` runner.
 
-**Two path bases, and the difference will bite you.** Paths under `core:` are
-resolved relative to **the config file's directory** — `taxonomy_file`,
-`artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir` — so a config
-directory is portable. Plugin options are handed to the plugin verbatim, so
-`store.sqlite.path` is resolved relative to **the current working
-directory**:
+**One path base.** Every relative path in a config file is resolved against
+**the config file's own directory** — the `core:` keys (`taxonomy_file`,
+`artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`) and the plugin
+sections (`store.sqlite.path`, `sources.robotframework.root`,
+`runners.robot-pool.suite_root`) alike. A config directory is therefore
+portable, and the same `--config` behaves identically from anywhere:
 
 ```console
 $ runcomposer runs --config envs/staging/config.yaml
@@ -78,14 +78,24 @@ RUN ID                      STATE             RESULT  CREATED               TITL
 
 $ cd elsewhere
 $ runcomposer runs --config ../envs/staging/config.yaml
-no runs stored
-$ ls
-staging.db                          # a second, empty database — created right here
+RUN ID                      STATE             RESULT  CREATED               TITLE
+01M1513JZMZ3CSH51RCCE72WYN  COMPOSED          -       2026-08-28T20:31:15Z  Two picks
+$ ls                                # no second database created here
 ```
 
-Give `store.sqlite.path` an **absolute path** in any config you invoke from
-more than one directory. That is the whole workaround, and it is worth doing
-before you have two databases.
+Absolute paths are used exactly as written, so nothing that already spells its
+store path out in full changes meaning.
+
+> In 0.1.0 the two halves resolved against different bases — `core:` keys
+> against the config file, plugin options against the working directory — so
+> running one `--config` from two directories silently created a second, empty
+> sqlite database and a source root that worked from one place and not the
+> other. The workaround was an absolute `store.sqlite.path`; it is no longer
+> needed, and configs that use one are unaffected.
+>
+> **Writing a plugin?** Path resolution is opt-in, so a third-party plugin
+> keeps its 0.1.0 behaviour until it asks for the new one — see
+> [ADOPTING.md](../ADOPTING.md#paths-in-your-plugins-options).
 
 ### Exit codes
 
@@ -152,15 +162,19 @@ at all — worth distinguishing in a CI gate.
 ## `demo`
 
 ```
-runcomposer demo
+runcomposer demo [--workspace DIR]
 ```
 
-No flags. Boots the neutral web-shop corpus end to end and prints the whole
-story: the corpus and its snapshot, the taxonomy with live item counts, a
-compiled selection, a validated spec, a dispatch to the `demo` runner, and then
-a *second*, history-derived run — "rerun what failed" against the history those
+Boots the neutral web-shop corpus end to end and prints the whole story: the
+corpus and its snapshot, the taxonomy with live item counts, a compiled
+selection, a validated spec, a dispatch to the `demo` runner, and then a
+*second*, history-derived run — "rerun what failed" against the history those
 runs just produced, which is the one feature a fresh store cannot show on its
 own.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--workspace DIR` | `./runcomposer-demo` | Where to seed the demo's `config.yaml` and store. Must be empty, absent, or a previous demo workspace. |
 
 ```console
 $ runcomposer demo
@@ -169,6 +183,7 @@ runcomposer demo — fictional web-shop corpus
 ────────────────────────────────────────────────────────────────
 Corpus: 60 items via the 'manifest' source
 Catalog snapshot: sha256:734b1c4803268df2d3246b…
+Workspace: runcomposer-demo
 
 Taxonomy (curated tree over tag patterns — data, not code):
   Areas
@@ -177,35 +192,70 @@ Taxonomy (curated tree over tag patterns — data, not code):
 …
 Selection: (Payments OR prefix:Checkout- OR regex:^Cart(V2)?$) AND NOT prefix:Quarantine-
   matched 36 of 60 items
-Run spec 01M1518ZC5W9HFJ1WHV2ZWG1YQ: validates against the runspec-1.0 schema (dispatch profile)
+Run spec 01M153CVKSBQQ150Z1SFC3T4KQ: validates against the runspec-1.0 schema (dispatch profile)
 …
-Dispatched to the 'demo' runner: dispatch 01M1518ZC60S4VRGAZEAQPD49F, 1 shard delivered
+Dispatched to the 'demo' runner: dispatch 01M153CVM2MAX28PASBFS27AQZ, 1 shard delivered — run COMPLETE (FAIL)
 Results: 28 PASS, 8 FAIL  (36 items, 76.2s simulated)
 …
-Seeded history: 3 completed runs over 'Regression' (46 items each)
-Latest completed run 01M1518ZC91C0NVYSJ0P0M12R1: 5 FAIL
-Derived selection: 5 items, provenance recorded in selection.derived_from
+Seeded history: 3 completed runs over 'Regression' (46 items each), persisted in runcomposer-demo/runcomposer.db
+Latest completed 'suite=nightly' run 01M153CVMG5F5XEHWXVJBZVM9Z: 5 FAIL
+Derived selection: 5 items, provenance recorded in selection.derived_from (run 01M153CVMG5F5XEHWXVJBZVM9Z, scope {'suite': 'nightly'})
+Results: 3 PASS, 2 FAIL  (5 items, 9.3s simulated)
+
+────────────────────────────────────────────────────────────────
+Demo complete. 5 completed runs and 179 verdicts are in runcomposer-demo/runcomposer.db — history features are live there.
+Delete the workspace to undo all of it:  rm -rf runcomposer-demo
+
+Next steps:
+  runcomposer runs --config runcomposer-demo/config.yaml
+  runcomposer runs --config runcomposer-demo/config.yaml --failed-in latest --label suite=nightly
+  runcomposer compile --config runcomposer-demo/config.yaml Payments
+  runcomposer export 01M153CVMG5F5XEHWXVJBZVM9Z --format ctrf --config runcomposer-demo/config.yaml
+  runcomposer serve --config runcomposer-demo/config.yaml
 ```
 
-Two things it does **not** do. It does not start a server — it prints and exits
-`0`; for the UI run `runcomposer serve`, which with no config serves this same
-demo corpus. And it does not write to a store: the runs, verdicts and history it
-narrates live in memory for the length of the command, so it leaves no files
-behind and the store is exactly as empty afterwards as before.
+Those next steps are meant to be pasted, and they work — the history the demo
+narrated is in the store it printed:
 
 ```console
-$ runcomposer demo          # in an empty directory
-…
-$ ls -la                    # nothing created
-$ runcomposer runs
-no runs stored
-$ runcomposer runs --failed-in latest
-error: history selection 'failed@latest' matched no completed run — history features are dark on a fresh store (DESIGN.md §6.3)
+$ runcomposer runs --config runcomposer-demo/config.yaml --failed-in latest --label suite=nightly
+# 5 item(s) FAILED in run 01M153CVMG5F5XEHWXVJBZVM9Z (scope: {'suite': 'nightly'})
+Shop.Payments.Cards.T003
+Shop.Cart.Core.T004
+Shop.Cart.Core.T005
+Shop.Catalog.Search.T002
+Shop.Auth.Login.T002
 ```
 
-That is worth knowing before you reach for `--failed-in` after a demo: history
-features stay dark until *your* runs accrue. Compose and dispatch a couple of
-real runs first ([the export loop](#the-export-loop-end-to-end)).
+**What it writes, and what it will not.** Everything lands in the workspace
+directory: a generated `config.yaml` and the `runcomposer.db` it points at.
+Nothing else on the machine is touched — in particular *not* `./runcomposer.db`,
+which is the zero-config default store, and which a demo writing there would
+leave full of `Shop.…` runs for your first real command to trip over. Deleting
+the directory undoes the demo completely, and re-running it re-seeds from
+scratch rather than piling more runs on.
+
+If the target is somebody's actual config directory, the demo refuses instead
+of overwriting it:
+
+```console
+$ runcomposer demo --workspace envs/staging
+error: envs/staging/config.yaml exists and was not written by `runcomposer demo` — refusing to overwrite it or delete the store it points at. Pass --workspace DIR to seed the demo somewhere else.
+```
+
+One thing it does **not** do: start a server. It prints and exits `0`; for the
+UI, the last next step (`runcomposer serve --config runcomposer-demo/config.yaml`)
+serves the seeded workspace, so the run list is populated from the first page
+load.
+
+Your *own* store still starts cold, as it must: `--failed-in` and
+duration-balanced planning stay dark there until your runs accrue
+([the export loop](#the-export-loop-end-to-end)).
+
+```console
+$ runcomposer runs --failed-in latest        # a fresh store of your own
+error: history selection 'failed@latest' matched no completed run — history features are dark on a fresh store (DESIGN.md §6.3)
+```
 
 ---
 

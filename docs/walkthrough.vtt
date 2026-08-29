@@ -1,0 +1,265 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:02.540
+Every test suite of any size has the same problem.
+
+00:00:03.180 --> 00:00:05.600
+You can run all of it, or you can run one thing.
+
+00:00:06.280 --> 00:00:11.960
+Running exactly the right part, and being able to prove afterwards which part that was, is the awkward bit.
+
+00:00:12.920 --> 00:00:13.860
+Say it is Tuesday.
+
+00:00:14.620 --> 00:00:16.540
+Something changed in the checkout code this morning.
+
+00:00:17.220 --> 00:00:20.000
+Tonight you want payments, checkout, and the catalog.
+
+00:00:20.700 --> 00:00:22.980
+Not the tests the team already knows are broken.
+
+00:00:23.300 --> 00:00:29.640
+And tomorrow, when somebody asks what you actually ran, you would like a better answer than the nightly job.
+
+00:00:30.600 --> 00:00:31.800
+Tags help with that.
+
+00:00:32.340 --> 00:00:37.260
+Until the tag query ends up buried in a build server setting that nobody can reconstruct three weeks later.
+
+00:00:38.220 --> 00:00:39.500
+This is runcomposer.
+
+00:00:40.120 --> 00:00:41.000
+Let me just show you.
+
+00:00:42.167 --> 00:00:48.867
+Here it is. On the left, the areas of the shop. Payments, Checkout, Cart, Catalog, Accounts.
+
+00:00:49.447 --> 00:00:51.307
+That list is not built into the tool.
+
+00:00:51.887 --> 00:00:57.387
+Somebody on the team wrote it down, in a plain file, out of the labels the tests already carry.
+
+00:00:58.327 --> 00:01:05.647
+Click Payments. Underneath, immediately the 13 tests carrying that label, by name, with their labels beside them.
+
+00:01:05.647 --> 00:01:14.687
+Click Checkout as well, and the count drops to zero, because right now it is asking for tests that are payments and checkout, and no test is both.
+
+00:01:15.327 --> 00:01:18.247
+Change the little word in the middle to OR and there they are.
+
+00:01:18.867 --> 00:01:21.387
+26. Add the catalog, 34.
+
+00:01:22.327 --> 00:01:24.107
+Now leave the broken ones out.
+
+00:01:24.727 --> 00:01:26.707
+Two of these 34 are in quarantine.
+
+00:01:27.547 --> 00:01:31.967
+Everybody knows they fail, somebody is fixing them, and they are not the point tonight.
+
+00:01:32.647 --> 00:01:33.207
+Untick them.
+
+00:01:34.047 --> 00:01:35.087
+32 tests.
+
+00:01:35.647 --> 00:01:37.047
+And here's the bit worth noticing.
+
+00:01:37.647 --> 00:01:40.567
+You can read all 32 right now before anything runs.
+
+00:01:41.147 --> 00:01:41.827
+Not a number.
+
+00:01:42.227 --> 00:01:43.147
+The actual names.
+
+00:01:44.267 --> 00:01:47.087
+Give the run a name, you will thank yourself in the morning.
+
+00:01:47.687 --> 00:01:48.587
+Then press play.
+
+00:01:49.587 --> 00:01:53.687
+It is already on the runs page, marked running, and the badge is counting.
+
+00:01:54.407 --> 00:01:56.547
+18 of 32 verdicts in, then 25.
+
+00:01:57.367 --> 00:01:59.227
+Then a pause while the slow ones finish.
+
+00:02:00.207 --> 00:02:03.747
+Those results arrive while the tests are still going, one at a time,
+
+00:02:04.167 --> 00:02:06.347
+each with the name of the test that just finished.
+
+00:02:06.927 --> 00:02:09.107
+Green if it passed, red if it did not.
+
+00:02:09.767 --> 00:02:14.547
+Underneath it says the work went out in two parts, side by side, so it finishes sooner.
+
+00:02:15.547 --> 00:02:18.747
+And when both parts have reported back, the run says complete.
+
+00:02:19.307 --> 00:02:20.267
+Not probably done.
+
+00:02:20.847 --> 00:02:23.487
+It knew how many parts it was owed, and it got them all.
+
+00:02:24.427 --> 00:02:25.327
+31 passed.
+
+00:02:25.827 --> 00:02:26.407
+One failed.
+
+00:02:27.067 --> 00:02:29.727
+An expired card was accepted when it should have been rejected.
+
+00:02:30.207 --> 00:02:32.867
+There it is in red, with the reason on the line.
+
+00:02:34.067 --> 00:02:36.607
+Now the part that makes this more than a convenient button.
+
+00:02:37.587 --> 00:02:42.227
+When you pressed play, runcomposer wrote the plan down first, a small file
+
+00:02:42.307 --> 00:02:43.327
+holding three things.
+
+00:02:43.847 --> 00:02:48.407
+The rule you built in the words you built it in, the exact list of 32 test
+
+00:02:48.407 --> 00:02:52.727
+names, and a fingerprint of the whole set of tests taken at that moment.
+
+00:02:53.687 --> 00:02:55.127
+Each one earns its place.
+
+00:02:55.687 --> 00:02:57.647
+The rule so anyone can see what you meant.
+
+00:02:58.227 --> 00:03:01.127
+The list so what runs is fixed and cannot drift.
+
+00:03:01.667 --> 00:03:02.487
+The fingerprint.
+
+00:03:02.967 --> 00:03:06.707
+So if the tests change afterwards, that gets noticed instead of discovered.
+
+00:03:07.627 --> 00:03:09.707
+Which is why the run does not have to happen here.
+
+00:03:10.267 --> 00:03:11.787
+The other button says export.
+
+00:03:12.327 --> 00:03:14.127
+Same selection, same list.
+
+00:03:14.547 --> 00:03:16.007
+Only now you get the file.
+
+00:03:16.947 --> 00:03:17.927
+Hand it to anything.
+
+00:03:18.307 --> 00:03:19.147
+A build job.
+
+00:03:19.547 --> 00:03:20.227
+A colleague.
+
+00:03:20.767 --> 00:03:24.347
+A machine in a lab this tool cannot reach and has no password for.
+
+00:03:24.887 --> 00:03:29.207
+Over there, one small Python file reads it, runs your usual test command
+
+00:03:29.207 --> 00:03:32.327
+against exactly those names and writes the results beside them.
+
+00:03:33.267 --> 00:03:35.567
+Bring the results back by any route at all.
+
+00:03:36.007 --> 00:03:40.427
+And they land on this run because the file carried its own reference number the whole way.
+
+00:03:41.387 --> 00:03:44.047
+The interface is a document, not a protocol.
+
+00:03:45.200 --> 00:03:47.420
+Next morning, one test failed.
+
+00:03:47.960 --> 00:03:49.880
+You do not want to run 32 again.
+
+00:03:50.320 --> 00:03:51.200
+You want that one.
+
+00:03:52.160 --> 00:03:53.680
+At the top, there is a shortcut.
+
+00:03:54.120 --> 00:03:56.000
+Rerun what failed in the latest run.
+
+00:03:56.540 --> 00:03:59.480
+One click and the selection is exactly that test.
+
+00:03:59.980 --> 00:04:00.620
+One of one.
+
+00:04:01.160 --> 00:04:03.740
+And the new run keeps a note of where its list came from.
+
+00:04:04.700 --> 00:04:07.040
+Latest means latest, finished by the way.
+
+00:04:07.620 --> 00:04:11.100
+A run still waiting on results is not quietly treated as an answer.
+
+00:04:12.060 --> 00:04:12.740
+One more thing.
+
+00:04:12.740 --> 00:04:17.540
+If results turn up that match no run you asked for, they do not join your history.
+
+00:04:18.280 --> 00:04:20.860
+They wait here, in the open, with the reason.
+
+00:04:21.540 --> 00:04:22.140
+You decide.
+
+00:04:22.640 --> 00:04:24.580
+Attach, promote, or discard.
+
+00:04:25.640 --> 00:04:26.680
+That is runcomposer.
+
+00:04:27.360 --> 00:04:28.020
+Open source.
+
+00:04:28.520 --> 00:04:28.900
+MIT.
+
+00:04:29.420 --> 00:04:30.400
+Running on your own machine.
+
+00:04:31.480 --> 00:04:33.220
+Pick exactly the tests you mean.
+
+00:04:33.760 --> 00:04:34.420
+Keep the receipt.

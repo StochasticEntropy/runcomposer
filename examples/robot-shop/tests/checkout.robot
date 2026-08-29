@@ -63,10 +63,16 @@ Slow Warehouse Sync Finishes
     [Tags]    Checkout    Checkout-Shipping    Regression    SlowLane
     [Documentation]    Deliberately slow: keeps the run in RUNNING long enough
     ...    to observe live per-item status (DESIGN.md §6.2a listener path).
-    Sleep    3s
+    ...    The two SlowLane sleeps are unequal on purpose: round-robin chunking
+    ...    puts them on different shards, so a two-worker run visibly plateaus
+    ...    twice — once per shard — instead of ending before the page refreshes.
+    Sleep    8s
     Log    warehouse sync finished
 
 Slow Invoice Batch Finishes
     [Tags]    Checkout    Checkout-Shipping    Regression    SlowLane
-    Sleep    6s
+    [Documentation]    The longer of the SlowLane pair: it holds the run open
+    ...    until the second shard reports, so COMPLETE is observably computed
+    ...    from both shards rather than guessed at.
+    Sleep    14s
     Log    invoice batch finished

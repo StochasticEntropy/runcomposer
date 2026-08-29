@@ -41,6 +41,11 @@ pipx run --spec . runcomposer serve   # web UI (EN/DE) + API at http://127.0.0.1
 # or: docker build -t runcomposer . && docker run -p 8100:8100 runcomposer
 ```
 
+`demo` seeds a real store — five completed runs with per-item verdicts — into
+`./runcomposer-demo/`, and prints the commands that read it back, including
+"rerun what failed". Everything it writes is in that one directory, so
+`rm -rf runcomposer-demo` undoes it.
+
 ## What it does
 
 **Catalog.** A *test source* enumerates your tests as items — an opaque stable
