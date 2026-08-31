@@ -666,16 +666,16 @@
     <h1>runcomposer<span class="dot">.</span></h1>
     <p class="thesis">Die Schnittstelle ist ein Dokument, kein Protokoll.</p>
     <p class="lede">
-      Ein tag-basierter Composer und Orchestrator für Testläufe. Betrachte deinen Testkorpus durch
-      eine kuratierte Taxonomie, stell mit einer echten Filtersprache eine präzise Auswahl zusammen
-      und friere sie zu einer portablen <strong>Run Spec</strong> ein — einem versionierten
-      Dokument, das beliebige Ausführende abarbeiten können: ein lokaler Process Pool,
-      <strong>dein eigener Agent auf einer entfernten Maschine</strong> oder ein CI-Job. Ergebnisse
-      laufen über jeden Transportweg zurück in eine Lauf-Historie, aus der die nächste Auswahl
-      entsteht.
+      Testläufe über Tags zusammenstellen und orchestrieren. Eine kuratierte Taxonomie legt sich
+      über deinen Testkorpus, du stellst mit einer richtigen Filtersprache eine präzise Auswahl
+      zusammen und frierst sie zu einer portablen <strong>Run Spec</strong> ein — einem
+      versionierten Dokument, das sich überall ausführen lässt: von einem lokalen Process Pool, von
+      <strong>deinem eigenen Agenten auf einer entfernten Maschine</strong>, von einem CI-Job. Die
+      Ergebnisse finden auf beliebigem Weg zurück in eine Lauf-Historie, aus der die nächste
+      Auswahl entsteht.
     </p>
     <div class="plate">
-      <div class="plate-head"><b>ausprobieren</b><span>~30 Sekunden, keine Konfiguration</span></div>
+      <div class="plate-head"><b>ausprobieren</b><span>~30 Sekunden, ohne Konfiguration</span></div>
 <pre><code><span class="c"># boots a fictional web-shop corpus and runs the whole loop</span>
 pipx run --spec . runcomposer demo</code></pre>
     </div>
@@ -685,10 +685,10 @@ pipx run --spec . runcomposer demo</code></pre>
     <figure class="shot">
       <img src="hero-compose.webp" width="1760" height="1100" loading="eager" fetchpriority="high" decoding="async"
            alt="Die Compose-Ansicht von runcomposer: links ein Taxonomie-Baum aus Bereichen, Suites,
-                Sprints und Lanes; darüber ein Filter, der aus einer Tag-Regel gebaut ist; und eine
-                Vorschau-Tabelle mit dreizehn passenden Payments-Tests samt ihren Tags, darunter eine
-                Fußzeile mit dem robot-pool-Runner und dem Spec-Export.">
-      <figcaption>Zusammenstellen: aus der Taxonomie auswählen, zusehen, wie die Auswahl neu
+                Sprints und Lanes; daneben ein Filter aus einer Tag-Regel und eine Vorschau-Tabelle
+                mit dreizehn passenden Payments-Tests samt ihren Tags; darunter eine Fußzeile, die
+                den robot-pool-Runner oder den Spec-Export anbietet.">
+      <figcaption>Zusammenstellen: aus der Taxonomie wählen, zusehen, wie die Auswahl neu
         kompiliert wird, dann ausführen oder exportieren. Korpus: <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a>
         über die Test Source <code>robotframework</code>.</figcaption>
     </figure>
@@ -697,25 +697,25 @@ pipx run --spec . runcomposer demo</code></pre>
   <section>
     <div class="marker">Die Idee</div>
     <div class="body">
-      <h2>Schwierig ist die Auswahl. Das Ausführen ist die Aufgabe anderer.</h2>
+      <h2>Die Auswahl ist das Schwierige. Ausführen sollen andere.</h2>
       <p>
-        Jeder Testkorpus ab einer gewissen Größe hat dasselbe Problem: Du kannst alles ausführen
-        oder eine einzelne Sache, aber <em>genau die richtige Teilmenge</em> auszuführen — und
-        später belegen zu können, welche Teilmenge das war — ist umständlich. Tags helfen, bis die
-        Tag-Abfrage in einem Parameter eines CI-Jobs steckt, den drei Wochen später niemand mehr
-        rekonstruieren kann.
+        Jeder Testkorpus hat ab einer gewissen Größe dasselbe Problem: Alles laufen lassen geht,
+        einen einzelnen Test laufen lassen auch. Umständlich wird es bei <em>genau der richtigen
+        Teilmenge</em> — und erst recht, wenn du später noch belegen sollst, welche Teilmenge das
+        war. Tags helfen, bis die Tag-Abfrage in einem Job-Parameter der CI steckt, den drei Wochen
+        später niemand mehr nachvollziehen kann.
       </p>
       <p>
-        runcomposer teilt das Problem in zwei Hälften. Das Zusammenstellen der Auswahl ist ein
-        vollwertiger, überprüfbarer Vorgang, der ein Dokument hervorbringt. Das Ausführen ist die
-        Aufgabe anderer — und zwar mit Absicht. Das Dokument ist die gesamte Schnittstelle: Wer
+        runcomposer teilt das Problem in zwei Hälften. Das Zusammenstellen wird zu einem eigenen
+        Arbeitsschritt — einem, den man prüfen kann und der ein Dokument hinterlässt. Ausführen
+        sollen andere, und zwar mit Absicht. Das Dokument ist die ganze Schnittstelle: Wer es
         ausführt, muss drei Felder verstehen, keine API.
       </p>
       <p class="note">
         <b>Was es nicht ist:</b> ein CI-System, ein Scheduler oder ein Test-Framework. Es gibt
-        keinen Cron, keine instanzübergreifende Queue und keinen Anspruch, das abzulösen, was
-        deine Builds heute schon ausführt. Zusammenstellen, dispatchen, einlesen, durchsehen — das ist
-        das ganze Produkt.
+        keinen Cron, keine instanzübergreifende Queue und keinen Anspruch, das abzulösen, was deine
+        Builds heute schon laufen lässt. Zusammenstellen, dispatchen, einlesen, durchsehen — das
+        ist das ganze Produkt.
       </p>
     </div>
   </section>
@@ -723,11 +723,11 @@ pipx run --spec . runcomposer demo</code></pre>
   <section>
     <div class="marker">Ansehen</div>
     <div class="body">
-      <h2>Sechzig Sekunden, falls du es lieber siehst</h2>
+      <h2>Sechzig Sekunden, wenn du lieber zusiehst</h2>
       <p>
-        Derselbe Gedankengang wie auf dem Rest dieser Seite, nur ausgeführt: wie umständlich
-        präzises Auswählen ist, was sich ändert, sobald die Auswahl zu einem Dokument wird, und
-        wohin dieses Dokument danach reisen kann.
+        Dieselbe Argumentation wie auf dem Rest der Seite, nur in Bewegung: wie umständlich es ist,
+        präzise auszuwählen; was sich ändert, sobald die Auswahl ein Dokument ist; und wohin dieses
+        Dokument danach reisen kann.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="teaser-poster.jpg" width="1920" height="1080">
@@ -738,13 +738,13 @@ pipx run --spec . runcomposer demo</code></pre>
       </div>
       <p class="watch-note">69 Sekunden, mit Sprecher</p>
 
-      <h3>Oder jemandem bei der Benutzung zusehen</h3>
+      <h3>Oder zusehen, wie jemand damit arbeitet</h3>
       <p>
-        Viereinhalb Minuten über die Schulter geschaut, in der echten Oberfläche: die Tests für
-        heute Nacht Bereich für Bereich zusammensuchen, die bekannt kaputten liegen lassen,
-        zusehen, wie die Verdicts einzeln eintreffen, bis der Lauf sich abgeschlossen meldet — und
-        am nächsten Morgen den einen fehlgeschlagenen Test erneut ausführen. Eine Erklärung dazu,
-        wie es darunter funktioniert, genau an der Stelle, an der die Geschichte sie braucht.
+        Viereinhalb Minuten über die Schulter, in der echten Oberfläche: die Tests für heute Nacht
+        Bereich für Bereich zusammensuchen, die bekannt kaputten liegen lassen, den Verdicts beim
+        Eintreffen zusehen, bis der Lauf sich abgeschlossen meldet — und am nächsten Morgen den
+        einen Test, der fehlgeschlagen ist, noch einmal laufen lassen. Dazwischen ein Blick darauf,
+        wie es darunter funktioniert, genau an der Stelle, an der die Geschichte ihn braucht.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="walkthrough-poster.jpg" width="1920" height="1080">
@@ -762,8 +762,7 @@ pipx run --spec . runcomposer demo</code></pre>
     <div class="body">
       <h2>Von einem Tag zum abgeschlossenen Lauf</h2>
       <p>
-        Sechs Schritte, und der Lebenszyklus-Status des Laufs wird bei jedem einzelnen berechnet
-        — nie geraten.
+        Sechs Schritte. Nach jedem einzelnen wird der Zustand des Laufs berechnet, nie geraten.
       </p>
 
       <div class="states">
@@ -776,49 +775,48 @@ pipx run --spec . runcomposer demo</code></pre>
 
       <h3>1 · Katalog</h3>
       <p>
-        Eine <em>Test Source</em> zählt deine Tests als Items auf — eine opake, stabile Id samt
-        Tags — und bildet einen Hash über den Inhalt des Katalogs. Eine Robot-Framework-Source
-        prägt Ids aus Longnames; eine Manifest-Source nimmt eine schlichte JSON-Liste entgegen,
-        sodass ein pytest-Korpus als Node-Ids ankommt.
+        Eine <em>Test Source</em> zählt deine Tests als Items auf — je eine opake, stabile Id und
+        die Tags dazu — und bildet über den Inhalt des Katalogs einen Hash. Die
+        Robot-Framework-Source prägt ihre Ids aus Longnames; die Manifest-Source nimmt eine
+        schlichte JSON-Liste, womit ein pytest-Korpus als Node-Ids hereinkommt.
       </p>
 
       <h3>2 · Zusammenstellen</h3>
       <p>
         Navigiere durch die
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/docs/taxonomy.md">Taxonomie</a>
-        — einen kuratierten Baum über Tag-Mustern, Daten statt Code —, baue einen Filter und sieh
-        zu, wie die Vorschau neu kompiliert wird, während du tippst. Die Filtersprache
-        ist klein und verlustfrei: ein bloßes Wort ist ein wörtlicher Tag, <code>prefix:Checkout-</code>
-        ist syntaktischer Zucker für einen verankerten Regex, <code>regex:</code> ist der
-        Notausgang, und die drei Operatoren sind <code>AND</code>, <code>OR</code>, <code>NOT</code>.
+        — einen kuratierten Baum über Tag-Mustern, Daten statt Code —, bau einen Filter, und die
+        Vorschau kompiliert beim Tippen mit. Die Filtersprache ist klein und verlustfrei: Ein
+        bloßes Wort ist ein wörtlicher Tag, <code>prefix:Checkout-</code> ist nur syntaktischer
+        Zucker für einen verankerten Regex, <code>regex:</code> ist der Notausgang, und mehr als
+        <code>AND</code>, <code>OR</code>, <code>NOT</code> gibt es nicht.
       </p>
 
       <h3>3 · Materialisieren</h3>
       <p>
-        Der Filter wird gegen den Katalog-Snapshot kompiliert, und die daraus entstehende
-        Item-Liste wird <em>in</em> das Dokument geschrieben. Das ist der Schritt, der einen Lauf
-        reproduzierbar macht: Der Filter bleibt zur Nachvollziehbarkeit erhalten, ausgeführt wird
-        aber die eingebettete Liste.
+        Der Filter wird gegen den Katalog-Snapshot kompiliert, und was dabei herauskommt, wandert
+        als Item-Liste <em>in</em> das Dokument. Dieser Schritt macht einen Lauf reproduzierbar:
+        Der Filter bleibt zur Nachvollziehbarkeit stehen; ausgeführt wird die eingebettete Liste.
       </p>
 
       <h3>4 · Dispatch</h3>
       <p>
-        Übergib das Dokument an einen Runner, oder exportiere es und gib es an was auch immer
-        weiter. Jede Übergabe prägt einen <em>Dispatch</em>; dieselbe Spec erneut
-        auszuführen ist ein neuer Dispatch unter demselben Lauf.
+        Übergib das Dokument an einen Runner — oder exportier es und gib es weiter, an was auch
+        immer. Jede Übergabe prägt einen <em>Dispatch</em>; dieselbe Spec ein zweites Mal laufen zu
+        lassen ergibt einen neuen Dispatch unter demselben Lauf.
       </p>
 
       <h3>5 · Zustellen</h3>
       <p>
-        Ergebnisse kommen als Bundle zurück, das einen Korrelations-Marker trägt. Schieb es per
-        HTTP, leg es in ein überwachtes Verzeichnis, oder übergib es auf der Kommandozeile. Über
-        jede Zustellung wird ein Hash ihres Inhalts gebildet.
+        Ergebnisse kommen als Bundle zurück, das einen Korrelations-Marker trägt. Schick es per HTTP,
+        leg es in ein überwachtes Verzeichnis oder reich es auf der Kommandozeile durch. Von jeder
+        Zustellung wird der Inhalt gehasht.
       </p>
 
       <h3>6 · Abschließen</h3>
       <p>
-        Sobald jeder deklarierte Shard geliefert hat, ist der Lauf abgeschlossen, und seine
-        Verdicts werden zur Historie — und genau dort beginnt die nächste Auswahl.
+        Sobald jeder deklarierte Shard geliefert hat, ist der Lauf abgeschlossen und seine Verdicts
+        werden Historie — und genau dort fängt die nächste Auswahl an.
       </p>
     </div>
   </section>
@@ -828,10 +826,10 @@ pipx run --spec . runcomposer demo</code></pre>
     <div class="body">
       <h2>Die Run Spec</h2>
       <p>
-        Versioniertes YAML, isomorph zu JSON und in beiden Formen akzeptiert, mit veröffentlichtem
-        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/src/runcomposer/schemas/runspec-1.0.json">JSON Schema</a>. Die
-        Kernabschnitte sind generisch und geschlossen. Genau ein Abschnitt ist offen —
-        <code>runner</code> — und der Kern schaut nie hinein.
+        Versioniertes YAML, isomorph zu JSON und in beiden Formen akzeptiert; das
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/src/runcomposer/schemas/runspec-1.0.json">JSON Schema</a>
+        ist veröffentlicht. Die Kernabschnitte sind generisch und abgeschlossen. Offen ist genau
+        einer, <code>runner</code>, und da schaut der Kern nie hinein.
       </p>
 
       <div class="plate full">
@@ -873,17 +871,17 @@ pipx run --spec . runcomposer demo</code></pre>
       </div>
 
       <p>
-        Weil die Item-Liste im Dokument selbst mitreist, ist eine dispatchte Spec autark. Die
-        Maschine, die sie ausführt, braucht keinen Zugriff auf deinen Katalog, deine Datenbank
-        oder dein Netz. Und weil der Katalog-Snapshot mitreist, kann ein Ausführender erkennen, ob sich
-        der Korpus unter dem Plan hinweg bewegt hat.
+        Die Item-Liste reist im Dokument mit, deshalb ist eine Spec unterwegs auf nichts weiter
+        angewiesen: Die Maschine, die sie ausführt, braucht keinen Zugriff auf deinen Katalog, deine Datenbank oder
+        dein Netz. Der Katalog-Snapshot reist ebenfalls mit — daran erkennt die ausführende Seite,
+        ob sich der Korpus unter dem Plan bewegt hat.
       </p>
       <p>
-        Ein Consumer muss jede Spec derselben Major-Version akzeptieren: Unbekannte Felder
-        innerhalb bekannter Abschnitte werden ignoriert, unbekannte Abschnitte auf oberster Ebene
-        erzeugen eine Warnung, eine höhere Major-Version wird rundheraus abgelehnt.
+        Ein Consumer muss jede Spec derselben Major-Version annehmen: Unbekannte Felder in
+        bekannten Abschnitten werden ignoriert, unbekannte Abschnitte auf oberster Ebene ergeben
+        eine Warnung, eine höhere Major-Version lehnt er rundheraus ab.
         <code>runcomposer validate</code> prüft ein Dokument gegen das Schema; mit
-        <code>--for-dispatch</code> verlangt es zusätzlich alles, was die Ausführung braucht.
+        <code>--for-dispatch</code> verlangt es obendrein alles, was zum Ausführen nötig ist.
       </p>
     </div>
   </section>
@@ -891,13 +889,13 @@ pipx run --spec . runcomposer demo</code></pre>
   <section>
     <div class="marker">Das Kernstück</div>
     <div class="body">
-      <h2>Bring deinen eigenen Run Agent mit</h2>
+      <h2>Bring deinen eigenen Agenten mit</h2>
       <p>
-        Das ist der Teil, den zu verstehen sich lohnt, denn genau ihn zu ermöglichen ist der Zweck
-        des ganzen Entwurfs. runcomposer muss deine Testmaschinen nicht erreichen. Es braucht dort
-        keine Zugangsdaten, keine Netzwerkroute dorthin und keinen Agenten unter seiner Kontrolle.
-        Es gibt ein Dokument heraus; irgendetwas auf der anderen Seite führt es aus und schickt ein
-        Bundle zurück, wann immer es so weit ist.
+        Diesen Teil zu verstehen lohnt sich, denn der ganze Entwurf existiert, um genau ihn
+        möglich zu machen. runcomposer muss deine Testmaschinen nicht erreichen: keine Zugangsdaten
+        dort, keine Netzwerkroute dorthin, kein Agent unter seiner Kontrolle. Es gibt ein Dokument
+        heraus; irgendetwas auf der anderen Seite führt es aus und schickt ein Bundle zurück, wann
+        immer es so weit ist.
       </p>
 
       <div class="handoff full">
@@ -912,8 +910,8 @@ pipx run --spec . runcomposer demo</code></pre>
             <div class="lane-id">robot-pool</div>
             <p>
               runcomposer führt die Tests selbst auf einem Process Pool aus: Fan-out über
-              Partitionen, laufzeitbalanciertes Chunking, live eintreffende Verdicts, während der
-              Lauf noch läuft.
+              Partitionen, laufzeitbalanciertes Chunking, und die Verdicts treffen schon ein,
+              während der Lauf noch läuft.
             </p>
             <div class="lane-where">läuft auf: dem runcomposer-Host</div>
           </div>
@@ -922,11 +920,11 @@ pipx run --spec . runcomposer demo</code></pre>
             <div class="lane-id">runcomposer-exec</div>
             <p>
               <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/src/runcomposer_exec.py">Eine
-              einzige mitgelieferte Python-Datei</a> auf der Gegenseite liest die Spec, führt deinen
-              Befehl gegen genau die aufgeführten Ids aus und schreibt einen Korrelations-Marker
-              neben die Ausgabe.
+              einzige Python-Datei</a>, die du dir zu deinem eigenen Code kopierst, liest auf der
+              Gegenseite die Spec, führt deinen Befehl gegen genau die aufgeführten Ids aus und
+              legt einen Korrelations-Marker neben die Ausgabe.
               <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/remote-agent">Ein
-              vollständiges Adopter-Kit</a> fährt die Schleife von Anfang bis Ende.
+              vollständiges Adopter-Kit</a> fährt die Schleife einmal von vorn bis hinten durch.
             </p>
             <div class="lane-where">läuft auf: überall, wohin du eine Datei kopieren kannst</div>
           </div>
@@ -934,13 +932,13 @@ pipx run --spec . runcomposer demo</code></pre>
             <div class="lane-name">Ein CI-Job</div>
             <div class="lane-id">ci-trigger</div>
             <p>
-              Stößt einen bestehenden parametrisierten Job an und übergibt die Spec als
-              Build-Parameter. Die Stage des Jobs führt denselben mitgelieferten Consumer aus und
-              schickt das Bundle zurück — es gibt ein
+              Stößt einen vorhandenen parametrisierten Job an und übergibt die Spec als
+              Build-Parameter. Dessen eigene Stage führt genau dieselbe Datei aus und schickt
+              das Bundle zurück — für Jenkins gibt es ein
               <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/ci/jenkins">reproduzierbares
-              Jenkins-in-Docker-Setup</a>, das du selbst laufen lassen kannst.
+              Setup in Docker</a>, das du selbst laufen lassen kannst.
             </p>
-            <div class="lane-where">läuft auf: deiner bestehenden CI</div>
+            <div class="lane-where">läuft auf: deiner vorhandenen CI</div>
           </div>
         </div>
         <div class="drop"></div>
@@ -950,31 +948,31 @@ pipx run --spec . runcomposer demo</code></pre>
         </div>
       </div>
 
-      <h3>Der Vertrag für Ausführende</h3>
+      <h3>Der Vertrag für die ausführende Seite</h3>
       <p>
         Was auch immer die Spec ausführt — unser Runner, dein Skript, ein CI-Job, ein Kollege auf
-        einem Laptop —, schuldet genau drei Dinge. Alles andere im Dokument, einschließlich des
-        gesamten Abschnitts <code>runner</code>, darf ignoriert werden.
+        seinem Laptop —, schuldet genau drei Dinge. Alles Übrige im Dokument darf es ignorieren,
+        den ganzen Abschnitt <code>runner</code> eingeschlossen.
       </p>
       <ul class="contract">
-        <li><span><b>Genau die materialisierte Item-Liste ausführen.</b> Nicht den Filter.
-          Ausführende kompilieren Auswahlen nicht neu — genau das macht den Lauf
+        <li><span><b>Genau die materialisierte Item-Liste ausführen.</b> Nicht den Filter. Wer
+          ausführt, kompiliert keine Auswahl neu — genau das macht den Lauf
           reproduzierbar.</span></li>
-        <li><span><b>Vor dem Ausführen auf Drift prüfen.</b> Weicht der Hash des aktuellen Korpus
-          von dem in der Spec ab, wird die Ausführung standardmäßig verweigert. Mit einem
-          ausdrücklichen Override wird die Schnittmenge ausgeführt und die Differenz als Skips
-          gemeldet.</span></li>
-        <li><span><b>Die Run-Id in den Ergebnissen nennen.</b> Das, plus ein Shard-Label, wenn die
-          Arbeit aufgeteilt wurde, ist alles, was die Korrelation braucht.</span></li>
+        <li><span><b>Vor dem Ausführen auf Drift prüfen.</b> Weicht der Hash des Korpus vor Ort von
+          dem in der Spec ab, wird die Ausführung standardmäßig verweigert. Nur mit einem
+          ausdrücklichen Override läuft
+          die Schnittmenge, und die Differenz wird als Skips gemeldet.</span></li>
+        <li><span><b>Die Run-Id in den Ergebnissen nennen.</b> Mehr braucht die Korrelation nicht —
+          nur noch ein Shard-Label, falls die Arbeit aufgeteilt wurde.</span></li>
       </ul>
 
       <h3>Wie „dein eigener Agent“ konkret aussieht</h3>
       <p>
         Der Consumer ist mit Absicht winzig: eine einzige, in sich geschlossene Python-Datei, die
         nur die Standardbibliothek benutzt. Auf der ausführenden Seite ist nichts zu installieren —
-        kopier sie zu deinem Code, oder hol sie aus einem <a href="https://github.com/StochasticEntropy/runcomposer/releases">Release</a>,
-        wo sie als eigenes Asset liegt. Die Datei liest die Spec als JSON, eine Maschine mit nichts als
-        <code>python3</code> kann sie also ausführen.
+        kopier sie zu deinem Code ins Repository, oder hol sie aus einem <a href="https://github.com/StochasticEntropy/runcomposer/releases">Release</a>,
+        wo sie als eigenes Asset liegt. Gelesen wird die Spec als JSON; eine Maschine, auf der
+        nichts weiter als <code>python3</code> liegt, kann sie ausführen.
       </p>
 
       <div class="plate full">
@@ -999,16 +997,16 @@ runcomposer runs
 
       <p>
         Das „wie auch immer du willst“ aus Schritt 3 ist der eigentliche Punkt. Das Bundle ist ein
-        Verzeichnis. Committe es in einen Ergebnis-Branch, hol es per <code>rsync</code>, leg es
-        auf eine Freigabe, häng es an einen Build — der Marker darin trägt die Korrelation, der
-        Transport ist also deine Sache und keineswegs unsere.
+        Verzeichnis. Committe es in einen Ergebnis-Branch, schieb es per <code>rsync</code>, leg es
+        auf ein Netzlaufwerk, häng es an einen Build — die Korrelation steckt im Marker, der
+        Transport ist deine Sache und nicht unsere.
       </p>
       <p class="note">
-        <b>Sicher wird das Ganze durch den Marker.</b> Er trägt die Run-Id und einen Hash genau der
-        Spec-Bytes, die herausgegeben wurden. Ein Bundle, dessen Hash nicht passt oder das sich auf
-        einen Lauf beruft, den niemand dispatcht hat, rutscht nicht still in deine Historie — es
-        landet in einer sichtbaren Quarantäne-Inbox, wo ein Mensch es zuordnen, übernehmen oder
-        verwerfen kann.
+        <b>Sicher macht das Ganze der Marker.</b> Er trägt die Run-Id und einen Hash genau der
+        Spec-Bytes, die herausgegeben wurden. Ein Bundle, dessen Hash nicht passt, oder eines, das
+        sich auf einen Lauf beruft, den nie jemand losgeschickt hat, rutscht nicht still in deine
+        Historie — es landet sichtbar in einer Quarantäne-Inbox, und ein Mensch entscheidet:
+        zuordnen, übernehmen oder verwerfen.
       </p>
     </div>
   </section>
@@ -1018,26 +1016,26 @@ runcomposer runs
     <div class="body">
       <h2>Ergebnisse, von überall, auch mehr als einmal</h2>
       <p>
-        Dispatch und Ergebnisrücklauf sind vollständig entkoppelt. Drei Transportwege münden in
-        eine Pipeline: ein HTTP-Push, abgesichert durch das eigene Ingest-Token des Laufs, ein
+        Dispatch und Rückweg sind vollständig entkoppelt. Drei Transportwege münden in eine
+        Pipeline: ein HTTP-Push, abgesichert durch das eigene Ingest-Token des Laufs, ein
         überwachtes File-Drop-Verzeichnis für Bundles, die per git oder über einen Air Gap gereist
         sind, und schlicht <code>runcomposer ingest</code> auf der Kommandozeile.
       </p>
       <p>
-        Erneute Zustellung ist kein Sonderfall — Poller pollen erneut, CI wiederholt Webhooks, git
-        zieht noch einmal. Deshalb sind die Regeln ausdrücklich: Ein Byte-gleiches Bundle ist ein
-        <strong>No-op</strong>. Ein anderes Bundle für denselben Shard <strong>ersetzt</strong> die
-        Verdicts dieses Shards, der letzte Schreiber gewinnt. Es gibt kein monotones
-        Zusammenführen, denn eine Korrektur muss ein
-        <span class="chip chip-fail">FAIL</span> wieder in ein
-        <span class="chip chip-pass">PASS</span> verwandeln können.
+        Dass etwas zweimal zugestellt wird, ist kein Sonderfall — Poller pollen erneut, die CI
+        wiederholt Webhooks, git zieht noch einmal. Deshalb sind die Regeln ausdrücklich: Ein
+        Byte-gleiches Bundle ist ein <strong>No-op</strong>. Ein anderes Bundle für denselben Shard
+        <strong>ersetzt</strong> die Verdicts dieses Shards, der letzte Schreiber gewinnt. Ein
+        monotones Zusammenführen gibt es nicht: Eine Korrektur muss ein
+        <span class="chip chip-fail">FAIL</span> wieder zu einem
+        <span class="chip chip-pass">PASS</span> machen können.
       </p>
       <p>
-        Verdicts je Item sind <span class="chip chip-pass">PASS</span>
+        Pro Item gibt es genau ein Verdict: <span class="chip chip-pass">PASS</span>
         <span class="chip chip-fail">FAIL</span> <span class="chip chip-skip">SKIP</span>
         <span class="chip chip-skip">ERROR</span>, jedes mit Dauer, Meldung, Artefakten und einem
-        Versuchszähler — so lässt sich ein Retry innerhalb eines Laufs abbilden, und Flakiness ist
-        ableitbar, statt als Vermutung gespeichert zu werden.
+        Versuchszähler. So lässt sich ein Retry innerhalb eines Laufs abbilden, und Flakiness kann
+        man ausrechnen, statt sie als Vermutung abzulegen.
       </p>
     </div>
   </section>
@@ -1045,12 +1043,12 @@ runcomposer runs
   <section>
     <div class="marker">Die Schleife schließt sich</div>
     <div class="body">
-      <h2>Erneut ausführen, was fehlgeschlagen ist</h2>
+      <h2>Noch einmal laufen lassen, was fehlgeschlagen ist</h2>
       <p>
-        Sobald sich Läufe ansammeln, wird die Historie selbst zur Auswahlquelle. Frag nach den
-        Fehlschlägen des letzten abgeschlossenen Laufs, und sie werden beim Zusammenstellen zu
-        einer ganz normalen, statischen, reproduzierbaren Spec aufgelöst — mit einem Nachweis, wie
-        die Liste zustande gekommen ist.
+        Sobald sich Läufe ansammeln, wird die Historie selbst zu einer Quelle für Auswahlen. Frag
+        nach den Fehlschlägen des letzten abgeschlossenen Laufs: Beim Zusammenstellen lösen sie
+        sich in eine ganz normale, statische, reproduzierbare Spec auf — samt Nachweis, wie die
+        Liste zustande gekommen ist.
       </p>
       <div class="plate full">
         <div class="plate-head"><b>Historie als Auswahl</b><span>einmal aufgelöst, dann eingefroren · Ids aus <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a></span></div>
@@ -1065,9 +1063,9 @@ runcomposer runs
       </div>
       <p>
         „Letzter“ heißt letzter <em>abgeschlossener</em> — ein Lauf, der noch auf Ergebnisse
-        wartet, gilt nicht stillschweigend als Antwort. Und in einer frischen Installation sind
-        diese Funktionen schlicht dunkel, was das Werkzeug ausspricht, statt eine selbstbewusst
-        leere Liste zurückzugeben.
+        wartet, gilt nicht stillschweigend als Antwort. Und frisch installiert bleiben diese
+        Funktionen dunkel; das sagt das Werkzeug dann auch, statt selbstbewusst eine leere Liste
+        zurückzugeben.
       </p>
     </div>
   </section>
@@ -1078,9 +1076,9 @@ runcomposer runs
       <h2>Alles Spezifische ist ein Plugin</h2>
       <p>
         Der Kern kennt Items, Tags, Auswahlen, Specs, Läufe und Verdicts. Von Robot Framework,
-        pytest, Jenkins oder XML weiß er nichts. Das lebt in Plugins, geladen entweder über einen
-        Entry Point oder über einen schlichten <code>module:</code>-Pfad in deiner Konfiguration —
-        keine Umgebungsvariablen, kein magisches Aufspüren.
+        pytest, Jenkins oder XML weiß er nichts. Das steckt in Plugins, die entweder über einen
+        Entry Point geladen werden oder über einen schlichten <code>module:</code>-Pfad in deiner
+        Konfiguration — keine Umgebungsvariablen, keine Magie, die von selbst etwas findet.
       </p>
       <div class="tablewrap full">
         <table>
@@ -1092,16 +1090,16 @@ runcomposer runs
               <td>manifest<span class="role">source</span></td>
               <td>Test Source</td>
               <td>Ein JSON- oder YAML-Katalog, der nur <code>id</code> und <code>tags</code>
-                braucht. Der Einstiegsweg ohne jede Abhängigkeit; bringt ein
+                braucht. Der Einstieg ohne jede Abhängigkeit; bringt ein
                 <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/pytest-shop">pytest-Beispiel</a>
                 mit, das Node-Ids benutzt.</td>
             </tr>
             <tr>
               <td>robotframework<span class="role">source</span></td>
               <td>Test Source</td>
-              <td>Geht <code>.robot</code>-Dateien durch, prägt Ids aus Longnames und übernimmt
-                jede Eigenheit der Namensnormalisierung, damit der Kern das nie tun muss. Vorgeführt
-                an der
+              <td>Geht <code>.robot</code>-Dateien durch, prägt Ids aus Longnames und nimmt jede
+                Eigenheit der Namensnormalisierung auf sich, damit der Kern sie nie kennen muss.
+                Vorgeführt an der
                 <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">robot-shop-Suite</a>.</td>
             </tr>
             <tr>
@@ -1114,9 +1112,9 @@ runcomposer runs
             <tr>
               <td>ci-trigger<span class="role">runner</span></td>
               <td>Runner</td>
-              <td>Steuert einen bestehenden parametrisierten CI-Job. Der Abschluss trifft per
-                Webhook ein, oder er wird über die Build-API gepollt, wenn ein System nicht nach
-                außen rufen kann.</td>
+              <td>Steuert einen vorhandenen parametrisierten CI-Job. Der Abschluss kommt per
+                Webhook — oder wird über die Build-API gepollt, wenn ein System nicht nach außen
+                rufen kann.</td>
             </tr>
             <tr>
               <td>robot-output-xml<span class="role">parser</span></td>
@@ -1127,7 +1125,8 @@ runcomposer runs
             <tr>
               <td>junit-xml<span class="role">parser</span></td>
               <td>Result Parser</td>
-              <td>Die Lingua franca — pytest und so ziemlich alles andere, was berichtet.</td>
+              <td>Die Lingua franca — pytest und so ziemlich alles andere, was Berichte
+                schreibt.</td>
             </tr>
             <tr>
               <td>sqlite<span class="role">store</span></td>
@@ -1139,10 +1138,10 @@ runcomposer runs
         </table>
       </div>
       <p>
-        Die Grenze wird erzwungen, nicht bloß beabsichtigt: Ein Wächtertest lässt den Build
-        scheitern, sobald Kern-Code auch nur das Vokabular eines Frameworks erwähnt. Native
-        Ergebnisnamen laufen immer über die Source, der der Id-Raum gehört, sodass keine Eigenheit
-        der Normalisierung nach innen sickern kann.
+        Die Grenze ist erzwungen, nicht bloß gut gemeint: Ein Test wacht darüber und lässt den
+        Build scheitern, sobald Kern-Code auch nur das Vokabular eines Frameworks in den Mund
+        nimmt. Native Ergebnisnamen laufen immer über die Source, der der Id-Raum gehört; so kann
+        keine Eigenheit der Normalisierung nach innen sickern.
       </p>
     </div>
   </section>
@@ -1153,8 +1152,8 @@ runcomposer runs
       <h2>In einer Minute lauffähig</h2>
       <p>
         Selbst gehostet, eine einzige Konfigurationsdatei, sqlite als Voreinstellung. Die Web-UI
-        liegt fertig gebaut im Wheel, auf Englisch und auf Deutsch, sodass zum Ausprobieren keine
-        Node-Toolchain nötig ist.
+        liegt fertig gebaut im Wheel, auf Englisch und auf Deutsch, sodass du zum Ausprobieren
+        keine Node-Toolchain brauchst.
       </p>
       <div class="plate full">
         <div class="plate-head"><b>Installation</b><span>Python 3.10 – 3.13</span></div>
@@ -1175,28 +1174,27 @@ docker build -t runcomposer . &amp;&amp; docker run -p 8100:8100 runcomposer
 pip install <span class="v">".[robot]"</span></code></pre>
       </div>
       <p class="note">
-        <b>Es gibt noch kein veröffentlichtes Paket.</b> runcomposer 0.1.0 wird aus einem Clone
-        installiert — davon geht jeder Befehl auf dieser Seite aus. Auf PyPI oder npm liegt nichts,
-        <code>pip install runcomposer</code> findet es also nicht; wann sich das ändert, siehst du
-        bei den <a href="https://github.com/StochasticEntropy/runcomposer/releases">Releases</a>.
+        <b>Ein veröffentlichtes Paket gibt es noch nicht.</b> runcomposer 0.1.0 wird aus einem
+        Clone installiert — davon geht jeder Befehl auf dieser Seite aus. Auf PyPI oder npm liegt
+        nichts, <code>pip install runcomposer</code> findet es also nicht; wann sich das ändert,
+        siehst du bei den <a href="https://github.com/StochasticEntropy/runcomposer/releases">Releases</a>.
       </p>
       <p>
         Die CLI ist das ganze Produkt ohne Browser. Alle elf Befehle:
         <code>demo</code> startet die Beispielwelt, <code>catalog</code> listet den Korpus und
-        seinen Snapshot, <code>compile</code> zeigt eine Auswahl in der Vorschau,
-        <code>spec</code> stellt eine zusammen, <code>validate</code> prüft ein Dokument gegen das
-        Schema, <code>dispatch</code> führt es aus, <code>ingest</code> nimmt Ergebnisse zurück,
+        seinen Snapshot, <code>compile</code> zeigt eine Auswahl vorab, <code>spec</code> stellt
+        eine zusammen, <code>validate</code> prüft ein Dokument gegen das Schema,
+        <code>dispatch</code> führt es aus, <code>ingest</code> nimmt Ergebnisse zurück,
         <code>runs</code> blättert darin, <code>export</code> reicht Ergebnisse an ein anderes
         Werkzeug weiter, <code>gc</code> hält alles in Grenzen, und <code>serve</code> liefert
         Web-UI und API.
       </p>
       <p>
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md">ADOPTING.md</a>
-        führt Schritt für Schritt durch das Ausrichten auf deinen eigenen Korpus und deine eigenen
-        Maschinen;
+        geht Schritt für Schritt durch, wie du das Ganze auf deinen eigenen Korpus und deine
+        eigenen Maschinen richtest;
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/DESIGN.md">DESIGN.md</a>
-        ist die Architektur und die Begründung hinter jeder Entscheidung, die hier zu sehen
-        ist.
+        ist die Architektur und die Begründung für jede Entscheidung, die du hier siehst.
       </p>
     </div>
   </section>
@@ -1206,7 +1204,7 @@ pip install <span class="v">".[robot]"</span></code></pre>
     <div class="body">
       <h2>Sechs Wege aus dieser Seite heraus</h2>
       <p>
-        Alles oben Beschriebene liegt in einem einzigen öffentlichen Repository. Es ist ein junges
+        Alles, was oben steht, liegt in einem einzigen öffentlichen Repository. Es ist ein junges
         Projekt mit einem einzigen Maintainer, deshalb ist der Issue-Tracker die Eingangstür für
         alles, was hier nicht hineinpasst.
       </p>
@@ -1235,8 +1233,8 @@ pip install <span class="v">".[robot]"</span></code></pre>
         <div class="lane lane-exit">
           <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/releases">Ein Release holen</a></div>
           <p>
-            Wheel, sdist und die mitlieferbare Einzeldatei <code>runcomposer_exec.py</code> als
-            eigener Download.
+            Wheel, sdist und <code>runcomposer_exec.py</code> als eigener Download — die eine
+            Datei, die du dir zu deinem Code ins Repository legst.
           </p>
         </div>
         <div class="lane lane-exit">
@@ -1249,8 +1247,8 @@ pip install <span class="v">".[robot]"</span></code></pre>
         <div class="lane lane-exit">
           <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/blob/main/LICENSE">Die Lizenz prüfen</a></div>
           <p>
-            MIT. Benutzen, forken, ein Closed-Source-Plugin dagegen ausliefern — genau dafür ist
-            die Plugin-Grenze da.
+            MIT. Benutzen, forken, ein Closed-Source-Plugin dafür schreiben und ausliefern — genau
+            dazu ist die Plugin-Grenze da.
           </p>
         </div>
       </div>
@@ -1264,13 +1262,13 @@ pip install <span class="v">".[robot]"</span></code></pre>
         runcomposer ist Open Source unter der
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/LICENSE">MIT-Lizenz</a>.
         Version 0.1.0 deckt Zusammenstellen, Exportieren, Ausführen und Einlesen ab — die
-        vollständige Schleife, die auf dieser Seite beschrieben ist.
+        vollständige Schleife, die diese Seite beschreibt.
       </p>
       <p>
         Der Screenshot und beide Tafeln oben stammen aus der Robot-Suite mit 58 Tests in
         <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/examples/robot-shop">examples/robot-shop</a>
-        — daher kommen die Ids <code>Tests.Payments.…</code>, und daher steht in der Vorschau 13 von
-        13. <code>runcomposer demo</code> startet einen <em>anderen</em> Korpus aus derselben
+        — daher kommen die Ids <code>Tests.Payments.…</code>, und daher steht in der Vorschau 13
+        von 13. <code>runcomposer demo</code> startet einen <em>anderen</em> Korpus aus derselben
         fiktiven Web-Shop-Welt: einen Manifest-Katalog mit 60 Items und <code>Shop.…</code>-Ids,
         den Weg ohne jede Abhängigkeit, der kein Robot Framework braucht. Zwei Korpora, eine Welt.
       </p>
