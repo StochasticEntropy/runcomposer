@@ -28,3 +28,6 @@ examples/remote-agent/state/
 .idea/
 .DS_Store
 .claude/launch.json
+
+# Local agent instructions: useful in a checkout, not part of the project.
+CLAUDE.md
