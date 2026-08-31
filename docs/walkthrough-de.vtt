@@ -1,0 +1,235 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:03.410
+Jede Test Suite ab einer gewissen Größe hat dasselbe Problem.
+
+00:00:03.960 --> 00:00:06.415
+Du kannst alles laufen lassen, oder genau eine Sache.
+
+00:00:06.965 --> 00:00:12.885
+Genau den richtigen Teil zu fahren, und hinterher belegen zu können, welcher Teil das war, ist der unangenehme Punkt.
+
+00:00:13.835 --> 00:00:15.340
+Sagen wir, es ist Dienstag.
+
+00:00:15.890 --> 00:00:18.486
+Heute Morgen hat sich im Checkout-Code etwas geändert.
+
+00:00:19.036 --> 00:00:21.869
+Heute Nacht willst du Payments, Checkout und den Katalog.
+
+00:00:22.419 --> 00:00:25.528
+Nicht die Tests, von denen das Team längst weiß, dass sie kaputt sind.
+
+00:00:26.078 --> 00:00:33.111
+Und wenn dich morgen jemand fragt, was du wirklich laufen lassen hast, hättest du gern eine bessere Antwort als: der Nightly Job.
+
+00:00:34.061 --> 00:00:35.181
+Tags helfen dabei.
+
+00:00:35.731 --> 00:00:41.891
+Bis deine Tag-Query in einer Einstellung des Build-Servers steckt, die drei Wochen später niemand mehr rekonstruieren kann.
+
+00:00:42.841 --> 00:00:45.641
+Das ist runcomposer. Ich zeige es dir einfach.
+
+00:00:46.767 --> 00:00:49.487
+Da ist es. Links die Bereiche des Shops.
+
+00:00:50.037 --> 00:00:53.550
+Payments, Checkout, Cart, Catalog, Accounts.
+
+00:00:54.100 --> 00:00:55.940
+Diese Liste steckt nicht im Werkzeug.
+
+00:00:56.490 --> 00:01:02.512
+Jemand aus dem Team hat sie aufgeschrieben, in einer schlichten Datei, aus den Labels, die die Tests ohnehin schon tragen.
+
+00:01:03.462 --> 00:01:04.722
+Klick auf Payments.
+
+00:01:05.272 --> 00:01:10.808
+Direkt darunter stehen die dreizehn Tests mit diesem Label, mit Namen, und daneben ihre Labels.
+
+00:01:11.758 --> 00:01:19.758
+Klick auch auf Checkout, und die Zahl fällt auf null, denn im Moment fragt es nach Tests, die Payments und Checkout sind, und kein Test ist beides.
+
+00:01:20.308 --> 00:01:23.759
+Ändere das kleine Wort in der Mitte auf oder, und da sind sie.
+
+00:01:24.309 --> 00:01:28.522
+Sechsundzwanzig. Nimm Catalog dazu: vierunddreißig.
+
+00:01:29.472 --> 00:01:30.969
+Jetzt lass die kaputten weg.
+
+00:01:31.519 --> 00:01:34.399
+Zwei von diesen vierunddreißig sind in Quarantäne.
+
+00:01:34.949 --> 00:01:39.969
+Alle wissen, dass sie fehlschlagen, jemand repariert sie gerade, und heute Nacht sind sie nicht der Punkt.
+
+00:01:40.519 --> 00:01:41.289
+Häkchen weg.
+
+00:01:42.239 --> 00:01:43.498
+Zweiunddreißig Tests.
+
+00:01:44.048 --> 00:01:46.163
+Und jetzt kommt der Teil, auf den es ankommt.
+
+00:01:46.713 --> 00:01:50.546
+Du kannst alle zweiunddreißig jetzt sofort lesen, bevor überhaupt etwas läuft.
+
+00:01:51.096 --> 00:01:53.570
+Keine Zahl. Die tatsächlichen Namen.
+
+00:01:54.700 --> 00:01:56.095
+Gib dem Run einen Namen.
+
+00:01:56.645 --> 00:02:00.053
+Morgen früh wirst du dir dafür danken. Dann drück auf Play.
+
+00:02:01.003 --> 00:02:05.031
+Er steht schon auf der Runs-Seite, als laufend markiert, und das Badge zählt mit.
+
+00:02:05.581 --> 00:02:08.682
+Achtzehn von zweiunddreißig Verdicts sind schon da.
+
+00:02:09.232 --> 00:02:10.506
+Dann fünfundzwanzig.
+
+00:02:11.056 --> 00:02:13.519
+Dann eine Pause, während die langsamen fertig werden.
+
+00:02:14.469 --> 00:02:22.469
+Diese Ergebnisse treffen ein, während die Tests noch laufen, eines nach dem anderen, jedes mit dem Namen des Tests, der gerade fertig geworden ist.
+
+00:02:23.019 --> 00:02:25.979
+Grün, wenn er bestanden hat, rot, wenn nicht.
+
+00:02:26.529 --> 00:02:32.129
+Darunter steht, dass die Arbeit in zwei Teilen hinausgegangen ist, nebeneinander, damit sie früher fertig wird.
+
+00:02:33.079 --> 00:02:36.759
+Und wenn beide Teile zurückgemeldet haben, steht der Run auf complete.
+
+00:02:37.309 --> 00:02:38.452
+Nicht wahrscheinlich fertig.
+
+00:02:39.002 --> 00:02:42.522
+Er wusste, wie viele Teile ihm zustehen, und er hat alle bekommen.
+
+00:02:43.472 --> 00:02:46.658
+Einunddreißig bestanden. Einer fehlgeschlagen.
+
+00:02:47.208 --> 00:02:51.115
+Eine abgelaufene Karte wurde akzeptiert, obwohl sie hätte abgelehnt werden müssen.
+
+00:02:51.665 --> 00:02:55.025
+Da steht es, in Rot, und der Grund steht in der Zeile.
+
+00:02:56.133 --> 00:02:59.224
+Jetzt der Teil, der daraus mehr macht als einen bequemen Knopf.
+
+00:03:00.174 --> 00:03:03.947
+Als du auf Play gedrückt hast, hat runcomposer zuerst den Plan aufgeschrieben.
+
+00:03:04.497 --> 00:03:07.069
+Eine kleine Datei, und darin stehen drei Dinge.
+
+00:03:07.619 --> 00:03:11.619
+Die Regel, die du gebaut hast, in genau den Worten, in denen du sie gebaut hast.
+
+00:03:12.169 --> 00:03:14.729
+Die exakte Liste der zweiunddreißig Testnamen.
+
+00:03:15.279 --> 00:03:19.394
+Und ein Fingerabdruck der gesamten Testmenge, genommen in genau diesem Moment.
+
+00:03:20.344 --> 00:03:22.181
+Jedes davon verdient seinen Platz.
+
+00:03:22.731 --> 00:03:25.288
+Die Regel, damit jeder sehen kann, was du gemeint hast.
+
+00:03:25.838 --> 00:03:29.728
+Die Liste, damit das, was läuft, festgeschrieben ist und nicht wegdriften kann.
+
+00:03:30.278 --> 00:03:35.727
+Der Fingerabdruck, damit es auffällt, wenn sich die Tests danach ändern, statt dass man es irgendwann entdeckt.
+
+00:03:36.677 --> 00:03:39.139
+Genau deshalb muss der Run gar nicht hier stattfinden.
+
+00:03:39.689 --> 00:03:41.514
+Der andere Knopf heißt Export.
+
+00:03:42.064 --> 00:03:45.584
+Die gleiche Auswahl, die gleiche Liste, nur bekommst du jetzt die Datei.
+
+00:03:46.534 --> 00:03:50.149
+Und dann geht sie an irgendetwas weiter. An einen Build-Job.
+
+00:03:50.699 --> 00:03:51.724
+An einen Kollegen.
+
+00:03:52.274 --> 00:03:57.510
+An eine Maschine in einem Labor, das dieses Werkzeug nicht erreichen kann und für das es kein Passwort hat.
+
+00:03:58.060 --> 00:04:05.807
+Drüben wird sie von einer kleinen Python-Datei gelesen, die dein übliches Testkommando gegen genau diese Namen ausführt und die Ergebnisse daneben schreibt.
+
+00:04:06.757 --> 00:04:14.738
+Bring die Ergebnisse auf irgendeinem Weg zurück, und sie landen an genau diesem Run, weil die Datei ihre eigene Referenznummer die ganze Zeit mitgetragen hat.
+
+00:04:15.688 --> 00:04:18.649
+Das Interface ist ein Dokument, kein Protokoll.
+
+00:04:19.767 --> 00:04:23.187
+Am nächsten Morgen. Ein Test ist fehlgeschlagen.
+
+00:04:23.737 --> 00:04:25.817
+Du willst nicht wieder zweiunddreißig laufen lassen.
+
+00:04:26.367 --> 00:04:27.965
+Du willst genau diesen einen.
+
+00:04:28.915 --> 00:04:34.449
+Ganz oben gibt es eine Abkürzung: noch einmal laufen lassen, was im letzten Run fehlgeschlagen ist.
+
+00:04:34.999 --> 00:04:38.393
+Ein Klick, und die Auswahl ist genau dieser Test.
+
+00:04:38.943 --> 00:04:39.801
+Einer von einem.
+
+00:04:40.351 --> 00:04:42.934
+Und der neue Run hält fest, woher seine Liste stammt.
+
+00:04:43.884 --> 00:04:46.987
+Der letzte heißt übrigens: der zuletzt abgeschlossene.
+
+00:04:47.537 --> 00:04:51.603
+Ein Run, der noch auf Ergebnisse wartet, wird nicht stillschweigend als Antwort behandelt.
+
+00:04:52.553 --> 00:04:53.593
+Noch eine Sache.
+
+00:04:54.143 --> 00:04:59.877
+Wenn Ergebnisse auftauchen, die zu keinem Run passen, den du angefordert hast, wandern sie nicht in deine Historie.
+
+00:05:00.427 --> 00:05:03.575
+Sie warten hier, offen sichtbar, mit dem Grund.
+
+00:05:04.125 --> 00:05:08.105
+Du entscheidest: zuordnen, übernehmen oder verwerfen.
+
+00:05:09.055 --> 00:05:10.415
+Das ist runcomposer.
+
+00:05:10.965 --> 00:05:14.219
+Open Source, MIT, auf deiner eigenen Maschine.
+
+00:05:15.169 --> 00:05:18.848
+Wähle genau die Tests, die du meinst. Heb den Beleg auf.

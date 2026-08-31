@@ -1,0 +1,55 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:03.350
+Jedes Testkorpus ab einer gewissen Größe hat dasselbe Problem.
+
+00:00:03.900 --> 00:00:07.005
+Du kannst alles laufen lassen, oder genau eine Sache.
+
+00:00:07.555 --> 00:00:13.061
+Genau die richtige Teilmenge zu fahren, und später zu belegen, welche das war, ist der unangenehme Teil.
+
+00:00:14.011 --> 00:00:14.802
+Tags helfen.
+
+00:00:15.352 --> 00:00:21.752
+Bis deine Tag-Query in einem CI-Job-Parameter steckt, den drei Wochen später niemand mehr rekonstruieren kann.
+
+00:00:22.702 --> 00:00:25.485
+runcomposer macht die Auswahl zu einem Dokument.
+
+00:00:26.035 --> 00:00:30.355
+Eine Run Spec: der Filter, aufbewahrt für die Nachvollziehbarkeit.
+
+00:00:30.905 --> 00:00:33.145
+Die exakte Liste der Tests, eingebettet.
+
+00:00:33.695 --> 00:00:36.575
+Und der Hash des Katalogs, aus dem sie geschnitten wurde.
+
+00:00:37.525 --> 00:00:39.429
+Und dann geht sie an irgendetwas weiter.
+
+00:00:39.979 --> 00:00:41.626
+An einen Process Pool hier.
+
+00:00:42.176 --> 00:00:44.488
+An einen parametrisierten CI-Job.
+
+00:00:45.038 --> 00:00:54.892
+Oder an eine kleine Python-Datei, nur Standardbibliothek, auf einer Maschine, die runcomposer nicht einmal erreichen kann, und die dort dein eigenes Kommando gegen genau diese IDs laufen lässt.
+
+00:00:55.842 --> 00:00:58.642
+Die Ergebnisse kommen zurück, wie es dir passt.
+
+00:00:59.192 --> 00:01:04.784
+Ein HTTP-Push, ein überwachtes Verzeichnis, ein Bundle, das du in einen Branch commitest.
+
+00:01:05.334 --> 00:01:09.474
+Der Marker darin trägt die Run-ID, der Transportweg ist deine Sache.
+
+00:01:10.424 --> 00:01:12.984
+Das Interface ist ein Dokument, kein Protokoll.
+
+00:01:13.934 --> 00:01:17.062
+runcomposer. Open Source, MIT.
