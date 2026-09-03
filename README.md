@@ -30,14 +30,11 @@ behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
 
 ## Quickstart
 
-There is **no published package yet** — runcomposer installs from a clone, and
-`pip install runcomposer` will not find anything.
-
 ```bash
-git clone https://github.com/StochasticEntropy/runcomposer && cd runcomposer
+pip install runcomposer
 
-pipx run --spec . runcomposer demo    # boot the neutral web-shop demo end-to-end
-pipx run --spec . runcomposer serve   # web UI (EN/DE) + API at http://127.0.0.1:8100
+runcomposer demo     # boot the neutral web-shop demo end-to-end
+runcomposer serve    # web UI (EN/DE) + API at http://127.0.0.1:8100
 # or: docker build -t runcomposer . && docker run -p 8100:8100 runcomposer
 ```
 
@@ -126,10 +123,10 @@ neutral template a private adopter package copies.
 | [ci/jenkins](ci/jenkins) | A reproducible Jenkins-in-Docker setup whose job runs the vendored consumer and posts results back. |
 | [examples/webshop-regression.runspec.yaml](examples/webshop-regression.runspec.yaml) | A complete run spec you can read. |
 
-Executing Robot Framework in-process needs one extra, still from the clone:
+Executing Robot Framework in-process needs one extra:
 
 ```bash
-pip install ".[robot]"
+pip install "runcomposer[robot]"
 ```
 
 ## Developing

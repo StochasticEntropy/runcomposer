@@ -24,7 +24,7 @@ def _require_robot():
     except ImportError as exc:
         raise ImportError(
             "the robotframework source needs Robot Framework — install the extra "
-            "from a checkout: pip install '.[robot]'"
+            "pip install 'runcomposer[robot]'"
         ) from exc
     return TestSuiteBuilder
 

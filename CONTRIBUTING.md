@@ -19,8 +19,8 @@ pip install -e ".[dev,robot]"    # adds Robot Framework: the robot plugin tests
                                  # skip cleanly without it, so run both
 ```
 
-Nothing is published to PyPI yet, so every install path goes through a clone.
-`pip install runcomposer` will not find anything.
+To *use* runcomposer rather than work on it, `pip install runcomposer` is
+enough — the clone above is for development.
 
 For the web UI:
 

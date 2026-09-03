@@ -70,10 +70,11 @@ history that itself feeds new selections ("rerun what failed").
 
 **Name — decided: `runcomposer`.** The exchange document is the **run spec**
 (`runspec`). Availability verified 2026-07-06: PyPI free (JSON API + simple
-index), npm free — and still unpublished as of 0.1.0, so every documented
-install runs from a clone (`pip install ".[robot]"`, `pipx run --spec .`). The
-release workflow's PyPI job is gated behind the `PYPI_PUBLISH` repository
-variable; publishing is a deliberate owner action, not a default. Runner naming
+index), npm free. Published to PyPI from 0.1.3 (2026-09-03), so the documented
+install is `pip install "runcomposer[robot]"`. The release workflow's PyPI job
+is gated behind the `PYPI_PUBLISH` repository variable and authenticates by
+Trusted Publishing (OIDC) — no API token exists; publishing is a deliberate
+owner action, triggered by pushing a `v*` tag. Runner naming
 axis is *what-it-drives*: `robot-pool` (in-process Robot Framework execution),
 `ci-trigger` (drives an external CI job).
 
