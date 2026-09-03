@@ -25,9 +25,9 @@ import {
 const build = (...patterns) => patterns.reduce(appendPattern, EMPTY_FILTER);
 
 test("a pattern clicked twice is added, then taken back out", () => {
-  const once = togglePattern(EMPTY_FILTER, "KKMeldung");
+  const once = togglePattern(EMPTY_FILTER, "Payments");
   assert.equal(once.rules.length, 1);
-  assert.deepEqual(togglePattern(once, "KKMeldung"), EMPTY_FILTER);
+  assert.deepEqual(togglePattern(once, "Payments"), EMPTY_FILTER);
 });
 
 test("a prefix pattern round-trips through the rule shape", () => {
@@ -38,25 +38,25 @@ test("a prefix pattern round-trips through the rule shape", () => {
 });
 
 test("the tree's active set holds every pattern the filter carries", () => {
-  const value = build("KKMeldung", "GD3", "prefix:Smoke");
-  assert.deepEqual([...activePatterns(value)].sort(), ["GD3", "KKMeldung", "prefix:Smoke"]);
+  const value = build("Payments", "SHOP-1200", "prefix:Smoke");
+  assert.deepEqual([...activePatterns(value)].sort(), ["Payments", "SHOP-1200", "prefix:Smoke"]);
 });
 
 test("removing the middle condition keeps the other two, in order", () => {
-  const value = build("KKMeldung", "Privatinsolvenz", "Pfaendung");
+  const value = build("Payments", "Auth", "Catalog");
   const left = removeConditionAt(value, 1);
   assert.deepEqual(
     listConditions(left).map((condition) => condition.value),
-    ["KKMeldung", "Pfaendung"]
+    ["Payments", "Catalog"]
   );
-  assert.deepEqual(svarToAst(left), { op: "AND", items: ["KKMeldung", "Pfaendung"] });
+  assert.deepEqual(svarToAst(left), { op: "AND", items: ["Payments", "Catalog"] });
 });
 
 test("conditions are described in the app's words, not SVAR's", () => {
   const value = {
     glue: "and",
     rules: [
-      patternToSvarRule("KKMeldung"),
+      patternToSvarRule("Payments"),
       patternToSvarRule("prefix:Smoke"),
       { field: "tag", type: "text", filter: "notContains", value: "wip" },
     ],
@@ -64,7 +64,7 @@ test("conditions are described in the app's words, not SVAR's", () => {
   assert.deepEqual(
     listConditions(value).map((condition) => [condition.index, condition.operator, condition.value]),
     [
-      [0, "is", "KKMeldung"],
+      [0, "is", "Payments"],
       [1, "startsWith", "Smoke"],
       [2, "notContains", "wip"],
     ]
@@ -72,9 +72,9 @@ test("conditions are described in the app's words, not SVAR's", () => {
 });
 
 test("a negated rule is not an active pattern — the tree must not claim it", () => {
-  const value = { glue: "and", rules: [{ field: "tag", type: "text", filter: "notEqual", value: "GD3" }] };
-  assert.equal(activePatterns(value).has("GD3"), false);
-  assert.deepEqual(svarToAst(value), { not: "GD3" });
+  const value = { glue: "and", rules: [{ field: "tag", type: "text", filter: "notEqual", value: "SHOP-1200" }] };
+  assert.equal(activePatterns(value).has("SHOP-1200"), false);
+  assert.deepEqual(svarToAst(value), { not: "SHOP-1200" });
 });
 
 // Nested groups: the engine and the runspec grammar take arbitrary nesting,
@@ -82,31 +82,31 @@ test("a negated rule is not an active pattern — the tree must not claim it", (
 const nested = {
   glue: "and",
   rules: [
-    patternToSvarRule("TZR"),
-    { glue: "or", rules: [patternToSvarRule("Krankenkasse"), patternToSvarRule("Drittrecht")] },
+    patternToSvarRule("Regression"),
+    { glue: "or", rules: [patternToSvarRule("Checkout"), patternToSvarRule("Cart")] },
   ],
 };
 
 test("a nested group becomes a nested AST, not a flattened one", () => {
   assert.deepEqual(svarToAst(nested), {
     op: "AND",
-    items: ["TZR", { op: "OR", items: ["Krankenkasse", "Drittrecht"] }],
+    items: ["Regression", { op: "OR", items: ["Checkout", "Cart"] }],
   });
 });
 
 test("a group is one removable condition and counts what is inside it", () => {
   const [outer, group] = listConditions(nested);
-  assert.deepEqual(outer, { index: 0, kind: "condition", operator: "is", value: "TZR", pattern: "TZR" });
+  assert.deepEqual(outer, { index: 0, kind: "condition", operator: "is", value: "Regression", pattern: "Regression" });
   assert.deepEqual(group, { index: 1, kind: "group", count: 2 });
-  assert.deepEqual(svarToAst(removeConditionAt(nested, 1)), "TZR");
+  assert.deepEqual(svarToAst(removeConditionAt(nested, 1)), "Regression");
 });
 
 test("the tree sees patterns inside a group, and switching one off prunes it", () => {
-  assert.equal(activePatterns(nested).has("Drittrecht"), true);
-  const left = togglePattern(nested, "Drittrecht");
-  assert.deepEqual(svarToAst(left), { op: "AND", items: ["TZR", "Krankenkasse"] });
-  const bare = removePattern(left, "Krankenkasse");
-  assert.deepEqual(svarToAst(bare), "TZR"); // the emptied group is gone, not left behind
+  assert.equal(activePatterns(nested).has("Cart"), true);
+  const left = togglePattern(nested, "Cart");
+  assert.deepEqual(svarToAst(left), { op: "AND", items: ["Regression", "Checkout"] });
+  const bare = removePattern(left, "Checkout");
+  assert.deepEqual(svarToAst(bare), "Regression"); // the emptied group is gone, not left behind
 });
 
 test("an empty filter compiles to no filter at all", () => {
