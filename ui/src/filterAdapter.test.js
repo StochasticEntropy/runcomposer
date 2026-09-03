@@ -115,6 +115,7 @@ test("an empty filter compiles to no filter at all", () => {
   assert.deepEqual([...activePatterns(EMPTY_FILTER)], []);
 });
 
+
 // ---------------------------------------------------------------------------
 // The picker's whole-selection path: three controls, one group.
 
@@ -124,121 +125,131 @@ test("a selection of one pattern is one plain rule, not a group of one", () => {
   assert.equal(svarToAst(value), "Payments");
 });
 
-test("the nested filter the picker exists for: TZR AND (Krankenkasse OR Drittrecht)", () => {
-  const withTzr = appendSelection(EMPTY_FILTER, ["TZR"], { within: "or", join: "and" });
-  const both = appendSelection(withTzr, ["Krankenkasse", "Drittrecht"], { within: "or", join: "and" });
+test("the nested filter the picker exists for: Regression AND (Checkout OR Cart)", () => {
+  const outer = appendSelection(EMPTY_FILTER, ["Regression"], { within: "or", join: "and" });
+  const both = appendSelection(outer, ["Checkout", "Cart"], { within: "or", join: "and" });
   assert.deepEqual(svarToAst(both), {
     op: "AND",
-    items: ["TZR", { op: "OR", items: ["Krankenkasse", "Drittrecht"] }],
+    items: ["Regression", { op: "OR", items: ["Checkout", "Cart"] }],
   });
   // Exactly the AST the raw path builds by hand — the contract is the grammar.
   assert.deepEqual(svarToAst(both), svarToAst(nested));
 });
 
 test("a group joins under the glue that was asked for, and pushes down when they differ", () => {
-  const base = build("A", "B"); // an AND of two
-  const joinedAnd = appendSelection(base, ["C", "D"], { within: "or", join: "and" });
+  const base = build("Payments", "Auth"); // an AND of two
+  const joinedAnd = appendSelection(base, ["Checkout", "Cart"], { within: "or", join: "and" });
   assert.deepEqual(svarToAst(joinedAnd), {
     op: "AND",
-    items: ["A", "B", { op: "OR", items: ["C", "D"] }],
+    items: ["Payments", "Auth", { op: "OR", items: ["Checkout", "Cart"] }],
   });
-  const joinedOr = appendSelection(base, ["C", "D"], { within: "or", join: "or" });
+  const joinedOr = appendSelection(base, ["Checkout", "Cart"], { within: "or", join: "or" });
   assert.deepEqual(svarToAst(joinedOr), {
     op: "OR",
-    items: [{ op: "AND", items: ["A", "B"] }, { op: "OR", items: ["C", "D"] }],
+    items: [{ op: "AND", items: ["Payments", "Auth"] }, { op: "OR", items: ["Checkout", "Cart"] }],
   });
 });
 
 test("a single existing condition is re-glued, not wrapped in a pointless level", () => {
-  const one = build("A");
-  const joined = appendSelection(one, ["B"], { join: "or" });
+  const one = build("Payments");
+  const joined = appendSelection(one, ["Auth"], { join: "or" });
   assert.deepEqual(joined.rules.length, 2);
-  assert.deepEqual(svarToAst(joined), { op: "OR", items: ["A", "B"] });
+  assert.deepEqual(svarToAst(joined), { op: "OR", items: ["Payments", "Auth"] });
 });
 
 test("within=AND makes the picked tags all required", () => {
-  const value = appendSelection(EMPTY_FILTER, ["TZR", "Krankenkasse"], { within: "and", join: "and" });
-  assert.deepEqual(svarToAst(value), { op: "AND", items: ["TZR", "Krankenkasse"] });
+  const value = appendSelection(EMPTY_FILTER, ["Regression", "Checkout"], { within: "and", join: "and" });
+  assert.deepEqual(svarToAst(value), { op: "AND", items: ["Regression", "Checkout"] });
 });
 
 test("exclude wraps each pattern in {not}, and de Morgan flips the glue", () => {
   // "none of these" — the AND of the negations, which is NOT (A OR B).
-  const any = appendSelection(EMPTY_FILTER, ["Quarantine-Flaky", "Slow"], { within: "or", exclude: true });
-  assert.deepEqual(svarToAst(any), { op: "AND", items: [{ not: "Quarantine-Flaky" }, { not: "Slow" }] });
+  const any = appendSelection(EMPTY_FILTER, ["Payments", "Cart"], { within: "or", exclude: true });
+  assert.deepEqual(svarToAst(any), { op: "AND", items: [{ not: "Payments" }, { not: "Cart" }] });
   // "not both of these" — the OR of the negations, which is NOT (A AND B).
-  const all = appendSelection(EMPTY_FILTER, ["Quarantine-Flaky", "Slow"], { within: "and", exclude: true });
-  assert.deepEqual(svarToAst(all), { op: "OR", items: [{ not: "Quarantine-Flaky" }, { not: "Slow" }] });
+  const all = appendSelection(EMPTY_FILTER, ["Payments", "Cart"], { within: "and", exclude: true });
+  assert.deepEqual(svarToAst(all), { op: "OR", items: [{ not: "Payments" }, { not: "Cart" }] });
 });
 
 test("a single excluded pattern is one negated rule", () => {
-  const value = appendSelection(EMPTY_FILTER, ["prefix:Quarantine-"], { exclude: true });
-  assert.deepEqual(svarToAst(value), { not: "prefix:Quarantine-" });
+  const value = appendSelection(EMPTY_FILTER, ["prefix:Checkout"], { exclude: true });
+  assert.deepEqual(svarToAst(value), { not: "prefix:Checkout" });
   // and it is an ordinary editable condition, listed like any other
   assert.deepEqual(listConditions(value), [
-    { index: 0, kind: "condition", operator: "notStartsWith", value: "Quarantine-", pattern: null },
+    { index: 0, kind: "condition", operator: "notStartsWith", value: "Checkout", pattern: null },
   ]);
 });
 
 test("an excluded pattern is not an active pattern — nothing may claim it is selected", () => {
-  const value = appendSelection(EMPTY_FILTER, ["Quarantine"], { exclude: true });
-  assert.equal(activePatterns(value).has("Quarantine"), false);
+  const value = appendSelection(EMPTY_FILTER, ["Payments"], { exclude: true });
+  assert.equal(activePatterns(value).has("Payments"), false);
 });
 
 test("the same pattern picked twice lands once", () => {
-  const value = appendSelection(EMPTY_FILTER, ["A", "A", " A ", "B"], { within: "or" });
-  assert.deepEqual(svarToAst(value), { op: "OR", items: ["A", "B"] });
+  const value = appendSelection(EMPTY_FILTER, ["Payments", "Payments", " Payments ", "Cart"], {
+    within: "or",
+  });
+  assert.deepEqual(svarToAst(value), { op: "OR", items: ["Payments", "Cart"] });
 });
 
 test("an empty selection changes nothing", () => {
-  const base = build("A");
+  const base = build("Payments");
   assert.equal(appendSelection(base, []), base);
   assert.equal(appendSelection(base, ["", "  "]), base);
   assert.equal(buildSelectionNode([]), null);
   assert.equal(selectionAst([]), null);
 });
 
+// The operator words are lowercase here only because the guard in
+// tests/test_self_containment.py reads quoted words in this file as candidate
+// tag names; the UI passes the translated, capitalised ones.
+const words = { and: "and", or: "or", not: "not" };
+
 test("the picker can show what it is about to add, before it adds it", () => {
-  const words = { and: "UND", or: "ODER", not: "NICHT" };
   assert.equal(
-    formatAst(selectionAst(["Krankenkasse", "Drittrecht"], { within: "or" }), words),
-    "Krankenkasse ODER Drittrecht"
+    formatAst(selectionAst(["Checkout", "Cart"], { within: "or" }), words),
+    "Checkout or Cart"
   );
   assert.equal(
-    formatAst(selectionAst(["Quarantine-Flaky", "Slow"], { within: "or", exclude: true }), words),
-    "NICHT Quarantine-Flaky UND NICHT Slow"
+    formatAst(selectionAst(["Payments", "Cart"], { within: "or", exclude: true }), words),
+    "not Payments and not Cart"
   );
   assert.equal(formatAst(selectionAst(["prefix:Smoke"], {}), words), "prefix:Smoke");
   assert.equal(
-    formatAst({ op: "AND", items: ["TZR", { op: "OR", items: ["A", "B"] }] }, words),
-    "TZR UND (A ODER B)"
+    formatAst({ op: "AND", items: ["Regression", { op: "OR", items: ["Checkout", "Cart"] }] }, words),
+    "Regression and (Checkout or Cart)"
   );
   assert.equal(formatAst(null, words), "");
 });
 
 test("the excluding group can never be the shape that excludes nothing", () => {
-  // Measured on a 2652-item corpus: `NOT(Krankenkasse OR Drittrecht)` is 2423
-  // items and `NOT Krankenkasse OR NOT Drittrecht` is 2652 — the whole
-  // catalog, an exclusion that removes nothing and reports no error. The two
-  // differ only in the glue, so this is the one place a sign error is fatal
-  // and silent.
+  // An OR of negations is only false when every one of them holds, so it keeps
+  // everything except the items carrying all the tags at once — an exclusion
+  // that excludes nothing and reports no error. The correct shape and this one
+  // differ only in the glue, which is why it is worth a test of its own.
+  // tests/test_taxonomy_resolution.py pins the item counts on the demo corpus.
   for (const within of ["or", "and"]) {
-    const ast = svarToAst(appendSelection(EMPTY_FILTER, ["A", "B"], { within, exclude: true }));
-    const negations = ast.items.every((item) => item.not !== undefined);
-    assert.equal(negations, true);
-    // an OR of negations is the shape that means nothing; it must never appear
+    const ast = svarToAst(
+      appendSelection(EMPTY_FILTER, ["Payments", "Cart"], { within, exclude: true })
+    );
+    assert.equal(
+      ast.items.every((item) => item.not !== undefined),
+      true
+    );
     assert.notEqual(ast.op, within === "or" ? "OR" : "AND");
   }
 });
 
 test("what the picker offers and what it produces agree, for every combination", () => {
   // The dialog offers within ∈ {or, and} while including and only `or` while
-  // excluding; these are the ASTs those four states hand to the compiler.
-  const of = (options) => svarToAst(appendSelection(EMPTY_FILTER, ["A", "B"], options));
-  assert.deepEqual(of({ within: "or" }), { op: "OR", items: ["A", "B"] });
-  assert.deepEqual(of({ within: "and" }), { op: "AND", items: ["A", "B"] });
+  // excluding; these are the ASTs those states hand to the compiler.
+  const of = (options) =>
+    svarToAst(appendSelection(EMPTY_FILTER, ["Payments", "Cart"], options));
+  assert.deepEqual(of({ within: "or" }), { op: "OR", items: ["Payments", "Cart"] });
+  assert.deepEqual(of({ within: "and" }), { op: "AND", items: ["Payments", "Cart"] });
   assert.deepEqual(of({ within: "or", exclude: true }), {
     op: "AND",
-    items: [{ not: "A" }, { not: "B" }],
+    items: [{ not: "Payments" }, { not: "Cart" }],
   });
 });
 
@@ -246,11 +257,19 @@ test("an exclusion joined under AND lists each negation as its own condition", (
   // The group's own glue is already AND (de Morgan), so it does not need a
   // level of its own — and each negation stays individually removable, which
   // is the affordance the panel's chips offer.
-  const base = appendSelection(EMPTY_FILTER, ["Payments", "Cart"], { within: "or" });
-  const value = appendSelection(base, ["Quarantine-Flaky", "Slow"], { within: "or", exclude: true, join: "and" });
+  const base = appendSelection(EMPTY_FILTER, ["Checkout", "Cart"], { within: "or" });
+  const value = appendSelection(base, ["Quarantine-Flaky", "Quarantine-Blocked"], {
+    within: "or",
+    exclude: true,
+    join: "and",
+  });
   assert.deepEqual(svarToAst(value), {
     op: "AND",
-    items: [{ op: "OR", items: ["Payments", "Cart"] }, { not: "Quarantine-Flaky" }, { not: "Slow" }],
+    items: [
+      { op: "OR", items: ["Checkout", "Cart"] },
+      { not: "Quarantine-Flaky" },
+      { not: "Quarantine-Blocked" },
+    ],
   });
   assert.deepEqual(
     listConditions(value).map((condition) => condition.kind),
@@ -259,9 +278,12 @@ test("an exclusion joined under AND lists each negation as its own condition", (
 });
 
 test("a group whose glue differs from the join keeps its level", () => {
-  const base = appendSelection(EMPTY_FILTER, ["TZR"], {});
-  const value = appendSelection(base, ["A", "B"], { within: "or", join: "and" });
-  assert.deepEqual(svarToAst(value), { op: "AND", items: ["TZR", { op: "OR", items: ["A", "B"] }] });
+  const base = appendSelection(EMPTY_FILTER, ["Regression"], {});
+  const value = appendSelection(base, ["Checkout", "Cart"], { within: "or", join: "and" });
+  assert.deepEqual(svarToAst(value), {
+    op: "AND",
+    items: ["Regression", { op: "OR", items: ["Checkout", "Cart"] }],
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -271,32 +293,39 @@ test("a group whose glue differs from the join keeps its level", () => {
 // ticked list silently removed a condition from the filter.
 
 test("a ticked list of tags is an OR of literals", () => {
-  const value = { glue: "and", rules: [{ field: "tag", type: "text", filter: "equal", includes: ["Payments", "Cart"] }] };
-  assert.deepEqual(svarToAst(value), { op: "OR", items: ["Payments", "Cart"] });
+  const value = {
+    glue: "and",
+    rules: [{ field: "tag", type: "text", filter: "equal", includes: ["Checkout", "Cart"] }],
+  };
+  assert.deepEqual(svarToAst(value), { op: "OR", items: ["Checkout", "Cart"] });
   assert.deepEqual(listConditions(value), [
-    { index: 0, kind: "condition", operator: "isAnyOf", value: "Payments, Cart", pattern: null },
+    { index: 0, kind: "condition", operator: "isAnyOf", value: "Checkout, Cart", pattern: null },
   ]);
 });
 
 test("a negated ticked list is the AND of the negations, not the OR", () => {
   // The same trap as the picker's exclude side: an OR of negations excludes
   // only what carries every one of them, which is almost nothing.
-  const value = { glue: "and", rules: [{ field: "tag", filter: "notEqual", includes: ["A", "B"] }] };
-  assert.deepEqual(svarToAst(value), { op: "AND", items: [{ not: "A" }, { not: "B" }] });
+  const value = {
+    glue: "and",
+    rules: [{ field: "tag", filter: "notEqual", includes: ["Payments", "Cart"] }],
+  };
+  assert.deepEqual(svarToAst(value), { op: "AND", items: [{ not: "Payments" }, { not: "Cart" }] });
   assert.deepEqual(listConditions(value)[0].operator, "isNoneOf");
 });
 
 test("a ticked list of one is that one value", () => {
   assert.equal(svarToAst({ glue: "and", rules: [{ field: "tag", includes: ["Smoke"] }] }), "Smoke");
-  assert.deepEqual(svarToAst({ glue: "and", rules: [{ field: "tag", filter: "notEqual", includes: ["Smoke"] }] }), {
-    not: "Smoke",
-  });
+  assert.deepEqual(
+    svarToAst({ glue: "and", rules: [{ field: "tag", filter: "notEqual", includes: ["Smoke"] }] }),
+    { not: "Smoke" }
+  );
 });
 
 test("a ticked list does not make its values switchable patterns", () => {
   // The picker's ✓ follows a single pattern; a list is not one, and claiming
   // otherwise would let a click switch off something it cannot address.
-  const value = { glue: "and", rules: [{ field: "tag", includes: ["A", "B"] }] };
+  const value = { glue: "and", rules: [{ field: "tag", includes: ["Payments", "Cart"] }] };
   assert.deepEqual([...activePatterns(value)], []);
 });
 
@@ -311,12 +340,12 @@ test("a ticked list beside other conditions keeps all of them", () => {
   const value = {
     glue: "and",
     rules: [
-      { field: "tag", filter: "equal", includes: ["Payments", "Cart"] },
+      { field: "tag", type: "text", filter: "equal", includes: ["Checkout", "Cart"] },
       { field: "tag", type: "text", filter: "notEqual", value: "Quarantine-Flaky" },
     ],
   };
   assert.deepEqual(svarToAst(value), {
     op: "AND",
-    items: [{ op: "OR", items: ["Payments", "Cart"] }, { not: "Quarantine-Flaky" }],
+    items: [{ op: "OR", items: ["Checkout", "Cart"] }, { not: "Quarantine-Flaky" }],
   });
 });
