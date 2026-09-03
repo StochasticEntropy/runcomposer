@@ -1,59 +1,26 @@
-// The tag picker (DESIGN.md §2 + §3.1): a modal over the resolved taxonomy
-// that commits a whole selection as ONE filter group.
+// The tag picker: a modal over the resolved taxonomy that applies a whole
+// selection as ONE filter group.
 //
-// It exists because the tree stopped being navigable. Resolving the taxonomy
-// against the catalog (0.1.4) took a real corpus from ~150 written nodes to
-// 2452 rendered ones over 1609 tags — complete, and unusable as an
-// always-visible list with no search. That list is gone; this is what
-// replaced it.
+// **This is the predecessor's dialog, ported — not a redesign.** Its layout is
+// the specification and is followed as-is: a four-column control row in its
+// order (include/exclude, how the picked tags combine, how the group joins
+// what is there, search), the multi-select hint above a bordered tree box, and
+// a footer of "selected: N" against Cancel and Apply. Two things are ours
+// because they have to be: every label is runcomposer's own string in its own
+// locale files (the original's German label strings and its two-field
+// include/exclude vocabulary are another repository's and stay there), and the
+// tree is virtualized, because resolving the taxonomy against a real catalog
+// renders 2452 nodes where the original had a few hundred and a plain list
+// took 17 seconds to settle on a one-letter search.
 //
-// Four things it does that a column of clickable rows cannot:
-//
-//  1. **Search that narrows without flattening.** `filterTree` prunes branches
-//     that match nothing and keeps a matching node's children, so a hit stays
-//     under the heading that explains what it is (tagTree.js). A short query
-//     matches nearly everything, and searching opens every branch it kept, so
-//     the tree is virtualized: without that, typing one letter on the real
-//     corpus put all 2452 rows in the DOM and took 17 seconds to settle
-//     (measured). Collapsed branches are not rendered at all, so the ordinary
-//     browsing case never builds them either.
-//  2. **Multi-select.** Checkbox, Space, shift-range, ctrl/cmd — the tree is
-//     `react-aria-components`' Tree, which is the reason that dependency is
-//     here: full keyboard and screen-reader semantics for a multi-select tree
-//     is not something worth hand-rolling.
-//  3. **Three explicit controls** — include/exclude, how the picked tags
-//     combine with each other, how the group joins the filter already built —
-//     shown next to the expression they produce, so the consequence of each is
-//     visible before it is applied.
-//  4. **One apply.** Which is also the usable road to a nested filter:
-//     `TZR AND (Krankenkasse OR Drittrecht)` is two tags with within=OR and
-//     join=AND, not a filter assembled row by row.
-//
-// What survives from the sidebar it replaces: a node already in the filter is
-// marked, and a closed branch says how many are hidden underneath it. The mark
-// follows the **pattern**, not the position — the only reading that holds on a
-// resolved tree, where the same tag hangs under every node whose pattern
-// covers it, so one condition legitimately marks several rows.
-//
-// A row therefore has THREE states, and they are deliberately not three shades
-// of one thing:
-//
-//  * **selected** — a checkbox, an accent-filled row: what this round is about
-//    to add. Empty every time the dialog opens.
-//  * **in the filter** — a green ✓ button: what the user already has. It is
-//    NOT pre-selected, because Apply would then re-add it.
-//  * **staged for removal** — the same ✓ pressed, turning red with the label
-//    struck through: on Apply it comes back out.
-//
-// Which settles the question of what "untick a row that is already active"
-// does: nothing, because such a row is never ticked. Taking something out has
-// its own control, so the two directions cannot be confused — and it is staged
-// rather than immediate, so Cancel cancels everything the dialog was about to
-// do, not merely the additions. The picker is thus a full editor of the tag
-// part of the filter without ever having to reproduce a structure it cannot
-// represent (a nested group, a negation, a condition typed into the builder):
-// it removes named patterns and appends one group, and leaves everything else
-// exactly as it found it.
+// The one addition on top of the original, and it was asked for: a row whose
+// pattern the filter ALREADY carries is marked with a ✓. It is a mark, not a
+// selection — the checkboxes say what this round will add, the ✓ says what you
+// already have, so reopening the dialog does not make you remember. The mark
+// follows the *pattern*, not the position, which is the only reading that
+// holds once the tree is resolved and a tag hangs under every node whose
+// pattern covers it. A closed branch carries the count of marked patterns
+// hidden below it.
 
 import { useDeferredValue, useEffect, useId, useMemo, useState } from "react";
 import {
@@ -61,16 +28,16 @@ import {
   Checkbox,
   Dialog,
   Heading,
+  ListLayout,
   Modal,
   ModalOverlay,
-  ListLayout,
   Tree,
   TreeItem,
   TreeItemContent,
   Virtualizer,
 } from "react-aria-components";
 
-import { SELECTION_DEFAULTS, formatAst, selectionAst } from "../filterAdapter.js";
+import { SELECTION_DEFAULTS } from "../filterAdapter.js";
 import {
   countActiveInside,
   countNodes,
@@ -95,13 +62,12 @@ const ROW_HEIGHT = 26;
 const TREE_LAYOUT = { rowHeight: ROW_HEIGHT };
 
 // How many nodes a search may open at once. Searching opens every branch it
-// kept, and a one-letter query keeps the whole tree: on the real corpus that
-// is 2452 nodes, and building that many rows costs seconds of blocked main
-// thread even though the virtualizer keeps the DOM small — the cost is the
-// collection, not the pixels. Past this budget the matched branches stay
-// CLOSED instead. Nothing is hidden and nothing is truncated; the tree is
-// simply not thrown open, and the hint says so. A query specific enough to be
-// worth reading is far below the budget.
+// kept, and a one-letter query keeps the whole tree; building that many rows
+// costs seconds of blocked main thread even with the DOM virtualized, because
+// the cost is the collection, not the pixels. Past this budget the matched
+// branches stay closed. Nothing is hidden and nothing is truncated — the tree
+// is simply not thrown open, and a query specific enough to be worth reading
+// is far below the budget.
 const EXPAND_BUDGET = 400;
 
 // Every id a selection may hold. Select-all (ctrl/cmd-A) reports "all", which
@@ -124,7 +90,6 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
   const [within, setWithin] = useState(SELECTION_DEFAULTS.within);
   const [join, setJoin] = useState(SELECTION_DEFAULTS.join);
   const [selected, setSelected] = useState(() => new Set());
-  const [removing, setRemoving] = useState(() => new Set());
   const [expanded, setExpanded] = useState(() => new Set());
 
   const labelOf = (node) => (node.origin === UNASSIGNED ? t("taxonomy.unassigned") : node.label);
@@ -152,13 +117,11 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
     setWithin(SELECTION_DEFAULTS.within);
     setJoin(SELECTION_DEFAULTS.join);
     setSelected(new Set());
-    setRemoving(new Set());
   }, [open]);
 
   // While searching, everything the search kept is open — a match behind a
   // closed twisty is a match the user still has to hunt for. With the box
-  // empty the tree is back to its first level, which is the only readable
-  // state at this size.
+  // empty the tree is back to its first level.
   useEffect(() => {
     if (!open) return;
     if (!searching) return setExpanded(roots);
@@ -166,21 +129,10 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
   }, [open, searching, tooBroad, narrowed, openable, roots]);
 
   const patterns = useMemo(() => selectedPatterns(narrowed, selected), [narrowed, selected]);
-  const words = { and: t("picker.and"), or: t("picker.or"), not: t("picker.not") };
-  const expression = formatAst(selectionAst(patterns, { within, exclude }), words);
-
-  const stageRemoval = (pattern) =>
-    setRemoving((current) => {
-      const next = new Set(current);
-      if (!next.delete(pattern)) next.add(pattern);
-      return next;
-    });
-
-  const nothingToDo = patterns.length === 0 && removing.size === 0;
 
   const apply = () => {
-    if (nothingToDo) return;
-    onApply(patterns, { within, join, exclude }, [...removing]);
+    if (patterns.length === 0) return;
+    onApply(patterns, { within, join, exclude });
     onClose();
   };
 
@@ -190,7 +142,6 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
       const label = labelOf(node);
       const selectable = isSelectable(node);
       const held = selectable && activePatterns.has(node.filter);
-      const staged = held && removing.has(node.filter);
       const isOpen = expanded.has(node.id);
       // Only while the branch is closed: open, the ✓ on the rows themselves
       // says it, and repeating it on every ancestor is noise.
@@ -206,7 +157,7 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
         >
           <TreeItemContent>
             {({ level, hasChildItems }) => (
-              <div className="picker-row" style={{ paddingLeft: `${(level - 1) * 14}px` }}>
+              <div className="picker-row" style={{ paddingLeft: `${(level - 1) * 13}px` }}>
                 {hasChildItems ? (
                   <Button
                     slot="chevron"
@@ -216,7 +167,9 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                     {isOpen ? "▾" : "▸"}
                   </Button>
                 ) : (
-                  <span className="picker-twisty" aria-hidden="true" />
+                  <span className="picker-twisty" aria-hidden="true">
+                    •
+                  </span>
                 )}
                 {selectable ? (
                   <Checkbox slot="selection" className="picker-check" excludeFromTabOrder>
@@ -229,26 +182,15 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                     composed alternation regex runs to hundreds of characters
                     and would replace the one word a screen reader needs. */}
                 <span
-                  className={[
-                    "picker-label",
-                    selectable ? "" : "picker-group",
-                    staged ? "picker-struck" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
+                  className={selectable ? "picker-label" : "picker-label picker-group"}
                   title={node.filter ?? label}
                 >
                   {label}
                 </span>
                 {held && (
-                  <Button
-                    className={staged ? "picker-held staged" : "picker-held"}
-                    aria-pressed={staged}
-                    aria-label={t(staged ? "picker.keepInFilter" : "picker.removeFromFilter", { label })}
-                    onPress={() => stageRemoval(node.filter)}
-                  >
-                    {staged ? "✕" : "✓"}
-                  </Button>
+                  <span className="picker-held" title={t("picker.inFilter")}>
+                    ✓
+                  </span>
                 )}
                 {hiddenInside > 0 && (
                   <span
@@ -258,11 +200,7 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                     {hiddenInside}
                   </span>
                 )}
-                {typeof node.item_count === "number" && (
-                  <span className="picker-count" title={t("taxonomy.items")}>
-                    {node.item_count}
-                  </span>
-                )}
+                {node.origin === "tag" && <span className="picker-kind">{t("picker.tag")}</span>}
               </div>
             )}
           </TreeItemContent>
@@ -288,17 +226,6 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
           </header>
 
           <div className="picker-controls">
-            <label htmlFor={`${ids}-search`}>
-              {t("picker.search")}
-              <input
-                id={`${ids}-search`}
-                type="search"
-                autoFocus
-                value={query}
-                placeholder={t("picker.searchPlaceholder")}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </label>
             <label htmlFor={`${ids}-mode`}>
               {t("picker.mode")}
               <select
@@ -307,8 +234,8 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                 onChange={(event) => {
                   const next = event.target.value === "exclude";
                   setExclude(next);
-                  // "all of them" has no honest excluded reading (see below),
-                  // so switching to exclude lands on the one that has.
+                  // "all of them" has no honest excluded reading, so switching
+                  // to exclude lands on the one that has.
                   if (next) setWithin("or");
                 }}
               >
@@ -316,15 +243,11 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                 <option value="exclude">{t("picker.modeExclude")}</option>
               </select>
             </label>
-            {/* Under "exclude" this control offers ONE reading, and that is
-                deliberate. Negating a whole selection has two arithmetically
-                available readings and only one of them is ever meant:
-                measured on a 2652-item corpus, "carries neither Krankenkasse
-                nor Drittrecht" is 2423 items, while "does not carry both" is
-                2652 — the entire catalog, an exclusion that excludes nothing
-                and reports no error. Offering the second as a peer of the
-                first would be offering a footgun with a plausible number on
-                it. The raw builder underneath can still express it. */}
+            {/* Under "exclude" this offers ONE reading, and that is deliberate.
+                Negating a selection has two arithmetically available readings
+                and only one is ever meant: on the demo corpus "carries neither
+                Payments nor Cart" is 38 items, while "does not carry both" is
+                60 — the whole corpus, an exclusion that excludes nothing. */}
             <label htmlFor={`${ids}-within`}>
               {t("picker.within")}
               <select
@@ -349,13 +272,23 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
                 <option value="or">{t("picker.joinOr")}</option>
               </select>
             </label>
+            <label htmlFor={`${ids}-search`}>
+              {t("picker.search")}
+              <input
+                id={`${ids}-search`}
+                type="search"
+                autoFocus
+                value={query}
+                placeholder={t("picker.searchPlaceholder")}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
           </div>
 
-          <p className="muted small picker-hint">
-            {tooBroad ? t("picker.tooBroad", { count: matches }) : t("picker.hint")}
-          </p>
-
           <div className="picker-body">
+            <p className="picker-hint">
+              {tooBroad ? t("picker.tooBroad", { count: matches }) : t("picker.hint")}
+            </p>
             {narrowed.length === 0 ? (
               <p className="picker-empty">{t("picker.noMatches")}</p>
             ) : (
@@ -382,30 +315,14 @@ export default function TagPicker({ open, taxonomy, activePatterns, onClose, onA
           </div>
 
           <footer className="picker-footer">
-            <div className="picker-summary">
-              <strong>
-                {patterns.length === 1
-                  ? t("picker.selectedOne")
-                  : t("picker.selected", { count: patterns.length })}
-              </strong>
-              {expression && (
-                <span className="mono picker-expression" title={expression}>
-                  {t("picker.adds", { expression })}
-                </span>
-              )}
-              {removing.size > 0 && (
-                <span className="picker-removing" title={[...removing].join(", ")}>
-                  {t("picker.removes", { count: removing.size })}
-                </span>
-              )}
-            </div>
+            <div className="picker-summary">{t("picker.selected", { count: patterns.length })}</div>
             <div className="picker-actions">
               <Button onPress={onClose} className="picker-button">
                 {t("picker.cancel")}
               </Button>
               <Button
                 onPress={apply}
-                isDisabled={nothingToDo}
+                isDisabled={patterns.length === 0}
                 className="picker-button primary"
               >
                 {t("picker.apply")}
