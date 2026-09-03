@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 — 2026-09-03
 
 ### Fixed
 - **Removing a single filter condition was a hidden click.** SVAR's filter rows
