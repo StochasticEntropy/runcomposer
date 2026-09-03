@@ -375,6 +375,12 @@ def resolve_taxonomy(
     The result is therefore itself a valid taxonomy document: a consumer that
     can render the file can render this, and only the metadata is new.
 
+    Beside ``taxonomy`` the response carries ``tags`` — every tag in the
+    catalog, in the tree's own order. It is not derivable from the nodes (a
+    leaf whose pattern resolves to a single tag *is* that tag's node and has no
+    tag child, so a tag reached only through a regex is nowhere spelled out),
+    and a client that offers tag completion needs all of them.
+
     ``items`` is the catalog to resolve against — the same list a selection
     compiles over, so the tree and the preview never disagree about what
     exists. ``document`` is validated first, on the same terms as everywhere
@@ -406,6 +412,15 @@ def resolve_taxonomy(
     claimed = frozenset(resolver.claimed)
     return {
         "taxonomy": nodes,
+        # The catalog's whole tag universe, in the same order the tree uses.
+        # The tree alone does NOT carry it: a written leaf whose pattern
+        # resolves to exactly one tag already *is* that tag's node and gets no
+        # tag child, so a tag reached only through `regex:^Cart(V2)?$` appears
+        # nowhere in the nodes as itself. A client offering tag completion
+        # would otherwise have to re-derive the tag set from the catalog and
+        # would silently be missing those, so it is served here rather than
+        # guessed at there — one resolution, one source (DESIGN.md §2).
+        "tags": list(resolver.tags),
         "resolved": {
             "tags_total": len(resolver.tags),
             "tags_claimed": len(claimed),

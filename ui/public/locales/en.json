@@ -18,24 +18,21 @@
     "dark": "Dark"
   },
   "taxonomy": {
-    "title": "Taxonomy",
-    "hint": "Click a node to add its pattern to the filter — click it again to remove it",
     "items": "items",
     "unassigned": "Unassigned tags",
     "expand": "Expand {label}",
-    "collapse": "Collapse {label}",
-    "activeInside": "{count} active in this branch"
+    "collapse": "Collapse {label}"
   },
   "filter": {
     "title": "Filter",
     "quickFilters": "Quick filters",
     "clear": "Clear",
-    "empty": "No filter yet — everything matches. Add a rule, a quick filter, or click a taxonomy node.",
     "fieldTag": "Tag",
     "historyLabel": "History",
     "historyRerunFailed": "Rerun what failed (latest run)",
     "historyActive": "History: {query}",
     "conditions": "Active conditions",
+    "summary": "Filter as a sentence",
     "removeCondition": "Remove condition: {condition}",
     "conditionGroup": "Group ({count} conditions)",
     "conditionGroupOne": "Group (1 condition)",
@@ -47,8 +44,11 @@
       "contains": "contains",
       "notContains": "does not contain",
       "endsWith": "ends with",
-      "notEndsWith": "does not end with"
-    }
+      "notEndsWith": "does not end with",
+      "isAnyOf": "is any of",
+      "isNoneOf": "is none of"
+    },
+    "empty": "No filter yet — everything matches. Pick tags, use a quick filter, or add a rule below."
   },
   "preview": {
     "title": "Preview",
@@ -119,5 +119,39 @@
       "claimedRun": "Claimed run",
       "actions": "Actions"
     }
+  },
+  "picker": {
+    "open": "Pick tags…",
+    "title": "Add tags to the filter",
+    "tree": "Taxonomy",
+    "search": "Search",
+    "searchPlaceholder": "Tag, label, group…",
+    "mode": "Include or exclude",
+    "modeInclude": "Include",
+    "modeExclude": "Exclude",
+    "within": "The selected tags",
+    "withinAny": "match any of them",
+    "withinAll": "match all of them",
+    "withinNone": "match none of them",
+    "join": "Join with the current filter",
+    "joinAnd": "AND — narrow what is there",
+    "joinOr": "OR — widen what is there",
+    "and": "AND",
+    "or": "OR",
+    "not": "NOT",
+    "hint": "Arrow keys move, space selects, shift or ctrl/cmd selects several. A ✓ marks a tag the filter already carries — press it to take that one out.",
+    "tooBroad": "{count} matches — too many to open at once. The branches stay closed; narrow the search, or open the one you want.",
+    "noMatches": "No matches",
+    "inFilter": "Already in the filter",
+    "inFilterInside": "{count} already in the filter in this branch",
+    "removeFromFilter": "{label} is in the filter — remove it",
+    "keepInFilter": "{label} will be removed — keep it",
+    "selected": "{count} selected",
+    "selectedOne": "1 selected",
+    "adds": "adds {expression}",
+    "removes": "removes {count}",
+    "apply": "Apply as filter",
+    "cancel": "Cancel",
+    "close": "Close"
   }
 }

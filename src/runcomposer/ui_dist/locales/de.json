@@ -18,24 +18,21 @@
     "dark": "Dunkel"
   },
   "taxonomy": {
-    "title": "Taxonomie",
-    "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen — noch einmal klicken, um es zu entfernen",
     "items": "Elemente",
     "unassigned": "Nicht zugeordnete Tags",
     "expand": "{label} aufklappen",
-    "collapse": "{label} zuklappen",
-    "activeInside": "{count} aktiv in diesem Zweig"
+    "collapse": "{label} zuklappen"
   },
   "filter": {
     "title": "Filter",
     "quickFilters": "Schnellfilter",
     "clear": "Leeren",
-    "empty": "Noch kein Filter — alles passt. Regel, Schnellfilter oder Taxonomie-Knoten hinzufügen.",
     "fieldTag": "Tag",
     "historyLabel": "Historie",
     "historyRerunFailed": "Fehlgeschlagenes erneut ausführen (letzter Lauf)",
     "historyActive": "Historie: {query}",
     "conditions": "Aktive Bedingungen",
+    "summary": "Filter als Satz",
     "removeCondition": "Bedingung entfernen: {condition}",
     "conditionGroup": "Gruppe ({count} Bedingungen)",
     "conditionGroupOne": "Gruppe (1 Bedingung)",
@@ -47,8 +44,11 @@
       "contains": "enthält",
       "notContains": "enthält nicht",
       "endsWith": "endet auf",
-      "notEndsWith": "endet nicht auf"
-    }
+      "notEndsWith": "endet nicht auf",
+      "isAnyOf": "ist eines von",
+      "isNoneOf": "ist keines von"
+    },
+    "empty": "Noch kein Filter — alles passt. Tags auswählen, einen Schnellfilter nehmen oder unten eine Regel hinzufügen."
   },
   "preview": {
     "title": "Vorschau",
@@ -119,5 +119,39 @@
       "claimedRun": "Beanspruchter Lauf",
       "actions": "Aktionen"
     }
+  },
+  "picker": {
+    "open": "Tags auswählen…",
+    "title": "Tags zum Filter hinzufügen",
+    "tree": "Taxonomie",
+    "search": "Suche",
+    "searchPlaceholder": "Tag, Bezeichnung, Gruppe…",
+    "mode": "Einschließen oder ausschließen",
+    "modeInclude": "Einschließen",
+    "modeExclude": "Ausschließen",
+    "within": "Die ausgewählten Tags",
+    "withinAny": "irgendeines davon trifft zu",
+    "withinAll": "alle davon treffen zu",
+    "withinNone": "keines davon trifft zu",
+    "join": "Verknüpfung mit dem aktuellen Filter",
+    "joinAnd": "UND — grenzt weiter ein",
+    "joinOr": "ODER — erweitert",
+    "and": "UND",
+    "or": "ODER",
+    "not": "NICHT",
+    "hint": "Pfeiltasten bewegen, Leertaste wählt aus, Umschalt oder Strg/Befehl wählt mehrere. Ein ✓ markiert ein Tag, das der Filter bereits enthält — Taste drücken, um es zu entfernen.",
+    "tooBroad": "{count} Treffer — zu viele, um sie auf einmal zu öffnen. Die Zweige bleiben zu; Suche eingrenzen oder den gewünschten Zweig öffnen.",
+    "noMatches": "Keine Treffer",
+    "inFilter": "Bereits im Filter",
+    "inFilterInside": "{count} bereits im Filter in diesem Zweig",
+    "removeFromFilter": "{label} ist im Filter — entfernen",
+    "keepInFilter": "{label} wird entfernt — behalten",
+    "selected": "{count} ausgewählt",
+    "selectedOne": "1 ausgewählt",
+    "adds": "fügt hinzu: {expression}",
+    "removes": "entfernt {count}",
+    "apply": "Als Filter übernehmen",
+    "cancel": "Abbrechen",
+    "close": "Schließen"
   }
 }

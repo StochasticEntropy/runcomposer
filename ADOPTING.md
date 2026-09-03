@@ -55,7 +55,7 @@ configuration rather than Python:
 ```yaml
 core:
   api: { host: 127.0.0.1, port: 8100 }
-  taxonomy_file: taxonomy.yaml  # the curated tree in the UI's left panel
+  taxonomy_file: taxonomy.yaml  # the curated tree in the UI's tag picker
   artifact_dir: artifacts/
   ingestion:
     tokens: required          # the per-run ingest token; "disabled" on closed networks

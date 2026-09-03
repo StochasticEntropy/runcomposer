@@ -1,6 +1,6 @@
 # The taxonomy file
 
-The taxonomy is the curated tree the UI shows on the left: the way *your* team
+The taxonomy is the curated tree the UI's tag picker shows: the way *your* team
 talks about the corpus, laid over the flat tag space. It is data, not code —
 one YAML file you write and runcomposer serves.
 
@@ -23,7 +23,7 @@ directory rather than depending on where the command was typed
 ([docs/cli.md](cli.md#--config--the-only-way-to-point-at-another-config-file)).
 
 With no `taxonomy_file` configured, runcomposer serves the bundled demo
-taxonomy, so the panel is never empty on a fresh install. The file is served
+taxonomy, so the picker is never empty on a fresh install. The file is served
 at `GET /api/v1/taxonomy`, validated (see
 [below](#what-is-validated-and-when)) and otherwise untouched — that response
 is exactly what you wrote. The UI asks for `?resolve=true` instead, which is
@@ -40,7 +40,7 @@ possible keys:
 | Key | Required | Meaning |
 |---|---|---|
 | `label` | yes | The text shown in the tree. Displayed verbatim — it is your string, not a translation key, and it is the same in every locale. Keep sibling labels distinct — the validator requires it, and it is what lets the resolved tree number nodes by their position in the file. |
-| `filter` | no | **One** pattern string in the tag-filter grammar. A node that has it is a **leaf**: clickable, and clicking it puts that pattern into the filter builder. |
+| `filter` | no | **One** pattern string in the tag-filter grammar. A node that has it is a **leaf**: selectable in the picker, and applying a selection puts its pattern into the filter. |
 | `children` | no | A list of further nodes. Nesting is arbitrarily deep. |
 
 A node with `children` and no `filter` is a **group** — a heading that only
@@ -218,30 +218,121 @@ the tags it was covering will appear under the synthetic node instead, where
 
 ## What a click does
 
-Clicking a leaf puts its pattern into the filter builder as one rule, where it
-stays editable. Clicking a second leaf adds a second rule; how the two combine
-is the builder's own glue (AND by default), which the user can change there.
+The tree is not a panel any more — it is a **picker dialog**, opened from
+`Pick tags…` in the filter panel. That changed in 0.1.6 for a reason worth
+stating: resolving the tree against the catalog (0.1.4) made it complete and,
+in the same move, unusable. A real corpus goes from ~150 written nodes to 2452
+rendered ones over 1609 tags, and an always-visible column of that many rows
+with no search is not something anyone navigates. There is no sidebar now.
+
+Inside the dialog:
+
+**Search narrows the tree without flattening it.** A node that matches keeps
+all of its children, and a branch that matches nothing is dropped — so a hit
+stays under the heading that explains what it is, instead of becoming a row in
+a list. The search reads both the label and the pattern, because both are
+things people look for: the word they remember, or the tag they were told to
+use. A query so broad that it matches nearly everything leaves the branches
+closed and says how many matched; nothing is hidden or truncated, the tree is
+just not thrown open.
+
+**Selection is multi-select** — checkbox, space, shift for a range,
+ctrl/cmd for individual rows — and the whole selection is applied as **one
+group** by one action. Three controls say what that group means:
+
+| Control | What it decides |
+|---|---|
+| include / exclude | whether the group selects items or rules them out |
+| the selected tags … | how the picked tags combine with **each other** |
+| join with the current filter | how the group combines with what is **already there** |
+
+The dialog shows the resulting expression before it is applied, in the same
+grammar the run spec will carry.
+
+This is also the usable way to build a **nested** filter. `Checkout AND
+(Payments OR Cart)` is not assembled row by row: pick the two tags, set "match
+any of them" and "AND", apply. The filter builder's own row menu
+(`Add group`) still reaches the same shapes by hand, and both produce the same
+`selection.tag_filter` — the AST is the contract, not the route to it.
+
 Nothing about the tree is recorded in the run spec: the spec keeps the
 resulting `selection.tag_filter`, not the node it came from.
 
-A leaf is a **switch**, not an append-only button: clicking one whose pattern
-is already in the filter takes that pattern back out instead of adding it a
-second time, and every leaf currently in the filter is marked in the tree.
+### Excluding: the negation goes outside the group
 
-The mark follows the **pattern**, not the position. In the resolved tree that
-is the only reading that holds: a tag hangs under every node whose pattern
-covers it, so one filter condition can legitimately be several rows — all of
-them show as active, and clicking any of them switches it off. Two patterns
-that merely overlap (a literal and an alternation regex containing it) stay
-independent: switching one on does not mark the other.
+"Exclude these tags" negates the group **as a whole**, and the encoding is de
+Morgan's law rather than a negation per row:
 
-Since a branch has to be opened to be seen, a **closed** row carries the
-number of distinct active patterns switched on somewhere below it, so nothing
-active is invisible.
+```
+NOT (A OR B)   ==  (NOT A) AND (NOT B)      <- what "exclude any of these" means
+NOT (A AND B)  ==  (NOT A) OR  (NOT B)
+```
 
-The same conditions are listed above the builder as chips, each with a `✕`
-that removes just that one; a chip for a nested group removes the group. The
-`Clear` link still empties the whole filter.
+The glue therefore **flips** under exclusion, and getting that backwards is a
+silent, plausible-looking disaster rather than an error. On the shipped demo
+corpus (60 items, DESIGN.md §12):
+
+| Filter | Items |
+|---|---|
+| `Payments OR Cart` | 22 |
+| `NOT (Payments OR Cart)` | 38 |
+| `(NOT Payments) AND (NOT Cart)` — what the picker writes | **38** |
+| `(NOT Payments) OR (NOT Cart)` — the wrong glue | 60 (the whole corpus) |
+
+The last row is an exclusion that excludes nothing and reports no problem —
+`tests/test_taxonomy_resolution.py` pins these four numbers so the table
+cannot rot. It
+is why the picker's "the selected tags …" control offers exactly **one** option
+while excluding — "match none of them". The other arithmetically available
+reading, "does not carry all of them", is almost never what anyone means and is
+hard to tell apart from the first in any wording; the filter builder underneath
+can still express it, spelled out, for someone who wants it.
+
+De Morgan rather than a literal `{not: {op: OR, …}}` node is also what keeps
+every negation an ordinary, editable rule in the builder and its own removable
+chip. The two are the same proposition; the grammar in
+`src/runcomposer/core/filter.py` accepts both.
+
+### What the dialog says about the filter you already have
+
+A row has three states, and they are deliberately not three shades of one
+colour:
+
+- **selected** — a ticked checkbox on an accent-filled row: what this round is
+  about to add. Empty every time the dialog opens.
+- **in the filter** — a green `✓`: a pattern the filter already carries. It is
+  *not* pre-selected, because applying would then add it a second time.
+- **staged for removal** — that `✓` pressed, turning red with the label struck
+  through: on apply, the pattern comes out.
+
+So the dialog edits the tag part of the filter in both directions, and `Cancel`
+cancels both. It never has to reproduce a shape it cannot express: it removes
+named patterns and appends one group, and leaves the rest of the filter — a
+nested group, a negation, a condition typed into the builder — exactly as it
+found it.
+
+The `✓` follows the **pattern**, not the position. In the resolved tree that is
+the only reading that holds: a tag hangs under every node whose pattern covers
+it, so one condition can legitimately be several rows — all of them are marked.
+Two patterns that merely overlap (a literal and an alternation regex containing
+it) stay independent. Since a branch has to be opened to be seen, a **closed**
+row carries the number of distinct filter patterns hidden somewhere below it.
+
+### The two layers
+
+The dialog is one of two ways into the same filter, and neither is a degraded
+version of the other:
+
+- **Pick tags** — no operator, no regex, no spelling to remember. Search,
+  tick, choose include/exclude, apply, and read the result back as a sentence.
+- **The filter builder** — the raw path, with all eight text operators and
+  `regex:` / `prefix:` patterns typed by hand, plus per-row `Add group` for
+  nesting. Its value field now completes against the catalog's real tags, so
+  it is no longer a field you have to know a tag by heart to use.
+
+Both edit the same `tag_filter` AST. The filter panel lists every top-level
+condition as a chip with a one-click `✕`, renders the whole filter as one
+readable sentence under **Filter as a sentence**, and `Clear` empties it.
 
 ---
 

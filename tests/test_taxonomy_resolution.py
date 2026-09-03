@@ -269,6 +269,38 @@ class TestResolutionFollowsTheCatalog:
         assert tree["resolved"]["tags_total"] == 0
 
 
+class TestTheTagUniverse:
+    """`tags` is served beside the tree because it is NOT derivable from it."""
+
+    def test_a_tag_reachable_only_through_a_regex_is_in_tags_and_in_no_node(self):
+        # A written leaf whose pattern resolves to exactly ONE tag already *is*
+        # that tag's node and gets no tag child — so "CartV2", reachable only
+        # through this regex, is spelled nowhere in the nodes. A client
+        # deriving completion candidates from the tree would silently miss it.
+        document = {"taxonomy": [{"label": "Second cart", "filter": "regex:^Cart(V2)$"}]}
+        resolved = resolve_taxonomy(document, ITEMS)
+        labels = {node["label"] for node in walk(resolved["taxonomy"])}
+        assert "CartV2" not in labels
+        assert "CartV2" in resolved["tags"]
+
+    def test_tags_holds_the_whole_catalog_even_where_the_tree_reaches_nothing(self):
+        resolved = resolve_taxonomy({"taxonomy": [{"label": "Nope", "filter": "Nothing"}]}, ITEMS)
+        assert resolved["tags"] == [
+            "Cart",
+            "CartV2",
+            "Loose",
+            "Payments",
+            "Regression",
+            "Smoke",
+            "Sprint-12",
+        ]
+
+    def test_tags_is_the_same_order_the_tree_uses(self):
+        resolved = resolve_taxonomy({"taxonomy": [{"label": "All", "filter": "regex:."}]}, ITEMS)
+        under = [child["label"] for child in resolved["taxonomy"][0]["children"]]
+        assert under == resolved["tags"]
+
+
 # -- the surfaces ---------------------------------------------------------------
 
 
@@ -316,6 +348,48 @@ class TestTheDemoWorldResolves:
         assert any(label.startswith("SHOP-") for label in labels)
 
 
+class TestExcludingASelection:
+    """The numbers docs/taxonomy.md quotes for the de Morgan table.
+
+    The UI's picker writes an exclusion as the AND of the negations, which is
+    the same proposition as negating the group. Getting the glue backwards is
+    the one mistake here that is silent AND plausible-looking: it produces a
+    large, believable count instead of an error. These are the four readings on
+    the shipped corpus, so the table in the docs cannot rot unnoticed.
+    """
+
+    @pytest.mark.parametrize(
+        "name, tag_filter, expected",
+        [
+            ("either", {"op": "OR", "items": ["Payments", "Cart"]}, 22),
+            ("neither", {"not": {"op": "OR", "items": ["Payments", "Cart"]}}, 38),
+            (
+                "neither, written as the AND of the negations — what the picker writes",
+                {"op": "AND", "items": [{"not": "Payments"}, {"not": "Cart"}]},
+                38,
+            ),
+            (
+                "the wrong glue: an exclusion that excludes nothing",
+                {"op": "OR", "items": [{"not": "Payments"}, {"not": "Cart"}]},
+                60,
+            ),
+        ],
+    )
+    def test_the_readings_of_excluding_two_tags(self, config, name, tag_filter, expected):
+        items, _ = Service(config).preview({"tag_filter": tag_filter})
+        assert len(items) == expected, name
+
+    def test_the_wrong_glue_is_the_whole_corpus(self, config):
+        """Stated separately because it is the point: the failure mode is a
+        filter that reports no problem and removes nothing."""
+        service = Service(config)
+        everything = len(service.source.items())
+        items, _ = service.preview(
+            {"tag_filter": {"op": "OR", "items": [{"not": "Payments"}, {"not": "Cart"}]}}
+        )
+        assert len(items) == everything == 60
+
+
 class TestTheEndpoint:
     def test_the_default_response_is_unchanged(self, config):
         client = TestClient(create_app(config))
@@ -329,6 +403,22 @@ class TestTheEndpoint:
         body = client.get("/api/v1/taxonomy?resolve=true").json()
         assert body["resolved"]["tags_selectable"] == body["resolved"]["tags_total"]
         assert all("id" in node for node in walk(body["taxonomy"]))
+
+    def test_resolve_true_also_serves_the_catalog_tags(self, config):
+        """The UI offers tag completion in the filter's value field, and the
+        tags have to come from the same resolution the tree does."""
+        service = Service(config)
+        body = TestClient(create_app(config)).get("/api/v1/taxonomy?resolve=true").json()
+        assert body["tags"] == sorted(
+            {tag for item in service.source.items() for tag in item.tags},
+            key=lambda tag: (tag.casefold(), tag),
+        )
+        assert len(body["tags"]) == body["resolved"]["tags_total"]
+
+    def test_the_default_response_carries_no_tag_list(self, config):
+        """`?resolve=true` is the opt-in; the published shape is untouched."""
+        body = TestClient(create_app(config)).get("/api/v1/taxonomy").json()
+        assert "tags" not in body
 
     def test_a_broken_file_still_names_the_node_when_resolving(self, tmp_path):
         (tmp_path / "taxonomy.yaml").write_text(

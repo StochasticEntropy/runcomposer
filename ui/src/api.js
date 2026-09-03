@@ -24,8 +24,11 @@ const post = (path, body) =>
 
 export const getUiConfig = () => request("/api/v1/ui-config");
 // Resolved against the catalog: every pattern's concrete tags as their own
-// clickable nodes (DESIGN.md §2). The unresolved shape is still the
-// endpoint's default for other clients.
+// clickable nodes, plus `tags` — the catalog's whole tag universe, which the
+// nodes do NOT carry (a leaf whose pattern resolves to a single tag is that
+// tag's node and has no tag child, so a tag reached only through a regex is
+// nowhere spelled out) and which the value field's completion needs
+// (DESIGN.md §2). The unresolved shape is still the endpoint's default.
 export const getTaxonomy = () => request("/api/v1/taxonomy?resolve=true");
 export const getRunners = () => request("/api/v1/runners");
 export const getLocaleMessages = (locale) => request(`/locales/${locale}.json`);

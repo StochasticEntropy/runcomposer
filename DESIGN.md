@@ -798,7 +798,13 @@ The complete flag-level reference is [docs/cli.md](docs/cli.md).
 
 A React app is the product's face (the prototype's interaction model is kept:
 taxonomy tree + filter-builder + auto-compiled preview table + fine
-selection):
+selection). The tree reaches the user through a **searchable, keyboard-driven
+picker dialog** rather than a permanent panel, and applies a whole selection as
+ONE filter group — resolving the tree against the catalog (§2) takes a real
+corpus to thousands of nodes, which an always-visible list with no search
+cannot carry. The dialog is the non-technical layer over the same
+`selection.tag_filter`; the filter-builder underneath is the raw one, and
+neither is a degraded version of the other:
 
 1. **i18n** — every literal in locale files; `en` + `de` shipped; locale date
    sugar lives here.
@@ -813,7 +819,11 @@ selection):
 **Stack — decided:** current React/Vite/deps at P1; the SVAR filter widget
 stays as the filter-builder (MIT, actively maintained, React-19 peer deps;
 verified 2026-07-06), kept behind the existing adapter so it remains
-swappable. P1 spike: SVAR built-in label localization for the i18n story;
+swappable. `react-aria-components` (Apache-2.0) carries the tag picker's tree
+and modal: a multi-select tree with real keyboard semantics and screen-reader
+behaviour is the whole point of that dialog and a bad thing to hand-roll. It
+costs ~58 kB gzip of the bundle, and its tree is virtualized because the
+resolved corpus is 2452 nodes. P1 spike: SVAR built-in label localization for the i18n story;
 override via the adapter if not exposed. Per-item *live* state requires the
 listener path (§6.2a); without it the grid shows planned → final, honestly
 labeled.

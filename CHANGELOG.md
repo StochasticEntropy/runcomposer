@@ -1,5 +1,119 @@
 # Changelog
 
+## 0.1.6 — unreleased
+
+### Added
+- **The tag tree is a picker dialog, and a whole selection is one filter
+  group.** Resolving the taxonomy against the catalog (0.1.4) made the tree
+  complete and, in the same move, unusable: on a real corpus it is **2452
+  nodes over 1609 tags** (up from ~150 written nodes), rendered as an
+  always-visible column with no search. `Pick tags…` in the filter panel now
+  opens a modal over that tree with
+
+  - a **live search that narrows without flattening** — a matching node keeps
+    all of its children, so a hit stays under the heading that explains it,
+    and a branch matching nothing is dropped;
+  - **multi-select** with checkbox, space, shift-range and ctrl/cmd, full
+    arrow-key navigation, and a focus trap that returns focus to the button
+    that opened it;
+  - **three explicit controls** — include or exclude, how the picked tags
+    combine with each other, how the group joins the filter already built —
+    shown next to the expression they produce, before it is applied;
+  - **one apply**, which is also the usable road to a nested filter:
+    `Checkout AND (Payments OR Cart)` is two tags with "match any of them"
+    and "AND", not a filter assembled row by row. It produces the same
+    `selection.tag_filter` as the builder's own `Add group` — the AST is the
+    contract ([docs/taxonomy.md](docs/taxonomy.md#what-a-click-does)).
+
+- **The filter reads back as one sentence.** `Filter as a sentence` in the
+  filter panel renders the whole `tag_filter` in the run spec's own grammar —
+  `(Payments OR Cart) AND NOT Quarantine-Flaky`. The builder shows
+  widgets and the chip row is flat; this is where a nested filter is legible to
+  somebody who did not build it.
+
+- **The filter's value field completes against the catalog's real tags.** It
+  was handed an empty options map, so typing a tag was blind and you had to
+  know its spelling by heart — on 1609 tags, nobody does. `GET
+  /api/v1/taxonomy?resolve=true` now also serves `tags`, the catalog's whole
+  tag universe in the tree's own order. It is **not** derivable from the nodes:
+  a written leaf whose pattern resolves to exactly one tag already *is* that
+  tag's node and gets no tag child, so a tag reached only through
+  `regex:^Cart(V2)?$` is spelled nowhere in the tree. The default
+  `GET /api/v1/taxonomy` is unchanged and carries no `tags`.
+
+- **`react-aria-components`** (Apache-2.0) for the dialog's tree and modal.
+  Deliberate: a multi-select tree with real keyboard and screen-reader
+  semantics is the reason this work exists and a bad thing to hand-roll. It
+  costs the bundle **+58 kB gzip** (90.6 → 158.8 kB gzip; 287 → 510 kB raw).
+  Its `Virtualizer` is what makes the tree viable at this size — see below.
+
+### Fixed
+- **Excluding a selection negates the group, not each row.** The glue flips
+  under de Morgan, and getting it backwards is silent and plausible-looking
+  rather than an error. On the shipped demo corpus (60 items),
+  `NOT (Payments OR Cart)` is 38 items and so is the
+  `(NOT Payments) AND (NOT Cart)` the picker writes — while
+  `(NOT Payments) OR (NOT Cart)` is 60, the entire corpus: an exclusion that
+  excludes nothing. The four numbers are pinned by a test. The picker cannot produce that shape, and
+  under "exclude" its combine control offers exactly **one** reading, "match
+  none of them", because the other one ("does not carry all of them") is
+  almost never meant and cannot be worded apart from the first. The raw
+  builder can still express it.
+
+- **A ticked list of tag values no longer disappears from the filter.**
+  Offering the catalog's tags as options lets the widget's value editor write
+  an `includes` list, which the adapter translated to *nothing* — ticking two
+  tags silently dropped the condition, narrowing the preview with nothing
+  anywhere to say why. A list is now an OR of literals, and a negated list
+  the AND of the negations (the same de Morgan step), listed as
+  `is any of` / `is none of`.
+
+- **A one-letter search no longer freezes the dialog.** Searching opens every
+  branch it kept, and one letter keeps all 2452 nodes: that put every row in
+  the DOM and took **17 seconds** to settle. The tree is virtualized (21 rows
+  in the DOM for the whole corpus), and past a budget of 400 matches the
+  branches stay closed with the count shown instead of being thrown open —
+  nothing hidden, nothing truncated. Every query now costs ~140 ms of
+  main-thread work.
+
+- **Closing the picker returns focus to the button that opened it.** The dialog
+  restores focus to whatever was focused when it opened, which on macOS is
+  nothing — clicking a button there does not focus it — so a keyboard user was
+  dropped on `<body>` and had to tab back through the whole page.
+
+### Changed
+- **The taxonomy sidebar is gone.** The compose view is one column, and the
+  freed width goes to the filter and the preview. What survives from 0.1.5 is
+  the part that was about the *filter* rather than the panel: a pattern the
+  filter already carries is marked in the tree, the mark follows the **pattern
+  and not the position** (the only reading that holds once the tree is
+  resolved), and a closed branch carries the count of distinct marked patterns
+  hidden below it. A row now has three visually distinct states — selected for
+  this round, already in the filter, staged for removal — and pressing the mark
+  stages a removal, so the dialog edits the tag part of the filter in both
+  directions and `Cancel` cancels both. `ui/src/components/TaxonomyTree.jsx`,
+  its styles and its locale keys are deleted rather than left unused.
+
+### Not done
+- **The picker does not take over the filter builder's own "add a filter"
+  button.** Intercepting `add-rule` works, but the payload does not say where
+  the rule was going: in `@svar-ui/react-filter` 2.6.0 both the toolbar's add
+  and a row menu's add send `{rule, edit}` where `rule` is the click's own
+  React event object (probed live). The two are therefore indistinguishable and
+  neither names a target group, so an interception would always have to append
+  at the top level — silently breaking the "add a group, then add a rule inside
+  it" path 0.1.5 opened up. The picker sits beside the builder's own add, as
+  the panel's primary action; the raw row is no longer blind either, now that
+  its value field completes against real tags.
+- **`include` / `exclude` are not two builder fields.** The single `tag` field
+  keeps its eight operators. The non-technical user no longer meets an operator
+  at all — that is what the picker is for — and the readable sentence plus the
+  `Tag ≠ x` chips already say a negation in words, so a second field would
+  double every field-dependent path in the adapter to restate what is already
+  legible. The trap it was proposed to help with (a negated leaf inside an OR
+  group) exists identically either way, and what makes it visible is the
+  sentence, not the field name.
+
 ## 0.1.5 — 2026-09-03
 
 ### Fixed

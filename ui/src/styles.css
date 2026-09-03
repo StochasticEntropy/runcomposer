@@ -195,13 +195,12 @@ body {
   color: var(--ok);
 }
 
+/* One column since the taxonomy sidebar was replaced by the picker dialog:
+   the width belongs to the filter and the preview, which are what is read. */
 .compose-grid {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 16px;
+  display: block;
   padding: 16px 20px;
   flex: 1;
-  align-items: start;
 }
 
 .compose-main {
@@ -228,6 +227,30 @@ body {
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The picker trigger is the primary action of the filter panel: it is now the
+   only way into the taxonomy. */
+.panel-actions button.primary {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+
+.panel-actions button.primary:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
 }
 
 .panel-header h2 {
@@ -274,75 +297,6 @@ body {
 
 .quick-filters {
   margin-bottom: 8px;
-}
-
-.taxonomy-tree,
-.taxonomy-tree ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-/* The resolved tree carries one node per catalog tag, so an opened branch can
-   be long. It scrolls inside the panel rather than pushing the page. */
-.taxonomy-tree {
-  max-height: 70vh;
-  overflow-y: auto;
-}
-
-.taxonomy-row {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-}
-
-/* A fixed gutter so labels line up whether or not a row opens. */
-.taxonomy-twisty {
-  flex: 0 0 14px;
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.6;
-  text-align: left;
-  cursor: pointer;
-}
-
-.taxonomy-group,
-.taxonomy-leaf {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  border: none;
-  background: none;
-  padding: 3px 0;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.taxonomy-group {
-  font-weight: 600;
-  color: inherit;
-}
-
-.taxonomy-leaf {
-  color: var(--accent);
-}
-
-.taxonomy-group:hover,
-.taxonomy-leaf:hover {
-  text-decoration: underline;
-}
-
-.taxonomy-count {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
 }
 
 .preview-table,
@@ -559,38 +513,6 @@ body {
   color: var(--info);
 }
 
-/* A taxonomy leaf is a switch, so it has to show which side it is on. The
- * resolved tree hangs the same tag under every pattern that covers it, so one
- * condition can light up several rows — that is the intended reading: what is
- * active is the pattern. The ✓ is its own element rather than a ::after,
- * because the label truncates and would eat it. */
-.taxonomy-leaf.active {
-  background: var(--info-bg);
-  color: var(--info);
-  font-weight: 600;
-  border-radius: 4px;
-  padding: 3px 4px;
-}
-
-.taxonomy-check {
-  flex: 0 0 auto;
-  color: var(--info);
-  font-size: 11px;
-}
-
-/* What a closed branch would otherwise hide: how many active patterns are
- * switched on somewhere below it. */
-.taxonomy-inside {
-  flex: 0 0 auto;
-  background: var(--info-bg);
-  border: 1px solid var(--info-border);
-  color: var(--info);
-  border-radius: 999px;
-  padding: 0 5px;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
 /* The removable conditions of the current filter. A long regex value must not
  * push the panel wide, so a chip truncates and keeps the whole text in its
  * tooltip. */
@@ -635,4 +557,320 @@ body {
 
 .filter-panel .wx-menu-icon:hover {
   color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------------
+ * The tag picker (TagPicker.jsx). react-aria-components ships behaviour, not
+ * looks, so every rule here is the app's own — which is also what keeps the
+ * dialog inside the theme: it reads the same tokens as the page, so both
+ * themes and the switch between them are covered by the palette at the top of
+ * this file and nothing is declared twice. */
+
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+}
+
+.picker-modal {
+  width: min(920px, 94vw);
+  max-height: 88vh;
+}
+
+.picker-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  outline: none;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 28%);
+}
+
+.picker-header,
+.picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.picker-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.picker-footer {
+  border-top: 1px solid var(--border);
+}
+
+.picker-header h2,
+.picker-header [role="heading"] {
+  font-size: 15px;
+  margin: 0;
+}
+
+/* The three controls and the search box, side by side: the point of the
+ * dialog is that they are decided together, so they are read together. */
+.picker-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  padding: 12px 16px 4px;
+}
+
+.picker-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.picker-controls input,
+.picker-controls select {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 7px;
+  min-width: 0;
+}
+
+.picker-controls input:focus-visible,
+.picker-controls select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.picker-hint {
+  margin: 4px 16px 8px;
+}
+
+/* The tree scrolls itself, because the virtualizer needs a scroll container
+   with a height it can measure. */
+.picker-body {
+  flex: 1 1 auto;
+  padding: 0 16px 12px;
+  min-height: 0;
+  display: flex;
+}
+
+.picker-empty {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.picker-tree {
+  flex: 1 1 auto;
+  height: 52vh;
+  overflow: auto;
+  outline: none;
+}
+
+.picker-item {
+  outline: none;
+}
+
+/* Height is fixed and matched by ROW_HEIGHT in TagPicker.jsx: the virtualizer
+   is told the row height rather than measuring thousands of them. */
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 5px;
+  padding: 0 4px;
+  height: 26px;
+}
+
+.picker-item[data-hovered] .picker-row {
+  background: var(--bg);
+}
+
+/* Keyboard focus has to be visible on the ROW, because the row is what the
+ * arrow keys move — this is the dialog's whole navigation story. */
+.picker-item[data-focus-visible] .picker-row {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* State 1 of 3: picked in this round, not yet applied. An accent-filled row —
+ * the loudest of the three, because it is the one being edited. */
+.picker-item[data-selected] .picker-row {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.picker-twisty {
+  flex: 0 0 16px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-check {
+  flex: 0 0 14px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.picker-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.picker-group {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.picker-struck {
+  text-decoration: line-through;
+  color: var(--danger);
+}
+
+/* State 2 of 3: already in the filter when the dialog opened. A green pill,
+ * not a second shade of the selection blue — a user has to see at a glance
+ * that a new pick is being ADDED to what is already there. Pressing it stages
+ * the pattern for removal (state 3): red, and the label struck through. */
+.picker-held {
+  flex: 0 0 auto;
+  border: 1px solid var(--ok-border);
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.picker-held.staged {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.picker-held[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* What a closed branch would otherwise hide: how many distinct patterns of
+ * the current filter are switched on somewhere below it. */
+.picker-inside {
+  flex: 0 0 auto;
+  background: var(--ok-bg);
+  border: 1px solid var(--ok-border);
+  color: var(--ok);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.picker-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* What Apply is about to do, in the runspec grammar's own words — the three
+ * controls otherwise have no visible consequence until after they are used. */
+.picker-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.picker-expression {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46ch;
+  color: var(--muted);
+}
+
+.picker-removing {
+  flex: 0 0 auto;
+  color: var(--danger);
+}
+
+.picker-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.picker-button {
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.picker-button[data-focus-visible] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.picker-button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.picker-button[data-disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The filter as one readable sentence. The builder shows widgets and the chip
+ * row is flat; this is where a nested group is legible to somebody who did not
+ * build it. Closed by default — it is a check, not the primary surface. */
+.filter-summary {
+  margin: 4px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--bg);
+}
+
+.filter-summary > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.filter-summary p {
+  margin: 6px 0 2px;
+  overflow-wrap: anywhere;
 }

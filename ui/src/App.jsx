@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { compileSelection, createRun, getRunners, getTaxonomy } from "./api.js";
 import {
   EMPTY_FILTER,
   activePatterns,
+  appendSelection,
   listConditions,
   removeConditionAt,
+  removePattern,
   svarToAst,
   togglePattern,
 } from "./filterAdapter.js";
@@ -16,7 +18,7 @@ import FilterPanel from "./components/FilterPanel.jsx";
 import PreviewTable from "./components/PreviewTable.jsx";
 import QuarantineView from "./components/QuarantineView.jsx";
 import RunsView from "./components/RunsView.jsx";
-import TaxonomyTree from "./components/TaxonomyTree.jsx";
+import TagPicker from "./components/TagPicker.jsx";
 
 export default function App({
   uiConfig,
@@ -29,9 +31,11 @@ export default function App({
   const { t } = useI18n();
   const [tab, setTab] = useState("compose");
   const [taxonomy, setTaxonomy] = useState([]);
+  const [tags, setTags] = useState([]);
   const [runners, setRunners] = useState([]);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [picking, setPicking] = useState(false);
 
   const [filterValue, setFilterValue] = useState(EMPTY_FILTER);
   const [historyQuery, setHistoryQuery] = useState(null); // §7 compose-time provider
@@ -41,17 +45,29 @@ export default function App({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const debounceRef = useRef(null);
+  // Closing the picker has to put focus back where it came from. The dialog
+  // restores focus to whatever was focused when it opened — which on macOS is
+  // nothing, because clicking a button there does not focus it, so a keyboard
+  // user was dropped on <body> and had to tab back through the whole page.
+  // This runs as a passive effect on the way down, i.e. AFTER the dialog's own
+  // layout-effect restore, which is the only ordering that wins.
+  const pickerTrigger = useRef(null);
+  const wasPicking = useRef(false);
 
   const ast = useMemo(() => svarToAst(filterValue), [filterValue]);
   // What the filter currently holds, in the app's own words: the removable
-  // conditions the panel lists, and the patterns the tree marks as active.
+  // conditions the panel lists, and the patterns the picker marks as already
+  // held.
   const conditions = useMemo(() => listConditions(filterValue), [filterValue]);
   const active = useMemo(() => activePatterns(filterValue), [filterValue]);
   const quickFilters = uiConfig.quick_filters ?? [];
 
   useEffect(() => {
     getTaxonomy()
-      .then((body) => setTaxonomy(body.taxonomy ?? []))
+      .then((body) => {
+        setTaxonomy(body.taxonomy ?? []);
+        setTags(body.tags ?? []);
+      })
       .catch((err) => setError(err.message));
     getRunners()
       .then((all) => setRunners(all.filter((runner) => !runner.error)))
@@ -89,12 +105,30 @@ export default function App({
     return () => clearTimeout(debounceRef.current);
   }, [ast, historyQuery]);
 
-  // A taxonomy node and a quick filter are switches: clicking one that is
-  // already in the filter takes it back out instead of adding a duplicate.
+  // A quick filter is a switch: clicking one that is already in the filter
+  // takes it back out instead of adding a duplicate.
   const pickPattern = (pattern) => {
     setFilterValue((value) => togglePattern(value, pattern));
     setTab("compose");
   };
+
+  // The picker's whole selection arrives as one edit: the patterns it staged
+  // for removal come out, and everything it picked goes back in as ONE group
+  // (filterAdapter.js). Removal runs first, so a pattern both removed and
+  // picked ends up in the new group rather than in its old place — which is
+  // how a condition is moved into a group.
+  const applySelection = (patterns, options, removals = []) => {
+    setFilterValue((value) =>
+      appendSelection(removals.reduce(removePattern, value), patterns, options)
+    );
+  };
+
+  const closePicker = useCallback(() => setPicking(false), []);
+
+  useEffect(() => {
+    if (wasPicking.current && !picking) pickerTrigger.current?.focus();
+    wasPicking.current = picking;
+  }, [picking]);
 
   const removeCondition = (index) => {
     setFilterValue((value) => removeConditionAt(value, index));
@@ -203,7 +237,6 @@ export default function App({
       {tab === "compose" ? (
         <>
           <main className="compose-grid">
-            <TaxonomyTree taxonomy={taxonomy} onPick={pickPattern} active={active} />
             <div className="compose-main">
               <FilterPanel
                 value={filterValue}
@@ -217,6 +250,10 @@ export default function App({
                 onClear={clearFilter}
                 historyQuery={historyQuery}
                 onHistory={setHistoryQuery}
+                onPickTags={() => setPicking(true)}
+                pickTagsRef={pickerTrigger}
+                tags={tags}
+                ast={ast}
               />
               <PreviewTable
                 items={items}
@@ -229,6 +266,13 @@ export default function App({
               />
             </div>
           </main>
+          <TagPicker
+            open={picking}
+            taxonomy={taxonomy}
+            activePatterns={active}
+            onClose={closePicker}
+            onApply={applySelection}
+          />
           <ComposeFooter
             runners={runners}
             disabled={(!ast && !historyQuery) || checked.size === 0}
