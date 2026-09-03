@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.7 — 2026-09-03
+
+### Fixed
+- **Adding a filter opens the picker.** In 0.1.6 the picker sat *beside* the
+  filter builder's own "add" button rather than replacing it, so the most
+  obvious control in the panel still opened the builder's inline editor — and
+  that editor, handed the catalog's tags (also new in 0.1.6), rendered them as
+  a flat, unsorted, unsearchable list of all 1609 with a checkbox each, four
+  rows visible, **every box ticked by default**. That is the screen the picker
+  exists to replace, reached by the most likely click. Every `add-rule` is now
+  intercepted and opens the dialog, and the builder is given no tag list at
+  all, which removes that list from everywhere it could appear. Choosing tags
+  happens in the dialog; the builder shows and edits the resulting expression,
+  and its row menu's `Edit` still takes any raw `regex:` / `prefix:` pattern.
+
+  0.1.6 justified leaving that button alone on the grounds that the widget's
+  `add-rule` payload does not name the group the rule was headed for, so an
+  interception could not honour a per-row add. That is still true and it was
+  the wrong trade: where a group lands is now the dialog's own "join with the
+  current filter" choice, which is visible and stated.
+
+### Changed
+- **The dialog follows the predecessor's layout rather than a rearrangement of
+  it**: the four controls in its order (include/exclude, how the picked tags
+  combine, how the group joins what is there, search last), the multi-select
+  hint above a bordered tree box, a dot on leaf rows, a kind badge on rows
+  standing for one concrete tag, and a footer of "Selected: N" against Cancel
+  and Apply. Sized as it was: `min(980px, 96vw)`, 85vh, 52vh of tree.
+
+  Dropped with it: the expression preview line and the staged-removal state,
+  both added in 0.1.6 and neither part of that design. A row whose pattern the
+  filter already carries still shows a `✓`; it is a mark, not a checkbox, and
+  nothing is ever pre-selected. Removing a condition is the filter panel's
+  chips, each with a one-click `✕`.
+
 ## 0.1.6 — 2026-09-03
 
 ### Added

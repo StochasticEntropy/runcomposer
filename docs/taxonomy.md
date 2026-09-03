@@ -246,8 +246,10 @@ group** by one action. Three controls say what that group means:
 | the selected tags … | how the picked tags combine with **each other** |
 | join with the current filter | how the group combines with what is **already there** |
 
-The dialog shows the resulting expression before it is applied, in the same
-grammar the run spec will carry.
+Adding a filter opens this dialog — including the filter builder's own "add"
+button, which is intercepted. There is no second, non-modal way to choose a
+tag, and that is the point: the builder's inline editor, handed a corpus of
+tags, renders them as a flat unsearchable list with every one pre-ticked.
 
 This is also the usable way to build a **nested** filter. `Checkout AND
 (Payments OR Cart)` is not assembled row by row: pick the two tags, set "match
@@ -295,21 +297,12 @@ chip. The two are the same proposition; the grammar in
 
 ### What the dialog says about the filter you already have
 
-A row has three states, and they are deliberately not three shades of one
-colour:
-
-- **selected** — a ticked checkbox on an accent-filled row: what this round is
-  about to add. Empty every time the dialog opens.
-- **in the filter** — a green `✓`: a pattern the filter already carries. It is
-  *not* pre-selected, because applying would then add it a second time.
-- **staged for removal** — that `✓` pressed, turning red with the label struck
-  through: on apply, the pattern comes out.
-
-So the dialog edits the tag part of the filter in both directions, and `Cancel`
-cancels both. It never has to reproduce a shape it cannot express: it removes
-named patterns and appends one group, and leaves the rest of the filter — a
-nested group, a negation, a condition typed into the builder — exactly as it
-found it.
+A row carries a green `✓` when the filter already holds its pattern. It is a
+**mark, not a selection**: the checkboxes say what this round will add, the `✓`
+says what you already have, so reopening the dialog does not make you remember.
+Nothing is ever pre-ticked — applying would then add it a second time. Taking a
+condition back out is the filter panel's job, where each one is a chip with a
+one-click `✕`.
 
 The `✓` follows the **pattern**, not the position. In the resolved tree that is
 the only reading that holds: a tag hangs under every node whose pattern covers
@@ -323,12 +316,14 @@ row carries the number of distinct filter patterns hidden somewhere below it.
 The dialog is one of two ways into the same filter, and neither is a degraded
 version of the other:
 
-- **Pick tags** — no operator, no regex, no spelling to remember. Search,
+- **The picker** — no operator, no regex, no spelling to remember. Search,
   tick, choose include/exclude, apply, and read the result back as a sentence.
-- **The filter builder** — the raw path, with all eight text operators and
-  `regex:` / `prefix:` patterns typed by hand, plus per-row `Add group` for
-  nesting. Its value field now completes against the catalog's real tags, so
-  it is no longer a field you have to know a tag by heart to use.
+  Every "add a filter" leads here.
+- **The filter builder** — the raw path. It shows and edits the resulting
+  expression: the row menu's `Edit` takes all eight text operators and any
+  `regex:` / `prefix:` pattern typed by hand, and `Add group` nests by hand.
+  It is given no tag list of its own, because a list of every tag in the
+  corpus is what the picker exists to replace.
 
 Both edit the same `tag_filter` AST. The filter panel lists every top-level
 condition as a chip with a one-click `✕`, renders the whole filter as one
