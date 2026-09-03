@@ -87,3 +87,63 @@ def test_core_never_splits_or_normalizes_item_ids():
         text = path.read_text(encoding="utf-8")
         for needle in ("item_id.split", "item_id.partition", "id.lower(", "id.upper(", "id.casefold"):
             assert needle not in text, f"{path.name} contains {needle!r}"
+
+
+# -- the example world is the only world (DESIGN.md §12) ----------------------
+#
+# The guard above lists tokens to forbid, which only works for vocabulary this
+# project already knows about. It cannot catch an adopter's domain leaking in
+# from a real corpus — naming those terms here would be the leak. So this half
+# inverts the test: example data may only use tags the bundled demo corpus
+# defines. A tag from somebody's real suite fails without ever being named.
+
+import json
+
+
+def demo_tags():
+    from importlib import resources
+
+    corpus = json.loads(
+        (resources.files("runcomposer.demo") / "corpus.json").read_text(encoding="utf-8")
+    )
+    return {tag for item in corpus["items"] for tag in item["tags"]}
+
+
+def quoted_strings(text):
+    import re
+
+    return re.findall(r'"([^"\n]{1,60})"|\'([^\'\n]{1,60})\'', text)
+
+
+def test_ui_test_data_uses_only_the_demo_corpus_vocabulary():
+    """The UI's adapter tests pin filter behaviour, so they carry tag names.
+    Those names must come from the shipped example world — a real corpus's
+    tags in this repository are a self-containment failure (CLAUDE.md)."""
+    ui_test = Path(__file__).parent.parent / "ui" / "src" / "filterAdapter.test.js"
+    if not ui_test.is_file():  # the UI is optional in a source checkout
+        return
+    # The adapter's own vocabulary — operator ids, glues, field ids — is
+    # whatever it spells in quotes. Deriving it from the module keeps this
+    # guard from needing a hand-maintained list that goes stale.
+    adapter = (ui_test.parent / "filterAdapter.js").read_text(encoding="utf-8")
+    own = {(d or s_).strip() for d, s_ in quoted_strings(adapter)}
+    allowed = demo_tags() | own | {"AND", "OR"}
+    text = ui_test.read_text(encoding="utf-8")
+    suspects = []
+    for double, single in quoted_strings(text):
+        value = (double or single).strip()
+        # Only tag-shaped literals are candidates: a bare word or one of the
+        # grammar's prefixed patterns. Prose, identifiers and paths are not.
+        bare = value.split(":", 1)[1] if value.startswith(("prefix:", "regex:")) else value
+        if not bare or " " in bare or "/" in bare or "." in bare or ":" in value:
+            continue
+        if bare in allowed or bare.lower() in {t.lower() for t in allowed}:
+            continue
+        if bare.islower() and bare.isalpha():  # option keys like "and"/"text"
+            continue
+        suspects.append(value)
+    assert not suspects, (
+        f"{ui_test.name} uses tag names that are not in the bundled demo corpus: "
+        f"{sorted(set(suspects))} — example data must use the shipped example world "
+        "(DESIGN.md §12), never a real corpus"
+    )
