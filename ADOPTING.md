@@ -65,6 +65,9 @@ store:
   sqlite: { path: runcomposer.db }
 sources:
   robotframework: { root: tests/ }
+  # …or several suite trees in one catalog, each parsed as its own top-level
+  # suite (so the ids stay the ones results come back under):
+  # robotframework: { roots: [api/tests, ui/tests] }
 runners:
   robot-pool:
     suite_root: tests/

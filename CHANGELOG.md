@@ -1,8 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-09-03
 
 ### Added
+- **`runcomposer taxonomy-check`** — compares the configured taxonomy with the
+  catalog in both directions: tags no leaf claims (invisible in the tree) and
+  leaves that match nothing (clickable, selects nothing). Neither drift was
+  visible anywhere before — the tree renders, the filter parses, the answer is
+  just empty. Exits `1` on drift (`--warn-only` to always exit `0`), so it can
+  gate a build.
+- **Several suite roots in one catalog** — `sources.robotframework` takes
+  `roots: [...]` alongside `root:`. A corpus split over sibling trees is still
+  one corpus, and a tag filter is asked of the corpus, not of a directory.
+  Each root is parsed as its own top-level suite, which is what keeps the ids
+  equal to the ones results come back under: pointing Robot at the trees'
+  common parent instead prepends that directory's name to every longname.
+  Both forms are anchored to the config file by `resolve_config_paths`.
+- **`runcomposer catalog --tags`** — every tag in the catalog with the number
+  of items carrying it. This is the question you have *before* you can write a
+  filter, and nothing answered it. `catalog` now also reads **the configured
+  source** rather than only a manifest file: `--manifest` still reads one file
+  directly, and with neither a config nor `--manifest` the bundled demo corpus
+  is still the fallback, so the zero-config path is unchanged.
+- **Duplicate catalog ids are reported.** When two items share one id — two
+  Robot tests with the same name in the same suite, say — `catalog` names them.
+  A selection cannot tell such items apart, and neither can the results that
+  come back. Reported, never raised: a corpus is not unusable because two of
+  its tests are named alike.
 - **`RunStore` read paths** (DESIGN.md §6.3). The port grows by addition only —
   new members, and keyword-only parameters with defaults on existing ones:
   `artifact_refs(run_id, dispatch_id=None)`, the `shard=` keyword on

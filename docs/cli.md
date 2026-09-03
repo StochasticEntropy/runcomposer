@@ -17,7 +17,8 @@ runcomposer [--version] [-h] <command> [options]
 
   validate   check a runspec document
   demo       boot the neutral web-shop demo end-to-end
-  catalog    list a manifest catalog and its snapshot hash
+  catalog    list the catalog, its tags and its snapshot hash
+  taxonomy-check  compare the taxonomy with the catalog
   compile    preview a selection
   spec       compose a run and emit its runspec
   export     export a run's results as a normalized document
@@ -261,24 +262,30 @@ error: history selection 'failed@latest' matched no completed run — history fe
 
 ## `catalog`
 
-List what a test source sees, and the snapshot hash that identifies it.
+List what a test source sees, its tag world, and the snapshot hash that
+identifies it.
 
 ```
-runcomposer catalog [--manifest FILE] [--limit N]
+runcomposer catalog [--manifest FILE] [--tags] [--limit N] [--config FILE]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--manifest FILE` | the bundled demo corpus | A manifest catalog (JSON or YAML) to read. |
-| `--limit N` | `0` (all) | Show at most N items. `0` means no limit. |
+| `--manifest FILE` | — | Read this manifest catalog (JSON or YAML) directly, instead of the configured source. |
+| `--tags` | off | List every tag with the number of items carrying it, instead of the items. |
+| `--limit N` | `0` (all) | Show at most N items — or, with `--tags`, the N most common tags. `0` means no limit. |
+| `--config FILE` | `./config.yaml` if present | Config file. |
 
-This command reads a **manifest file directly** and does not consult your
-config — it is the quick "are my tags good enough to select on" check from
-[ADOPTING.md](../ADOPTING.md) §8, usable before any config exists.
+Without `--manifest` this lists **the source your config configures**, because
+"which tests can I select, and by which tags" is a question about the
+deployment. With no config file and no `--manifest`, it falls back to the
+bundled demo corpus, so the command still works before any config exists —
+the quick "are my tags good enough to select on" check from
+[ADOPTING.md](../ADOPTING.md) §8.
 
 ```console
 $ runcomposer catalog --limit 5
-# 60 items — snapshot sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
+# 60 items, 47 distinct tags — snapshot sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
 Shop.Payments.Cards.T001  [Payments, Payments-Cards, Smoke, Sprint-12, SHOP-1200]
 Shop.Payments.Cards.T002  [Payments, Payments-Cards, Regression, Sprint-13]
 Shop.Payments.Cards.T003  [Payments, Payments-Cards, Regression, Sprint-14]
@@ -287,18 +294,73 @@ Shop.Payments.Cards.T005  [Payments, Payments-Cards, Regression, Sprint-13]
 # … 55 more (use --limit 0 for all)
 ```
 
+`--tags` answers the question you have *before* you can write a filter — what
+is there to filter on:
+
+```console
+$ runcomposer catalog --tags --limit 5
+# 60 items, 47 distinct tags — snapshot sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
+    46  Regression
+    20  Sprint-12
+    20  Sprint-13
+    20  Sprint-14
+    17  Payments
+# … 42 more (use --limit 0 for all)
+```
+
+If two items in the catalog share one id, the header says so and names them.
+A selection cannot tell such items apart, and neither can the results that
+come back — it is worth knowing before you compose against them.
+
 The snapshot is what makes drift detectable: it is recorded into every spec and
 compared before execution. A pytest-flavoured catalog reads the same way — the
 ids are just node ids:
 
 ```console
 $ runcomposer catalog --manifest examples/pytest-shop/manifest.json
-# 7 items — snapshot sha256:980cdcc95afee2f86a56fead71730921ee1bf80dc6cfcbb62df10be3dd777d57
+# 7 items, 5 distinct tags — snapshot sha256:980cdcc95afee2f86a56fead71730921ee1bf80dc6cfcbb62df10be3dd777d57
 test_cart.py::test_add_item  [Cart, Smoke]
 test_cart.py::test_remove_item  [Cart, Regression]
 test_cart.py::test_checkout[visa]  [Cart, Payments, Regression]
 …
 ```
+
+---
+
+## `taxonomy-check`
+
+Hold the taxonomy against the catalog, in both directions.
+
+```
+runcomposer taxonomy-check [--warn-only] [--limit N] [--config FILE]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--warn-only` | off | Report and exit `0`. Without it, exit `1` when either side has drifted. |
+| `--limit N` | `0` (all) | Show at most N entries per section. |
+| `--config FILE` | `./config.yaml` if present | Config file. |
+
+The taxonomy is hand-written and the catalog moves underneath it, so the two
+drift apart silently. A newly introduced tag has no home in the tree and is
+invisible to anyone browsing it; a leaf whose tag was renamed stays clickable
+and selects nothing. Neither shows up anywhere — the tree renders, the filter
+parses, the answer is just empty.
+
+```console
+$ runcomposer taxonomy-check
+# 11 taxonomy leaf pattern(s) over 47 distinct catalog tag(s)
+
+tags no leaf claims (invisible in the tree): 34
+  Auth-Login
+  Auth-SSO
+  …
+every taxonomy leaf matches at least one tag
+```
+
+Worth running in CI over the config you ship: a red build is a cheaper way to
+learn that a rename orphaned half the tree than a colleague reporting that a
+filter "does nothing".
 
 ---
 

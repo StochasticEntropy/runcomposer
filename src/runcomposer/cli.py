@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from typing import Any
 
 import yaml
@@ -43,9 +44,28 @@ def main(argv: list[str] | None = None) -> int:
         "undo the demo entirely (DESIGN.md §12)",
     )
 
-    p_catalog = sub.add_parser("catalog", help="list a manifest catalog and its snapshot hash")
-    p_catalog.add_argument("--manifest", help="manifest file (default: the bundled demo corpus)")
+    p_catalog = sub.add_parser(
+        "catalog", help="list the catalog, its tags and its snapshot hash"
+    )
+    p_catalog.add_argument("--manifest", help="read this manifest file instead of the "
+                           "configured source (default: the configured source, else the "
+                           "bundled demo corpus)")
+    p_catalog.add_argument("--tags", action="store_true",
+                           help="list every tag in the catalog with the number of items "
+                           "carrying it, instead of the items")
     p_catalog.add_argument("--limit", type=int, default=0, help="show at most N items")
+    _add_config_arg(p_catalog)
+
+    p_taxonomy = sub.add_parser(
+        "taxonomy-check",
+        help="compare the configured taxonomy with the catalog: tags no leaf "
+        "claims, and leaves that match nothing",
+    )
+    p_taxonomy.add_argument("--warn-only", action="store_true",
+                            help="report and exit 0 (default: exit 1 when either side drifts)")
+    p_taxonomy.add_argument("--limit", type=int, default=0,
+                            help="show at most N entries per section. 0 means no limit")
+    _add_config_arg(p_taxonomy)
 
     p_compile = sub.add_parser("compile", help="preview a selection: matched items + warnings")
     _add_selection_args(p_compile)
@@ -130,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         "validate": _cmd_validate,
         "demo": _cmd_demo,
         "catalog": _cmd_catalog,
+        "taxonomy-check": _cmd_taxonomy_check,
         "compile": _cmd_compile,
         "spec": _cmd_spec,
         "runs": _cmd_runs,
@@ -243,24 +264,129 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 
 def _cmd_catalog(args: argparse.Namespace) -> int:
+    """The catalog every other command selects from.
+
+    ``--manifest`` reads one file directly — the zero-config path, and what
+    this command did when it could do nothing else. Otherwise it lists the
+    source the config actually configures, because "which tests can I select,
+    and by which tags" is a question about the deployment, not about a file
+    the deployment may not even use.
+    """
     from importlib import resources
 
     from runcomposer.plugins.manifest_source import ManifestError, ManifestSource
 
-    manifest = args.manifest or resources.files("runcomposer.demo") / "corpus.json"
-    try:
-        source = ManifestSource(manifest)
-    except (OSError, ManifestError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    if args.manifest:
+        try:
+            source = ManifestSource(args.manifest)
+        except (OSError, ManifestError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    else:
+        from runcomposer.config import load_config
+
+        config = load_config(args.config)
+        if config.path is None and args.config is None:
+            # No config to speak of: the bundled demo corpus, as before.
+            source = ManifestSource(resources.files("runcomposer.demo") / "corpus.json")
+        else:
+            try:
+                source = config.build_source()
+            except (OSError, ValueError) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+
     items = source.items()
-    print(f"# {len(items)} items — snapshot {source.snapshot()}")
+    tags = Counter(tag for item in items for tag in item.tags)
+    print(f"# {len(items)} items, {len(tags)} distinct tags — snapshot {source.snapshot()}")
+
+    duplicates = getattr(source, "duplicate_ids", ())
+    if duplicates:
+        print(
+            f"# warning: {len(duplicates)} id(s) belong to more than one item — a selection "
+            "cannot tell them apart:"
+        )
+        for item_id in duplicates:
+            print(f"#   {item_id}")
+
+    if args.tags:
+        shown = tags.most_common(args.limit) if args.limit else sorted(tags.items())
+        for tag, count in shown:
+            print(f"{count:6d}  {tag}")
+        if args.limit and len(tags) > args.limit:
+            print(f"# … {len(tags) - args.limit} more (use --limit 0 for all)")
+        return 0
+
     shown = items[: args.limit] if args.limit else items
     for item in shown:
         print(f"{item.id}  [{', '.join(item.tags)}]")
     if args.limit and len(items) > args.limit:
         print(f"# … {len(items) - args.limit} more (use --limit 0 for all)")
     return 0
+
+
+def _cmd_taxonomy_check(args: argparse.Namespace) -> int:
+    """Hold the taxonomy against the catalog, in both directions.
+
+    The taxonomy is hand-written data and the catalog moves underneath it, so
+    the two drift apart silently: a newly introduced tag has no home in the
+    tree and is invisible to anyone browsing it, and a leaf whose tag was
+    renamed stays clickable and selects nothing. Neither shows up anywhere —
+    the tree renders, the filter parses, the answer is just empty. This is the
+    check that says so.
+    """
+    from runcomposer.core.filter import parse_filter
+
+    service = _service(args)
+    taxonomy = service.taxonomy().get("taxonomy") or []
+
+    leaves: list[tuple[str, str]] = []  # (label path, pattern)
+
+    def walk(nodes: list[Any], path: str) -> None:
+        for node in nodes:
+            label = f"{path} › {node['label']}" if path else node["label"]
+            if node.get("filter"):
+                leaves.append((label, node["filter"]))
+            walk(node.get("children") or [], label)
+
+    walk(taxonomy, "")
+
+    items = service.source.items()
+    tags = sorted({tag for item in items for tag in item.tags})
+    matchers = [(label, pattern, parse_filter(pattern)) for label, pattern in leaves]
+
+    unclaimed = [tag for tag in tags if not any(node.matches([tag]) for _l, _p, node in matchers)]
+    dead = [
+        (label, pattern)
+        for label, pattern, node in matchers
+        if not any(node.matches([tag]) for tag in tags)
+    ]
+
+    print(f"# {len(leaves)} taxonomy leaf pattern(s) over {len(tags)} distinct catalog tag(s)")
+
+    def section(title: str, rows: list[str]) -> None:
+        print(f"\n{title}: {len(rows)}")
+        shown = rows[: args.limit] if args.limit else rows
+        for row in shown:
+            print(f"  {row}")
+        if args.limit and len(rows) > args.limit:
+            print(f"  … {len(rows) - args.limit} more (use --limit 0 for all)")
+
+    if unclaimed:
+        section("tags no leaf claims (invisible in the tree)", unclaimed)
+    else:
+        print("\nevery catalog tag is reachable from the taxonomy")
+    if dead:
+        section(
+            "leaves that match nothing (clickable, selects nothing)",
+            [f"{label}  →  {pattern}" for label, pattern in dead],
+        )
+    else:
+        print("every taxonomy leaf matches at least one tag")
+
+    if args.warn_only:
+        return 0
+    return 1 if (unclaimed or dead) else 0
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:

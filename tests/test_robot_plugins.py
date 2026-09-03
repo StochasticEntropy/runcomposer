@@ -48,6 +48,70 @@ def robot_config(tmp_path, corpus=CORPUS, **runner_options):
 
 
 class TestRobotSource:
+    def test_several_roots_form_one_catalog(self, tmp_path):
+        """A corpus split over sibling suite trees is still one corpus."""
+        for area, test in (("Api", "Ping Responds"), ("Ui", "Login Works")):
+            directory = tmp_path / area
+            directory.mkdir()
+            (directory / "s.robot").write_text(
+                f"*** Test Cases ***\n{test}\n    [Tags]    {area}    Smoke\n    Log    ok\n",
+                encoding="utf-8",
+            )
+        source = RobotFrameworkSource(roots=[str(tmp_path / "Api"), str(tmp_path / "Ui")])
+        # Each root names its own top-level suite, so the ids are exactly the
+        # ones a run over those roots reports back — no common-parent segment.
+        assert [item.id for item in source.items()] == [
+            "Api.S.Ping Responds",
+            "Ui.S.Login Works",
+        ]
+        assert {tag for item in source.items() for tag in item.tags} == {"Api", "Ui", "Smoke"}
+        assert source.duplicate_ids == []
+
+    def test_a_filter_reaches_across_roots(self, tmp_path):
+        for area in ("Api", "Ui"):
+            directory = tmp_path / area
+            directory.mkdir()
+            (directory / "s.robot").write_text(
+                f"*** Test Cases ***\n{area} One\n    [Tags]    Smoke\n    Log    ok\n",
+                encoding="utf-8",
+            )
+        from runcomposer.core.selection import Selection
+
+        source = RobotFrameworkSource(roots=[str(tmp_path / "Api"), str(tmp_path / "Ui")])
+        selection = Selection.from_data({"tag_filter": "Smoke"})
+        assert len(selection.compile(source.items())) == 2
+        # …and a single root sees only its own half, which is the whole point.
+        one = RobotFrameworkSource(root=str(tmp_path / "Api"))
+        assert len(selection.compile(one.items())) == 1
+
+    def test_two_tests_under_one_id_are_reported_not_raised(self, tmp_path):
+        (tmp_path / "Api").mkdir()
+        (tmp_path / "Api" / "s.robot").write_text(
+            "*** Test Cases ***\nSame\n    Log    ok\nSame\n    Log    ok\n", encoding="utf-8"
+        )
+        source = RobotFrameworkSource(root=str(tmp_path / "Api"))
+        assert len(source.items()) == 2
+        assert source.duplicate_ids == ["Api.S.Same"]
+
+    def test_a_missing_root_is_named(self, tmp_path):
+        (tmp_path / "Api").mkdir()
+        (tmp_path / "Api" / "s.robot").write_text(
+            "*** Test Cases ***\nOne\n    Log    ok\n", encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="Gone"):
+            RobotFrameworkSource(roots=[str(tmp_path / "Api"), str(tmp_path / "Gone")])
+
+    def test_a_source_without_any_root_fails_loudly(self):
+        with pytest.raises(ValueError, match="'root' or 'roots'"):
+            RobotFrameworkSource()
+
+    def test_both_root_forms_are_anchored_to_the_config_file(self):
+        options = RobotFrameworkSource.resolve_config_paths(
+            {"root": "suite", "roots": ["a", "/abs/b"]}, lambda value: value
+            if value.startswith("/") else f"/base/{value}",
+        )
+        assert options == {"root": "/base/suite", "roots": ["/base/a", "/abs/b"]}
+
     def test_ids_are_longnames_with_tags(self):
         source = RobotFrameworkSource(root=str(CORPUS))
         items = {item.id: item for item in source.items()}

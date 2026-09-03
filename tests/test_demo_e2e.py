@@ -201,8 +201,57 @@ class TestValidateCli:
     def test_catalog_lists_the_demo_corpus(self, capsys):
         assert main(["catalog", "--limit", "3"]) == 0
         out = capsys.readouterr().out
-        assert out.startswith("# 60 items — snapshot sha256:")
+        assert out.startswith("# 60 items, 47 distinct tags — snapshot sha256:")
         assert "Shop.Payments.Cards.T001" in out
+
+    def test_catalog_tags_lists_the_tag_world_with_counts(self, capsys):
+        assert main(["catalog", "--tags"]) == 0
+        out = capsys.readouterr().out
+        assert "# 60 items, 47 distinct tags" in out
+        # Every tag, sorted, with the number of items carrying it — the answer
+        # to "what can I filter on" before any filter is written.
+        assert "    46  Regression" in out
+        assert "     1  SHOP-1200" in out
+        assert len([line for line in out.splitlines() if not line.startswith("#")]) == 47
+
+
+    def test_taxonomy_check_names_tags_no_leaf_claims(self, capsys):
+        # The bundled taxonomy is a demo tree, not a complete one — so the
+        # check has something to report, which is the point: drift between a
+        # hand-written tree and a moving catalog is invisible otherwise.
+        assert main(["taxonomy-check"]) == 1
+        out = capsys.readouterr().out
+        assert "taxonomy leaf pattern(s) over 47 distinct catalog tag(s)" in out
+        assert "tags no leaf claims" in out
+        assert "Payments-Cards" in out
+        assert "every taxonomy leaf matches at least one tag" in out
+
+    def test_taxonomy_check_warn_only_still_reports(self, capsys):
+        assert main(["taxonomy-check", "--warn-only"]) == 0
+        assert "tags no leaf claims" in capsys.readouterr().out
+
+    def test_taxonomy_check_names_leaves_that_match_nothing(self, tmp_path, capsys):
+        (tmp_path / "taxonomy.yaml").write_text(
+            "taxonomy:\n"
+            "  - label: Areas\n"
+            "    children:\n"
+            "      - label: Payments\n"
+            "        filter: Payments\n"
+            "      - label: Renamed away\n"
+            "        filter: Billing\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "config.yaml").write_text(
+            f"core:\n  taxonomy_file: taxonomy.yaml\nstore:\n"
+            f"  sqlite: {{ path: {tmp_path / 'runs.db'} }}\n",
+            encoding="utf-8",
+        )
+        assert main(["taxonomy-check", "--config", str(tmp_path / "config.yaml")]) == 1
+        out = capsys.readouterr().out
+        # A leaf whose tag was renamed stays clickable and selects nothing —
+        # the failure mode nothing else surfaces.
+        assert "leaves that match nothing" in out
+        assert "Areas › Renamed away  →  Billing" in out
 
 
 class TestExampleSpecHonesty:

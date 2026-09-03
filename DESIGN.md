@@ -370,7 +370,12 @@ Reference impls:
   framework-agnostic claim is demonstrated, not asserted.
 - **`robotframework`** — walks `.robot` files via `robot.api` (a dependency of
   the plugin, not the core); mints `id = longname`; `resolve` owns any
-  name-normalization quirks.
+  name-normalization quirks. Takes `root` or `roots`: a repository often holds
+  several sibling suite trees that belong in one catalog, and parsing each as
+  its own root (rather than pointing Robot at their common parent) is what
+  keeps the ids stable — Robot names the root suite after the directory it is
+  given, so a common parent prepends a segment to every longname and the
+  catalog's ids stop matching the ids that come back in results.
 
 ### 6.2 `Runner`
 
@@ -647,7 +652,7 @@ core:
 store:
   sqlite: { path: runcomposer.db }
 sources:
-  robotframework: { root: tests/ }
+  robotframework: { root: tests/ }          # or: roots: [api/tests, ui/tests]
   # my-source: { module: "mypkg.sources:MySource", ... }   # import-path plugin
 runners:
   robot-pool: { max_workers: 20, history_selector: { labels: {...} } }
