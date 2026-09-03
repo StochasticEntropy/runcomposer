@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 — 2026-09-03
 
 ### Added
 - **The taxonomy tree resolves against the catalog.** A written leaf carries
