@@ -89,7 +89,7 @@ axis is *what-it-drives*: `robot-pool` (in-process Robot Framework execution),
 | **Item** | A runnable test: `id`, `name`, `tags: [str]`, optional `hierarchy`, optional `meta` (opaque). |
 | **Item id (normative)** | An opaque, stable string **minted by the TestSource**. Invariant: `TestSource.items()[].id` and `TestSource.resolve(native_name)` define the *same id space* — every native name a ResultParser emits must resolve to exactly one Item id. The core never parses, splits, or normalizes ids or native names; it compares ids for equality only. (A Robot Framework source mints `id = longname`; a pytest source might mint `id = nodeid`.) |
 | **TestSource** | A plugin that enumerates Items, produces a content-hashed **catalog snapshot**, and owns native-name→id resolution. |
-| **Taxonomy** | A curated tree over tag patterns used for navigation and selection-building. Data, not code. |
+| **Taxonomy** | A curated tree over tag patterns used for navigation and selection-building. Data, not code. Served twice: verbatim, and **resolved** against the catalog — each node expanded with the concrete tags its own pattern matches, nodes matching nothing dropped, unclaimed tags gathered under one synthetic node. Resolution is derived per request, never stored, and speaks the same node grammar, so the file format does not know about it. |
 | **Selection** | The lossless filter: `tag_filter` AST + optional explicit `item_ids`. Compiled against a catalog snapshot into a **materialized item list**. |
 | **Run spec** | The versioned document: identity + selection (incl. materialization) + source snapshot + results contract + one opaque runner section. |
 | **Run / Dispatch / Delivery** | A **Run** is the stored lifecycle record for one spec. Each hand-off to an executor is a **Dispatch** (`dispatch_id`). Each results bundle that arrives is a **Delivery** (content-hashed). One run may have several dispatches (re-runs) and several deliveries (shards, retries). |
@@ -730,7 +730,8 @@ with an empty tree.
 ## 9. API & CLI surface
 
 ```
-GET  /api/v1/taxonomy
+GET  /api/v1/taxonomy                   # the validated file, verbatim
+GET  /api/v1/taxonomy?resolve=true      # …resolved against the catalog (§2) + a summary
 POST /api/v1/selection/compile          # preview: matched items + warnings
 POST /api/v1/selection/spec-preview     # render the would-be runspec
 POST /api/v1/runs                       # compose (+ dispatch: {runner: id} | {mode: export})
@@ -763,6 +764,14 @@ every existing reader, and the flat list is still what a per-item view wants.
 The fan-out question is answered next to it by `shards`, a per-shard roll-up
 (`count`, status counts, computed `completion`) — so "green on partition A,
 red on partition B" is read, not aggregated.
+
+`?resolve=true` is a parameter rather than a second endpoint or a new
+response field, for one reason each: the unresolved body is the published
+shape and a client that asks for the file must keep getting the file; an extra
+field would put the resolution cost on every caller including those; and a
+second endpoint would duplicate the taxonomy's error contract (the same
+`500` naming the offending node, §8) for a response that is the same document
+in the same grammar. The default is off; the UI opts in.
 
 Runner-specific admin actions (e.g. a pool reload) are `[planned]`, and when
 they arrive they go to `POST /api/v1/runners/{id}/actions/<action>`,
@@ -930,4 +939,5 @@ Each phase ends runnable + demoable.
 | 6 | Who mints the dispatch id (2026-08-28) | **runcomposer does**, offered to the runner as a `DispatchReservation` via the optional `bind_dispatch` hook (§6.2); the runner decides *when* the hand-off is recorded, and the returned handle refines the declaration. Rejected: passing the id into `dispatch()` (breaks the published signature), and letting bound runners write their own dispatch rows (duplicates the ledger, unavailable to unbound runners, and lets a runner's own id drift from its configured `mode`). A refused dispatch — refusal always precedes the recording — leaves **no** row. |
 | 7 | Shape of the shard in run detail (2026-08-28) | **Label the flat verdict list, add a sibling roll-up** (§9). Rejected: nesting verdicts by shard — it breaks every existing reader for a view a per-item table does not want; and leaving the aggregation to clients — the fan-out question is the reason shards exist, so answering it is the payload's job. |
 | 8 | Serving local artifacts (2026-08-28) | **Containment + sandbox** (§6.4): resolve the path fully and refuse anything not strictly inside `core.artifact_dir` (one rule covering `..`, absolute paths and symlinks), refuse as `404` so probing is uninformative, and serve with `sandbox`/`default-src 'none'`/`nosniff` because the bytes are attacker-influenced and share an origin with the UI. Accepted cost: a scripted HTML report renders inert; the §6.4 pass-through (host it elsewhere, record the URL) is the answer for those. Rejected: a bare static mount (no containment story, scripts live), and forcing `Content-Disposition: attachment` on everything (kills the one-click log the feature exists for). |
+| 10 | Where the taxonomy resolves (2026-09-03) | **Server-side, opt-in per request** (`?resolve=true`, §2/§9). Server-side because the tag universe is the catalog and the matcher is `core.filter`: resolving in the UI would mean shipping the whole catalog to the browser and reimplementing the §3.1 grammar — its case rules included — in JavaScript, where it would drift from the one the selection actually compiles with. Opt-in because the unresolved body is published API. Rejected: resolving unconditionally (changes every response and charges every caller for it), a second endpoint (duplicates the §8 error contract for the same document in the same grammar), and extending the *file* format so a leaf could carry several tags (the limitation is deliberate — the tree hands the builder one pattern, docs/taxonomy.md — and it would put the corpus into the file, which is exactly what drifts). |
 | 9 | History scope syntax (2026-08-28) | **A query-string suffix on the selector**, `<verdict>@<selector>?key=value&…` (§7), because `?`/`&` cannot occur in an ISO-8601 time or a run id, it survives a shell, an HTTP body and a spec field unchanged, and it composes with every existing selector. A scope on `run:<id>` is **refused, not ignored** — it can only mislead. Rejected: a second CLI-only flag (invisible in the API and in `derived_from`), and bracket/semicolon forms (quoting hazards, no established reading). |

@@ -23,7 +23,10 @@ const post = (path, body) =>
   });
 
 export const getUiConfig = () => request("/api/v1/ui-config");
-export const getTaxonomy = () => request("/api/v1/taxonomy");
+// Resolved against the catalog: every pattern's concrete tags as their own
+// clickable nodes (DESIGN.md §2). The unresolved shape is still the
+// endpoint's default for other clients.
+export const getTaxonomy = () => request("/api/v1/taxonomy?resolve=true");
 export const getRunners = () => request("/api/v1/runners");
 export const getLocaleMessages = (locale) => request(`/locales/${locale}.json`);
 export const compileSelection = (selection) => post("/api/v1/selection/compile", selection);

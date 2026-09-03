@@ -164,7 +164,16 @@ def create_app(config: Config) -> FastAPI:
         return {"status": "ok", "version": __version__}
 
     @app.get("/api/v1/taxonomy")
-    def taxonomy() -> dict[str, Any]:
+    def taxonomy(resolve: bool = Query(False)) -> dict[str, Any]:
+        # `resolve` is opt-in and defaults off, because the unresolved
+        # response is the published shape (§9) and a client that asked for
+        # the file must keep getting the file, byte for byte. With it, the
+        # same three-key node grammar comes back resolved against the live
+        # catalog — every pattern's concrete tags as their own clickable
+        # nodes, dead nodes collapsed, unclaimed tags gathered — plus a
+        # `resolved` summary of what that cost and covered (DESIGN.md §2).
+        if resolve:
+            return service.resolved_taxonomy()
         return service.taxonomy()
 
     @app.get("/api/v1/ui-config")

@@ -332,13 +332,14 @@ test_cart.py::test_checkout[visa]  [Cart, Payments, Regression]
 Hold the taxonomy against the catalog, in both directions.
 
 ```
-runcomposer taxonomy-check [--warn-only] [--limit N] [--config FILE]
+runcomposer taxonomy-check [--warn-only] [--limit N] [--tree] [--config FILE]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--warn-only` | off | Report and exit `0`. Without it, exit `1` when either side has drifted. |
-| `--limit N` | `0` (all) | Show at most N entries per section. |
+| `--limit N` | `0` (all) | Show at most N entries per section (with `--tree`: N nodes). |
+| `--tree` | off | Print the **resolved** tree — the one the UI renders — instead of the drift report. Always exits `0`. |
 | `--config FILE` | `./config.yaml` if present | Config file. |
 
 The taxonomy is hand-written and the catalog moves underneath it, so the two
@@ -354,13 +355,53 @@ $ runcomposer taxonomy-check
 tags no leaf claims (invisible in the tree): 34
   Auth-Login
   Auth-SSO
-  …
+  Auth-Signup
+  … 31 more (use --limit 0 for all)
 every taxonomy leaf matches at least one tag
+
+resolved tree (GET /api/v1/taxonomy?resolve=true, and what the UI renders):
+  14 written node(s) → 53, 0 collapsed as matching nothing
+  47 of 47 tag(s) selectable on their own; 34 reachable only under the unassigned node
+  see the tree itself with --tree
 ```
 
 Worth running in CI over the config you ship: a red build is a cheaper way to
 learn that a rename orphaned half the tree than a colleague reporting that a
 filter "does nothing".
+
+The last block is the same file read the other way round: not "does the tree
+still fit the catalog" but "what does the tree become once its patterns are
+resolved against it" ([docs/taxonomy.md](taxonomy.md#resolution-the-tree-the-ui-renders)).
+Those 34 unclaimed tags are still *reachable* — resolution gathers them under
+one synthetic node — which is why they are worth fixing but not urgent.
+
+### `--tree` — read the resolved tree
+
+```console
+$ runcomposer taxonomy-check --tree --limit 14
+Areas  (60 item(s), 6 tag(s))
+  Payments  Payments  (17 item(s), 1 tag(s))
+  Checkout  Checkout  (13 item(s), 1 tag(s))
+  Cart  regex:^Cart(V2)?$  (9 item(s), 2 tag(s))
+    Cart  Cart  (5 item(s), 1 tag(s))
+    CartV2  CartV2  (4 item(s), 1 tag(s))
+  Catalog  Catalog  (9 item(s), 1 tag(s))
+  Auth  Auth  (12 item(s), 1 tag(s))
+Suites  (60 item(s), 2 tag(s))
+  Smoke  Smoke  (14 item(s), 1 tag(s))
+  Regression  Regression  (46 item(s), 1 tag(s))
+Sprints  (60 item(s), 3 tag(s))
+  Sprint 12  Sprint-12  (20 item(s), 1 tag(s))
+  Sprint 13  Sprint-13  (20 item(s), 1 tag(s))
+… 39 more (use --limit 0 for all)
+
+# 14 written node(s) → 53; 47 of 47 tag(s) selectable on their own; 60 of 60 item(s) reachable
+```
+
+`Cart` is the whole point: one written leaf carrying `regex:^Cart(V2)?$`, and
+under it the two tags it actually covers, each selectable on its own. This is
+the answer to "why does that node not show what I expected" — it prints the
+tree the browser gets, with the pattern and the counts next to every row.
 
 ---
 

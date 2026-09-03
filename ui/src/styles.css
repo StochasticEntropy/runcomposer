@@ -283,26 +283,66 @@ body {
   padding: 0;
 }
 
-.taxonomy-group {
-  display: block;
-  font-weight: 600;
-  padding: 4px 0 2px;
+/* The resolved tree carries one node per catalog tag, so an opened branch can
+   be long. It scrolls inside the panel rather than pushing the page. */
+.taxonomy-tree {
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
+.taxonomy-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+/* A fixed gutter so labels line up whether or not a row opens. */
+.taxonomy-twisty {
+  flex: 0 0 14px;
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.taxonomy-group,
 .taxonomy-leaf {
-  display: block;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: left;
   border: none;
   background: none;
   padding: 3px 0;
   cursor: pointer;
-  color: var(--accent);
   font-size: 13px;
 }
 
+.taxonomy-group {
+  font-weight: 600;
+  color: inherit;
+}
+
+.taxonomy-leaf {
+  color: var(--accent);
+}
+
+.taxonomy-group:hover,
 .taxonomy-leaf:hover {
   text-decoration: underline;
+}
+
+.taxonomy-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .preview-table,

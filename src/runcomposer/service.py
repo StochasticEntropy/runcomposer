@@ -28,7 +28,11 @@ from runcomposer.core.ports import DispatchReservation, ParsedVerdict
 from runcomposer.core.registry import PARSER_GROUP, PluginError, resolve_plugin
 from runcomposer.core.selection import Selection
 from runcomposer.core.spec import build_spec, validate_document
-from runcomposer.core.taxonomy import TaxonomyError, validate_taxonomy
+from runcomposer.core.taxonomy import (
+    TaxonomyError,
+    resolve_taxonomy,
+    validate_taxonomy,
+)
 
 __all__ = [
     "ARTIFACT_ROUTE_PREFIX",
@@ -874,6 +878,25 @@ class Service:
         except yaml.YAMLError as exc:
             raise TaxonomyError(f"{origin}: taxonomy file is not valid YAML: {exc}") from None
         return validate_taxonomy(document, origin=origin)
+
+    def resolved_taxonomy(self) -> dict[str, Any]:
+        """The taxonomy resolved against the live catalog (DESIGN.md §2).
+
+        The written tree is a tree of *patterns*; this is the same tree with
+        the patterns replaced by what they actually cover here — one child per
+        concrete catalog tag, nodes that match nothing collapsed away, and the
+        tags no node claims gathered into one synthetic node. Without it a
+        pattern standing for a family of tags is a single opaque node and the
+        tags under it cannot be picked at all.
+
+        Resolution reads ``source.items()``, which is the cached catalog the
+        selection preview already compiles against — so the tree and the
+        preview can never disagree about which tags exist, and the cost is the
+        catalog's, paid once per process rather than per request.
+        """
+        return resolve_taxonomy(
+            self.taxonomy(), self.source.items(), origin=str(self.config.taxonomy_source)
+        )
 
     def runner_infos(self) -> list[dict[str, Any]]:
         infos = []

@@ -105,6 +105,15 @@ that same message rather than `200` with an empty panel. Write it against
 one-pattern-per-leaf limitation, the rules the validator enforces, and a
 worked example.
 
+Write it broadly rather than exhaustively: the UI does not render your file,
+it renders the file **resolved against your catalog**, so a leaf carrying one
+pattern comes out with a child for every concrete tag that pattern matches,
+each selectable on its own. Leaves that match nothing collapse away, and tags
+no leaf claims are gathered under one synthetic node — so an unfinished tree
+still reaches the whole corpus, and a catch-all `regex:.*` leaf is no longer
+worth writing. `runcomposer taxonomy-check` reports both directions of the
+drift and `--tree` prints the resolved tree.
+
 **One rule before you write any pattern**, in a taxonomy leaf or a filter: a
 bare literal is matched case-**insensitively**, but `regex:` is compiled
 without flags and `prefix:X` is exactly `regex:^X` — so both of those are
