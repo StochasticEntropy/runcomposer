@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 — 2026-09-03
+
+### Fixed
+- **The sdist was 40 MB.** Hatchling's default sweeps in everything the VCS
+  does not ignore, so the homepage's 37 MB of videos and a stray agent
+  worktree were being packaged as source. The sdist is now an explicit
+  include list; the wheel was always 0.2 MB and is unchanged.
+
 ## 0.1.2 — 2026-09-03
 
 ### Fixed

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runcomposer"
-version = "0.1.2"
+version = "0.1.3"
 description = "Tag-based test run composer & orchestrator — compose portable run specs any executor can fulfill"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -74,6 +74,21 @@ packages = ["src/runcomposer"]
 # runcomposer-exec stays a single self-contained stdlib-only file by
 # construction (DESIGN.md §6.2c) — shipped in the wheel AND vendorable as-is.
 "src/runcomposer_exec.py" = "runcomposer_exec.py"
+
+[tool.hatch.build.targets.sdist]
+# Hatchling's default sdist sweeps in everything the VCS does not ignore —
+# which meant 37 MB of homepage videos and a stray agent worktree. The
+# homepage's media lives on GitHub Pages; an sdist needs the sources, the
+# tests that prove them, and the prose.
+include = [
+    "/src", "/tests", "/examples", "/ci", "/docs",
+    "/README.md", "/LICENSE", "/CHANGELOG.md", "/DESIGN.md", "/ADOPTING.md",
+    "/CONTRIBUTING.md", "/SECURITY.md", "/pyproject.toml", "/Dockerfile",
+]
+exclude = [
+    "**/*.mp4", "**/*.vtt", "**/*.png", "**/*.jpg", "**/*.webp",
+    "**/__pycache__", "**/*.pyc", "**/node_modules", "**/*.db",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

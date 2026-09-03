@@ -27,7 +27,7 @@ examples/remote-agent/state/
 .vscode/
 .idea/
 .DS_Store
-.claude/launch.json
+.claude/
 
 # Local agent instructions: useful in a checkout, not part of the project.
 CLAUDE.md
