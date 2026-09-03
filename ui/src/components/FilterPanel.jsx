@@ -19,7 +19,7 @@
 //    so only genuinely external edits (taxonomy, quick filter, ✕, Clear) reach
 //    it — where a remount used to throw the whole widget away on every click.
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Locale } from "@svar-ui/react-core";
 import { FilterBuilder, Willow, WillowDark } from "@svar-ui/react-filter";
 import "@svar-ui/react-filter/all.css";
@@ -54,30 +54,53 @@ export default function FilterPanel({
   const fields = useMemo(() => [{ id: "tag", label: t("filter.fieldTag"), type: "text" }], [locale]);
   const SvarTheme = theme === "dark" ? WillowDark : Willow;
 
-  // The value field completes against the real catalog tags. Until this was
-  // wired the widget was handed an empty options map, so typing a tag was
-  // blind and you had to know its spelling by heart — which on a corpus of
-  // 1609 tags is not a thing anyone knows. The list comes back from the same
-  // resolution the picker's tree does (api.js), so there is one source for
-  // "which tags exist" and it is the server's.
+  // The widget is deliberately given NO options, and that is the opposite of
+  // an oversight. Handed the catalog's tags it renders them as its own value
+  // editor: a flat, unsorted, unsearchable scrolling list of all 1609 with a
+  // checkbox each, four rows visible at a time. It is not a typeahead — it
+  // narrows only on an exact match — so it is the very list the picker exists
+  // to replace, reached from the panel's most obvious button. Choosing tags
+  // happens in the dialog; this widget stays what it is good at, which is
+  // showing and editing the resulting expression.
   //
-  // Identity matters here for the same reason it matters for `value`: a fresh
-  // object every render re-seeds the widget's store.
-  const options = useMemo(() => (tags?.length ? { tag: tags } : NO_OPTIONS), [tags]);
+  // `tags` still arrives as a prop: the picker is what consumes it (App.jsx).
 
-  // NOT DONE, and the reason is worth keeping: the picker cannot take over the
-  // widget's own "add a filter" action. Intercepting `add-rule` works, but the
-  // payload does not say WHERE the rule was going: in @svar-ui/react-filter
-  // 2.6.0 both the toolbar's add and a row menu's add send `{rule, edit}` where
-  // `rule` is the click's own React event object (probed live: the keys are
-  // ["rule","edit"] and `rule.nativeEvent` is set for both). So the target
-  // group is not knowable, the two adds are indistinguishable, and an
-  // interception that always appended at the top level would silently break
-  // the "add a group, then add a rule inside it" path 0.1.5 deliberately
-  // opened up. The picker therefore sits BESIDE the widget's own add rather
-  // than replacing it — as the panel's primary action, one line above it — and
-  // the raw row is no longer blind either, now that the value field completes
-  // against the catalog's real tags.
+  // Adding a filter opens the PICKER. The widget's own add puts up a rule
+  // editor whose value field, once it is given the catalog's tags, is a flat
+  // scrolling list of every tag in the corpus with a checkbox each — 1609 of
+  // them, unsorted into anything, no search. That is precisely the problem the
+  // picker exists to solve, so reaching it by the most obvious button in the
+  // panel is not acceptable.
+  //
+  // Every `add-rule` is intercepted, not just the toolbar's. The two cannot be
+  // told apart anyway: in @svar-ui/react-filter 2.6.0 the toolbar's add and a
+  // row menu's add both send `{rule, edit}` where `rule` is the click's own
+  // React event object (probed live), so neither names the group it was aimed
+  // at. Where the new group lands is therefore the picker's own "join with the
+  // current filter" choice — visible and stated, rather than an invisible
+  // click position.
+  //
+  // The raw path is not lost with it: the row menu's `Bearbeiten` still opens
+  // that editor on an existing rule, and its value field takes any pattern the
+  // grammar accepts, `regex:` and `prefix:` included. So a technical user picks
+  // anything and edits it into the expression they want.
+  //
+  // `init` runs once per mount with a stable callback, so this does not
+  // reintroduce the remount 0.1.5 removed — `key` still depends on locale and
+  // theme alone.
+  const wantPicker = useRef(onPickTags);
+  wantPicker.current = onPickTags;
+  const init = useCallback((api) => {
+    api.detach("runcomposer-tag-picker");
+    api.intercept(
+      "add-rule",
+      () => {
+        wantPicker.current();
+        return false;
+      },
+      { tag: "runcomposer-tag-picker" }
+    );
+  }, []);
 
   // Identity, not equality: the widget re-reads its value whenever the prop is
   // a different object. For an edit it made itself it already holds the state,
@@ -109,8 +132,9 @@ export default function FilterPanel({
   const builder = (
     <FilterBuilder
       key={mountKey}
+      init={init}
       fields={fields}
-      options={options}
+      options={NO_OPTIONS}
       value={shown.current}
       type="list"
       onChange={(ev) => {
