@@ -49,11 +49,26 @@ jobs:
             dist/*.whl dist/*.tar.gz src/runcomposer_exec.py
 
   pypi:
-    # Publishes only when the repository variable PYPI_PUBLISH is "true" AND
-    # a PYPI_API_TOKEN secret exists — the owner flips these at launch time.
+    # Publishes only when the repository variable PYPI_PUBLISH is "true" — the
+    # owner flips that at launch time.
+    #
+    # Authentication is PyPI Trusted Publishing (OIDC): this job proves to PyPI
+    # that it is *this* workflow in *this* repository, and PyPI issues a
+    # short-lived token for the upload. There is no API token stored anywhere —
+    # nothing to leak, rotate, or forget to scope.
+    #
+    # The counterpart lives on PyPI: Manage project -> Publishing (or, before
+    # the first release, "Pending publishers") registered as
+    #   owner: StochasticEntropy   repository: runcomposer
+    #   workflow: release.yml      environment: (none)
+    # Those four values must match this file exactly or the upload is refused.
     if: vars.PYPI_PUBLISH == 'true'
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      # The whole point: mint the OIDC token PyPI verifies. Without this the
+      # publish step fails with a missing-credentials error, not a hint.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,5 +80,3 @@ jobs:
           python -m build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
