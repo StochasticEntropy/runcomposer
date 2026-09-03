@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runcomposer"
-version = "0.1.5"
+version = "0.1.6"
 description = "Tag-based test run composer & orchestrator — compose portable run specs any executor can fulfill"
 readme = "README.md"
 requires-python = ">=3.10"

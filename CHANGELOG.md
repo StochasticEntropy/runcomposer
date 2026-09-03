@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.6 — unreleased
+## 0.1.6 — 2026-09-03
 
 ### Added
 - **The tag tree is a picker dialog, and a whole selection is one filter
