@@ -254,6 +254,44 @@ class TestValidateCli:
         assert "Areas › Renamed away  →  Billing" in out
 
 
+    def test_piping_into_head_is_not_an_error(self, tmp_path):
+        """`runcomposer catalog | head` must not end in a traceback.
+
+        The reader closing the pipe is it saying "enough" — and Python then
+        raises a *second* time while flushing stdout at exit, so an unhandled
+        BrokenPipeError costs the user two tracebacks for having used `head`.
+
+        The catalog has to be big enough to overflow the pipe buffer (~64 KB),
+        or the writer finishes before the reader closes and nothing breaks —
+        which is exactly why the bundled 60-item corpus never surfaced this.
+        """
+        import json
+        import subprocess
+        import sys
+
+        manifest = tmp_path / "big.json"
+        manifest.write_text(
+            json.dumps({"items": [
+                {"id": f"suite.module{n // 50}.test_case_number_{n:05d}",
+                 "tags": ["Regression", f"Sprint-{n % 30}", f"TICKET-{n:05d}"]}
+                for n in range(4000)
+            ]}),
+            encoding="utf-8",
+        )
+        run = (
+            f'{sys.executable} -c "from runcomposer.cli import main; '
+            f'raise SystemExit(main())" catalog --manifest {manifest} --limit 0'
+        )
+        full = subprocess.run(run, shell=True, capture_output=True)
+        assert full.returncode == 0 and full.stderr == b"", full.stderr.decode()
+        assert len(full.stdout) > 65536, "corpus too small to close the pipe early"
+
+        piped = subprocess.run(f"{run} | head -1", shell=True, capture_output=True)
+        assert b"BrokenPipeError" not in piped.stderr, piped.stderr.decode()
+        assert b"Traceback" not in piped.stderr, piped.stderr.decode()
+        assert piped.stdout.startswith(b"# 4000 items")
+
+
 class TestExampleSpecHonesty:
     """Every capability claim in docs is demonstrated, not asserted:
     the shipped example spec must be *true* against the shipped corpus."""

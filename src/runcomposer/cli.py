@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from typing import Any
@@ -165,6 +166,15 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return handlers[args.command](args)
+    except BrokenPipeError:
+        # `runcomposer catalog | head` closes the pipe under us. That is the
+        # reader saying "enough", not a failure — but Python then also raises
+        # again while flushing stdout at exit, so the user gets two tracebacks
+        # for having piped into `head`. Point stdout at the void so the
+        # interpreter's own flush has nothing to fail on, and report the
+        # conventional 128+SIGPIPE.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 141
     except (ConfigError, TaxonomyError) as exc:
         # Plugin resolution is lazy, so a bad config can surface past
         # load_config — still a config error, still a clean one-liner (§8).

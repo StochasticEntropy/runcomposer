@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 — 2026-09-03
+
+### Fixed
+- **Piping a listing into `head` no longer ends in a traceback.** The reader
+  closing the pipe is it saying "enough", but the unhandled `BrokenPipeError`
+  surfaced twice — once from the print loop and again from the interpreter
+  flushing stdout at exit. `runcomposer catalog | head -1` now exits quietly
+  with the conventional 141. Only visible on a catalog large enough to
+  overflow the pipe buffer, which is why the 60-item demo corpus never showed
+  it and the regression test builds a 4000-item one.
+
 ## 0.1.1 — 2026-09-03
 
 ### Added
