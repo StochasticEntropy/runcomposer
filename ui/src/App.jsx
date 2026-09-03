@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { compileSelection, createRun, getRunners, getTaxonomy } from "./api.js";
-import { EMPTY_FILTER, appendPattern, svarToAst } from "./filterAdapter.js";
+import {
+  EMPTY_FILTER,
+  activePatterns,
+  listConditions,
+  removeConditionAt,
+  svarToAst,
+  togglePattern,
+} from "./filterAdapter.js";
 import { AVAILABLE_LOCALES, useI18n } from "./i18n.jsx";
 import { AVAILABLE_THEMES } from "./prefs.js";
 import ComposeFooter from "./components/ComposeFooter.jsx";
@@ -28,7 +35,6 @@ export default function App({
 
   const [filterValue, setFilterValue] = useState(EMPTY_FILTER);
   const [historyQuery, setHistoryQuery] = useState(null); // §7 compose-time provider
-  const [revision, setRevision] = useState(0); // bumps remount the widget on external edits
   const [items, setItems] = useState([]);
   const [checked, setChecked] = useState(new Set());
   const [warnings, setWarnings] = useState([]);
@@ -37,6 +43,10 @@ export default function App({
   const debounceRef = useRef(null);
 
   const ast = useMemo(() => svarToAst(filterValue), [filterValue]);
+  // What the filter currently holds, in the app's own words: the removable
+  // conditions the panel lists, and the patterns the tree marks as active.
+  const conditions = useMemo(() => listConditions(filterValue), [filterValue]);
+  const active = useMemo(() => activePatterns(filterValue), [filterValue]);
   const quickFilters = uiConfig.quick_filters ?? [];
 
   useEffect(() => {
@@ -79,15 +89,19 @@ export default function App({
     return () => clearTimeout(debounceRef.current);
   }, [ast, historyQuery]);
 
+  // A taxonomy node and a quick filter are switches: clicking one that is
+  // already in the filter takes it back out instead of adding a duplicate.
   const pickPattern = (pattern) => {
-    setFilterValue((value) => appendPattern(value, pattern));
-    setRevision((n) => n + 1);
+    setFilterValue((value) => togglePattern(value, pattern));
     setTab("compose");
+  };
+
+  const removeCondition = (index) => {
+    setFilterValue((value) => removeConditionAt(value, index));
   };
 
   const clearFilter = () => {
     setFilterValue(EMPTY_FILTER);
-    setRevision((n) => n + 1);
   };
 
   const toggleItem = (itemId) => {
@@ -189,13 +203,15 @@ export default function App({
       {tab === "compose" ? (
         <>
           <main className="compose-grid">
-            <TaxonomyTree taxonomy={taxonomy} onPick={pickPattern} />
+            <TaxonomyTree taxonomy={taxonomy} onPick={pickPattern} active={active} />
             <div className="compose-main">
               <FilterPanel
                 value={filterValue}
-                revision={revision}
                 theme={resolvedTheme}
                 onChange={setFilterValue}
+                conditions={conditions}
+                onRemoveCondition={removeCondition}
+                activePatterns={active}
                 quickFilters={quickFilters}
                 onPickPattern={pickPattern}
                 onClear={clearFilter}

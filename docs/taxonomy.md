@@ -218,11 +218,30 @@ the tags it was covering will appear under the synthetic node instead, where
 
 ## What a click does
 
-Clicking a leaf appends its pattern to the filter builder as one rule, where
-it stays editable. Clicking a second leaf appends a second rule; how
-the two combine is the builder's own glue (AND by default), which the user can
-change there. Nothing about the tree is recorded in the run spec: the spec
-keeps the resulting `selection.tag_filter`, not the node it came from.
+Clicking a leaf puts its pattern into the filter builder as one rule, where it
+stays editable. Clicking a second leaf adds a second rule; how the two combine
+is the builder's own glue (AND by default), which the user can change there.
+Nothing about the tree is recorded in the run spec: the spec keeps the
+resulting `selection.tag_filter`, not the node it came from.
+
+A leaf is a **switch**, not an append-only button: clicking one whose pattern
+is already in the filter takes that pattern back out instead of adding it a
+second time, and every leaf currently in the filter is marked in the tree.
+
+The mark follows the **pattern**, not the position. In the resolved tree that
+is the only reading that holds: a tag hangs under every node whose pattern
+covers it, so one filter condition can legitimately be several rows — all of
+them show as active, and clicking any of them switches it off. Two patterns
+that merely overlap (a literal and an alternation regex containing it) stay
+independent: switching one on does not mark the other.
+
+Since a branch has to be opened to be seen, a **closed** row carries the
+number of distinct active patterns switched on somewhere below it, so nothing
+active is invisible.
+
+The same conditions are listed above the builder as chips, each with a `✕`
+that removes just that one; a chip for a nested group removes the group. The
+`Clear` link still empties the whole filter.
 
 ---
 

@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Removing a single filter condition was a hidden click.** SVAR's filter rows
+  carry their own menu — Edit, Add filter, Add group, Delete — behind an icon
+  the widget draws with an icon font that `@svar-ui` does not ship: no
+  `@font-face` for `wxi` exists anywhere in the package, so the trigger
+  rendered as a blank 20px box. Everything worked; nothing was visible. The
+  glyphs are drawn now, so the widget's own per-row controls (including nested
+  groups, which `type="list"` supported all along) are reachable, and the
+  filter panel lists each condition as a chip with a one-click `✕` above the
+  builder. `Clear` is unchanged.
+- **A taxonomy node is a switch, not an append-only button.** Clicking a node
+  already in the filter removes it instead of adding a second identical rule,
+  and every node currently in the filter is marked in the tree. The mark
+  follows the *pattern*, not the position — which is the only reading that
+  holds on the resolved tree of 0.1.4, where a tag hangs under every node whose
+  pattern covers it: all of its rows light up and any of them switches it off.
+  A closed branch carries the number of distinct active patterns hidden
+  underneath it, so nothing active is invisible. Quick-filter chips toggle the
+  same way.
+- **Adding a condition no longer throws the filter builder away.** The panel
+  remounted the whole widget on every taxonomy click (`key={locale-revision}`),
+  and re-seeded its store on every render besides, because `fields` and
+  `options` were fresh objects each time. The widget now keeps its state
+  through its own edits; only an external change (taxonomy, quick filter, `✕`,
+  `Clear`) hands it a new value, and a remount (locale or theme switch) hands
+  it the current one.
+
+### Added
+- **`npm test` in `ui/`** — Node's own test runner over the filter adapter (no
+  new dependency): the toggle, per-condition removal, the operator vocabulary,
+  and the nested-group round trip that a click-through cannot pin down. Runs
+  in CI alongside the bundle check.
+- A locale guard in the Python suite: EN and DE must carry the same keys, no
+  message may be empty, and the bundled `ui_dist` locales must match the
+  source.
 ## 0.1.4 — 2026-09-03
 
 ### Added

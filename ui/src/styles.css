@@ -558,3 +558,81 @@ body {
   border-color: var(--info-border);
   color: var(--info);
 }
+
+/* A taxonomy leaf is a switch, so it has to show which side it is on. The
+ * resolved tree hangs the same tag under every pattern that covers it, so one
+ * condition can light up several rows — that is the intended reading: what is
+ * active is the pattern. The ✓ is its own element rather than a ::after,
+ * because the label truncates and would eat it. */
+.taxonomy-leaf.active {
+  background: var(--info-bg);
+  color: var(--info);
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 3px 4px;
+}
+
+.taxonomy-check {
+  flex: 0 0 auto;
+  color: var(--info);
+  font-size: 11px;
+}
+
+/* What a closed branch would otherwise hide: how many active patterns are
+ * switched on somewhere below it. */
+.taxonomy-inside {
+  flex: 0 0 auto;
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  color: var(--info);
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The removable conditions of the current filter. A long regex value must not
+ * push the panel wide, so a chip truncates and keeps the whole text in its
+ * tooltip. */
+.filter-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 4px;
+}
+
+.filter-conditions .chip {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* SVAR draws the filter rows' own controls with an icon font that the package
+ * does not ship: there is no @font-face for `wxi` anywhere in @svar-ui, so
+ * every glyph resolved to nothing. The row menu — Edit, Add filter, Add group,
+ * Delete — was a blank 20px box, which is what made a filter feel one-way.
+ * These rules draw the glyphs that carry no text label of their own; the menu
+ * entries inside the popup have labels and read fine without one. */
+.filter-panel .wxi-dots-v::before {
+  content: "⋮";
+}
+
+.filter-panel .wxi-close::before {
+  content: "✕";
+}
+
+.filter-panel .wxi-angle-down::before {
+  content: "▾";
+}
+
+.filter-panel .wx-menu-icon {
+  font-size: 16px;
+  line-height: 20px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.filter-panel .wx-menu-icon:hover {
+  color: var(--accent);
+}
