@@ -66,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
                             help="report and exit 0 (default: exit 1 when either side drifts)")
     p_taxonomy.add_argument("--limit", type=int, default=0,
                             help="show at most N entries per section. 0 means no limit")
+    p_taxonomy.add_argument("--tree", action="store_true",
+                            help="print the resolved tree (the one the UI renders) instead "
+                            "of the drift report")
     _add_config_arg(p_taxonomy)
 
     p_compile = sub.add_parser("compile", help="preview a selection: matched items + warnings")
@@ -348,6 +351,8 @@ def _cmd_taxonomy_check(args: argparse.Namespace) -> int:
     from runcomposer.core.filter import parse_filter
 
     service = _service(args)
+    if args.tree:
+        return _print_resolved_taxonomy(service, limit=args.limit)
     taxonomy = service.taxonomy().get("taxonomy") or []
 
     leaves: list[tuple[str, str]] = []  # (label path, pattern)
@@ -394,9 +399,53 @@ def _cmd_taxonomy_check(args: argparse.Namespace) -> int:
     else:
         print("every taxonomy leaf matches at least one tag")
 
+    resolved = service.resolved_taxonomy()["resolved"]
+    print(
+        f"\nresolved tree (GET /api/v1/taxonomy?resolve=true, and what the UI renders):"
+        f"\n  {resolved['nodes_written']} written node(s) → {resolved['nodes_total']}, "
+        f"{resolved['nodes_dropped']} collapsed as matching nothing"
+        f"\n  {resolved['tags_selectable']} of {resolved['tags_total']} tag(s) selectable on "
+        f"their own; {resolved['tags_unassigned']} reachable only under the unassigned node"
+        f"\n  see the tree itself with --tree"
+    )
+
     if args.warn_only:
         return 0
     return 1 if (unclaimed or dead) else 0
+
+
+def _print_resolved_taxonomy(service, *, limit: int) -> int:
+    """Print the resolved tree — the written tree with every pattern replaced
+    by the concrete catalog tags it covers. This is what the UI renders, so it
+    is also the answer to "why does that node not show what I expected"."""
+    resolved = service.resolved_taxonomy()
+    printed = 0
+
+    def walk(nodes: list[Any], depth: int) -> bool:
+        nonlocal printed
+        for node in nodes:
+            if limit and printed >= limit:
+                return False
+            pattern = f"  {node['filter']}" if node.get("filter") else ""
+            print(
+                f"{'  ' * depth}{node['label']}{pattern}"
+                f"  ({node['item_count']} item(s), {node['tag_count']} tag(s))"
+            )
+            printed += 1
+            if not walk(node.get("children") or [], depth + 1):
+                return False
+        return True
+
+    complete = walk(resolved["taxonomy"], 0)
+    summary = resolved["resolved"]
+    if not complete:
+        print(f"… {summary['nodes_total'] - printed} more (use --limit 0 for all)")
+    print(
+        f"\n# {summary['nodes_written']} written node(s) → {summary['nodes_total']}; "
+        f"{summary['tags_selectable']} of {summary['tags_total']} tag(s) selectable on their own; "
+        f"{summary['items_claimed']} of {summary['items_total']} item(s) reachable"
+    )
+    return 0
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:

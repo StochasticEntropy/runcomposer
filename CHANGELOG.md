@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **The taxonomy tree resolves against the catalog.** A written leaf carries
+  exactly one pattern, so a pattern standing for a family of tags rendered as
+  a single opaque node: `regex:^Cart(V2)?$` was one row, and the tags it
+  covered had no row of their own and could not be picked. Over a real corpus
+  that is most of the tag space hidden behind a handful of patterns. Now every
+  node gains one child per concrete catalog tag its own pattern matches, each
+  individually selectable; a node whose subtree matches nothing collapses away
+  instead of clicking and selecting nothing; and the tags no node anywhere
+  claims are gathered under one synthetic node, so nothing in the catalog is
+  unreachable. On the shipped demo world that takes tags with a node of their
+  own from 9 of 47 to **47 of 47**.
+
+  **The taxonomy file format does not change.** Resolution is derived from the
+  live catalog and never written back, and resolved nodes speak the same three
+  keys the file is written in — `label`, `filter`, `children` — so the result
+  is itself a valid taxonomy document. The additive metadata is `id`,
+  `origin`, `tag_count` and `item_count`
+  ([docs/taxonomy.md](docs/taxonomy.md#resolution-the-tree-the-ui-renders)).
+
+- **`GET /api/v1/taxonomy?resolve=true`** serves that tree, plus a `resolved`
+  summary (`tags_total`, `tags_claimed`, `tags_selectable`,
+  `tags_unassigned`, `items_total`, `items_claimed`, `nodes_written`,
+  `nodes_dropped`, `nodes_total`). **The published shape is unchanged**: the
+  parameter defaults to off and `GET /api/v1/taxonomy` still returns the
+  validated file verbatim, so an existing client sees exactly what it saw
+  before and pays none of the resolution cost. Resolution happens server-side,
+  against the same cached catalog the selection preview compiles over — the
+  tree and the preview therefore cannot disagree about which tags exist, and
+  the filter grammar stays in one implementation instead of being mirrored in
+  JavaScript.
+
+- **`runcomposer taxonomy-check --tree`** prints the resolved tree — every
+  node with its pattern and its item/tag counts — which is the answer to "why
+  does that node not show what I expected". The drift report itself gains a
+  closing summary of what resolution reaches.
+
+### Changed
+- **The UI's taxonomy panel renders the resolved tree**, and therefore
+  collapses: rows open and close, a branch's children are mounted only while
+  it is open (the real corpora resolve to thousands of nodes), each row shows
+  its item count, and the first level opens on arrival. A leaf's accessible
+  name is now its label — it was the pattern, which for a composed alternation
+  regex meant a screen reader read hundreds of characters of expression
+  instead of one word. The pattern is still the tooltip.
+
 ## 0.1.3 — 2026-09-03
 
 ### Fixed

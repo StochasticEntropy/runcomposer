@@ -20,7 +20,10 @@
   "taxonomy": {
     "title": "Taxonomie",
     "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen",
-    "items": "Elemente"
+    "items": "Elemente",
+    "unassigned": "Nicht zugeordnete Tags",
+    "expand": "{label} aufklappen",
+    "collapse": "{label} zuklappen"
   },
   "filter": {
     "title": "Filter",

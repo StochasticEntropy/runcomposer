@@ -25,8 +25,10 @@ directory rather than depending on where the command was typed
 With no `taxonomy_file` configured, runcomposer serves the bundled demo
 taxonomy, so the panel is never empty on a fresh install. The file is served
 at `GET /api/v1/taxonomy`, validated (see
-[below](#what-is-validated-and-when)) and otherwise untouched — the UI
-receives exactly what you wrote.
+[below](#what-is-validated-and-when)) and otherwise untouched — that response
+is exactly what you wrote. The UI asks for `?resolve=true` instead, which is
+the same tree with every pattern replaced by the catalog tags it covers
+([below](#resolution-the-tree-the-ui-renders)).
 
 ---
 
@@ -37,7 +39,7 @@ possible keys:
 
 | Key | Required | Meaning |
 |---|---|---|
-| `label` | yes | The text shown in the tree. Displayed verbatim — it is your string, not a translation key, and it is the same in every locale. Keep sibling labels distinct; the UI keys nodes by label. |
+| `label` | yes | The text shown in the tree. Displayed verbatim — it is your string, not a translation key, and it is the same in every locale. Keep sibling labels distinct — the validator requires it, and it is what lets the resolved tree number nodes by their position in the file. |
 | `filter` | no | **One** pattern string in the tag-filter grammar. A node that has it is a **leaf**: clickable, and clicking it puts that pattern into the filter builder. |
 | `children` | no | A list of further nodes. Nesting is arbitrarily deep. |
 
@@ -125,6 +127,95 @@ into the builder, not a second selection language.
 
 ---
 
+## Resolution: the tree the UI renders
+
+One pattern per leaf keeps the file writable, and it is also what makes a leaf
+opaque: `regex:^Cart(V2)?$` renders as **one** row, and the tags it stands for
+— `Cart`, `CartV2` — have no row of their own, so neither can be picked. Over
+a real corpus that is most of the tag space hidden behind a handful of
+patterns.
+
+So the tree is served twice. `GET /api/v1/taxonomy` returns the file, exactly
+as before. `GET /api/v1/taxonomy?resolve=true` returns it **resolved against
+the catalog** — and that is what the UI asks for:
+
+- every node keeps its own `label` and `filter` and gains **one child per
+  concrete catalog tag its own pattern matches**, each a leaf whose `filter`
+  is that one tag;
+- a node whose whole subtree matches nothing in the current catalog is
+  **dropped**, instead of rendering as a leaf that clicks and selects nothing;
+- the tags **no** node anywhere claims are gathered under one synthetic node,
+  so every tag in the catalog is reachable and a tag introduced tomorrow shows
+  up rather than being merely absent.
+
+```console
+$ runcomposer taxonomy-check --tree
+Areas  (60 item(s), 6 tag(s))
+  Cart  regex:^Cart(V2)?$  (9 item(s), 2 tag(s))
+    Cart  Cart  (5 item(s), 1 tag(s))
+    CartV2  CartV2  (4 item(s), 1 tag(s))
+…
+```
+
+**The file format does not change.** Resolution is derived, never stored: the
+same file over a different catalog resolves differently, and nothing about it
+is written back.
+
+### The shape
+
+Resolved nodes speak the same three keys the file is written in — so the
+result is itself a valid taxonomy document — plus additive metadata:
+
+| Key | Meaning |
+|---|---|
+| `label`, `filter`, `children` | As in the file. A tag node's `filter` is that one tag. |
+| `id` | Stable key, spelled as the node's path in the document (`taxonomy[0].children[2]`, the same path the [validator's messages](#what-is-validated-and-when) use), with `.tags[n]` for a synthesized tag node. Written nodes are numbered by position in the **file**, so a collapsing sibling does not renumber the rest. |
+| `origin` | `file` (written), `tag` (synthesized for one tag), `unassigned` (the synthetic node). |
+| `tag_count`, `item_count` | Distinct catalog tags and items under the node — its own pattern and its whole subtree together. Clicking still applies the node's **own** pattern. |
+
+Alongside `taxonomy`, the response carries a `resolved` summary:
+`tags_total`, `tags_claimed`, `tags_selectable`, `tags_unassigned`,
+`items_total`, `items_claimed`, `nodes_written`, `nodes_dropped`,
+`nodes_total`.
+
+### The three rules worth knowing
+
+**A tag a descendant already claims is not repeated on the parent.** It
+belongs to the more specific node; listed twice in one branch it reads as two
+different things.
+
+```yaml
+- label: Cart
+  filter: "regex:^Cart(V2)?$"
+  children:
+    - { label: Cart v2 only, filter: "CartV2" }
+```
+
+resolves to `Cart` → [`Cart v2 only`, `Cart`] — `CartV2` stays where you put
+it.
+
+**A pattern that resolves to exactly one tag stays a plain leaf.** The node
+already *is* that tag's node; a single identical child would be noise.
+
+**A tag some other tag differs from only in case gets an escaped regex, not a
+literal.** Literals match case-insensitively ([above](#the-pattern-in-a-leaf)),
+so a corpus carrying both `Adapter` and `ADAPTER` would otherwise get two
+nodes that both select both. Each gets `regex:^Adapter$` / `regex:^ADAPTER$`
+instead, and means itself. (The same escaping covers a tag literally spelled
+`regex:…` or `prefix:…`.)
+
+### A catch-all leaf resolves to the whole tag space
+
+A leaf written as `filter: "regex:.*"` — the usual way to make sure nothing is
+invisible — claims **every** tag, so after resolution it carries a child for
+every tag in the catalog, and the synthetic unassigned node is empty because
+nothing is left over. That is faithful, and usually not what you want any
+more: resolution already guarantees reachability, so the catch-all can go and
+the tags it was covering will appear under the synthetic node instead, where
+`taxonomy-check` can also tell you they are unclaimed.
+
+---
+
 ## What a click does
 
 Clicking a leaf appends its pattern to the filter builder as one rule, where
@@ -147,7 +238,7 @@ rendering as an empty panel. The rules:
 | every node is a mapping with a non-empty **`label`** string | `taxonomy: ["Payments"]` |
 | `filter`, when present, is **one pattern string** the grammar can parse | `filter: ["Visa", "MC"]`, `filter: {op: OR, …}`, `filter: "regex:^(unclosed"` |
 | `children`, when present, is a **list** | `children: {}` |
-| sibling labels are **distinct** — the tree keys its nodes by label | two `- {label: Payments, …}` under one parent |
+| sibling labels are **distinct** | two `- {label: Payments, …}` under one parent |
 | every node has `filter`, `children`, or both | `- {label: Payments, pattern: "Payments"}` |
 
 That last rule is what catches the trap: only `filter` is read, so a node

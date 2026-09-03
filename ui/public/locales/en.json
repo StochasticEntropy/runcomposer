@@ -20,7 +20,10 @@
   "taxonomy": {
     "title": "Taxonomy",
     "hint": "Click a node to add its pattern to the filter",
-    "items": "items"
+    "items": "items",
+    "unassigned": "Unassigned tags",
+    "expand": "Expand {label}",
+    "collapse": "Collapse {label}"
   },
   "filter": {
     "title": "Filter",
