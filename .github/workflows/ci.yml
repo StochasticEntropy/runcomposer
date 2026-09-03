@@ -81,6 +81,9 @@ jobs:
       - name: Build UI
         working-directory: ui
         run: npm ci && npm run build
+      - name: Filter adapter tests
+        working-directory: ui
+        run: npm test
       - name: Committed bundle matches source
         run: git diff --exit-code src/runcomposer/ui_dist
 

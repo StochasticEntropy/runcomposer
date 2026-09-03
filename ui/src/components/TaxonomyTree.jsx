@@ -7,6 +7,18 @@
 // own. That turns a small written tree into a large rendered one — the real
 // corpora run to thousands of nodes — so a branch's children are mounted only
 // while it is open, and everything below the first level starts collapsed.
+//
+// A node is a switch: it adds its pattern to the filter, and clicking it again
+// takes it back out. `active` holds the patterns the filter currently carries,
+// and that is the whole definition — **active is a property of the pattern,
+// not of the position in the tree**. It has to be, once the tree is resolved:
+// the same tag hangs under every node whose pattern covers it, so one filter
+// condition legitimately corresponds to several rows. All of them show as
+// active and any of them switches it off again.
+//
+// Which leaves a second problem the resolved tree creates: with the branches
+// closed, an active node can be nowhere on screen. So a closed row also says
+// how many active patterns are hidden underneath it.
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -17,11 +29,35 @@ import { useI18n } from "../i18n.jsx";
 // label in the tree the UI translates (DESIGN.md §10).
 const UNASSIGNED = "unassigned";
 
-function Node({ node, onPick, depth, open, onToggle }) {
+// How many *distinct* active patterns sit strictly below each node, keyed by
+// node id. Distinct, because the resolved tree repeats a tag under every
+// pattern that covers it and "3 active in this branch" should mean three
+// conditions, not three rows. One walk over the whole tree per filter edit;
+// the tree is thousands of nodes, which is nothing, and it is memoized.
+function countActiveInside(nodes, active) {
+  const hidden = new Map();
+  const walk = (node) => {
+    const found = new Set();
+    (node.children ?? []).forEach((child) => {
+      if (child.filter && active.has(child.filter)) found.add(child.filter);
+      walk(child).forEach((pattern) => found.add(pattern));
+    });
+    if (node.id != null && found.size > 0) hidden.set(node.id, found.size);
+    return found;
+  };
+  nodes.forEach(walk);
+  return hidden;
+}
+
+function Node({ node, onPick, active, hidden, depth, open, onToggle }) {
   const { t } = useI18n();
   const children = node.children ?? [];
   const isOpen = open.has(node.id);
   const label = node.origin === UNASSIGNED ? t("taxonomy.unassigned") : node.label;
+  const on = Boolean(node.filter) && active.has(node.filter);
+  // Only while the branch is closed: open, the ✓ on the rows themselves says
+  // it, and repeating it on every ancestor is noise.
+  const inside = isOpen ? 0 : hidden.get(node.id) ?? 0;
   const count =
     typeof node.item_count === "number" ? (
       <span className="taxonomy-count" title={t("taxonomy.items")}>
@@ -53,8 +89,9 @@ function Node({ node, onPick, depth, open, onToggle }) {
           // useful and where a long one does no harm.
           <button
             type="button"
-            className="taxonomy-leaf"
+            className={on ? "taxonomy-leaf active" : "taxonomy-leaf"}
             aria-label={label}
+            aria-pressed={on}
             title={node.filter}
             onClick={() => onPick(node.filter)}
           >
@@ -71,6 +108,16 @@ function Node({ node, onPick, depth, open, onToggle }) {
             {label}
           </button>
         )}
+        {on && (
+          <span className="taxonomy-check" aria-hidden="true">
+            ✓
+          </span>
+        )}
+        {inside > 0 && (
+          <span className="taxonomy-inside" title={t("taxonomy.activeInside", { count: inside })}>
+            {inside}
+          </span>
+        )}
         {count}
       </div>
       {isOpen && children.length > 0 && (
@@ -80,6 +127,8 @@ function Node({ node, onPick, depth, open, onToggle }) {
               key={child.id ?? child.label}
               node={child}
               onPick={onPick}
+              active={active}
+              hidden={hidden}
               depth={depth + 1}
               open={open}
               onToggle={onToggle}
@@ -91,9 +140,10 @@ function Node({ node, onPick, depth, open, onToggle }) {
   );
 }
 
-export default function TaxonomyTree({ taxonomy, onPick }) {
+export default function TaxonomyTree({ taxonomy, onPick, active }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(() => new Set());
+  const hidden = useMemo(() => countActiveInside(taxonomy, active), [taxonomy, active]);
 
   // The first level opens on arrival, so the panel reads as a tree rather
   // than as a list of closed headings; everything deeper waits to be asked
@@ -120,6 +170,8 @@ export default function TaxonomyTree({ taxonomy, onPick }) {
             key={node.id ?? node.label}
             node={node}
             onPick={onPick}
+            active={active}
+            hidden={hidden}
             depth={0}
             open={open}
             onToggle={toggle}

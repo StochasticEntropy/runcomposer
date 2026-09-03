@@ -19,11 +19,12 @@
   },
   "taxonomy": {
     "title": "Taxonomy",
-    "hint": "Click a node to add its pattern to the filter",
+    "hint": "Click a node to add its pattern to the filter — click it again to remove it",
     "items": "items",
     "unassigned": "Unassigned tags",
     "expand": "Expand {label}",
-    "collapse": "Collapse {label}"
+    "collapse": "Collapse {label}",
+    "activeInside": "{count} active in this branch"
   },
   "filter": {
     "title": "Filter",
@@ -33,7 +34,21 @@
     "fieldTag": "Tag",
     "historyLabel": "History",
     "historyRerunFailed": "Rerun what failed (latest run)",
-    "historyActive": "History: {query}"
+    "historyActive": "History: {query}",
+    "conditions": "Active conditions",
+    "removeCondition": "Remove condition: {condition}",
+    "conditionGroup": "Group ({count} conditions)",
+    "conditionGroupOne": "Group (1 condition)",
+    "operator": {
+      "is": "=",
+      "isNot": "≠",
+      "startsWith": "begins with",
+      "notStartsWith": "does not begin with",
+      "contains": "contains",
+      "notContains": "does not contain",
+      "endsWith": "ends with",
+      "notEndsWith": "does not end with"
+    }
   },
   "preview": {
     "title": "Preview",

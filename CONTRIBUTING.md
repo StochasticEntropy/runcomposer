@@ -27,6 +27,7 @@ For the web UI:
 ```bash
 cd ui && npm ci && npm run dev   # dev server, proxies the API on :8100
 npm run build                    # rebuilds src/runcomposer/ui_dist
+npm test                         # the filter adapter's tests (node --test)
 ```
 
 **If you touch `ui/`, commit the rebuilt `src/runcomposer/ui_dist` in the same

@@ -19,11 +19,12 @@
   },
   "taxonomy": {
     "title": "Taxonomie",
-    "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen",
+    "hint": "Knoten anklicken, um sein Muster zum Filter hinzuzufügen — noch einmal klicken, um es zu entfernen",
     "items": "Elemente",
     "unassigned": "Nicht zugeordnete Tags",
     "expand": "{label} aufklappen",
-    "collapse": "{label} zuklappen"
+    "collapse": "{label} zuklappen",
+    "activeInside": "{count} aktiv in diesem Zweig"
   },
   "filter": {
     "title": "Filter",
@@ -33,7 +34,21 @@
     "fieldTag": "Tag",
     "historyLabel": "Historie",
     "historyRerunFailed": "Fehlgeschlagenes erneut ausführen (letzter Lauf)",
-    "historyActive": "Historie: {query}"
+    "historyActive": "Historie: {query}",
+    "conditions": "Aktive Bedingungen",
+    "removeCondition": "Bedingung entfernen: {condition}",
+    "conditionGroup": "Gruppe ({count} Bedingungen)",
+    "conditionGroupOne": "Gruppe (1 Bedingung)",
+    "operator": {
+      "is": "=",
+      "isNot": "≠",
+      "startsWith": "beginnt mit",
+      "notStartsWith": "beginnt nicht mit",
+      "contains": "enthält",
+      "notContains": "enthält nicht",
+      "endsWith": "endet auf",
+      "notEndsWith": "endet nicht auf"
+    }
   },
   "preview": {
     "title": "Vorschau",
