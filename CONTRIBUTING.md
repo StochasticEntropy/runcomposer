@@ -26,13 +26,23 @@ All three — tests, `ruff`, `mypy` — are expected to be clean on every change
 To *use* runcomposer rather than work on it, `pip install runcomposer` is
 enough — the clone above is for development.
 
-For the web UI:
+For the web UI (TypeScript, React, Vite — `ui/`):
 
 ```bash
-cd ui && npm ci && npm run dev   # dev server, proxies the API on :8100
+cd ui && npm ci
+npm run dev                      # dev server, proxies the API on :8100
+npm test                         # unit and component tests (vitest), under a second
+npm run lint                     # eslint + tsc --noEmit
 npm run build                    # rebuilds src/runcomposer/ui_dist
-npm test                         # the filter adapter's tests (node --test)
+npm run e2e:install              # once: the browser the end-to-end tests drive
+npm run e2e                      # rebuilds, then drives the built UI in a browser
 ```
+
+The end-to-end tests start a real `runcomposer serve` per test, on a free port
+in a temp directory, with the Python they find in `.venv/` (or the one named by
+`RUNCOMPOSER_PYTHON`); the robot extra must be installed. They wait on
+conditions and are run without retries — a test that needs a second attempt is
+a flaky test.
 
 **If you touch `ui/`, commit the rebuilt `src/runcomposer/ui_dist` in the same
 change.** CI runs `git diff --exit-code src/runcomposer/ui_dist` against a fresh
