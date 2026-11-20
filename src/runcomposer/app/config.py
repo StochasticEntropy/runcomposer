@@ -124,7 +124,7 @@ _ROLES: dict[str, tuple[type, str]] = {
 #: Keys of a plugin entry that select the plugin rather than configure it.
 _SELECTOR_KEYS = ("module", "plugin")
 
-_DEFAULT_API = {"host": "127.0.0.1", "port": 8100, "cors": []}
+_DEFAULT_API = {"host": "127.0.0.1", "port": 8100, "cors": [], "docs": False}
 _DEFAULT_INGESTION = {
     "tokens": "required",
     "inbox": "results_inbox",
@@ -756,4 +756,9 @@ def _check_core_values(config: Config, file_path: Path) -> None:
         raise ConfigError(
             f"{file_path}: core.ingestion.tokens must be 'required' or 'disabled', "
             f"got {config.ingestion.get('tokens')!r}"
+        )
+    if not isinstance(config.api.get("docs"), bool):
+        raise ConfigError(
+            f"{file_path}: core.api.docs must be true or false (serve /docs and /redoc), "
+            f"got {config.api.get('docs')!r}"
         )

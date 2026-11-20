@@ -65,7 +65,7 @@ class Artifacts:
             return None
         try:
             resolved = Path(candidate).resolve()
-        except OSError:
+        except (OSError, ValueError):  # ValueError: a NUL byte in the path
             return None
         if resolved == root or root not in resolved.parents:
             return None
@@ -80,7 +80,7 @@ class Artifacts:
                 continue
             try:
                 recorded = Path(ref.url_or_path).resolve()
-            except OSError:
+            except (OSError, ValueError):
                 continue
             if recorded == candidate:
                 return True
@@ -143,16 +143,22 @@ class Artifacts:
     def resolve_file(self, artifact_path: str) -> Path:
         """Containment, checked after full resolution — so ``..`` segments,
         absolute paths and symlinks out of the tree are one rule. A refusal
-        is indistinguishable from a miss: probing learns nothing."""
+        is indistinguishable from a miss: probing learns nothing — and a
+        path no file system could hold (a NUL byte, a name too long) is a
+        miss like any other."""
         root = self.root()
-        if root is None or not artifact_path:
+        if root is None or not artifact_path or "\x00" in artifact_path:
             raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
-        candidate = (root / artifact_path).resolve()
-        if candidate == root or root not in candidate.parents:
-            raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
-        if not self._recorded(candidate, root):
-            raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
-        if not candidate.is_file():
+        try:
+            candidate = (root / artifact_path).resolve()
+            if candidate == root or root not in candidate.parents:
+                raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
+            if not self._recorded(candidate, root):
+                raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
+            is_file = candidate.is_file()
+        except (OSError, ValueError):
+            raise UnknownArtifact(f"unknown artifact {artifact_path!r}") from None
+        if not is_file:
             raise UnknownArtifact(
                 f"unknown artifact {artifact_path!r} — if it was recorded, the file is gone "
                 "(artifacts are removed with their run: `core.retention` / `runcomposer gc`)"

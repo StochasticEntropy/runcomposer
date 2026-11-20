@@ -21,12 +21,18 @@ from runcomposer.app.expiry import AwaitingExpiry
 from runcomposer.app.inbox import InboxWatcher
 from runcomposer.app.service import Service
 
+from .crosssite import CrossSiteGuard
 from .errors import install_error_handlers
 from .routers import files, ingestion, meta, plan, runs, selection
 
-__all__ = ["create_app"]
+__all__ = ["api_docs_enabled", "create_app"]
 
 log = logging.getLogger("runcomposer.http")
+
+
+def api_docs_enabled(config: Config) -> bool:
+    """Whether ``/docs`` and ``/redoc`` are served (``core.api.docs``)."""
+    return config.api.get("docs") is True
 
 
 def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
@@ -63,9 +69,24 @@ def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
                 watcher.stop()
             service.close()
 
-    app = FastAPI(title="runcomposer", version=__version__, lifespan=lifespan)
+    # The API's own description is always served, from this origin, with
+    # nothing in it but the schema. The two viewers load their script from a
+    # public CDN — third-party script on this origin, and a blank page in a
+    # closed network — so they are served only when `core.api.docs` says so.
+    docs = api_docs_enabled(config)
+    app = FastAPI(
+        title="runcomposer",
+        version=__version__,
+        lifespan=lifespan,
+        openapi_url="/openapi.json",
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+    )
     app.state.service = service
     cors: Any = config.api.get("cors") or []
+    # A state-changing request that a browser sends for another site's page
+    # is refused before any route sees it (crosssite.py).
+    app.add_middleware(CrossSiteGuard, allowed_origins=cors)
     if cors:
         app.add_middleware(
             CORSMiddleware, allow_origins=cors, allow_methods=["*"], allow_headers=["*"]

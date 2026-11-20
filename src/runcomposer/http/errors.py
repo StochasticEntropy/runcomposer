@@ -34,7 +34,7 @@ from runcomposer.core.errors import (
 )
 from runcomposer.core.taxonomy import TaxonomyError
 
-__all__ = ["error_body", "install_error_handlers", "status_of"]
+__all__ = ["CrossSiteRequest", "error_body", "error_response", "install_error_handlers", "status_of"]
 
 log = logging.getLogger("runcomposer.http")
 
@@ -64,6 +64,14 @@ _INGEST_STATUS = {
 }
 
 
+class CrossSiteRequest(Forbidden):
+    """A state-changing request a browser sent on behalf of another site's
+    page (see ``crosssite``). A refusal of the HTTP transport, so it lives
+    here rather than in the domain's error taxonomy."""
+
+    code = "cross-site-request"
+
+
 def status_of(exc: BaseException) -> int:
     if isinstance(exc, IngestError):
         return _INGEST_STATUS.get(exc.reason, 422)
@@ -77,20 +85,30 @@ def error_body(detail: str, code: str, **extra: Any) -> dict[str, Any]:
     return {"detail": detail, "code": code, **extra}
 
 
+def error_response(request: Request, exc: RunComposerError, *, close: bool = False) -> JSONResponse:
+    """The answer to a domain error. ``close`` ends the connection after
+    the answer — for a refusal given before the request body was read: the
+    rest of that body is never wanted, and a keep-alive connection could
+    only go on reading it."""
+    extra = dict(exc.extra or {})
+    # Which per-run parameter was refused — so a form can put the message
+    # on the field instead of reading it out of the text.
+    if isinstance(exc, InvalidParameter) and exc.parameter:
+        extra.setdefault("parameter", exc.parameter)
+    # A runner may have quoted a configured option in what it raised.
+    service = getattr(request.app.state, "service", None)
+    detail = service.redact(str(exc)) if service is not None else str(exc)
+    return JSONResponse(
+        status_code=status_of(exc),
+        content=error_body(detail, str(exc.code), **extra),
+        headers={"Connection": "close"} if close else None,
+    )
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RunComposerError)
     async def _domain(request: Request, exc: RunComposerError) -> JSONResponse:
-        extra = dict(getattr(exc, "extra", None) or {})
-        # Which per-run parameter was refused — so a form can put the message
-        # on the field instead of reading it out of the text.
-        if isinstance(exc, InvalidParameter) and exc.parameter:
-            extra.setdefault("parameter", exc.parameter)
-        # A runner may have quoted a configured option in what it raised.
-        service = getattr(request.app.state, "service", None)
-        detail = service.redact(str(exc)) if service is not None else str(exc)
-        return JSONResponse(
-            status_code=status_of(exc), content=error_body(detail, str(exc.code), **extra)
-        )
+        return error_response(request, exc)
 
     @app.exception_handler(RequestValidationError)
     async def _validation(_request: Request, exc: RequestValidationError) -> JSONResponse:

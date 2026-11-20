@@ -27,7 +27,8 @@ def health() -> dict[str, Any]:
 def meta(service: Service = Depends(service_of)) -> dict[str, Any]:
     """Everything a client needs at boot, in one call: version, default
     locale, the dispatchable runners with their per-run parameters, the size
-    of the catalog, whether a taxonomy is configured, what the deployment
+    of the catalog, whether a taxonomy is configured, whether the API
+    documentation viewers are served (``api.docs``), what the deployment
     loads (``configured``) and what is installed (``plugins``)."""
     config = service.config
     stats = service.catalog.stats()
@@ -38,6 +39,9 @@ def meta(service: Service = Depends(service_of)) -> dict[str, Any]:
         "catalog": stats,
         "taxonomy": {"configured": config.taxonomy_configured},
         "ingestion": {"tokens": config.ingestion["tokens"], "inbox": config.inbox_dir is not None},
+        # Whether the API documentation viewers (/docs, /redoc) are served —
+        # `core.api.docs`; /openapi.json always is.
+        "api": {"docs": config.api.get("docs") is True},
         "states": list(lifecycle.RUN_STATES),
         "completions": list(lifecycle.COMPLETIONS),
         "ui": dict(config.ui),

@@ -1,15 +1,29 @@
-"""Results in: the push endpoint and the quarantine."""
+"""Results in: the push endpoint, an external executor's progress, and the
+quarantine.
+
+The three routes an executor writes to — ``/results``, ``/live``, ``/log`` —
+are :class:`TokenFirstRoute` routes: the run and the ingest token are checked
+from the path and the headers before a single byte of the body is read, and
+the body is read under ``core.ingestion.max_upload_mb``, counted while it
+arrives.
+"""
 
 from __future__ import annotations
 
+import functools
 import shutil
 import tempfile
+from collections.abc import Callable, Coroutine, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Header, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
+from starlette.types import Message
 
 from runcomposer.app.ingestion import QuarantineReport, expected_format
 from runcomposer.app.service import Service
@@ -19,108 +33,222 @@ from runcomposer.core.errors import (
     IngestError,
     InvalidRequest,
     PayloadTooLarge,
+    RunComposerError,
 )
 
-from ..errors import error_body, status_of
+from ..errors import error_body, error_response, status_of
 from ..models import AttachRequest, LivePush, LogPush, PromoteRequest
+from ..uploads import FILES_FIELD, receive_bundle
 from . import service_of
 
-router = APIRouter(prefix="/api/v1", tags=["ingestion"])
+#: Room for the multipart envelope (part headers, boundaries, the text
+#: fields) on top of ``max_upload_mb`` of files.
+ENVELOPE_BYTES = 64 * 1024
 
 
-@router.post("/runs/{run_id}/results")
-def push_results(
-    run_id: str,
-    request: Request,
-    files: list[UploadFile] = File(...),
-    shard: str | None = Form(None),
-    dispatch: str | None = Form(None),
-    format: str | None = Form(None),
-    authorization: str | None = Header(None),
-    x_runcomposer_token: str | None = Header(None),
-    service: Service = Depends(service_of),
-) -> Any:
-    """Multipart results push (DESIGN.md §5, transport 1).
-
-    Auth is ``Authorization: Bearer <token>`` or ``X-Runcomposer-Token`` — the
-    ingest token of the dispatch being delivered to. **Nothing is written
-    before the token checks out**: an unknown run is a plain 404, a missing
-    token 401, a wrong one 403. A bundle that is then refused for what it
-    contains lands in the quarantine and answers 422 (unreadable) or 409
-    (contradicts the run), with the quarantine entry's id.
-    """
-    config = service.config
-    max_bytes = int(config.ingestion["max_upload_mb"]) * 1024 * 1024
-    too_large = PayloadTooLarge(
-        f"upload exceeds core.ingestion.max_upload_mb ({config.ingestion['max_upload_mb']} MB)"
+def _max_upload(service: Service) -> tuple[int, PayloadTooLarge]:
+    """``core.ingestion.max_upload_mb`` in bytes, and the error that says so."""
+    megabytes = service.config.ingestion["max_upload_mb"]
+    return int(megabytes) * 1024 * 1024, PayloadTooLarge(
+        f"upload exceeds core.ingestion.max_upload_mb ({megabytes} MB)"
     )
-    declared_length = request.headers.get("content-length")
-    if declared_length and declared_length.isdigit() and int(declared_length) > max_bytes + 65536:
-        raise too_large
 
-    # 1. the run, 2. the token — both before a single byte is kept.
+
+def _authorize(service: Service, run_id: str, headers: Mapping[str, str]) -> str | None:
+    """The run, then the token (``X-Runcomposer-Token`` or ``Authorization:
+    Bearer``): an unknown run is a 404, a missing token 401, a wrong one 403.
+    Returns the dispatch the token is bound to (``None`` with tokens
+    disabled)."""
     service.require_run(run_id)
-    token = x_runcomposer_token
+    token = headers.get("x-runcomposer-token")
+    authorization = headers.get("authorization")
     if token is None and authorization and authorization.lower().startswith("bearer "):
         token = authorization[len("bearer "):].strip()
-    bound_dispatch = service.ingestion.authorize_push(run_id, token)
-    if bound_dispatch and dispatch and dispatch != bound_dispatch:
-        raise Forbidden(
-            f"this token belongs to dispatch {bound_dispatch}, not to {dispatch} — "
-            "a dispatch's token delivers to that dispatch only"
-        )
-    spec = service.require_spec(run_id)
-    if format and format != expected_format(spec):
-        raise InvalidRequest(
-            f"declared format {format!r} does not match the run's expected results format "
-            f"{expected_format(spec)!r} (results.expect, §3.1)"
-        )
+    return service.ingestion.authorize_push(run_id, token)
 
-    temp_root = Path(tempfile.mkdtemp(prefix="runcomposer-push-"))
-    try:
-        total = 0
-        for upload in files:
-            name = Path(upload.filename or "artifact").name or "artifact"  # no path traversal
-            with open(temp_root / name, "wb") as out:
-                while chunk := upload.file.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > max_bytes:
+
+class TokenFirstRoute(APIRoute):
+    """A route an executor writes to with a dispatch's ingest token.
+
+    FastAPI reads and parses a declared body *before* any dependency runs,
+    so the check cannot be a dependency: it runs here, in front of the
+    route's own handler. In order, and before the body is touched: the run
+    (404), the token (401/403), a declared ``Content-Length`` beyond
+    ``max_upload_mb`` (413). A refusal at this point closes the connection,
+    so not even the server's buffers take in more of the body.
+
+    A route that declares a body (``/live``, ``/log``) then gets it read
+    here, counted while it arrives and refused (413) once it passes the
+    limit, and parsed from that. A route that declares none (``/results``)
+    reads ``request.stream()`` itself, under the same limit."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+        reads_body = self.body_field is not None
+
+        async def authorized_first(request: Request) -> Response:
+            service = service_of(request)
+            max_bytes, too_large = _max_upload(service)
+            limit = max_bytes + ENVELOPE_BYTES
+            try:
+                bound = await run_in_threadpool(
+                    _authorize, service, request.path_params["run_id"], request.headers
+                )
+                declared = request.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > limit:
+                    raise too_large
+            except RunComposerError as exc:
+                return error_response(request, exc, close=True)
+            request.state.ingest_dispatch = bound
+            if not reads_body:
+                return await handler(request)
+            body = bytearray()
+            try:
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > limit:
                         raise too_large
-                    out.write(chunk)
-        result = service.ingestion.ingest_or_quarantine(
-            temp_root,
-            transport="push",
-            run_id=run_id,
-            dispatch_id=dispatch or bound_dispatch,
-            shard=shard,
+            except PayloadTooLarge as exc:
+                return error_response(request, exc, close=True)
+            except ClientDisconnect:
+                return error_response(request, InvalidRequest("the client went away"), close=True)
+            replayed = bytes(body)
+
+            async def replay() -> Message:
+                return {"type": "http.request", "body": replayed, "more_body": False}
+
+            return await handler(Request(request.scope, replay))
+
+        return authorized_first
+
+
+def ingest_dispatch(
+    request: Request,
+    authorization: str | None = Header(
+        None, description="`Bearer <ingest token>` of the dispatch delivered to"
+    ),
+    x_runcomposer_token: str | None = Header(
+        None, description="the ingest token of the dispatch delivered to"
+    ),
+) -> str | None:
+    """The dispatch the request's token is bound to — checked by
+    :class:`TokenFirstRoute` before the body was read. (The header
+    parameters are declared here so the API schema shows them.)"""
+    bound: str | None = request.state.ingest_dispatch
+    return bound
+
+
+router = APIRouter(prefix="/api/v1", tags=["ingestion"])
+_executor = APIRouter(route_class=TokenFirstRoute)
+
+_PUSH_BODY: dict[str, Any] = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": [FILES_FIELD],
+                    "properties": {
+                        FILES_FIELD: {
+                            "type": "array",
+                            "items": {"type": "string", "format": "binary"},
+                            "description": "the bundle's files; each is kept under its base name",
+                        },
+                        "shard": {"type": "string"},
+                        "dispatch": {"type": "string"},
+                        "format": {"type": "string"},
+                    },
+                }
+            }
+        },
+    }
+}
+
+
+def _discard(directory: Path) -> None:
+    shutil.rmtree(directory, ignore_errors=True)
+
+
+@_executor.post("/runs/{run_id}/results", openapi_extra=_PUSH_BODY)
+async def push_results(
+    run_id: str,
+    request: Request,
+    bound_dispatch: str | None = Depends(ingest_dispatch),
+    service: Service = Depends(service_of),
+) -> Any:
+    """Multipart results push (DESIGN.md §5, transport 1): the bundle's files
+    under ``files``, optionally ``shard``, ``dispatch`` and ``format``.
+
+    Auth is ``Authorization: Bearer <token>`` or ``X-Runcomposer-Token`` — the
+    ingest token of the dispatch being delivered to — and it is **checked
+    before anything is read or written**: an unknown run is a plain 404, a
+    missing token 401, a wrong one 403, and the body stays unread. The body is
+    then read as a stream: each file goes into a temporary bundle directory
+    under its base name (a name that is not a file name — ``..``, empty, a
+    control character — is a 400), and ``core.ingestion.max_upload_mb`` is
+    counted while the bytes arrive (413 as soon as it is passed, whatever the
+    request declared). A bundle that is then refused for what it contains
+    lands in the quarantine and answers 422 (unreadable) or 409 (contradicts
+    the run), with the quarantine entry's id; it is named by its files' names,
+    never by where it lay on this machine.
+    """
+    max_bytes, too_large = _max_upload(service)
+    temp_root = Path(await run_in_threadpool(functools.partial(tempfile.mkdtemp, prefix="runcomposer-push-")))
+    try:
+        try:
+            received = await receive_bundle(
+                request,
+                temp_root,
+                max_file_bytes=max_bytes,
+                max_body_bytes=max_bytes + ENVELOPE_BYTES,
+                too_large=too_large,
+            )
+        except RunComposerError as exc:
+            # Refused while reading: the rest of the body is not wanted.
+            return error_response(request, exc, close=True)
+        dispatch = received.fields.get("dispatch") or None
+        shard = received.fields.get("shard") or None
+        declared_format = received.fields.get("format") or None
+        if bound_dispatch and dispatch and dispatch != bound_dispatch:
+            raise Forbidden(
+                f"this token belongs to dispatch {bound_dispatch}, not to {dispatch} — "
+                "a dispatch's token delivers to that dispatch only"
+            )
+        if declared_format:
+            expected = expected_format(await run_in_threadpool(service.require_spec, run_id))
+            if declared_format != expected:
+                raise InvalidRequest(
+                    f"declared format {declared_format!r} does not match the run's expected "
+                    f"results format {expected!r} (results.expect, §3.1)"
+                )
+        result = await run_in_threadpool(
+            functools.partial(
+                service.ingestion.ingest_or_quarantine,
+                temp_root,
+                transport="push",
+                run_id=run_id,
+                dispatch_id=dispatch or bound_dispatch,
+                shard=shard,
+                name=", ".join(dict.fromkeys(received.files)),
+            )
         )
         if isinstance(result, QuarantineReport):
             refusal = IngestError(result.detail, reason=result.reason)
             return JSONResponse(
                 status_code=status_of(refusal),
                 content=error_body(
-                    result.detail, result.reason, quarantine_entry=result.entry_id
+                    service.redact(result.detail), result.reason, quarantine_entry=result.entry_id
                 ),
             )
         return ingest_json(result)
     finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        await run_in_threadpool(_discard, temp_root)
 
 
-def _progress_dispatch(
-    service: Service,
-    run_id: str,
-    named: str | None,
-    authorization: str | None,
-    x_runcomposer_token: str | None,
-) -> Any:
-    """Authorize a progress push exactly as a results push is authorized —
-    the run, then the token, before anything else — and name its dispatch."""
-    service.require_run(run_id)
-    token = x_runcomposer_token
-    if token is None and authorization and authorization.lower().startswith("bearer "):
-        token = authorization[len("bearer "):].strip()
-    bound = service.ingestion.authorize_push(run_id, token)
+def _progress_dispatch(service: Service, run_id: str, named: str | None, bound: str | None) -> Any:
+    """The dispatch a progress push reports for — the token's own (the
+    token was checked before the body was read)."""
     if bound and named and named != bound:
         raise Forbidden(
             f"this token belongs to dispatch {bound}, not to {named} — "
@@ -129,43 +257,45 @@ def _progress_dispatch(
     return service.ingestion.progress_dispatch(run_id, named or bound)
 
 
-@router.post("/runs/{run_id}/live")
+@_executor.post("/runs/{run_id}/live")
 def push_live(
     run_id: str,
     body: LivePush,
-    authorization: str | None = Header(None),
-    x_runcomposer_token: str | None = Header(None),
+    bound_dispatch: str | None = Depends(ingest_dispatch),
     service: Service = Depends(service_of),
 ) -> dict[str, Any]:
     """Live status from an executor runcomposer did not start itself: which
     item is executing now (``RUNNING``) and how items ended, while the build
-    is still under way. Authorized like the results push: by the ingest token of
-    the dispatch. Live status is a progress report — shown flagged ``live``,
-    replaced by the next update for the same shard and item, and dropped when
-    the shard's results are delivered; it is never a verdict.
+    is still under way. Authorized like the results push — by the ingest
+    token of the dispatch, before the body is read. Live status is a progress
+    report — shown flagged ``live``, replaced by the next update for the same
+    shard and item, and dropped when the shard's results are delivered; it is
+    never a verdict.
 
     Answers ``{dispatch_id, accepted, ignored, reason}``: an update for an
     item the run did not plan or a shard that has delivered is ignored, and
     so is everything once the dispatch is over (``reason`` says so)."""
-    dispatch = _progress_dispatch(service, run_id, body.dispatch, authorization, x_runcomposer_token)
+    dispatch = _progress_dispatch(service, run_id, body.dispatch, bound_dispatch)
     result = service.ingestion.push_live(dispatch, [update.model_dump() for update in body.updates])
     return {"dispatch_id": dispatch.dispatch_id, **result}
 
 
-@router.post("/runs/{run_id}/log")
+@_executor.post("/runs/{run_id}/log")
 def push_log(
     run_id: str,
     body: LogPush,
-    authorization: str | None = Header(None),
-    x_runcomposer_token: str | None = Header(None),
+    bound_dispatch: str | None = Depends(ingest_dispatch),
     service: Service = Depends(service_of),
 ) -> dict[str, Any]:
     """Log lines from an external executor, appended to the run's event
     stream (``log`` / ``warning`` events with ``source: push``). Authorized
-    by the ingest token of the dispatch."""
-    dispatch = _progress_dispatch(service, run_id, body.dispatch, authorization, x_runcomposer_token)
+    by the ingest token of the dispatch, before the body is read."""
+    dispatch = _progress_dispatch(service, run_id, body.dispatch, bound_dispatch)
     result = service.ingestion.push_log(dispatch, [line.model_dump() for line in body.lines])
     return {"dispatch_id": dispatch.dispatch_id, **result}
+
+
+router.include_router(_executor)
 
 
 # -- quarantine (§4, §5) ------------------------------------------------------

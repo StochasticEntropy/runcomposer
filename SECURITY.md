@@ -43,21 +43,55 @@ quadratic-blowup DoS, or SSRF out of a parser; also any path in a bundle that
 escapes the extraction directory.
 
 **2. Artifact serving.** `/artifacts/{run_id}/{dispatch_id}/…` serves bytes a
-runner produced, from the same origin as the API and the UI. Paths are resolved
-fully and refused unless they land strictly inside `core.artifact_dir`; the bytes
-go out with `Content-Security-Policy: default-src 'none'; sandbox; base-uri 'none'`
-and `X-Content-Type-Options: nosniff`. In scope: any traversal that reads a file
-outside `artifact_dir` (via `..`, an absolute path, or a symlink), and any way an
-artifact scripts against this origin, reaches the API, or steals an ingest token
-despite those headers.
+runner produced, from the same origin as the API and the UI. Only a file a
+runner recorded — itself, or under a directory it recorded — is served. Paths
+are resolved fully and refused unless they land strictly inside
+`core.artifact_dir`; a refusal, and a path no file system can hold (a NUL
+byte, an over-long name), is the same `404` as a miss. Every artifact goes
+out with these headers:
+
+```
+Content-Security-Policy: default-src 'none'; sandbox; base-uri 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+```
+
+A `text/html` artifact is the one exception. A test framework's log or report
+is an HTML application, a blank page without its own script, so it may run
+its inline script and style and show embedded images — inside a sandbox
+without `allow-same-origin`, which gives it an origin of its own: it cannot
+read or call this server as the user, `default-src 'none'` lets it load and
+connect to nothing, and `form-action 'none'` lets it post nothing:
+
+```
+Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; sandbox allow-scripts; base-uri 'none'; form-action 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+```
+
+(These two blocks are compared with what the server sends by
+`tests/test_api_browser_safety.py`.) In scope: any traversal that reads a
+file outside `artifact_dir` (via `..`, an absolute path, or a symlink), and
+any way an artifact scripts against this origin, reaches the API, or steals
+an ingest token despite those headers.
 
 **3. Result ingestion and correlation.** `POST /api/v1/runs/{id}/results` requires
 the ingest token of the dispatch being delivered to. A token is minted when a
 spec is handed out (an export, or a runner handing off to an external executor),
 returned once, bound to that dispatch, and stored only as a hash — it is not in
-the spec document and no API returns it. The token is checked before anything
-is read or written: a push for an unknown run is a `404` that writes nothing.
-An authenticated bundle that does not match its dispatch lands in the
+the spec document and no API returns it. The run and the token are checked
+from the request's path and headers before anything is read or written: a
+push for an unknown run (`404`), without a token (`401`) or with a wrong one
+(`403`) is answered before runcomposer reads any of its body, and the
+connection is closed.
+The same holds for an executor's progress (`/live`, `/log`). The body of an
+authenticated push is then read as a stream, each file into a temporary
+bundle directory under its base name — a name that is not a file name (`..`,
+empty, a control character) is a `400` — and `max_upload_mb` is counted while
+the bytes arrive: the push is refused (`413`) as soon as it passes the limit,
+whatever length it declared, or none. A bundle refused for what it contains
+is named by its files' names in the answer and in the quarantine, never by
+where it lay on the server. An authenticated bundle that does not match its dispatch lands in the
 quarantine, never in run history, and the quarantine is bounded on write.
 Attaching a quarantined bundle to a run is an explicit action, recorded as an
 event on that run. In scope: ingesting without a valid token, reading a token
@@ -78,6 +112,51 @@ import something its configuration did not name.
 (ingest tokens, `${env:…}` config values) leaking into logs, spec documents or
 API responses.
 
+**6. Requests a browser sends for another site.** There is no login (below),
+so whoever's browser can reach the API can be made to send a request by any
+page that browser opens. Every state-changing request — any method but
+`GET`, `HEAD` and `OPTIONS`, on every route, the body-less ones such as
+`cancel`, `rerun` and `finalize` included — is refused with `403`
+(`cross-site-request`) when the browser says it comes from another site:
+
+- its `Origin` is neither this server's own origin nor listed in
+  `core.api.cors` (an `Origin` of `null`, a sandboxed document's, is never
+  this server's), or
+- it carries no `Origin` and `Sec-Fetch-Site: cross-site`.
+
+"This server's own origin" is the `Host` the request was sent to: an
+`Origin` passes when its host and port are the `Host` header's (the scheme's
+default port when either leaves it out); the scheme is not compared. A
+sibling host of the same site is another origin — list it in `core.api.cors`
+to let it in. Clients that are not browsers — curl, the CLI, an executor
+pushing results with its token — send neither header and are unaffected. A
+token-authorized push that carries a foreign `Origin` is refused like any
+other request: pushing from a web page is not a use case. In scope: any
+state-changing request a page on another origin can get accepted.
+
+*Behind a reverse proxy*, pass the `Host` the browser used through to
+runcomposer unchanged — or, if the proxy rewrites it, list the public origin
+(`https://runcomposer.shop.example`) in `core.api.cors`; otherwise the UI's
+own requests are refused.
+
+*The `Host` header itself is not restricted*: runcomposer has no setting that
+names its public address to compare it with. A page on a host name its
+author controls that resolves to runcomposer's address (DNS rebinding) is
+the same origin as that host name to the browser, so the rule above does not
+stop it — and listening on `127.0.0.1` does not either, since the browser
+making the requests runs on that machine. What stops it is a reverse proxy
+in front of runcomposer that answers only for runcomposer's own host name
+and refuses every other `Host`; deploy one wherever a browser that visits
+untrusted pages can reach the port.
+
+**7. API documentation.** `/openapi.json` — the API's description, from this
+origin, with nothing in it but the schema — is always served. The two
+viewers, `/docs` and `/redoc`, are off unless `core.api.docs: true`: they load
+their script and style from a public CDN (`cdn.jsdelivr.net`) into the
+browser that opens them — third-party script on this origin, and a blank
+page in a closed network. `GET /api/v1/meta` says whether they are on
+(`api.docs`).
+
 ## What is *not* a vulnerability
 
 These are documented design decisions, not bugs. Reporting them is welcome as a
@@ -88,7 +167,8 @@ normal issue, but they will not get an advisory:
   reverse proxy that authenticates. The ingest token exists so the results
   *write* path is not open by default — it is not a user authentication system,
   and every other endpoint (composing, dispatching, cancelling, deleting,
-  attaching a quarantined bundle) is open to whoever can reach the API.
+  attaching a quarantined bundle) is open to whoever can reach the API. (What
+  a browser sends for another site's page is refused — see 6 above.)
 - **Runners execute commands you configured.** `robot-pool` runs your suites and
   its `pre_run_hooks`, the `command` runner and the `command` observer run the
   command lines in your config, and `runcomposer-exec` runs the `--command` you
