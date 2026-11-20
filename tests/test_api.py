@@ -1393,8 +1393,28 @@ class TestArtifactRoute:
         # Untrusted bytes on the API's own origin: no scripting, no sniffing.
         policy = response.headers["content-security-policy"]
         assert "sandbox" in policy and "default-src 'none'" in policy
+        assert "allow-scripts" not in policy and "script-src" not in policy
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
+
+    def test_an_html_report_may_script_itself_but_never_this_origin(self, with_artifact):
+        """A framework's log is an HTML application: without its own script it
+        is a blank page. It runs in a sandbox that is not this origin and can
+        reach nothing."""
+        client, _service, run_id, tmp_path = with_artifact
+        log = tmp_path / "artifacts" / run_id / "dispatch-1" / "env1" / "log.html"
+        log.write_text("<html><script>document.title = 'log'</script></html>", encoding="utf-8")
+        response = client.get(f"/artifacts/{run_id}/dispatch-1/env1/log.html")
+        assert response.status_code == 200 and response.headers["content-type"].startswith("text/html")
+        directives = {
+            part.split()[0]: part.split()[1:]
+            for part in response.headers["content-security-policy"].split(";") if part.strip()
+        }
+        assert directives["default-src"] == ["'none'"], "nothing is loaded or connected to"
+        assert directives["sandbox"] == ["allow-scripts"], "its own origin: no allow-same-origin"
+        assert "'unsafe-inline'" in directives["script-src"] and "connect-src" not in directives
+        assert directives["form-action"] == ["'none'"]
+        assert response.headers["x-content-type-options"] == "nosniff"
 
     @pytest.mark.parametrize(
         "attack",

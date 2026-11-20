@@ -24,6 +24,16 @@ router = APIRouter()
 _REVALIDATE = {"Cache-Control": "no-cache"}
 _IMMUTABLE = "public, max-age=31536000, immutable"
 
+#: No script, no subresources, an origin of its own.
+_STRICT_POLICY = "default-src 'none'; sandbox; base-uri 'none'"
+#: An HTML report: its own inline script and style and embedded images, in a
+#: sandbox without this origin (no `allow-same-origin`), unable to fetch,
+#: post a form or load anything from anywhere (`default-src 'none'`).
+_HTML_REPORT_POLICY = (
+    "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; "
+    "img-src data: blob:; font-src data:; sandbox allow-scripts; base-uri 'none'; form-action 'none'"
+)
+
 
 @router.get("/artifacts/{artifact_path:path}")
 def artifact_file(artifact_path: str, service: Service = Depends(service_of)) -> FileResponse:
@@ -35,8 +45,12 @@ def artifact_file(artifact_path: str, service: Service = Depends(service_of)) ->
        — `..`, absolute paths and symlinks out of the tree are one rule. A
        refusal is a 404, the same as a miss.
     2. **Sandboxed delivery.** Artifact bytes are untrusted content on the
-       API's origin: they go out with ``sandbox`` + ``default-src 'none'`` and
-       ``nosniff``, so an HTML artifact cannot script against this origin.
+       API's origin. Every file goes out with ``sandbox`` and ``nosniff``: a
+       sandboxed document has an origin of its own, so nothing in it can read
+       or call this origin as the user. A report that is an HTML *application*
+       — a test framework's log is one — may run its own inline script and
+       style inside that sandbox, and may load nothing and connect to
+       nothing; every other type may not run script at all.
     """
     file = service.artifacts.resolve_file(artifact_path)
     media_type, _ = mimetypes.guess_type(file.name)
@@ -45,7 +59,7 @@ def artifact_file(artifact_path: str, service: Service = Depends(service_of)) ->
         media_type=media_type or "application/octet-stream",
         headers={
             "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "default-src 'none'; sandbox; base-uri 'none'",
+            "Content-Security-Policy": _HTML_REPORT_POLICY if media_type == "text/html" else _STRICT_POLICY,
             "Referrer-Policy": "no-referrer",
         },
     )
