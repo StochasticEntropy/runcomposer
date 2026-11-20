@@ -79,7 +79,7 @@ remote_run() { # $1 = the command line to run on the executing machine
         local) sh -c "$1" ;;
         # rsync|scp) ssh "$RC_REMOTE_HOST" "$1" ;;
         # git) : ;;   # nothing to trigger: that side runs on its own schedule
-        #             #  and the next `sync.sh pull` finds the bundle waiting
+        #             #  and a later run of this script finds its bundle waiting
         *) echo "sync: unknown RC_TRANSPORT '$RC_TRANSPORT'" >&2; exit 2 ;;
     esac
 }

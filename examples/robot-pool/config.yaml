@@ -23,7 +23,7 @@ runners:
     partition_variables:
       eu: { CURRENCY: EUR }
       us: { CURRENCY: USD }
-    executed_tag: "Executed_{partition}"
+    executed_tag: "RanOn-{partition}"
     rerun_failed: 1
   # The same runner configured the other way round: the selection is
   # DISTRIBUTED over the partitions (every test runs once, the partitions are

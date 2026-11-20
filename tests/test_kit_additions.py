@@ -371,6 +371,16 @@ class TestSmallHelpers:
         finally:
             fake.close()
 
+    def test_the_stand_in_answers_as_the_jenkins_version_the_real_check_runs_against(self):
+        import re
+
+        from runcomposer.testing.jenkins import FakeJenkins
+
+        from .conftest import REPO
+
+        pinned = re.search(r"^FROM jenkins/jenkins:([0-9.]+)", (REPO / "ci/jenkins/Dockerfile").read_text(), re.M)
+        assert pinned and FakeJenkins.VERSION == pinned.group(1)
+
     def test_the_kit_and_its_stand_in_import_without_pytest(self):
         code = ("import sys, runcomposer.testing, runcomposer.testing.jenkins; "
                 "assert 'pytest' not in sys.modules and '_pytest' not in sys.modules")

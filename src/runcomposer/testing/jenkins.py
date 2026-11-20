@@ -118,7 +118,9 @@ class FakeJenkins:
       ``fake.builds`` (``{(job, number): Build}``).
     """
 
-    VERSION = "2.462.3"
+    #: The Jenkins version it answers as: the one the reference runner is
+    #: checked against on a real server (the image pinned in ci/jenkins).
+    VERSION = "2.541.3"
     CRUMB_FIELD = "Jenkins-Crumb"
 
     def __init__(

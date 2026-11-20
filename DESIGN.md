@@ -222,9 +222,7 @@ Filter grammar notes (deliberate, not inherited):
 
 ### 3.2 What deliberately stays OUT of the core schema
 
-Anything framework-, CI-, or deployment-specific: framework variables, code
-generation flags, stage/partition vocabulary, CI job names and integer build
-numbers, host-derived identity, artifact file naming, result-file paths. All
+Anything framework-, CI- or deployment-specific. All
 of it lives either in the `runner.*` namespace (the plugin's own vocabulary)
 or in runner/store policy — never in core sections. An exchange format that
 grows one deployment-specific field at a time ends up almost entirely
@@ -1599,7 +1597,7 @@ file must keep getting the file. Static files are served with
 `Cache-Control: no-cache` for `/` and the locale files, and as immutable for
 the hashed `/assets/`.
 
-Runner-specific admin actions (e.g. a pool reload) are declined: a runner
+Runner-specific admin actions are declined: a runner
 offers `dispatch`, `plan`, `cancel`, `health` and declared per-run parameters, and an
 endpoint whose meaning only one runner knows would be an unchecked surface of
 the API.

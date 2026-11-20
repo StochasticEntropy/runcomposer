@@ -417,7 +417,7 @@ def shards_of(service, run) -> dict[str, list[str]]:
 
 class TestPartitionModeSplit:
     def test_each_test_runs_once_distributed_over_the_partitions(self, make_service, tmp_path):
-        service = pool_service(make_service, cart_root(tmp_path), executed_tag="ran-on-{partition}", **SPLIT)
+        service = pool_service(make_service, cart_root(tmp_path), executed_tag="RanOn-{partition}", **SPLIT)
         run = execute(service, "Cart")
         dispatch = run.latest_dispatch
         assert (run.state, run.completion) == ("COMPLETE", "FAIL")
@@ -431,7 +431,7 @@ class TestPartitionModeSplit:
         for partition in ("staging", "preview"):
             tests = executed_tests(workdir(service, run) / partition / "output.xml")
             assert set(tests) == set(ran[partition])
-            assert all(f"ran-on-{partition}" in tags for _s, tags, _m in tests.values())
+            assert all(f"RanOn-{partition}" in tags for _s, tags, _m in tests.values())
         assert "distributed over 2 of 2 partition(s) — each test once" in dispatch.plan
 
     def test_the_default_mode_still_runs_the_selection_once_per_partition(self, make_service, tmp_path):
@@ -584,7 +584,7 @@ class TestPreDispatchAndRunParameters:
         assert (service.config.private_dir / run.id / dispatch_id / "booking.json").is_file()
         for path in ("booking.json", "../private/booking.json", "prepared.txt", ".live"):
             response = client.get(f"/artifacts/{run.id}/{dispatch_id}/{path}")
-            assert response.status_code == 404 and "k-booking-4711" not in response.text
+            assert response.status_code == 404 and "k-booking-secret" not in response.text
         # …while what the runner recorded is served — the shard's directory
         # too, but not the worker's own bookkeeping in it.
         assert client.get(f"/artifacts/{run.id}/{dispatch_id}/staging/log.html").status_code == 200

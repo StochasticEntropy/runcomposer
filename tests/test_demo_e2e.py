@@ -283,7 +283,7 @@ class TestValidateAndCatalogCli:
         manifest.write_text(
             json.dumps({"items": [
                 {"id": f"Shop.Catalog.Browse{n // 50}.T{n:05d}",
-                 "tags": ["Regression", f"Sprint-{n % 30}", f"SHOP-{n:05d}"]}
+                 "tags": ["Regression", f"Sprint-{n % 30}", f"SHOP-{n:04d}"]}
                 for n in range(4000)
             ]}),
             encoding="utf-8",

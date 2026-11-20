@@ -31,7 +31,7 @@ def reserve_partitions(ctx: DispatchContext, info: dict[str, Any]) -> dict[str, 
         "shards": {shard: len(items) for shard, items in info["shards"].items()},
         "groups": info["groups"],
         "parameters": info["parameters"],
-        "booking_key": "k-booking-4711",
+        "booking_key": "k-booking-secret",
     }
     (ctx.private_dir / "booking.json").write_text(json.dumps(booking), encoding="utf-8")
     (ctx.workdir / "prepared.txt").write_text("partitions reserved", encoding="utf-8")

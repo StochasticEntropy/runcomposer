@@ -45,7 +45,7 @@ REPO = Path(__file__).resolve().parent.parent
 #: Suffixes scanned as text. Media and the minified UI bundle are not prose.
 TEXT_SUFFIXES = {
     ".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".json", ".yaml", ".yml", ".toml",
-    ".html", ".css", ".robot", ".resource", ".sh", ".txt", ".cfg", ".ini", "",
+    ".html", ".css", ".robot", ".resource", ".sh", ".txt", ".cfg", ".ini", ".vtt", "",
 }
 SKIPPED_DIRS = ("src/runcomposer/ui_dist/", "ui/node_modules/")
 SKIPPED_FILES = {"ui/package-lock.json"}

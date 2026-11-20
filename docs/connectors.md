@@ -1291,7 +1291,7 @@ Deliberate, each for a reason:
   ([§5](#5-configuration)).
 - **No per-runner custom "actions" endpoint.** A runner offers `dispatch`,
   `plan`, `cancel`, `health` and declared per-run parameters; an endpoint
-  whose meaning only one runner knows (a pool reload, say) would be an
+  whose meaning only one runner knows would be an
   unchecked, undocumented surface of the API. Do such operations in your own
   tooling.
 - **No catalog cache shared across CLI invocations.** Each CLI command is its

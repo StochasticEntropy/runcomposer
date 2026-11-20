@@ -340,19 +340,19 @@ class TestPartitions:
     def test_executed_tag_is_stamped_on_every_executed_test(self, make_service, tmp_path):
         root = shop_suite(tmp_path, GREEN_ON_ENV1)
         service = pool_service(
-            make_service, root, partitions=["env1", "env2"], executed_tag="Executed_{partition}"
+            make_service, root, partitions=["env1", "env2"], executed_tag="RanOn-{partition}"
         )
         run = execute(service, "Checkout")
         for partition in ("env1", "env2"):
             tests = executed_tests(workdir(service, run) / f"{partition}-1" / "output.xml")
             assert len(tests) == 2
             for _status, tags, _message in tests.values():
-                assert f"Executed_{partition}" in tags and "Checkout" in tags
-                assert not any(tag.startswith("Executed_") and tag != f"Executed_{partition}" for tag in tags)
+                assert f"RanOn-{partition}" in tags and "Checkout" in tags
+                assert not any(tag.startswith("RanOn-") and tag != f"RanOn-{partition}" for tag in tags)
 
     def test_a_malformed_executed_tag_template_refuses_startup(self, make_service):
         with pytest.raises(ConfigError, match="executed_tag"):
-            pool_service(make_service, executed_tag="Executed_{environment}").validate()
+            pool_service(make_service, executed_tag="RanOn-{environment}").validate()
 
 
 # -- exact ids and several roots ----------------------------------------
