@@ -1,0 +1,24 @@
+# The catalog of the example connector: one HTTP check per test item.
+# Tags are what runcomposer selects by; ids are what results report.
+checks:
+  - id: shop.home
+    tags: [Smoke, Catalog]
+    path: /
+    expect_text: web shop
+  - id: shop.catalog.lists-products
+    tags: [Catalog, Regression]
+    path: /catalog
+    expect_text: BOOK-1
+  - id: shop.cart.add
+    tags: [Cart, Smoke]
+    method: POST
+    path: /cart/add?sku=BOOK-1
+    expect_text: added
+  - id: shop.checkout.page
+    tags: [Checkout, Regression]
+    path: /checkout
+    expect_text: checkout
+  - id: shop.auth.account-needs-a-session
+    tags: [Auth, Regression]
+    path: /account
+    expect_status: 401

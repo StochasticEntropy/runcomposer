@@ -263,10 +263,18 @@ class Configurable(Protocol):
       names listed in ``PATH_OPTIONS``; override it when the rule has
       exceptions (a store whose ``:memory:`` names no file).
 
-    :class:`PluginBase` supplies both; every base class below derives from it.
+    - ``CONNECTOR`` — ``None`` (the default), or the name of a mapping under
+      the config file's ``connectors:`` section. When set, the plugin is
+      built with that mapping as the keyword argument ``connector_settings``
+      (``${env:…}`` references resolved): settings a connector package's
+      plugins share, written once.
+
+    :class:`PluginBase` supplies all three; every base class below derives
+    from it.
     """
 
     OPTIONS: ClassVar[tuple[str, ...] | None]
+    CONNECTOR: ClassVar[str | None]
 
     @classmethod
     def resolve_config_paths(
@@ -276,11 +284,13 @@ class Configurable(Protocol):
 
 class PluginBase:
     """Defaults for :class:`Configurable`: options are the constructor's
-    keyword parameters, and the names in ``PATH_OPTIONS`` (single values or
-    lists) are paths relative to the config file."""
+    keyword parameters, the names in ``PATH_OPTIONS`` (single values or
+    lists) are paths relative to the config file, and no ``connectors:``
+    mapping is handed over."""
 
     OPTIONS: ClassVar[tuple[str, ...] | None] = None
     PATH_OPTIONS: ClassVar[tuple[str, ...]] = ()
+    CONNECTOR: ClassVar[str | None] = None
 
     @classmethod
     def resolve_config_paths(

@@ -137,7 +137,7 @@ class TestStartupChecksTheContract:
         with pytest.raises(ConfigError) as caught:
             self.build(tmp_path, runners={"plain": {"module": f"{HERE}:PlainRunner"}})
         message = str(caught.value)
-        assert "'resolve_config_paths'" in message and "'OPTIONS'" in message
+        assert "'resolve_config_paths'" in message and "'OPTIONS'" in message and "'CONNECTOR'" in message
         assert "Configurable contract" in message
 
     def test_a_store_missing_one_member_is_refused_naming_exactly_that_member(self, tmp_path):
@@ -167,7 +167,7 @@ class TestTheContractIsData:
         }
         assert set(contract_members(ResultParser)) == {"format_id", "parse"}
         assert contract_members(RunObserver) == ("notify",)
-        assert set(contract_members(Configurable)) == {"OPTIONS", "resolve_config_paths"}
+        assert set(contract_members(Configurable)) == {"OPTIONS", "CONNECTOR", "resolve_config_paths"}
         assert {"close", "latest_events", "add_dispatch", "store_id"} <= set(contract_members(RunStore))
 
     def test_the_base_classes_supply_every_optional_member(self):
@@ -253,3 +253,52 @@ def test_no_layer_probes_plugin_objects_by_attribute():
         "needs is declared in its protocol (runcomposer.core.ports) with a default in the "
         f"base class, and called directly: {offending}"
     )
+
+
+# -- connectors: — settings a connector package's plugins share ---------------------
+
+
+class ShopSettingsRunner(RunnerBase):
+    CONNECTOR = "shop"
+
+    def __init__(self, region: str = "eu", connector_settings: dict[str, Any] | None = None):
+        self.region = region
+        self.settings = dict(connector_settings or {})
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="shop-settings")
+
+    def dispatch(self, ctx: Any) -> None:
+        ctx.refuse("not today")
+
+
+class ForgetfulSettingsRunner(CompleteRunner):
+    CONNECTOR = "shop"
+
+
+class TestConnectorSettings:
+    def service(self, tmp_path: Path, **sections: Any) -> Service:
+        return Service(load_config(str(write_config(tmp_path, **sections))))
+
+    def test_a_plugin_that_declares_connector_receives_that_mapping(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SHOP_API_KEY", "k-123456")
+        with self.service(tmp_path, runners={"shop": {"module": f"{HERE}:ShopSettingsRunner", "region": "us"}},
+                          connectors={"shop": {"base_url": "https://shop.example", "api_key": "${env:SHOP_API_KEY}"},
+                                      "other": {"ignored": True}}) as service:
+            runner = service.runner("shop")
+            assert runner.region == "us"
+            assert runner.settings == {"base_url": "https://shop.example", "api_key": "k-123456"}
+            assert service.redact("key k-123456") == "key ‹from the environment›"
+
+    def test_no_mapping_is_an_empty_one(self, tmp_path):
+        with self.service(tmp_path, runners={"shop": {"module": f"{HERE}:ShopSettingsRunner"}}) as service:
+            assert service.runner("shop").settings == {}
+
+    def test_the_keyword_is_not_an_option_anyone_writes(self, tmp_path):
+        with pytest.raises(ConfigError, match="'connector_settings' is not an option you write"):
+            self.service(tmp_path, runners={"shop": {"module": f"{HERE}:ShopSettingsRunner",
+                                                     "connector_settings": {}}}).validate()
+
+    def test_declaring_connector_without_taking_the_keyword_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="declares CONNECTOR = 'shop' but its constructor takes no"):
+            self.service(tmp_path, runners={"shop": {"module": f"{HERE}:ForgetfulSettingsRunner"}}).validate()

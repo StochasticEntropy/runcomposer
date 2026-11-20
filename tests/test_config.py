@@ -985,3 +985,17 @@ def test_values_shorter_than_four_characters_are_not_redacted(tmp_path, monkeypa
     })
     secrets = load_config(str(path)).secret_values()
     assert "s3cr" in secrets and "123" not in secrets
+
+
+def test_a_default_written_in_the_file_is_not_treated_as_a_secret(tmp_path, monkeypatch):
+    """``${env:NAME:-default}``: the default is in the config file for anyone
+    to read, so it is not blanked out of answers (only a value that really
+    came from the environment is)."""
+    monkeypatch.delenv("SHOP_HOOK_URL", raising=False)
+    monkeypatch.setenv("SHOP_TOKEN", "s3cr3t-token")
+    path = write_config(tmp_path, runners={"demo": {}}, observers={
+        "hook": {"plugin": "webhook", "url": "${env:SHOP_HOOK_URL:-https://chat.shop.example/hooks}",
+                 "secret": "${env:SHOP_TOKEN:-unused-default}"},
+    })
+    secrets = load_config(str(path)).secret_values()
+    assert secrets == frozenset({"s3cr3t-token"})

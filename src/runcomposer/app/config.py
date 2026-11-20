@@ -324,6 +324,11 @@ class Config:
         check_options(spec)
         options = {name: _resolve_env(value, spec.where) for name, value in spec.options.items()}
         secrets = _env_values(spec.options)
+        connector = spec.cls.CONNECTOR
+        if connector is not None:
+            raw = self.connector_settings(str(connector))
+            options[_CONNECTOR_KEYWORD] = _resolve_env(raw, f"connectors.{connector}")
+            secrets |= _env_values(raw)
 
         def redacted(message: object) -> str:
             # A plugin that refuses a value tends to quote it. Whatever came
@@ -373,7 +378,7 @@ class Config:
         answered. Values shorter than four characters are not included —
         blanking those would mangle ordinary text."""
         found: set[str] = set()
-        for section in _PLUGIN_SECTIONS:
+        for section in (*_PLUGIN_SECTIONS, "connectors"):
             for raw in self._section(section).values():
                 found |= _env_values(raw)
         return frozenset(found)
@@ -432,8 +437,28 @@ def accepted_options(cls: Any) -> tuple[list[str], list[str], bool]:
     return accepted, required, is_open
 
 
+#: The constructor keyword a plugin that declares ``CONNECTOR`` receives its
+#: ``connectors.<name>`` mapping under — supplied by runcomposer, never
+#: written in a plugin entry.
+_CONNECTOR_KEYWORD = "connector_settings"
+
+
 def check_options(spec: PluginSpec) -> None:
     accepted, required, is_open = accepted_options(spec.cls)
+    if _CONNECTOR_KEYWORD in spec.options:
+        raise ConfigError(
+            f"{spec.where}: '{_CONNECTOR_KEYWORD}' is not an option you write — a plugin that "
+            "declares CONNECTOR = '<name>' receives connectors.<name> under that keyword"
+        )
+    if spec.cls.CONNECTOR is not None:
+        declared = spec.cls.OPTIONS is not None  # then the constructor is not inspected
+        if not declared and _CONNECTOR_KEYWORD not in accepted and not is_open:
+            raise ConfigError(
+                f"{spec.where}: {_name(spec.cls)} declares CONNECTOR = {spec.cls.CONNECTOR!r} but "
+                f"its constructor takes no '{_CONNECTOR_KEYWORD}' keyword"
+            )
+        accepted = [name for name in accepted if name != _CONNECTOR_KEYWORD]
+        required = [name for name in required if name != _CONNECTOR_KEYWORD]
     # `events` on an observer entry is read by the event bus (which kinds the
     # observer is told about), not by the observer.
     reserved = {"events"} if spec.section == "observers" else set()
@@ -496,12 +521,14 @@ def redact(value: Any, secrets: frozenset[str] | set[str]) -> Any:
 
 
 def _env_values(value: Any) -> set[str]:
-    """Every value an option takes from the environment (``${env:…}``)."""
+    """Every value an option takes from the environment (``${env:…}``). A
+    ``:-default`` is written in the file itself, so it is not a secret and
+    is not collected."""
     found: set[str] = set()
     if isinstance(value, str):
         for match in _ENV_REF.finditer(value):
-            resolved = os.environ.get(match.group(1), match.group(2) or "")
-            if len(resolved) >= 4:  # shorter values would redact ordinary text
+            resolved = os.environ.get(match.group(1))
+            if resolved is not None and len(resolved) >= 4:  # shorter would redact ordinary text
                 found.add(resolved)
     elif isinstance(value, Mapping):
         for entry in value.values():

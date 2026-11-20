@@ -87,7 +87,7 @@ class LeakyRunner(RunnerBase):
         if self.fail == "refuse":
             ctx.refuse(f"stage rejected 'Authorization: Bearer {self.token}'")
         ctx.log(f"calling the stage with {self.token}")
-        ctx.declare(["1"])
+        ctx.declare(["1"], plan=f"one shard, token {self.token}", links={"stage": f"https://stage.shop.example/?t={self.token}"})
         raise RuntimeError(f"stage answered 403 to token {self.token!r}")
 
 
@@ -669,6 +669,7 @@ class TestSecretsStaySecret:
         else:
             assert detail["state"] == "FAILED"
             assert "‹from the environment›" in detail["dispatches"][-1]["error"]
+            assert detail["dispatches"][-1]["plan"] == "one shard, token ‹from the environment›"
         for answered in (answer.json(), detail, runners, events):
             assert "hunter2" not in json.dumps(answered, ensure_ascii=False)
         assert runners[0]["health"]["detail"] == "probe with ‹from the environment› was rejected"

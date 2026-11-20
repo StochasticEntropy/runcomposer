@@ -244,6 +244,11 @@ class ConnectorHarness:
             warnings=[str(e.data.get("message", "")) for e in events if e.kind == "warning"],
         )
 
+    def flush_observers(self, timeout: float = 10.0) -> bool:
+        """Wait until every observer was told every event emitted so far
+        (observers are notified on a thread of their own)."""
+        return bool(self.service.bus.flush(timeout))
+
     def cancel(self, run_id: str) -> DispatchRecord:
         return self.service.cancel(run_id)
 
