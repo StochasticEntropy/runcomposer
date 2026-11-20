@@ -98,6 +98,8 @@ export interface CompileResult {
 export interface Selection {
   tag_filter?: FilterAst;
   item_ids?: string[];
+  /** A history query, e.g. `failed@run:<id>` (DESIGN.md §7). */
+  history?: string;
 }
 
 export type VerdictStatus = "PASS" | "FAIL" | "ERROR" | "SKIP" | "MISSING" | "RUNNING" | string;

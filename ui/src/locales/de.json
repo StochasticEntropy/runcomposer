@@ -104,8 +104,7 @@
     "FAIL": "fehlgeschlagen",
     "ERROR": "Fehler",
     "SKIP": "übersprungen",
-    "MISSING": "fehlend",
-    "RUNNING": "live gemeldet"
+    "MISSING": "fehlend"
   },
   "health": {
     "ok": "verfügbar",
@@ -388,6 +387,8 @@
     "noToken": "Dieser Server nimmt Ergebnisse ohne Token an.",
     "stepPush": "Ergebnisse zurückschicken",
     "pushHint": "Die Ergebnisdateien an den Lauf senden, zum Beispiel:",
+    "preview": "Dokument vorher anzeigen",
+    "previewHint": "So würde das Dokument jetzt zusammengestellt. Angelegt wurde noch nichts.",
     "openRun": "Lauf öffnen"
   },
   "runs": {
@@ -440,6 +441,7 @@
       "one": "{count} Fehlschlag wiederholen",
       "other": "{count} Fehlschläge wiederholen"
     },
+    "rerunFailedAny": "Fehlschläge wiederholen",
     "load": "In die Zusammenstellung laden",
     "finalize": "So abschließen",
     "finalizeTitle": "Diesen Lauf so abschließen?",
@@ -526,6 +528,9 @@
       "expect": "Ergebnisformat",
       "dispatch": "So wurde ausgeführt",
       "spec": "Laufdokument",
+      "downloads": "Downloads",
+      "results": "Ergebnisse",
+      "resultsHint": "Die letzten Ergebnisse als CTRF-Dokument, für andere Werkzeuge.",
       "specHint": "Das gespeicherte Dokument, ohne Token."
     },
     "activity": {

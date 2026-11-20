@@ -209,7 +209,6 @@ const RESULT_TONE: Record<string, string> = {
   INCOMPLETE: "warn",
   SKIP: "neutral",
   MISSING: "warn",
-  RUNNING: "running",
 };
 
 export function StateBadge({ state }: { state: string }) {

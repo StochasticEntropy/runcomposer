@@ -77,6 +77,9 @@ export function createApi(client: Client = createClient()) {
       post<CompileResult>(`${API}/selection/compile`, selection, signal),
     count: (selection: Selection, signal?: AbortSignal) =>
       post<CompileResult>(`${API}/selection/compile`, { ...selection, limit: 0 }, signal),
+    /** The run spec a compose would store — composed and validated, not stored. */
+    specPreview: (body: Omit<ComposeBody, "dispatch">) =>
+      post<{ spec: Record<string, unknown>; warnings: string[] }>(`${API}/selection/spec-preview`, body),
 
     createRun: (body: ComposeBody) => post<CreateRunResponse>(`${API}/runs`, body),
     listRuns: (query: RunListQuery, signal?: AbortSignal) => get<RunList>(runListPath(query), signal),
@@ -120,4 +123,5 @@ export type Api = ReturnType<typeof createApi>;
 export const specUrl = (runId: string, format: "json" | "yaml") => `${API}/runs/${id(runId)}/spec?format=${format}`;
 export const dispatchSpecUrl = (runId: string, dispatchId: string) =>
   `${API}/runs/${id(runId)}/dispatches/${id(dispatchId)}/spec`;
+export const resultsExportUrl = (runId: string) => `${API}/runs/${id(runId)}/export?format=ctrf`;
 export const resultsUrl = (runId: string) => `${API}/runs/${id(runId)}/results`;

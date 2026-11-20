@@ -11,8 +11,7 @@ import { sleep, usePageVisible } from "../hooks/usePage.ts";
 import { useResource } from "../hooks/useResource.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import { runListPath } from "../lib/api.ts";
-import { takeFlash } from "../lib/flash.ts";
-import type { Flash } from "../lib/flash.ts";
+import { useFlash } from "../hooks/useFlash.ts";
 import { formatDuration, parseLabel } from "../lib/format.ts";
 import { composeHref, runHref, runsHref } from "../lib/router.ts";
 import type { Route } from "../lib/router.ts";
@@ -42,7 +41,7 @@ export function RunsView({ route }: { route: Route }) {
   const { t, tOr, locale } = useI18n();
   const { meta } = useApp();
   const visible = usePageVisible();
-  const [flash, setFlashState] = useState<Flash | null>(() => takeFlash());
+  const { flash, dismiss: dismissFlash } = useFlash();
 
   const q = route.query.q ?? "";
   const state = route.query.state ?? "";
@@ -126,7 +125,7 @@ export function RunsView({ route }: { route: Route }) {
       </header>
 
       {flash && (
-        <Notice tone={flash.tone} onDismiss={() => setFlashState(null)}>
+        <Notice tone={flash.tone} onDismiss={dismissFlash}>
           {flash.text}
         </Notice>
       )}

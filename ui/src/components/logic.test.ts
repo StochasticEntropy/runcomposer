@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ROOT_ID, fromAst, positivePatterns, toAst } from "../lib/editor.ts";
 import { formatFilter } from "../lib/filter.ts";
 import type { RunDetail, VerdictRow } from "../lib/types.ts";
-import { failedCount, loadHref } from "../views/RunView.tsx";
+import { failedItems, hasFailures, loadHref } from "../views/RunView.tsx";
 import { plannedVerdicts } from "../views/RunsView.tsx";
 import { resultRows, runProgress } from "./RunResults.tsx";
 import { applyPicks } from "./TagPicker.tsx";
@@ -110,7 +110,7 @@ describe("runProgress", () => {
         verdicts: [verdict("a", "PASS", { shard: "firefox-1", live: true }), verdict("b", "PASS", { shard: "chromium-1" })],
       }),
     );
-    expect(progress).toEqual({ counts: { PASS: 2, FAIL: 1, RUNNING: 1 }, done: 4, planned: 6 });
+    expect(progress).toEqual({ counts: { PASS: 3, FAIL: 1 }, done: 4, planned: 6 });
   });
 
   it("falls back to the planned items when a runner declared no shard plan", () => {
@@ -133,8 +133,26 @@ describe("loading a run's selection back", () => {
     expect(derived).toBe("#/compose?from=01RUN");
   });
 
-  it("counts what a rerun of the failures would carry", () => {
-    expect(failedCount(run({ verdict_summary: { PASS: 10, FAIL: 2, ERROR: 1, MISSING: 3, SKIP: 4 } }))).toBe(6);
-    expect(failedCount(run({ verdict_summary: { PASS: 10 } }))).toBe(0);
+  it("counts the ITEMS a rerun of the failures would carry, not the verdicts", () => {
+    const dispatches = [{ dispatch_id: "d1" }] as RunDetail["dispatches"];
+    const fannedOut = run({
+      dispatch_id: "d1",
+      dispatches,
+      verdict_summary: { PASS: 3, FAIL: 2, MISSING: 1 },
+      verdicts: [
+        verdict("Shop.Auth.SSO.T001", "FAIL", { shard: "chromium-1" }),
+        verdict("Shop.Auth.SSO.T001", "FAIL", { shard: "firefox-1" }),
+        verdict("Shop.Auth.SSO.T002", "MISSING", { shard: "firefox-1" }),
+        verdict("Shop.Auth.SSO.T002", "PASS", { shard: "chromium-1" }),
+        verdict("Shop.Auth.SSO.T003", "FAIL", { shard: "chromium-1", attempt: 1 }),
+        verdict("Shop.Auth.SSO.T003", "PASS", { shard: "chromium-1", attempt: 2 }),
+        verdict("Shop.Auth.SSO.T003", "PASS", { shard: "firefox-1" }),
+      ],
+    });
+    expect(hasFailures(fannedOut)).toBe(true);
+    expect(failedItems(fannedOut)).toBe(2);
+    // An earlier dispatch on screen says nothing about the latest one.
+    expect(failedItems(run({ dispatch_id: "d0", dispatches, verdict_summary: { FAIL: 1 } }))).toBeNull();
+    expect(hasFailures(run({ verdict_summary: { PASS: 10, SKIP: 2 } }))).toBe(false);
   });
 });

@@ -34,9 +34,11 @@ interface Props {
   onExported?: (result: Exported) => void;
   /** Shown as "Open run" when the dialog is not already on that run's page. */
   linkToRun?: boolean;
+  /** The document as it would be composed — offered before anything is created. */
+  previewSpec?: () => Promise<Record<string, unknown>>;
 }
 
-export function ExportDialog({ intro, perform, onClose, onExported, linkToRun = true }: Props) {
+export function ExportDialog({ intro, perform, onClose, onExported, linkToRun = true, previewSpec }: Props) {
   const { t } = useI18n();
   const [format, setFormat] = useState<Format>("json");
   const [busy, setBusy] = useState(false);
@@ -44,6 +46,21 @@ export function ExportDialog({ intro, perform, onClose, onExported, linkToRun = 
   const [result, setResult] = useState<Exported | null>(null);
   const inFlight = useRef(false);
   const formatName = useId();
+  const [preview, setPreview] = useState<{ text: string | null; loading: boolean; error: ApiError | null }>({
+    text: null,
+    loading: false,
+    error: null,
+  });
+
+  const showPreview = async () => {
+    if (!previewSpec || preview.loading) return;
+    setPreview({ text: null, loading: true, error: null });
+    try {
+      setPreview({ text: JSON.stringify(await previewSpec(), null, 2), loading: false, error: null });
+    } catch (caught) {
+      setPreview({ text: null, loading: false, error: asApiError(caught) });
+    }
+  };
 
   const submit = async () => {
     if (inFlight.current) return;
@@ -156,6 +173,26 @@ export function ExportDialog({ intro, perform, onClose, onExported, linkToRun = 
           </label>
         ))}
       </fieldset>
+      {previewSpec && preview.text === null && (
+        <p>
+          <button type="button" className="btn btn-small" onClick={() => void showPreview()} disabled={preview.loading}>
+            {preview.loading ? t("state.loading") : t("export.preview")}
+          </button>
+        </p>
+      )}
+      {preview.error && (
+        <Notice tone="error">
+          <ErrorText error={preview.error} />
+        </Notice>
+      )}
+      {preview.text !== null && (
+        <>
+          <p className="hint">{t("export.previewHint")}</p>
+          <pre className="message-full" tabIndex={0} aria-label={t("export.preview")} data-testid="spec-preview">
+            {preview.text}
+          </pre>
+        </>
+      )}
       {error && (
         <Notice tone="error">
           <ErrorText error={error} />

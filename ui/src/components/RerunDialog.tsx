@@ -2,9 +2,10 @@
 // run (DESIGN.md §7). The runner and its parameters start out as they were
 // for the run's last dispatch and can be changed before anything starts.
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useApp, useI18n } from "../hooks/context.tsx";
+import { useResource } from "../hooks/useResource.ts";
 import { fromPayload, initialValues, toPayload, validateValues } from "../lib/params.ts";
 import type { ParamValues } from "../lib/params.ts";
 import { asApiError } from "../lib/request.ts";
@@ -16,13 +17,11 @@ import { Dialog, ErrorText, Notice, describeError } from "./ui.tsx";
 interface Props {
   run: RunDetail;
   scope: "all" | "failed";
-  /** How many items a rerun of the failures would carry. */
-  failedCount: number;
   onDone: (response: DispatchResponse) => void;
   onClose: () => void;
 }
 
-export function RerunDialog({ run, scope, failedCount, onDone, onClose }: Props) {
+export function RerunDialog({ run, scope, onDone, onClose }: Props) {
   const i18n = useI18n();
   const { t } = i18n;
   const { api, runners } = useApp();
@@ -70,7 +69,16 @@ export function RerunDialog({ run, scope, failedCount, onDone, onClose }: Props)
     }
   };
 
-  const count = scope === "failed" ? failedCount : run.planned_count;
+  // What "the failures" are is the server's to say — the very query a rerun
+  // composes from — so the dialog asks instead of counting rows itself.
+  const failed = useResource(
+    useCallback(
+      async (signal: AbortSignal) => (scope === "failed" ? (await api.count({ history: `failed+error+missing@run:${run.id}` }, signal)).count : 0),
+      [api, scope, run.id],
+    ),
+    `failed:${run.id}:${scope}`,
+  );
+  const count = scope === "failed" ? failed.data : run.planned_count;
   return (
     <Dialog
       title={scope === "failed" ? t("rerun.titleFailed") : latest ? t("rerun.titleAll") : t("rerun.titleFirst")}
@@ -80,8 +88,8 @@ export function RerunDialog({ run, scope, failedCount, onDone, onClose }: Props)
           <button type="button" className="btn" onClick={onClose}>
             {t("action.cancel")}
           </button>
-          <button type="submit" form="rerun-form" className="btn btn-primary" disabled={busy || !runnerUsable(runner)}>
-            {busy ? t("compose.starting") : t("compose.run", { count })}
+          <button type="submit" form="rerun-form" className="btn btn-primary" disabled={busy || !runnerUsable(runner) || count === undefined}>
+            {busy ? t("compose.starting") : count === undefined ? t("state.loading") : t("compose.run", { count })}
           </button>
         </>
       }
@@ -94,7 +102,14 @@ export function RerunDialog({ run, scope, failedCount, onDone, onClose }: Props)
           void submit();
         }}
       >
-        <p>{scope === "failed" ? t("rerun.explainFailed", { count, title: run.title }) : t("rerun.explainAll", { count, title: run.title })}</p>
+        {count !== undefined && (
+          <p>{scope === "failed" ? t("rerun.explainFailed", { count, title: run.title }) : t("rerun.explainAll", { count, title: run.title })}</p>
+        )}
+        {failed.error && (
+          <Notice tone="error">
+            <ErrorText error={failed.error} />
+          </Notice>
+        )}
         <RunnerSelect
           value={runnerId}
           onChange={(id) => {

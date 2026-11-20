@@ -1055,23 +1055,38 @@ main {
 }
 
 .toggle-not {
-  min-height: 24px;
-  padding: 0 6px;
-  border: 1px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
   border-radius: 4px;
-  background: var(--panel);
+  background: transparent;
   color: var(--muted);
-  font: inherit;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
   cursor: pointer;
+  flex: none;
+}
+
+.toggle-not:hover {
+  background: var(--panel);
+  color: var(--danger);
 }
 
 .toggle-not.is-on {
   background: var(--danger-solid);
-  border-color: var(--danger-solid);
   color: var(--solid-ink);
+}
+
+.not-mark {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--danger-solid);
+  color: var(--solid-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 20px;
 }
 
 .expr-rules {
@@ -1764,23 +1779,33 @@ main {
 }
 
 .verdict-table .col-status {
-  width: 150px;
+  width: 124px;
 }
 
 .verdict-table .col-shard {
-  width: 130px;
+  width: 124px;
 }
 
 .verdict-table .col-attempt {
-  width: 80px;
+  width: 76px;
 }
 
 .verdict-table .col-duration {
-  width: 96px;
+  width: 92px;
 }
 
 .verdict-table .col-message {
-  width: 34%;
+  width: 30%;
+}
+
+.verdict-table .col-item .clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
 }
 
 .verdict-table tr.is-superseded td {
@@ -1935,8 +1960,8 @@ main {
   }
 
   .toggle-not {
-    min-height: 30px;
-    padding: 0 8px;
+    width: 30px;
+    height: 30px;
   }
 
   .chip-remove {

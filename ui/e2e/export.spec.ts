@@ -29,6 +29,11 @@ test("round trip with a title outside ASCII: export → execute elsewhere → re
   await page.getByRole("button", { name: msg("compose.export") }).click();
   const ask = page.getByRole("dialog", { name: msg("export.title") });
   await expect(ask).toContainText(msg("export.introCompose", { count: 3 }));
+  // The document can be read before anything exists.
+  await ask.getByRole("button", { name: msg("export.preview") }).click();
+  const preview = ask.getByTestId("spec-preview");
+  await expect(preview).toContainText('"title": "Zahlungen prüfen — Größe ✓"');
+  await expect(preview).toContainText("Shop.Auth.SSO.T003");
   expect(await api.runs()).toHaveLength(0);
   await ask.getByRole("button", { name: msg("export.confirm") }).click();
 
@@ -78,6 +83,15 @@ test("round trip with a title outside ASCII: export → execute elsewhere → re
   await again.saveAs(againFile);
   expect(sha256(againFile)).toBe(shown);
   await expect(page.locator("body")).not.toContainText(token);
+
+  // And the results leave as a normalized document other tools read.
+  await page.getByRole("link", { name: msg("run.tab.selection") }).click();
+  const [results] = await Promise.all([page.waitForEvent("download"), page.getByTestId("results-export").click()]);
+  const resultsFile = testInfo.outputPath("results.json");
+  await results.saveAs(resultsFile);
+  expect(results.suggestedFilename()).toBe(`results-${runId}.ctrf.json`);
+  const ctrf = JSON.parse(readFileSync(resultsFile, "utf-8")) as { results: { summary: { tests: number; passed: number } } };
+  expect(ctrf.results.summary).toMatchObject({ tests: 3, passed: 3 });
 });
 
 test("YAML export, and a new token replaces the one shown once", async ({ page, open, api, server }, testInfo) => {

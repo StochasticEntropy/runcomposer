@@ -28,10 +28,10 @@ import { useApp, useI18n } from "../hooks/context.tsx";
 import { usePageVisible } from "../hooks/usePage.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import { useRunFollow } from "../hooks/useRunFollow.ts";
-import { dispatchSpecUrl, specUrl } from "../lib/api.ts";
+import { dispatchSpecUrl, resultsExportUrl, specUrl } from "../lib/api.ts";
 import { formatFilter } from "../lib/filter.ts";
-import { setFlash, takeFlash } from "../lib/flash.ts";
-import type { Flash } from "../lib/flash.ts";
+import { useFlash } from "../hooks/useFlash.ts";
+import { setFlash } from "../lib/flash.ts";
 import { absoluteTime, formatDuration } from "../lib/format.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
@@ -63,9 +63,26 @@ export function loadHref(run: RunDetail): string {
   return composeHref({ f: filterText || null, from: needsItems ? run.id : null });
 }
 
-export function failedCount(run: RunDetail): number {
-  const summary = run.verdict_summary;
-  return (summary.FAIL ?? 0) + (summary.ERROR ?? 0) + (summary.MISSING ?? 0);
+const FAILING = ["FAIL", "ERROR", "MISSING"];
+
+/** Something in the run's latest dispatch did not pass. */
+export const hasFailures = (run: RunDetail): boolean => FAILING.some((status) => (run.verdict_summary[status] ?? 0) > 0);
+
+/** How many ITEMS did not pass — an item that failed on two partitions is one
+ * item to rerun. Known when the latest dispatch is the one on screen. */
+export function failedItems(run: RunDetail): number | null {
+  const latest = run.dispatches[run.dispatches.length - 1];
+  if (!latest || latest.dispatch_id !== run.dispatch_id) return null;
+  const newest = new Map<string, { attempt: number; status: string }>();
+  for (const row of run.verdicts) {
+    if (row.live) continue;
+    const slot = `${row.shard}\u0000${row.item_id}`;
+    const held = newest.get(slot);
+    if (!held || row.attempt >= held.attempt) newest.set(slot, { attempt: row.attempt, status: row.status });
+  }
+  const failed = new Set<string>();
+  for (const [slot, verdict] of newest) if (FAILING.includes(verdict.status)) failed.add(slot.split("\u0000")[1]!);
+  return failed.size;
 }
 
 export function RunView({ route }: { route: Route }) {
@@ -77,7 +94,7 @@ export function RunView({ route }: { route: Route }) {
   const follow = useRunFollow(api, runId, dispatchParam);
   const { run, refresh } = follow;
 
-  const [flash, setFlashState] = useState<Flash | null>(() => takeFlash());
+  const { flash, show: showFlash, dismiss: dismissFlash } = useFlash();
   const [pending, setPending] = useState<Pending>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<ApiError | null>(null);
@@ -152,7 +169,7 @@ export function RunView({ route }: { route: Route }) {
   const latest = run.dispatches[run.dispatches.length - 1] ?? null;
   const shown = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id) ?? null;
   const active = isActive(run.state);
-  const failures = failedCount(run);
+  const failures = failedItems(run);
   const canFinalize = latest !== null && isActive(latest.state) && !latest.executing;
   const tabHref = (name: Tab) => runHref(run.id, { tab: name === "results" ? null : name, d: dispatchParam });
 
@@ -224,9 +241,9 @@ export function RunView({ route }: { route: Route }) {
               {latest ? t("run.rerunAll") : t("run.dispatch")}
             </button>
           )}
-          {!active && failures > 0 && (
+          {!active && hasFailures(run) && (
             <button type="button" className="btn" onClick={() => setPending({ kind: "rerun", scope: "failed" })}>
-              {t("run.rerunFailed", { count: failures })}
+              {failures !== null ? t("run.rerunFailed", { count: failures }) : t("run.rerunFailedAny")}
             </button>
           )}
           <a className="btn" href={loadHref(run)}>
@@ -254,7 +271,7 @@ export function RunView({ route }: { route: Route }) {
       </header>
 
       {flash && (
-        <Notice tone={flash.tone} onDismiss={() => setFlashState(null)}>
+        <Notice tone={flash.tone} onDismiss={dismissFlash}>
           {flash.text}
         </Notice>
       )}
@@ -415,7 +432,6 @@ export function RunView({ route }: { route: Route }) {
         <RerunDialog
           run={run}
           scope={pending.scope}
-          failedCount={failures}
           onClose={close}
           onDone={(response) => {
             close();
@@ -423,7 +439,7 @@ export function RunView({ route }: { route: Route }) {
               setFlash({ tone: "ok", text: t("rerun.startedNew", { count: response.run.planned_count, title: run.title }) });
               navigate(runHref(response.run.id));
             } else {
-              setFlashState({ tone: "ok", text: t("rerun.started") });
+              showFlash({ tone: "ok", text: t("rerun.started") });
               if (dispatchParam) navigate(runHref(run.id));
               refresh();
             }
@@ -512,17 +528,35 @@ function SelectionTab({ run, shown }: { run: RunDetail; shown: Dispatch | null }
 
       <section className="panel">
         <header className="panel-head">
-          <h2>{t("run.selection.spec")}</h2>
+          <h2>{t("run.selection.downloads")}</h2>
         </header>
-        <p className="hint">{t("run.selection.specHint")}</p>
-        <p className="row">
-          <a className="btn btn-small" href={specUrl(run.id, "json")} download={`runspec-${run.id}.json`}>
-            JSON
-          </a>
-          <a className="btn btn-small" href={specUrl(run.id, "yaml")} download={`runspec-${run.id}.yaml`}>
-            YAML
-          </a>
-        </p>
+        <dl className="facts">
+          <dt>{t("run.selection.spec")}</dt>
+          <dd>
+            <span className="row">
+              <a className="btn btn-small" href={specUrl(run.id, "json")} download={`runspec-${run.id}.json`}>
+                JSON
+              </a>
+              <a className="btn btn-small" href={specUrl(run.id, "yaml")} download={`runspec-${run.id}.yaml`}>
+                YAML
+              </a>
+              <span className="hint">{t("run.selection.specHint")}</span>
+            </span>
+          </dd>
+          {run.dispatches.length > 0 && (
+            <>
+              <dt>{t("run.selection.results")}</dt>
+              <dd>
+                <span className="row">
+                  <a className="btn btn-small" href={resultsExportUrl(run.id)} download={`results-${run.id}.ctrf.json`} data-testid="results-export">
+                    CTRF
+                  </a>
+                  <span className="hint">{t("run.selection.resultsHint")}</span>
+                </span>
+              </dd>
+            </>
+          )}
+        </dl>
       </section>
     </div>
   );

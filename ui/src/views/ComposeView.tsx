@@ -216,6 +216,9 @@ export function ComposeView({ route }: { route: Route }) {
     setUnreadableLink(parsed.unreadable);
     setExcluded(new Set(incoming.excluded));
     setFrom(incoming.from);
+    // A dialog that was open belongs to the selection that was there before.
+    setPickerGroup(null);
+    setExporting(false);
   }, [route.query]);
 
   useEffect(() => {
@@ -565,6 +568,11 @@ export function ComposeView({ route }: { route: Route }) {
             const body = collect();
             if (!body) throw new Error(t("compose.blocked.updating"));
             return api.createRun({ ...body, dispatch: { mode: "export", format } });
+          }}
+          previewSpec={async () => {
+            const body = collect();
+            if (!body) throw new Error(t("compose.blocked.updating"));
+            return (await api.specPreview(body)).spec;
           }}
           onClose={() => setExporting(false)}
         />

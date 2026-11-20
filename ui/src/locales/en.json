@@ -104,8 +104,7 @@
     "FAIL": "failed",
     "ERROR": "error",
     "SKIP": "skipped",
-    "MISSING": "missing",
-    "RUNNING": "reported live"
+    "MISSING": "missing"
   },
   "health": {
     "ok": "available",
@@ -388,6 +387,8 @@
     "noToken": "This server accepts results without a token.",
     "stepPush": "Send the results back",
     "pushHint": "Post the result files to the run, for example:",
+    "preview": "Show the document first",
+    "previewHint": "This is the document as it would be composed now. Nothing has been created yet.",
     "openRun": "Open the run"
   },
   "runs": {
@@ -440,6 +441,7 @@
       "one": "Re-run {count} failure",
       "other": "Re-run {count} failures"
     },
+    "rerunFailedAny": "Re-run the failures",
     "load": "Load into Compose",
     "finalize": "Close as it stands",
     "finalizeTitle": "Close this run as it stands?",
@@ -526,6 +528,9 @@
       "expect": "Result format",
       "dispatch": "How it was run",
       "spec": "Run spec",
+      "downloads": "Downloads",
+      "results": "Results",
+      "resultsHint": "The latest results as a CTRF document, for other tools.",
       "specHint": "The stored document, without any token."
     },
     "activity": {

@@ -83,10 +83,21 @@ function ArtifactLinks({ artifacts }: { artifacts: Artifact[] }) {
   );
 }
 
-function ShardCard({ shard, artifacts, live, running }: { shard: ShardSummary; artifacts: Artifact[]; live: number; running: boolean }) {
+function ShardCard({
+  shard,
+  artifacts,
+  live,
+  running,
+}: {
+  shard: ShardSummary;
+  artifacts: Artifact[];
+  /** Counts by status of what the shard has reported live so far. */
+  live: Record<string, number>;
+  running: boolean;
+}) {
   const { t } = useI18n();
-  const reported = shard.delivered ? shard.count : live;
-  const counts = shard.delivered ? shard.summary : {};
+  const counts = shard.delivered ? shard.summary : live;
+  const reported = shard.delivered ? shard.count : sumCounts(live);
   return (
     <li className="shard-card" data-shard={shard.shard}>
       <div className="shard-head">
@@ -97,7 +108,7 @@ function ShardCard({ shard, artifacts, live, running }: { shard: ShardSummary; a
           <span className={`badge badge-${running ? "running" : "neutral"}`}>{running ? t("run.shardRunning") : t("run.shardWaiting")}</span>
         )}
       </div>
-      <VerdictBar counts={shard.delivered ? counts : live > 0 ? { RUNNING: live } : {}} planned={shard.planned ?? reported} active={!shard.delivered && running} />
+      <VerdictBar counts={counts} planned={shard.planned ?? reported} active={!shard.delivered && running} />
       <p className="shard-numbers">
         {shard.planned !== null
           ? t("run.shardProgress", { done: reported, total: shard.planned })
@@ -117,7 +128,7 @@ export function RunResults({ run }: { run: RunDetail }) {
   const [search, setSearch] = useState("");
   const [opened, setOpened] = useState<ResultRow | null>(null);
   const narrow = useMediaQuery("(max-width: 700px)");
-  const rowHeight = narrow ? 84 : 40;
+  const rowHeight = narrow ? 84 : 44;
 
   const dispatch = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id) ?? null;
   const all = useMemo(() => resultRows(run.verdicts), [run.verdicts]);
@@ -147,8 +158,13 @@ export function RunResults({ run }: { run: RunDetail }) {
   const virtual = useVirtual<HTMLDivElement>(rows.length, rowHeight, 12, 37);
 
   const liveByShard = useMemo(() => {
-    const live = new Map<string, number>();
-    for (const row of run.verdicts) if (row.live) live.set(row.shard, (live.get(row.shard) ?? 0) + 1);
+    const live = new Map<string, Record<string, number>>();
+    for (const row of run.verdicts) {
+      if (!row.live) continue;
+      const counts = live.get(row.shard) ?? {};
+      counts[row.status] = (counts[row.status] ?? 0) + 1;
+      live.set(row.shard, counts);
+    }
     return live;
   }, [run.verdicts]);
   const running = dispatch?.state === "RUNNING" || dispatch?.state === "DISPATCHED";
@@ -168,7 +184,7 @@ export function RunResults({ run }: { run: RunDetail }) {
                 key={entry.shard}
                 shard={entry}
                 artifacts={artifacts.filter((artifact) => artifact.shard === entry.shard)}
-                live={liveByShard.get(entry.shard) ?? 0}
+                live={liveByShard.get(entry.shard) ?? {}}
                 running={running}
               />
             ))}
@@ -294,7 +310,9 @@ export function RunResults({ run }: { run: RunDetail }) {
                           <VerdictBadge status={row.status} live={row.live} />
                           {row.live && <span className="live-dot" aria-hidden="true" title={t("run.live")} />}
                         </td>
-                        <td className="col-item mono">{row.item_id}</td>
+                        <td className="col-item mono" title={row.item_id}>
+                          <span className="clamp">{row.item_id}</span>
+                        </td>
                         <td className="col-shard" data-label={t("run.column.shard")}>
                           {row.shard || "–"}
                         </td>
@@ -358,9 +376,10 @@ export function runProgress(run: RunDetail): { counts: Record<string, number>; d
     if (!entry.delivered) continue;
     for (const [status, value] of Object.entries(entry.summary)) counts[status] = (counts[status] ?? 0) + value;
   }
-  let live = 0;
-  for (const row of run.verdicts) if (row.live && !delivered.has(row.shard)) live += 1;
-  if (live > 0) counts.RUNNING = live;
+  // A shard that has not delivered counts with what it reported live so far.
+  for (const row of run.verdicts) {
+    if (row.live && !delivered.has(row.shard)) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  }
   const done = sumCounts(counts);
   const planned = dispatch?.planned_verdicts ?? Math.max(run.planned_count, done);
   return { counts, done, planned: Math.max(planned, done) };

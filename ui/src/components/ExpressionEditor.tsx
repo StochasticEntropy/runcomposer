@@ -166,16 +166,11 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
       aria-label={t(isRoot ? "filter.rootGroup" : "filter.group", { op: t(`filter.op.${node.op}`) })}
     >
       <div className="expr-group-head">
-        <button
-          type="button"
-          className={`toggle-not${node.negated ? " is-on" : ""}`}
-          aria-pressed={node.negated}
-          onClick={() => actions.toggleNot(node.id)}
-          title={t("filter.negateGroup")}
-        >
-          {t("filter.not")}
-          <span className="sr-only"> — {t("filter.negateGroup")}</span>
-        </button>
+        {node.negated && (
+          <span className="not-mark" aria-hidden="true">
+            {t("filter.not")}
+          </span>
+        )}
         <label className="sr-only" htmlFor={opId}>
           {t("filter.combine")}
         </label>
@@ -188,24 +183,27 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
           <option value="AND">{t("filter.opLong.AND")}</option>
           <option value="OR">{t("filter.opLong.OR")}</option>
         </select>
-        {!isRoot && (
-          <span className="expr-group-tools">
-            {!node.negated && (
-              <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.ungroup(node.id)}>
-                {t("filter.ungroup")}
+        <span className="expr-group-tools">
+          <NotToggle on={node.negated} label={t("filter.negateGroup")} onToggle={() => actions.toggleNot(node.id)} />
+          {!isRoot && (
+            <>
+              {!node.negated && (
+                <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.ungroup(node.id)}>
+                  {t("filter.ungroup")}
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => actions.remove(node.id)}
+                aria-label={t("filter.removeGroup")}
+                title={t("filter.removeGroup")}
+              >
+                ×
               </button>
-            )}
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => actions.remove(node.id)}
-              aria-label={t("filter.removeGroup")}
-              title={t("filter.removeGroup")}
-            >
-              ×
-            </button>
-          </span>
-        )}
+            </>
+          )}
+        </span>
       </div>
 
       {node.children.length > 0 && (
@@ -314,17 +312,10 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
 
   return (
     <span className={`chip${node.negated ? " is-negated" : ""}${invalid ? " is-invalid" : ""}`} data-pattern={node.pattern}>
-      {!everything && (
-        <button
-          type="button"
-          className={`toggle-not${node.negated ? " is-on" : ""}`}
-          aria-pressed={node.negated}
-          aria-label={t("filter.negateRule", { pattern: spoken })}
-          title={t("filter.negateRule", { pattern: spoken })}
-          onClick={() => actions.toggleNot(node.id)}
-        >
+      {node.negated && !everything && (
+        <span className="not-mark" aria-hidden="true">
           {t("filter.not")}
-        </button>
+        </span>
       )}
       <button
         type="button"
@@ -342,10 +333,12 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
         ) : (
           <>
             {kind !== "tag" && <span className="chip-kind">{t(`filter.kind.${kind}`)}</span>}
-            <span className={kind === "tag" ? undefined : "mono"}>{label && kind !== "tag" ? `${label} · ${body}` : body}</span>
+            {/* A curated name explains a regular expression; a tag or a prefix explains itself. */}
+            <span className={kind === "tag" ? undefined : "mono"}>{label && kind === "regex" ? `${label} · ${body}` : body}</span>
           </>
         )}
       </button>
+      {!everything && <NotToggle on={node.negated} label={t("filter.negateRule", { pattern: spoken })} onToggle={() => actions.toggleNot(node.id)} />}
       <button
         type="button"
         className="chip-remove"
@@ -356,6 +349,20 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
         ×
       </button>
     </span>
+  );
+}
+
+// NOT is a switch on a rule or a group. It is drawn as its own small button
+// behind the rule — while it is off, nothing in front of the rule reads as
+// "NOT"; while it is on, the rule is marked red and says NOT in front.
+function NotToggle({ on, label, onToggle }: { on: boolean; label: string; onToggle: () => void }) {
+  return (
+    <button type="button" className={`toggle-not${on ? " is-on" : ""}`} aria-pressed={on} aria-label={label} title={label} onClick={onToggle}>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+        <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.6" />
+        <path d="M3.9 12.1 12.1 3.9" stroke="currentColor" strokeWidth="1.6" />
+      </svg>
+    </button>
   );
 }
 
