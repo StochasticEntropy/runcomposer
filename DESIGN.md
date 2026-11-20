@@ -1100,9 +1100,14 @@ Two safety properties of the route, both deliberate:
 2. **Sandboxed delivery.** Artifact bytes are untrusted content served from
    the same origin as the API and the UI. They go out with
    `Content-Security-Policy: default-src 'none'; sandbox` and
-   `X-Content-Type-Options: nosniff`, so an HTML artifact cannot script
-   against this origin. A report that needs its own JavaScript does not
-   render — host those where they belong and record the URL.
+   `X-Content-Type-Options: nosniff`, so an artifact cannot script against
+   this origin. A `text/html` artifact — a framework's log or report is an
+   HTML *application* and is a blank page without its own script — gets
+   `sandbox allow-scripts` with inline script and style and embedded images
+   allowed and everything else still denied: without `allow-same-origin` it
+   has an origin of its own and cannot read or call this server as the user,
+   `default-src 'none'` lets it load and connect to nothing, and
+   `form-action 'none'` lets it post nothing.
 
 **Retention is config, not an afterthought:** `core.retention.max_age_days`
 (`null` = no age limit) and `max_runs`, applied by `runcomposer gc`.
@@ -1504,6 +1509,7 @@ GET    /api/v1/runs/{id}                  # detail (below)
 DELETE /api/v1/runs/{id}
 GET    /api/v1/runs/{id}/items            # the materialized selection
 GET    /api/v1/runs/{id}/spec             # the stored document (never a token)
+GET    /api/v1/runs/{id}/export?format=ctrf  # the results as a CTRF download (what `export` writes)
 GET    /api/v1/runs/{id}/events?after=    # the event stream after a cursor; wait= long-polls
 GET    /api/v1/runs/{id}/verdicts         # dispatch, shard, status filters (status=RUNNING:
                                           #   what is executing now); limit/offset
@@ -1649,34 +1655,47 @@ neither is a degraded version of the other:
    sugar lives here.
 2. **Config-driven environment** — whatever the deployment puts under `ui:` is
    served from `/api/v1/ui-config`, never hardcoded (§8). The UI reads
-   `quick_filters` as starting points of a selection; using `default_filter`
-   and `presets` (also served by `GET /api/v1/presets`) is `[planned]`, and so
-   are `examples`, so a key the UI does not yet read is served and silently
-   ignored. Partitions are not a UI setting: they are the `partitions`
-   parameter a runner declares, chosen in the runner form.
-3. **Runner-aware compose footer** — "Run with: [robot-pool ▾] | Export spec";
-   runs list shows dispatch mode + lifecycle state incl. `AWAITING_RESULTS`;
-   an inbox view for unmatched (quarantined) deliveries.
+   `quick_filters` as starting points of a selection (one pattern is added
+   as a rule, a whole expression becomes the filter), starts a new selection
+   from `default_filter` — only when the URL carries no selection and the
+   session has no draft to come back to — and offers `presets` (read from
+   `GET /api/v1/presets`), each of which fills selection, runner, the
+   runner's options, title and labels. `examples` is `[planned]`, so a key
+   the UI does not yet read is served and silently ignored. Partitions are
+   not a UI setting: they are the `partitions` parameter a runner declares,
+   chosen in the runner form.
+3. **Runner-aware run bar** — what would run, with which runner, and the
+   actions Plan / Export / Run, in a bar that stays in reach at any scroll
+   position and width; runs list shows dispatch mode + lifecycle state incl.
+   `AWAITING_RESULTS`; an inbox view for unmatched (quarantined) deliveries.
 
 **What the UI covers of the 0.2 API.** Four hash routes — `#/compose`,
 `#/runs`, `#/runs/<id>`, `#/inbox` — so a deep link survives a reload
 without the server knowing a single UI route, and the UI works unchanged
 behind a reverse proxy that mounts it under a path prefix. Compose: the tag
 picker, the filter editor, the auto-compiled preview, a runner form rendered
-from the runner's declared parameters with its health status, and export
-with the document downloaded byte-exact from `spec_url` (§9). Runs: paging,
-search, state and label filters. A run: the lifecycle states and statuses
-0.2 added (`FAILED`, `CANCELLED`, `STALE`; `MISSING`, `INCOMPLETE`), the
-event stream followed live, the per-shard roll-up and artifact links,
-cancel, rerun (all, or what failed) and delete. Inbox: attach, promote,
-discard.
+from the runner's declared parameters — every kind, `text` and `mapping`
+included, a `pattern` checked before sending and the server's refusal put on
+the field — with the runner's health status and, where it reports them, its
+checks one by one (`health.data.checks`); a plan preview (`POST /plan`,
+§6.2) for a runner with the `plan` capability, showing shards, groups,
+estimates and notes or the refusal a dispatch would meet; and export with
+the document downloaded byte-exact from `spec_url` (§9). The preview of the
+selection and the plan are each the answer to what is on screen or are not
+shown: a request is keyed by what it asks, a newer question aborts it, and a
+late answer is dropped. Runs: paging, search, state and label filters. A
+run: the lifecycle states and statuses 0.2 added (`FAILED`, `CANCELLED`,
+`STALE`; `MISSING`, `INCOMPLETE`), the event stream followed live, the
+`RUNNING` live status per item (listed and counted as running, never as a
+result), the roll-up per shard and — where the runner declared groups — per
+group, with artifact links (a recorded directory is listed, not linked),
+`last_live` on a `MISSING` row after a cancel, cancel, rerun (all, or what
+did not pass, optionally with a title; the new run links back through
+`rerun_of`), a plan for the stored run (`POST /runs/{id}/plan`) and delete.
+Inbox: attach, promote, discard.
 
-What the API offers beyond that is `[planned]` on the UI side: plan previews
-(`POST /plan`, §6.2), form fields for the `text` and `mapping` parameter
-kinds and for a parameter's `pattern`, the `RUNNING` live status per item
-and `live_summary`, the shard groups and their roll-up, presets and the
-default filter, a runner's health `data` (what its checks found), and
-`last_live` on a `MISSING` row.
+Not in the UI: uploading results (§5), and the label-scoped history picker
+of §7 — a rerun is an action of one run.
 
 **Stack — decided:** TypeScript and React, and nothing else at run time —
 React and React DOM are the only dependencies. What earlier versions took
@@ -1825,7 +1844,7 @@ as history; `CHANGELOG.md` says what changed.
 | 5 | `runcomposer-exec` distribution | **Both by construction**: stdlib-only single file, also pipx-installable; JSON spec input so zero deps. |
 | 6 | Who mints the dispatch id (2026-08-28; the mechanism is superseded by #11/#12) | **runcomposer does**, offered to the runner as a `DispatchReservation` via the optional `bind_dispatch` hook (§6.2); the runner decides *when* the hand-off is recorded, and the returned handle refines the declaration. Rejected: passing the id into `dispatch()` (breaks the published signature), and letting bound runners write their own dispatch rows (duplicates the ledger, unavailable to unbound runners, and lets a runner's own id drift from its configured `mode`). A refused dispatch — refusal always precedes the recording — leaves **no** row. |
 | 7 | Shape of the shard in run detail (2026-08-28) | **Label the flat verdict list, add a sibling roll-up** (§9). Rejected: nesting verdicts by shard — it breaks every existing reader for a view a per-item table does not want; and leaving the aggregation to clients — the fan-out question is the reason shards exist, so answering it is the payload's job. |
-| 8 | Serving local artifacts (2026-08-28) | **Containment + sandbox** (§6.4): resolve the path fully and refuse anything not strictly inside `core.artifact_dir` (one rule covering `..`, absolute paths and symlinks), refuse as `404` so probing is uninformative, and serve with `sandbox`/`default-src 'none'`/`nosniff` because the bytes are attacker-influenced and share an origin with the UI. Accepted cost: a scripted HTML report renders inert; the §6.4 pass-through (host it elsewhere, record the URL) is the answer for those. Rejected: a bare static mount (no containment story, scripts live), and forcing `Content-Disposition: attachment` on everything (kills the one-click log the feature exists for). |
+| 8 | Serving local artifacts (2026-08-28) | **Containment + sandbox** (§6.4): resolve the path fully and refuse anything not strictly inside `core.artifact_dir` (one rule covering `..`, absolute paths and symlinks), refuse as `404` so probing is uninformative, and serve with `sandbox`/`default-src 'none'`/`nosniff` because the bytes are attacker-influenced and share an origin with the UI. A `text/html` artifact may run its own inline script inside that sandbox (`allow-scripts` without `allow-same-origin`, nothing loadable or reachable) — a framework's log is an application and was a blank page without it. Rejected: a bare static mount (no containment story, scripts live), and forcing `Content-Disposition: attachment` on everything (kills the one-click log the feature exists for). |
 | 10 | Where the taxonomy resolves (2026-09-03) | **Server-side, opt-in per request** (`?resolve=true`, §2/§9). Server-side because the tag universe is the catalog and the matcher is `core.filter`: resolving in the UI would mean shipping the whole catalog to the browser and reimplementing the §3.1 grammar — its case rules included — in JavaScript, where it would drift from the one the selection actually compiles with. Opt-in because the unresolved body is published API. Rejected: resolving unconditionally (changes every response and charges every caller for it), a second endpoint (duplicates the §8 error contract for the same document in the same grammar), and extending the *file* format so a leaf could carry several tags (the limitation is deliberate — the tree hands the builder one pattern, docs/taxonomy.md — and it would put the corpus into the file, which is exactly what drifts). |
 | 9 | History scope syntax (2026-08-28) | **A query-string suffix on the selector**, `<verdict>@<selector>?key=value&…` (§7), because `?`/`&` cannot occur in an ISO-8601 time or a run id, it survives a shell, an HTTP body and a spec field unchanged, and it composes with every existing selector. A scope on `run:<id>` is **refused, not ignored** — it can only mislead. Rejected: a second CLI-only flag (invisible in the API and in `derived_from`), and bracket/semicolon forms (quoting hazards, no established reading). |
 | 11 | Who owns the lifecycle (0.2) | **The core, per dispatch.** One transition function; a run's headline is derived from its latest dispatch (§4). Rejected: a run state any caller may set (0.1) — a refused re-dispatch erased a finished run, and a late bundle for an old dispatch rewrote the headline. Supersedes #6: the dispatch id is still runcomposer's, but the hand-off is now `ctx.declare`, not a reservation object and a returned handle. |

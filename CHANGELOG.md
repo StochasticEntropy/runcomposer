@@ -414,7 +414,64 @@ where the member, field or behaviour did not exist or worked differently.
 
 ### Web UI
 
-<!-- PLACEHOLDER: the web UI rework's changes are filled in at merge. -->
+Rebuilt against the 0.2 API, in TypeScript; React and React DOM are the only
+run-time dependencies.
+
+- Four views with their own URLs — Compose, Runs, a run, Inbox. A selection
+  can be shared as a link, a run can be linked to, and a reload or a trip to
+  another view loses nothing. An edit of the filter is a step in the
+  browser's history.
+- One filter editor over the run spec's filter grammar: rules, groups, NOT as
+  a labelled switch, and the same expression as text. The third-party filter
+  widget is gone.
+- The tag picker shows item counts, says what applying will add and remove
+  and how many items result; unticking a tag removes it.
+- The preview is always the answer to the filter on screen or says it is not,
+  and a run can only be started from a current preview. Unticked items
+  survive filter edits. Search, sort, group by suite; rows are rendered as
+  needed.
+- A plan can be read before a run is started, for the selection in the
+  builder and for a stored run: shards, groups, estimates and the runner's
+  notes — or the refusal a dispatch would meet. Offered for runners with the
+  `plan` capability; never the plan of anything but what is on screen.
+- Runner options are a form rendered from what the runner declares — string,
+  text, integer, boolean, choice, multi-choice and mapping, with a declared
+  pattern checked before sending; a refusal by the server lands on its field.
+  Unhealthy runners are listed with the reason, and a runner's own health
+  checks one by one.
+- A deployment's presets fill selection, runner, options, title and labels;
+  its default filter is where a new selection starts; a quick filter may be a
+  whole expression.
+- The Run, Plan and Export actions sit in a bar that stays in reach at any
+  scroll position and width.
+- A run's page follows it live — progress per shard and, where the runner
+  declares groups, per group; what is running right now; cancel — and shows
+  failures first with durations, attempts and each shard's log and report.
+  After a cancel a missing item says what it was doing when the run stopped.
+  Run again, re-run what did not pass (optionally under a new title, with a
+  link back to the source run), load the selection back into the builder,
+  export, close as it stands, delete.
+- Export downloads the server's exact bytes and shows the ingest token once;
+  the document can be previewed before and downloaded again later. Results
+  can be downloaded as CTRF.
+- The inbox names runs by title, asks before discarding and has a count in
+  the navigation.
+- English and German throughout, including states, results and error codes.
+  Keyboard operation of the main flow, phone-sized screens, light and dark.
+- Browser end-to-end tests (`npm run e2e`) drive the built UI against real
+  servers; unit and component tests run under vitest; `npm run lint` is
+  eslint plus the TypeScript check.
+
+API additions that came with it:
+
+- A dispatch reports `planned_verdicts`; each shard of a run's roll-up
+  reports `planned` (both null when a runner declared shard names only).
+- An `invalid-parameter` error carries `parameter`, the name of the option.
+- `GET /api/v1/runs/{id}/export?format=ctrf` — the document `runcomposer
+  export` writes, as a download.
+- A `text/html` artifact is served with `sandbox allow-scripts` — an origin
+  of its own, nothing loadable or reachable — so a framework's log renders.
+  Every other type keeps the policy without script.
 
 ### Known limits
 

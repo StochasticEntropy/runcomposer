@@ -190,7 +190,9 @@ pip install -e ".[dev]" && pytest         # Python 3.10–3.13 (add the [robot] 
 ruff check src tests && mypy              # lint + type check, both kept clean
 python ci/jenkins/e2e.py                  # the jenkins runner against a real Jenkins (needs docker)
 cd ui && npm ci && npm run dev            # UI dev server (proxies to :8100)
+npm test && npm run lint                  # UI unit tests; eslint + TypeScript check
 npm run build                             # rebuild src/runcomposer/ui_dist
+npm run e2e                               # the built UI in a browser against real servers
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the boundaries that matter, and
