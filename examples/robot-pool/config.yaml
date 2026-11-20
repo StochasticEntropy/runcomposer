@@ -25,3 +25,27 @@ runners:
       us: { CURRENCY: USD }
     executed_tag: "Executed_{partition}"
     rerun_failed: 1
+  # The same runner configured the other way round: the selection is
+  # DISTRIBUTED over the partitions (every test runs once, the partitions are
+  # parallel lanes), each lane executes in chunks of two tests, and every
+  # chunk is a shard of its own — delivered when it is done, grouped by
+  # partition. `runcomposer plan Cart --runner robot-lanes --config …` shows
+  # which test goes where without running anything.
+  robot-lanes:
+    plugin: robot-pool
+    suite_root: ../robot-shop/tests
+    max_workers: 2
+    partitions: [eu, us]
+    partition_mode: split
+    max_tests_per_chunk: 2
+    chunk_shards: true
+    partition_variables:
+      eu: { CURRENCY: EUR }
+      us: { CURRENCY: USD }
+    # Extra per-run parameters, declared here and turned into Robot variables:
+    #   --param 'variables={LOCALE: de}' --param browser=chromium
+    run_parameters:
+      - { name: variables, kind: mapping, label: "Extra variables" }
+      - { name: browser, kind: choice, choices: [firefox, chromium], default: firefox }
+    parameter_variables: { variables: "*", browser: BROWSER }
+    history_statuses: [PASS]      # balance by how long tests take when they pass

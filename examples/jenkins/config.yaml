@@ -13,6 +13,21 @@
 # `parameters` maps the job's build-parameter names to templates; the first
 # four are the runner's defaults, HOLD_SECONDS shows a per-run parameter
 # (`run_parameters`) travelling to the job: `--param hold_s=60`.
+#
+# Two more entries drive a second job, `runcomposer-fanout`, that runs the
+# selection in several regions — one build, one shard per region:
+#   - `jenkins-fanout` (poll): the shards come from a per-run parameter, the
+#     document travels compressed (`{spec_b64}`), a build parameter is
+#     computed from the selection (`field_providers`), and the results are
+#     read from the build's console log — a URL below the build that is not
+#     an archived artifact (`result_urls`) — and cut out of it per region
+#     before parsing (`postprocess`).
+#   - `jenkins-fanout-push` (callback): the same job pushes each region's
+#     bundle itself, with live status and log lines while it runs.
+# Their two callables live in shop_job.py next to this file; start
+# runcomposer with this directory importable (PYTHONPATH=examples/jenkins).
+#
+#   runcomposer plan Payments-Cards --runner jenkins-fanout --param 'regions=[eu,apac]' --config …
 core:
   artifact_dir: state/artifacts
   ingestion: { inbox: null }
@@ -50,3 +65,40 @@ runners:
     api_token: "${env:JENKINS_API_TOKEN:-}"
     parameters: *job-parameters
     run_parameters: *run-parameters
+  jenkins-fanout:
+    plugin: jenkins
+    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    job: runcomposer-fanout
+    completion: poll
+    poll_interval_s: 2
+    user: "${env:JENKINS_USER:-admin}"
+    api_token: "${env:JENKINS_API_TOKEN:-}"
+    run_parameters: &fanout-run-parameters
+      - { name: regions, kind: multi_choice, choices: [eu, us, apac], default: [eu, us],
+          label: Regions, help: "Each region runs the selection and reports as a shard of its own" }
+      - { name: hold_s, kind: integer, default: 0, label: "Hold (s)" }
+    shards: "{params[regions]}"
+    field_providers: { include: "shop_job:include_tags" }
+    parameters: &fanout-parameters
+      SPEC_B64: "{spec_b64}"          # gzip + base64 of the exact bytes
+      REGIONS: "{shards}"
+      INCLUDE: "{include}"            # computed from the selection
+      DISPATCH_ID: "{dispatch_id}"
+      HOLD_SECONDS: "{params[hold_s]}"
+    result_urls: [consoleText]        # below the build's URL; nothing is archived
+    postprocess: "shop_job:results_from_console"
+  jenkins-fanout-push:
+    plugin: jenkins
+    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    job: runcomposer-fanout
+    completion: callback
+    callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
+    user: "${env:JENKINS_USER:-admin}"
+    api_token: "${env:JENKINS_API_TOKEN:-}"
+    run_parameters: *fanout-run-parameters
+    shards: "{params[regions]}"
+    field_providers: { include: "shop_job:include_tags" }
+    parameters:
+      <<: *fanout-parameters
+      CALLBACK_URL: "{callback_url}"
+      INGEST_TOKEN: "{token}"

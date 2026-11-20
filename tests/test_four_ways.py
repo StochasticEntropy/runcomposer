@@ -67,6 +67,29 @@ def test_1_in_process_pool_robot(tmp_path, capsys):
     assert run["verdict_summary"] == {"PASS": 4}
 
 
+@needs_robot
+def test_1b_the_pool_configured_as_lanes(tmp_path, capsys):
+    """The example's second entry: the selection distributed over the
+    partitions, every chunk a shard of its own, grouped by partition."""
+    root = copy_examples(tmp_path, "robot-pool", "robot-shop")
+    config = str(root / "robot-pool" / "config.yaml")
+    code, plan = run_cli(capsys, "plan", "Cart", "--runner", "robot-lanes", "--config", config)
+    assert code == 0 and plan["refused"] is False
+    planned = [item for shard in plan["plan"]["shards"] for item in shard["item_ids"]]
+    assert len(planned) == len(set(planned)) == plan["item_count"], "each test once"
+    assert {group["group"] for group in plan["plan"]["groups"]} == {"eu", "us"}
+    assert not (root / "robot-pool" / "state" / "artifacts").exists(), "a plan runs nothing"
+
+    code, run = run_cli(capsys, "run", "Cart", "--runner", "robot-lanes", "--param", "variables={LOCALE: de}",
+                        "--param", "browser=chromium", "--config", config)
+    assert run["state"] == "COMPLETE", run
+    assert [s["shard"] for s in run["shards"]] == [s["shard"] for s in plan["plan"]["shards"]]
+    assert sum(run["verdict_summary"].values()) == run["planned_count"] == plan["item_count"]
+    assert [group["group"] for group in run["groups"]] == ["eu", "us"]
+    assert all(group["delivered_shards"] == group["declared_shards"] for group in run["groups"])
+    assert run["dispatches"][-1]["parameters"]["variables"] == {"LOCALE": "de"}
+
+
 def test_3_local_command_pytest(tmp_path, capsys, monkeypatch):
     root = copy_examples(tmp_path, "pytest-shop")
     config = str(root / "pytest-shop" / "config.yaml")
@@ -124,6 +147,54 @@ def test_2_remote_ci_trigger_jenkins_poll_and_callback(tmp_path, capsys, monkeyp
     assert sent["CALLBACK_URL"] == f"http://runcomposer.shop.example:8100/api/v1/runs/{run['id']}/results"
     assert sent["INGEST_TOKEN"].startswith("rct_")
     assert json.loads(sent["SPEC_JSON"])["run"]["id"] == run["id"]
+
+
+def fanout_job(build: Any) -> None:
+    """What the ci/jenkins fan-out job does without a callback URL: run the
+    spec once per region and print each region's results into the console
+    log. It archives nothing."""
+    from runcomposer.sdk.jenkins import decode_spec
+
+    spec = json.loads(decode_spec(build.params["SPEC_B64"]))
+    ids = spec["selection"]["materialized"]["item_ids"]
+    console = [f"regions: {build.params['REGIONS']}; include: {build.params['INCLUDE']}"]
+    for region in build.params["REGIONS"].split(","):
+        results = {"format": "runcomposer-verdicts",
+                   "verdicts": [{"name": item_id, "status": "PASS", "duration_ms": 5} for item_id in ids]}
+        console += [f"=== results {region} ===", json.dumps(results, indent=2), "=== end ==="]
+    build.pages["consoleText"] = "\n".join(console).encode()
+
+
+def test_2b_a_job_that_fans_out_configured_not_coded(tmp_path, capsys, monkeypatch, jenkins_job):
+    """The example's `jenkins-fanout` entry: several shards from a per-run
+    parameter, a build parameter computed from the selection, results read
+    from the console log and cut out of it — all configuration, plus the two
+    small callables next to the config file."""
+    root = copy_examples(tmp_path, "jenkins")
+    config = str(root / "jenkins" / "config.yaml")
+    jenkins_job.add_job("runcomposer-fanout", fanout_job)
+    monkeypatch.setenv("JENKINS_URL", jenkins_job.url)
+    monkeypatch.syspath_prepend(str(root / "jenkins"))   # PYTHONPATH=examples/jenkins
+
+    code, plan = run_cli(capsys, "plan", "Payments-Cards", "--runner", "jenkins-fanout",
+                         "--param", "regions=[eu,apac]", "--config", config)
+    assert code == 0 and plan["plan"]["data"]["build_parameters"]["INCLUDE"] == "Payments-Cards"
+    assert jenkins_job.triggers() == []
+
+    code, run = run_cli(capsys, "run", "Payments-Cards", "--runner", "jenkins-fanout",
+                        "--param", "regions=[eu,apac]", "--config", config)
+    assert code == 0, run
+    assert (run["state"], run["completion"]) == ("COMPLETE", "PASS")
+    assert [(s["shard"], s["delivered"], s["count"]) for s in run["shards"]] == [("eu", True, 6), ("apac", True, 6)]
+    sent = jenkins_job.triggers()[-1].form
+    assert (sent["REGIONS"], sent["INCLUDE"]) == ("eu,apac", "Payments-Cards") and "SPEC_JSON" not in sent
+    assert jenkins_job.gets("/artifact/") == [] and len(jenkins_job.gets("/consoleText")) == 2
+
+    # A selection the job cannot express is refused before anything is sent.
+    code = main(["run", "Cart", "--runner", "jenkins-fanout", "--config", config])
+    captured = capsys.readouterr()
+    assert code == 3 and "belongs to none of them" in captured.err + captured.out
+    assert len(jenkins_job.triggers()) == 1
 
 
 def test_4_export_remote_agent_is_covered_by_its_own_round_trip_test():

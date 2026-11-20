@@ -56,3 +56,41 @@ jobs:
           }
         }
       }
+      freeStyleJob('runcomposer-fanout') {
+        description('A job that fans out: it runs the passed spec once per region and reports each region as a shard of its own (runcomposer DESIGN.md §6.2b). Without a callback URL it prints the results into its console log and archives nothing; with one, runcomposer-exec pushes each region itself, reporting progress while it works.')
+        parameters {
+          textParam('SPEC_B64', '', 'the runspec document, gzip + base64 (the exact bytes)')
+          stringParam('REGIONS', 'eu', 'comma-separated regions; each is one shard')
+          stringParam('INCLUDE', '', 'the feature tags of the selection (computed by runcomposer)')
+          stringParam('DISPATCH_ID', '', 'dispatch id minted by runcomposer for this hand-off')
+          stringParam('CALLBACK_URL', '', 'results push endpoint; empty: print the results into the console log')
+          stringParam('HOLD_SECONDS', '0', 'wait this long before executing (lets a test cancel a running build)')
+        }
+        configure { project ->
+          project / 'properties' / 'hudson.model.ParametersDefinitionProperty' / 'parameterDefinitions' << 'hudson.model.PasswordParameterDefinition' {
+            name('INGEST_TOKEN')
+            description('ingest token of this dispatch')
+          }
+        }
+        steps {
+          shell('''#!/bin/bash -e
+      rm -rf results spec.json
+      printf '%s' "$SPEC_B64" | base64 -d | gunzip > spec.json
+      if [ "^${HOLD_SECONDS:-0}" -gt 0 ]; then echo "holding for $HOLD_SECONDS s"; sleep "$HOLD_SECONDS"; fi
+      echo "regions: $REGIONS; include: $INCLUDE"
+      for region in $(echo "$REGIONS" | tr ',' ' '); do
+        if [ -n "$CALLBACK_URL" ]; then
+          RUNCOMPOSER_INGEST_TOKEN="$INGEST_TOKEN" python3 /opt/runcomposer/runcomposer_exec.py spec.json \\
+            --out "results/$region" --simulate --seed "$region" --dispatch "$DISPATCH_ID" --shard "$region" \\
+            --callback "$CALLBACK_URL" --push
+        else
+          python3 /opt/runcomposer/runcomposer_exec.py spec.json \\
+            --out "results/$region" --simulate --seed "$region" --dispatch "$DISPATCH_ID" --shard "$region"
+          echo "=== results $region ==="
+          cat "results/$region/results.json"
+          echo "=== end ==="
+        fi
+      done
+      ''')
+        }
+      }
