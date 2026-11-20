@@ -11,21 +11,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
+from .errors import InvalidRequest
 from .filter import FilterError, parse_filter
 from .ids import new_ulid
+from .timeutil import parse_time, utc_now
 
 __all__ = [
-    "SPEC_VERSION",
     "KNOWN_SECTIONS",
+    "SPEC_VERSION",
     "SpecLoadError",
     "ValidationReport",
     "build_spec",
@@ -40,8 +42,22 @@ KNOWN_SECTIONS = ("runspec", "run", "selection", "source", "results", "runner")
 _VERSION_RE = re.compile(r"\d+\.\d+")
 
 
-class SpecLoadError(ValueError):
+class SpecLoadError(InvalidRequest):
     """Raised when a spec file cannot be read or parsed."""
+
+    code = "spec-unreadable"
+
+
+# `date-time` is enforced by this checker, not left to whether an optional
+# format-validation package happens to be installed next to jsonschema.
+_FORMATS = FormatChecker(formats=())
+
+
+@_FORMATS.checks("date-time", raises=InvalidRequest)  # type: ignore[untyped-decorator, unused-ignore]
+def _is_date_time(value: Any) -> bool:
+    if isinstance(value, str):
+        parse_time(value)
+    return True
 
 
 _schema_cache: dict[str, Any] | None = None
@@ -54,10 +70,6 @@ def runspec_schema() -> dict[str, Any]:
         text = resources.files("runcomposer.schemas").joinpath("runspec-1.0.json").read_text("utf-8")
         _schema_cache = json.loads(text)
     return _schema_cache
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build_spec(
@@ -84,7 +96,7 @@ def build_spec(
     """
     if tag_filter is not None:
         parse_filter(tag_filter)
-    now = created_at or _utc_now()
+    now = created_at or utc_now()
 
     run: dict[str, Any] = {"id": run_id or new_ulid(), "title": title, "created_at": now}
     if labels:
@@ -168,9 +180,7 @@ def validate_document(doc: Any, *, for_dispatch: bool = False) -> ValidationRepo
         )
         return report
 
-    validator = Draft202012Validator(
-        runspec_schema(), format_checker=Draft202012Validator.FORMAT_CHECKER
-    )
+    validator = Draft202012Validator(runspec_schema(), format_checker=_FORMATS)
     for error in sorted(validator.iter_errors(doc), key=lambda e: list(map(str, e.absolute_path))):
         report.errors.append(f"{error.json_path}: {error.message}")
 
@@ -192,6 +202,13 @@ def validate_document(doc: Any, *, for_dispatch: bool = False) -> ValidationRepo
             f"$.selection.materialized: count is {materialized['count']} "
             f"but item_ids has {len(materialized['item_ids'])} entries"
         )
+    if isinstance(materialized, Mapping) and isinstance(materialized.get("item_ids"), list):
+        ids = [entry for entry in materialized["item_ids"] if isinstance(entry, str)]
+        if len(set(ids)) != len(ids):
+            report.errors.append(
+                "$.selection.materialized.item_ids: an id is listed more than once — "
+                "an item is planned once"
+            )
     if isinstance(selection, Mapping) and selection.get("tag_filter") is not None:
         try:
             parse_filter(selection["tag_filter"])

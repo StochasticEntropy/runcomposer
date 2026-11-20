@@ -150,5 +150,17 @@ class TestLoading:
 
         bad = tmp_path / "bad.json"
         bad.write_text("{nope", encoding="utf-8")
-        with pytest.raises(SpecLoadError, match="bad.json"):
+        with pytest.raises(SpecLoadError, match=r"bad\.json"):
             load_document(bad)
+
+
+def test_date_time_fields_are_checked_without_an_optional_format_package():
+    """`format: date-time` in the schema is enforced by runcomposer's own
+    checker — not left to whether a format-validation extra is installed."""
+    doc = make_spec()
+    assert validate_document(doc).ok
+    doc["run"]["created_at"] = "last tuesday"
+    report = validate_document(doc)
+    assert not report.ok and any("created_at" in error for error in report.errors)
+    doc["run"]["created_at"] = "2026-07-06T11:14:03+02:00"  # an offset is still a date-time
+    assert validate_document(doc).ok

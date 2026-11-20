@@ -112,12 +112,12 @@ class TestExplicitPicks:
         # Fixed AND (DESIGN.md §3.1): picks narrow the filter result.
         smoke_ids = [item.id for item in CORPUS if "Smoke" in item.tags]
         non_smoke = next(item.id for item in CORPUS if "Smoke" not in item.tags)
-        picks = smoke_ids[:2] + [non_smoke]
+        picks = [*smoke_ids[:2], non_smoke]
         compiled = Selection.from_data({"tag_filter": "Smoke", "item_ids": picks}).compile(CORPUS)
         assert {item.id for item in compiled} == set(smoke_ids[:2])
 
     def test_unknown_item_id_is_a_compile_error(self):
-        with pytest.raises(SelectionError, match="No.Such.Item"):
+        with pytest.raises(SelectionError, match=r"No\.Such\.Item"):
             Selection.from_data({"item_ids": ["No.Such.Item"]}).compile(CORPUS)
 
     def test_empty_selection_is_an_error(self):

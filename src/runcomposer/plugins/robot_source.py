@@ -8,22 +8,25 @@ Robot Framework is a dependency of this PLUGIN, installed via the
 
 from __future__ import annotations
 
-import hashlib
-import json
+import os
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
-from runcomposer.core.model import Item
+from runcomposer.sdk import ConfigError, Item, canonical_json, sha256_hex
 
 __all__ = ["RobotFrameworkSource"]
 
+#: What a suite tree is made of — the files whose change can change the catalog.
+_SUITE_SUFFIXES = (".robot", ".resource", ".rst", ".tsv", ".txt", ".py", ".yaml", ".json")
 
-def _require_robot():
+
+def _require_robot() -> Any:
     try:
         from robot.api import TestSuiteBuilder
     except ImportError as exc:
-        raise ImportError(
-            "the robotframework source needs Robot Framework — install the extra "
+        raise ConfigError(
+            "the robotframework source needs Robot Framework — install the extra: "
             "pip install 'runcomposer[robot]'"
         ) from exc
     return TestSuiteBuilder
@@ -31,53 +34,60 @@ def _require_robot():
 
 class RobotFrameworkSource:
     provider_id = "robotframework"
-
-    @staticmethod
-    def resolve_config_paths(options, resolve):
-        """§8 opt-in: ``root``/``roots`` are test checkouts, relative to the
-        config file's directory — so the same ``--config`` sees the same
-        corpus from any working directory."""
-        if "root" in options:
-            options["root"] = resolve(options["root"])
-        if isinstance(options.get("roots"), (list, tuple)):
-            options["roots"] = [resolve(entry) for entry in options["roots"]]
-        return options
+    PATH_OPTIONS = ("root", "roots")
 
     def __init__(self, root: str | None = None, roots: list[str] | None = None):
         """One suite root, or several.
 
-        A repository often holds more than one suite tree — components,
-        products, or a split between fast and slow suites — and they belong in
-        one catalog, because a tag filter is asked of the corpus, not of a
-        directory. Parsing each root separately (rather than pointing Robot at
-        their common parent) is what keeps the ids stable: Robot names the
-        root suite after the directory it was given, so a common parent would
-        prepend a segment to every longname and the ids in this catalog would
-        no longer be the ids in the ``output.xml`` that comes back.
+        A repository often holds more than one suite tree, and they belong in
+        one catalog. Each root is parsed on its own (rather than pointing
+        Robot at a common parent) because Robot names the root suite after
+        the directory it is given: a common parent would prepend a segment to
+        every longname, and the ids here would no longer be the ids in the
+        ``output.xml`` that comes back.
         """
         builder_cls = _require_robot()
         if roots is not None and not isinstance(roots, (list, tuple)):
-            raise ValueError("robotframework source 'roots' must be a list of paths")
+            raise ConfigError("robotframework source 'roots' must be a list of paths")
         given = ([root] if root is not None else []) + list(roots or ())
         if not given:
-            raise ValueError("the robotframework source needs 'root' or 'roots'")
-        self._roots = [Path(entry) for entry in given]
-        missing = [str(path) for path in self._roots if not path.exists()]
+            raise ConfigError("the robotframework source needs 'root' or 'roots'")
+        self.roots = [Path(entry) for entry in given]
+        missing = [str(path) for path in self.roots if not path.exists()]
         if missing:
-            raise ValueError(f"robotframework source root not found: {', '.join(missing)}")
+            raise ConfigError(f"robotframework source root not found: {', '.join(missing)}")
+        self._stamp = self.fingerprint()
         self._items: list[Item] = []
-        for path in self._roots:
-            self._collect(builder_cls().build(str(path)))
+        for path in self.roots:
+            self._collect(builder_cls().build(str(path)), str(path))
         self._by_longname = {item.id: item for item in self._items}
         # Two tests under one longname are one id for two tests: a selection
-        # cannot name one without the other, and neither can the results that
-        # come back. That is a defect in the suites, not in this catalog, so it
-        # is reported (``runcomposer catalog``) rather than raised — a corpus
-        # is not unusable because two of its tests are named alike.
+        # cannot name one without the other. A defect in the suites, so it is
+        # reported (`runcomposer catalog`, `doctor`) rather than raised.
         counts = Counter(item.id for item in self._items)
         self.duplicate_ids = sorted(item_id for item_id, n in counts.items() if n > 1)
 
-    def _collect(self, suite) -> None:
+    def fingerprint(self) -> str:
+        """Cheap staleness token: name, size and modification time of every
+        suite file under the roots — no parsing."""
+        entries: list[tuple[str, int, int]] = []
+        for root in self.roots:
+            if root.is_file():
+                stat = root.stat()
+                entries.append((str(root), stat.st_size, stat.st_mtime_ns))
+                continue
+            for directory, _dirs, files in os.walk(root):
+                for name in files:
+                    if name.endswith(_SUITE_SUFFIXES):
+                        path = os.path.join(directory, name)
+                        try:
+                            stat = os.stat(path)
+                        except OSError:
+                            continue
+                        entries.append((path, stat.st_size, stat.st_mtime_ns))
+        return sha256_hex(canonical_json(sorted(entries)))
+
+    def _collect(self, suite: Any, root: str) -> None:
         for test in suite.tests:
             self._items.append(
                 Item(
@@ -85,22 +95,19 @@ class RobotFrameworkSource:
                     name=test.name,
                     tags=tuple(str(tag) for tag in test.tags),
                     hierarchy=tuple(test.longname.split(".")[:-1]),
-                    meta={"source": str(getattr(suite, "source", "") or "")},
+                    meta={"source": str(getattr(suite, "source", "") or ""), "root": root},
                 )
             )
         for child in suite.suites:
-            self._collect(child)
+            self._collect(child, root)
 
     def items(self) -> list[Item]:
         return list(self._items)
 
     def snapshot(self) -> str:
-        canonical = json.dumps(
-            [{"id": item.id, "tags": list(item.tags)} for item in self._items],
-            sort_keys=True,
-            separators=(",", ":"),
+        return "sha256:" + sha256_hex(
+            canonical_json([{"id": item.id, "tags": list(item.tags)} for item in self._items])
         )
-        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def resolve(self, native_name: str) -> str | None:
         """output.xml longnames match builder longnames exactly; whitespace

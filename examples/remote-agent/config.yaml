@@ -23,10 +23,11 @@ core:
     # watched run — it lands here for a human (DESIGN.md §4/§5).
     quarantine_dir: state/quarantine
     # This loop returns bundles over the file drop, not over HTTP: there is no
-    # ingest endpoint for a token to guard, and disabling tokens also keeps a
-    # secret out of the exported spec document, which travels to the executing
-    # machine in the clear. Set `required` the moment you expose the push API
-    # — then results.token rides along on purpose (§5 security floor).
+    # ingest endpoint for a token to guard, so none is minted. Set `required`
+    # the moment you expose the push API — every export then prints an ingest
+    # token once (`spec --export`, or `--token-file`), next to the document
+    # and never inside it, for the executing side to push with (§5 security
+    # floor).
     tokens: disabled
   # Nothing writes artifacts in this pattern (the native output.xml comes home
   # inside the bundle), but `runcomposer gc` wants a directory to bound.

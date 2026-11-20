@@ -1,5 +1,224 @@
 # Changelog
 
+## 0.2.0 — 2026-11-20
+
+A rework of the backbone. 0.1 proved the product idea; its runner contract,
+lifecycle, store, configuration, API and CLI were a proof of concept, and 0.2
+replaces them with contracts meant to be built on. **This release breaks
+plugins, config files and API clients written against 0.1** — the list below
+says where. The run spec document (`runspec/1.0`) is unchanged and a 0.1
+sqlite database opens as it is.
+
+### Breaking
+
+**Connectors (plugins)**
+
+- **Import from `runcomposer.sdk`, and only from there.** It is the connector
+  surface: protocols, records, errors, helpers, `load_config`, `Service`.
+  `runcomposer.service`, `runcomposer.config`, `runcomposer.api` are gone
+  (the code lives in `runcomposer.app`, `runcomposer.http`, `runcomposer.cli`,
+  none of which is a public import surface).
+- **`Runner` is `describe()` + `dispatch(ctx: DispatchContext)`**, returning
+  nothing. Gone: `dispatch(spec) -> DispatchHandle`, and the hooks discovered
+  by attribute — `bind`, `bind_dispatch`, `deliveries`, `last_plan`. A runner
+  now refuses with `ctx.refuse`, hands off with `ctx.declare(shards)`, and
+  delivers with `ctx.deliver`; it reads the store through nothing but the
+  context. Optional `cancel(ctx)` and `health() -> Health` are called.
+- **`RunnerInfo`** gained `title`, `description`, `parameters`,
+  `result_format`. Per-run options must be *declared* as `Parameter`s: a
+  spec's `runner.<id>` section no longer overrides configured options.
+- **`RunStore` is a new port.** `set_run_state`, `clear_live_verdicts` and
+  `get_ingest_token_sha256` are gone; `add_dispatch` changed; new members
+  cover dispatch state (`update_dispatch`, `get_dispatch`, `delete_dispatch`,
+  `owned_dispatches`), the run headline, hand-out bytes, token hashes, live
+  status, events, `delete_run`, and `list_runs` now pages (`offset`, `q`) and
+  returns a `RunPage` with a total. `record_delivery` is keyed on
+  (run, dispatch, shard) and must be atomic.
+- **`ResultParser`s raise the one `ParseError`** from the SDK (the three
+  per-module classes are gone) and read XML through `forbid_dtd` /
+  `parse_xml`.
+- **`Verdict.artifacts`, `DispatchHandle`, `DispatchReservation`,
+  `Selection.to_data`, `registry.available_entry_points`** are removed.
+  `DeliveryRecord.dispatch_id` is never `None`.
+- **`ServiceError` is gone**, replaced by a typed taxonomy
+  (`InvalidRequest`, `NotFound` / `UnknownRun`, `Conflict` / `RunActive` /
+  `DispatchRefused` / `SpecConflict`, `IngestError`, `ConfigError`, …), each
+  with a stable `code`.
+
+**Configuration**
+
+- **The key of a plugin entry is its id**, and only ids configured under
+  `runners:` can be dispatched to. A config file without `runners:` has no
+  dispatchable runner — add `runners: {demo: {}}` to keep the demo runner.
+- **`ci-trigger` is replaced by `jenkins`**, with other options: `parameters`
+  (a mapping of your job's build-parameter names to templates),
+  `artifact_paths`, `run_parameters`, `verify_tls` / `ca_bundle`,
+  `request_timeout_s`, `retries`.
+- **Unknown plugin options are refused at startup**, with the accepted keys
+  in the message. A typo that 0.1 carried until the first dispatch now stops
+  `serve`.
+- **`store.sqlite.path: "file:…"`** is refused (`:memory:` works).
+- **An unknown top-level section** is still an error; a connector package's
+  own settings go under the new `connectors:`.
+- `robot-pool`: `output_root` is gone (artifacts go to the dispatch's
+  directory under `core.artifact_dir`); `log.html` and `report.html` are
+  written by default (`log: false` / `report: false` to turn off).
+
+**HTTP API**
+
+- **`POST /api/v1/runs` with a dispatch returns before the run finishes** —
+  `DISPATCHED` or `RUNNING`, never `COMPLETE`. Follow the run, its events, or
+  `?wait=` on the events.
+- **Error bodies are `{"detail": <string>, "code": <id>}` everywhere**, and
+  request validation answers `400` (not `422`) in that shape, with `fields`.
+  Status codes changed where 0.1 was wrong: a refused dispatch is `409`, an
+  unknown runner or a bad parameter `400` (were `500`); an unreadable bundle
+  `422`, a push to an unknown run a plain `404` that writes nothing.
+- **Request bodies are closed and typed**: an unknown field, `title: 5` or
+  `labels: {a: 1}` is a `400`.
+- **The export answer changed**: `spec_url`, `spec_sha256` and `ingest_token`
+  instead of `spec_document`. Download the document from `spec_url` — those
+  are the exact bytes the marker hash is verified against.
+- **`GET /runs/{id}/spec` no longer contains `results.token`.**
+- `GET /runs` returns `total` / `limit` / `offset`; `GET /runners` returns
+  the configured id (not the plugin's own), parameters and health.
+
+**CLI**
+
+- **Exit codes**: `dispatch` (and the new `run`) exit `1` when the run
+  completed but is not `PASS`, and `3` when it ended without a result. 0.1
+  exited `0` on `COMPLETE (FAIL)`.
+- `spec --runner ID` no longer embeds the runner's configured options; it
+  composes for that runner and validates `--param NAME=VALUE` against its
+  declared parameters.
+- `spec --export` prints the ingest token on stderr (or writes
+  `--token-file`); the emitted document carries none.
+- `dispatch SPEC` refuses a spec file whose selection, source or results
+  contract was edited after its run was stored; an edited `runner` section is
+  taken as this dispatch's per-run parameters.
+- `runcomposer-exec`: the marker is written only when `--command` exited with
+  an accepted code (`--ok-exit-codes`, default `0`), and the template is
+  filled by literal replacement of `{ids_file}` `{run_id}` `{out_dir}` — other
+  braces are left alone.
+
+**Behaviour**
+
+- **A run with planned items that never reported is `INCOMPLETE`, not
+  `PASS`.** The missing items are `MISSING`. Empty results are never `PASS`.
+  On upgrade, the completion of stored runs is recomputed under this rule.
+- **The manifest source's snapshot hashes ids and tags only.** Specs composed
+  by 0.1 against a manifest read as drifted.
+- **Verdict status `MISSING` and completion `INCOMPLETE`** are new values a
+  client must expect, as are the states `FAILED`, `CANCELLED` and (now really
+  set) `STALE`.
+
+### Added
+
+- **Asynchronous dispatch** through a dispatch manager with a bounded pool
+  (`core.dispatch.max_concurrent`), the same code in the foreground for the
+  CLI.
+- **A lifecycle state machine**, tracked per dispatch; the run's state is
+  derived from its latest dispatch. Completion is computed against the
+  declared shard *set* and the planned item set.
+- **Cancellation** — `POST /runs/{id}/cancel`, `runcomposer cancel` (also
+  against a run a server is executing; `--force` for a dispatch whose owner
+  cannot be reached) — and **restart recovery**: a dispatch whose process is
+  gone is marked `STALE`.
+- **An event stream** per run (`GET /runs/{id}/events?after=`, `runcomposer
+  watch`) and an **observer port** with `webhook` (HMAC-signed), `jsonl` and
+  `command` observers.
+- **Per-run runner parameters**, declared by the runner, validated by the
+  API, exposed for a UI to render.
+- **Runners**: `command` (run any command per shard and parse what it wrote);
+  `jenkins`; `robot-pool` options `suite_roots`, `log` / `report`,
+  `max_tests_per_chunk`, `rerun_failed`, `partition_variable`,
+  `partition_variables`, `executed_tag`, `worker_setup`, `pythonpath`,
+  `hook_timeout_s`, `shard_timeout_s`, `format`; exact-id test selection;
+  spawned workers that can be stopped.
+- **Live status for any store** — a picklable live channel from the context.
+- **Configuration**: several `sources:` as one catalog, `parsers:`,
+  `observers:`, `connectors:`, `${env:NAME}` secrets, `PATH_OPTIONS`,
+  `core.dispatch`, `core.ingestion.settle_s`.
+- **Catalog reload** when the corpus changes (`fingerprint()` on sources),
+  `POST /catalog/reload`.
+- **Ingest tokens bound to a dispatch**, stored hashed, returned once,
+  rotatable. **Exact, re-downloadable spec bytes** for every hand-out.
+- **API**: `/meta`, `/catalog/tags`, `/runs/{id}/dispatch`, `/cancel`,
+  `/rerun`, `DELETE /runs/{id}`, `/events`, `/verdicts`, dispatch spec and
+  token endpoints; run rows complete for a list; run detail with events and
+  the selection.
+- **CLI**: `run`, `rerun`, `cancel`, `watch`, `show`, `finalize`, `delete`,
+  `export-spec`, `quarantine`, `doctor`; `--json`; `spec --dry-run`;
+  `-v/--verbose`.
+- **A versioned sqlite schema with in-place migration** from 0.1; WAL, a busy
+  timeout, one connection per thread, atomic deliveries.
+- **Logging** through the `logging` module (`runcomposer.*`).
+- **`ruff` and `mypy`** configured and clean; the version single-sourced in
+  `runcomposer/__init__.py`.
+
+### Fixed
+
+- A run completed green without its planned items; a refused re-dispatch
+  erased a finished run; a late bundle for an old dispatch rewrote the run's
+  state; a shard with an unexpected name completed a dispatch; a re-dispatch
+  with identical results never completed; `finalize` on a never-dispatched
+  run reported `PASS`.
+- The ingest token was readable through `GET /runs/{id}/spec`; an
+  unauthenticated push to an unknown run was written to quarantine and could
+  be attached into a passing run; the quarantine bound was enforced only by
+  `gc`.
+- A spec document could set `pre_run_hooks` and `listener`, and name a result
+  format as an import path.
+- Concurrent deliveries to one shard left several deliveries.
+- The catalog was frozen at process start: after a corpus edit every dispatch
+  was refused until restart.
+- One unreadable bundle in the inbox blocked every bundle after it; a slow
+  copy could be ingested half-written.
+- A DOCTYPE behind 64 KiB of padding, or in a UTF-16 document, got past the
+  XML check.
+- `retention.max_age_days: null` crashed `gc`; `export --format ctrf` failed
+  on a timestamp with an offset; `limit=-1` dropped a row; time filters were
+  compared as unvalidated strings; file-drop quarantine entries always
+  claimed the reference format.
+- `store.sqlite.path: ":memory:"` was documented and unusable.
+- `robot-pool` treated ids as glob patterns, so an id containing `[` or `*`
+  was not executed (or ran its neighbours); a multi-root catalog met a single
+  `suite_root`.
+- The Jenkins poll path could ingest another build's results, gave up as a
+  "refusal" after the hand-off, and only worked for one result format.
+
+### Known limits
+
+- **A refusal that arrives after the HTTP answer** (a readiness hook that
+  fails later than `core.dispatch.handoff_wait_s`) leaves the run `COMPOSED`
+  with a `dispatch.refused` event, even without `keep_run`: the caller has
+  the run id by then.
+- **Restart recovery cannot tell a reused process id** from the process that
+  owned a dispatch; `cancel --force` closes such a dispatch.
+- **"One dispatch in flight per run" is guaranteed within a process**, not
+  across processes: two `runcomposer dispatch --run` commands started at the
+  same moment for the same run can both be accepted. Runcomposer does not
+  coordinate instances (`DESIGN.md` §13).
+- **The Jenkins runner is tested against an in-process stand-in** that speaks
+  the endpoints it uses (over TLS too); `ci/jenkins/` is the manual check
+  against a real Jenkins and was not re-run for this release. Its image tag
+  and plugins are still unpinned, and the project `Dockerfile` still runs as
+  root — both left as they were: neither image was rebuilt and run as part
+  of this release, and changing an image without running it would be an
+  unverified change. To be settled with the CI work.
+- **CI** still runs on Linux only, and the release workflow still does not
+  run the test suite or publish the artifacts it built for the GitHub
+  release.
+
+### Not in this release
+
+- The bundled UI still speaks the 0.1 API and is being reworked: with this
+  backend its "Export spec" and its handling of the new states are not
+  reliable. The API and the CLI are the supported surfaces of 0.2.0 until it
+  lands.
+- A conformance kit for connector authors and a connector template are
+  planned (`DESIGN.md` §6.6).
+
 ## 0.1.7 — 2026-09-03
 
 ### Fixed
@@ -7,7 +226,7 @@
   filter builder's own "add" button rather than replacing it, so the most
   obvious control in the panel still opened the builder's inline editor — and
   that editor, handed the catalog's tags (also new in 0.1.6), rendered them as
-  a flat, unsorted, unsearchable list of all 1609 with a checkbox each, four
+  a flat, unsorted, unsearchable list of every one of them with a checkbox each, four
   rows visible, **every box ticked by default**. That is the screen the picker
   exists to replace, reached by the most likely click. Every `add-rule` is now
   intercepted and opens the dialog, and the builder is given no tag list at
@@ -22,15 +241,14 @@
   current filter" choice, which is visible and stated.
 
 ### Changed
-- **The dialog follows the predecessor's layout rather than a rearrangement of
-  it**: the four controls in its order (include/exclude, how the picked tags
-  combine, how the group joins what is there, search last), the multi-select
-  hint above a bordered tree box, a dot on leaf rows, a kind badge on rows
-  standing for one concrete tag, and a footer of "Selected: N" against Cancel
-  and Apply. Sized as it was: `min(980px, 96vw)`, 85vh, 52vh of tree.
+- **The dialog's layout is settled**: four controls in a fixed order
+  (include/exclude, how the picked tags combine, how the group joins what is
+  there, search last), the multi-select hint above a bordered tree box, a dot
+  on leaf rows, a kind badge on rows standing for one concrete tag, and a
+  footer of "Selected: N" against Cancel and Apply.
 
   Dropped with it: the expression preview line and the staged-removal state,
-  both added in 0.1.6 and neither part of that design. A row whose pattern the
+  both added in 0.1.6. A row whose pattern the
   filter already carries still shows a `✓`; it is a mark, not a checkbox, and
   nothing is ever pre-selected. Removing a condition is the filter panel's
   chips, each with a one-click `✕`.
@@ -40,8 +258,8 @@
 ### Added
 - **The tag tree is a picker dialog, and a whole selection is one filter
   group.** Resolving the taxonomy against the catalog (0.1.4) made the tree
-  complete and, in the same move, unusable: on a real corpus it is **2452
-  nodes over 1609 tags** (up from ~150 written nodes), rendered as an
+  complete and, in the same move, unusable: the resolved tree has a node for
+  every catalog tag, so it grows with the catalog, and it was rendered as an
   always-visible column with no search. `Pick tags…` in the filter panel now
   opens a modal over that tree with
 
@@ -68,7 +286,7 @@
 
 - **The filter's value field completes against the catalog's real tags.** It
   was handed an empty options map, so typing a tag was blind and you had to
-  know its spelling by heart — on 1609 tags, nobody does. `GET
+  know its spelling by heart. `GET
   /api/v1/taxonomy?resolve=true` now also serves `tags`, the catalog's whole
   tag universe in the tree's own order. It is **not** derivable from the nodes:
   a written leaf whose pattern resolves to exactly one tag already *is* that
@@ -104,12 +322,11 @@
   `is any of` / `is none of`.
 
 - **A one-letter search no longer freezes the dialog.** Searching opens every
-  branch it kept, and one letter keeps all 2452 nodes: that put every row in
-  the DOM and took **17 seconds** to settle. The tree is virtualized (21 rows
-  in the DOM for the whole corpus), and past a budget of 400 matches the
-  branches stay closed with the count shown instead of being thrown open —
-  nothing hidden, nothing truncated. Every query now costs ~140 ms of
-  main-thread work.
+  branch it kept, and one letter keeps nearly every node: that put every row in
+  the DOM at once. The tree is virtualized (only the visible rows are in the
+  DOM), and past a budget of 400 matches the branches stay closed with the
+  count shown instead of being thrown open — nothing hidden, nothing
+  truncated.
 
 - **Closing the picker returns focus to the button that opened it.** The dialog
   restores focus to whatever was focused when it opened, which on macOS is
@@ -189,11 +406,10 @@
 ## 0.1.4 — 2026-09-03
 
 ### Added
-- **The taxonomy tree resolves against the catalog.** A written leaf carries
-  exactly one pattern, so a pattern standing for a family of tags rendered as
+- **The taxonomy tree resolves against the catalog.** The filter of a written
+  leaf is a single pattern, so a pattern standing for a family of tags rendered as
   a single opaque node: `regex:^Cart(V2)?$` was one row, and the tags it
-  covered had no row of their own and could not be picked. Over a real corpus
-  that is most of the tag space hidden behind a handful of patterns. Now every
+  covered had no row of their own and could not be picked. Now every
   node gains one child per concrete catalog tag its own pattern matches, each
   individually selectable; a node whose subtree matches nothing collapses away
   instead of clicking and selecting nothing; and the tags no node anywhere
@@ -228,11 +444,10 @@
 ### Changed
 - **The UI's taxonomy panel renders the resolved tree**, and therefore
   collapses: rows open and close, a branch's children are mounted only while
-  it is open (the real corpora resolve to thousands of nodes), each row shows
+  it is open (the resolved tree grows with the catalog), each row shows
   its item count, and the first level opens on arrival. A leaf's accessible
-  name is now its label — it was the pattern, which for a composed alternation
-  regex meant a screen reader read hundreds of characters of expression
-  instead of one word. The pattern is still the tooltip.
+  name is now its label — it was the pattern, so a screen reader read out a
+  regular expression instead of one word. The pattern is still the tooltip.
 
 ## 0.1.3 — 2026-09-03
 
@@ -342,8 +557,8 @@
   pasted, from any directory — `rm -rf runcomposer-demo` is the whole
   uninstall.
 - **One path base for the whole config file** (§8). `core:` paths resolved
-  against the config file's directory while everything under `store:`,
-  `sources:` and `runners:` resolved against the *working* directory, and the
+  against the config file's directory, the plugin sections against the
+  *working* directory, and the
   gap was expensive in practice: the same `--config` invoked from two
   directories silently created a second, empty sqlite database; a source root
   that worked from one directory failed from another with `robotframework
@@ -363,9 +578,8 @@
   (§3.3) is between the document and whoever fulfills it. `sync.sh` lost its
   `cd`.
 - **Verdicts carry their shard.** `verdicts.shard` was stored but never read
-  back, so one selection fanned out over two partitions produced two verdict
-  rows per item with nothing to tell them apart — the single question fan-out
-  exists to answer, and the only way to get at it was to open the sqlite file.
+  back, so the verdicts of a selection fanned out over two partitions could
+  not be attributed to their partition through the port or the API.
   `GET /api/v1/runs/{id}` now labels every verdict with its `shard` and
   `attempt` (the flat list stays flat; existing readers are unaffected) and
   adds a `shards` roll-up with per-shard counts and computed completion.
@@ -378,10 +592,10 @@
   Only `http`/`https` count as remote; `file:`/`data:`/`javascript:` are never
   handed out as links.
 - **`failed@latest` had no scope.** DESIGN.md §7's flagship feature resolved
-  through an unscoped `latest_completed_run`, so "latest" meant the latest
-  completed run of *anything* in the store. On any shared deployment the next
-  ad-hoc selection silently became the reference for the nightly rerun, which
-  then executed the wrong item set and looked entirely healthy doing it.
+  through an unscoped `latest_completed_run`, so "latest" ranged over every
+  completed run in the store. Where several streams of runs shared an
+  instance, a rerun could follow the wrong one and execute a different item
+  set without any sign of it.
 - **A malformed taxonomy failed silently.** `service.taxonomy()` served
   whatever the YAML parsed to: a wrong-shaped file was a `200` with an empty
   UI panel and no error anywhere, and a missing or empty file was an uncaught

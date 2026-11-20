@@ -29,9 +29,11 @@ taxonomy document and the tree's consumer needs no second vocabulary.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
+from .errors import RunComposerError
 from .filter import FilterError, parse_filter
 from .model import Item
 
@@ -47,12 +49,14 @@ ORIGIN_TAG = "tag"
 ORIGIN_UNASSIGNED = "unassigned"
 
 
-class TaxonomyError(ValueError):
+class TaxonomyError(RunComposerError, ValueError):
     """Raised when a taxonomy document does not conform to the format.
 
     Carries a message naming the offending node — a taxonomy is written by
     hand, so the only useful error is one that says which line to fix.
     """
+
+    code = "taxonomy-invalid"
 
 
 def _type_name(value: Any) -> str:
@@ -147,8 +151,8 @@ def _validate_nodes(nodes: list[Any], *, origin: str, path: str) -> None:
 def _validate_filter(value: Any, *, origin: str, named: str) -> None:
     if not isinstance(value, str):
         raise TaxonomyError(
-            f"{origin}: {named} has a 'filter' of type {_type_name(value)} — a leaf carries "
-            "exactly ONE pattern string; write alternatives as one regex, e.g. "
+            f"{origin}: {named} has a 'filter' of type {_type_name(value)} — the filter of "
+            "a leaf is a single pattern string; write alternatives as one regex, e.g. "
             "'regex:^(Visa|Mastercard)$' (docs/taxonomy.md)"
         )
     try:
@@ -181,7 +185,7 @@ def _tag_pattern(tag: str, *, case_exact: bool = False) -> str:
     - a tag that *starts* with a grammar prefix — a tag literally named
       ``regex:…`` would otherwise be read as an expression, not as itself;
     - a tag some other tag differs from only in case. Literals match
-      case-insensitively (§3.1), so ``Adapter`` would select ``ADAPTER`` too
+      case-insensitively (§3.1), so ``Cart`` would select ``CART`` too
       and a node promising one tag would quietly deliver two.
     """
     if case_exact or tag.startswith(("regex:", "prefix:")):

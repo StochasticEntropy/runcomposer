@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
-VERDICT_STATUSES = ("PASS", "FAIL", "SKIP", "ERROR")
+__all__ = [
+    "REPORTABLE_STATUSES",
+    "VERDICT_STATUSES",
+    "ArtifactRef",
+    "DeliveryRecord",
+    "DispatchRecord",
+    "Item",
+    "RunEvent",
+    "RunPage",
+    "RunRecord",
+    "Verdict",
+]
+
+#: What an executor can report about an item.
+REPORTABLE_STATUSES = ("PASS", "FAIL", "SKIP", "ERROR")
+#: ``MISSING`` is the one status nobody reports: it is *derived* for an item
+#: that was planned and never came back (DESIGN.md §4). It is never stored and
+#: a parser or a push that claims it is refused.
+VERDICT_STATUSES = (*REPORTABLE_STATUSES, "MISSING")
 
 
 @dataclass(frozen=True)
@@ -29,23 +48,20 @@ class Item:
 
 @dataclass(frozen=True)
 class Verdict:
-    """Per-item result. `flaky` is derivable from attempts, never stored.
+    """Per-item result. ``flaky`` is derivable from attempts, never stored.
 
-    ``shard`` is the runner-declared partition/chunk label the verdict was
-    delivered under (DESIGN.md §4: run → dispatch → shard). It is **assigned
-    by the delivery, not by the producer**: a parser or runner builds verdicts
-    without it and ``RunStore.record_delivery(shard=…)`` labels the whole
-    bundle, so it is empty on the write path and always filled on the read
-    path (``RunStore.verdicts_for``). Without it a selection fanned out over
-    two partitions returns two rows per item with nothing to tell them apart —
-    the one question fan-out exists to answer.
+    ``shard`` is the partition/chunk label the verdict was delivered under
+    (DESIGN.md §4: run → dispatch → shard). It is **assigned by the delivery,
+    not by the producer**: a parser or runner builds verdicts without it, the
+    delivery labels the whole bundle, and every verdict read back carries it.
+    ``attempt`` counts executions of the item within one shard; the highest
+    attempt is the one that counts (``core.lifecycle.effective_verdicts``).
     """
 
     item_id: str
     status: str
     duration_ms: int = 0
     message: str = ""
-    artifacts: tuple[str, ...] = ()
     attempt: int = 1
     shard: str = ""
 
@@ -56,16 +72,44 @@ class Verdict:
 
 @dataclass(frozen=True)
 class DispatchRecord:
-    """One hand-off to an executor (DESIGN.md §4). ``mode`` is a runner plugin
-    id or ``"export"``. ``spec_sha256`` is the hash of the exact document
-    bytes handed out — the marker verification anchor (§5)."""
+    """One hand-off to an executor (DESIGN.md §4), and the unit the lifecycle
+    is tracked on.
+
+    ``mode`` is a configured runner id, ``"export"`` (a document handed out
+    for somebody else to execute) or ``"ingest"`` (results that arrived for a
+    run nothing was dispatched for). ``shards`` is the declared shard *set* —
+    completion is computed against these names, never against a count — and
+    ``shard_items`` optionally says which items each shard was planned to
+    report. ``spec_sha256`` is the hash of the exact document bytes handed
+    out — the marker verification anchor (§5).
+    """
 
     dispatch_id: str
     run_id: str
     mode: str
-    declared_shards: int | None
+    state: str
     created_at: str
+    shards: tuple[str, ...] = ()
+    shard_items: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     spec_sha256: str | None = None
+    error: str = ""
+    plan: str = ""
+    links: Mapping[str, str] = field(default_factory=dict)
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+    completion: str | None = None
+    completed_at: str | None = None
+    #: Verdict counts by status over the effective verdicts, ``MISSING``
+    #: included — maintained by the lifecycle so a run list needs no per-row
+    #: aggregation.
+    summary: Mapping[str, int] = field(default_factory=dict)
+    #: Identity of the process executing an in-process dispatch; ``None`` once
+    #: nothing in any process is working on it.
+    owner: str | None = None
+    cancel_requested: bool = False
+
+    @property
+    def declared_shards(self) -> int:
+        return len(self.shards)
 
 
 @dataclass(frozen=True)
@@ -74,7 +118,7 @@ class DeliveryRecord:
 
     delivery_id: str
     run_id: str
-    dispatch_id: str | None
+    dispatch_id: str
     shard: str
     content_hash: str
     format: str
@@ -86,11 +130,10 @@ class ArtifactRef:
     """A reference to one result artifact of a run (DESIGN.md §6.4).
 
     ``url_or_path`` is either an absolute ``http(s)`` URL — a remote artifact
-    (a CI build link) that passes through untouched and is never fetched by
-    runcomposer — or a filesystem path written by whatever executed the run.
-    Which of the two it is, and whether a local path is servable, is decided
-    by the app layer against the configured artifact directory; the core
-    records the string.
+    that passes through untouched and is never fetched — or a filesystem path
+    written by whatever executed the run. Which of the two it is, and whether
+    a local path is servable, is decided by the app layer against the
+    configured artifact directory; the core records the string.
     """
 
     run_id: str
@@ -98,11 +141,29 @@ class ArtifactRef:
     name: str
     media_type: str
     url_or_path: str
+    shard: str | None = None
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    """One entry of a run's event stream (DESIGN.md §4): every state change,
+    every delivery, every refusal and every runner log line. ``seq`` is the
+    stream cursor — strictly increasing per store."""
+
+    seq: int
+    run_id: str
+    at: str
+    kind: str
+    dispatch_id: str | None = None
+    data: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RunRecord:
-    """The stored lifecycle record for one spec (DESIGN.md §2, §4)."""
+    """The stored record for one spec (DESIGN.md §2, §4). ``state``,
+    ``completion`` and ``completed_at`` are the *headline*: derived from the
+    latest dispatch by ``core.lifecycle.headline`` and cached here so runs can
+    be listed and filtered by them."""
 
     id: str
     title: str
@@ -112,5 +173,18 @@ class RunRecord:
     state: str
     completion: str | None = None
     completed_at: str | None = None
+    planned_count: int = 0
     dispatches: tuple[DispatchRecord, ...] = ()
     deliveries: tuple[DeliveryRecord, ...] = ()
+
+    @property
+    def latest_dispatch(self) -> DispatchRecord | None:
+        return self.dispatches[-1] if self.dispatches else None
+
+
+@dataclass(frozen=True)
+class RunPage:
+    """One page of a run listing plus the size of the whole filtered set."""
+
+    runs: tuple[RunRecord, ...]
+    total: int

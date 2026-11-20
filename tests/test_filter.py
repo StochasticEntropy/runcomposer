@@ -3,9 +3,7 @@
 import pytest
 
 from runcomposer.core.filter import (
-    BoolOp,
     FilterError,
-    NotNode,
     TagPattern,
     format_filter,
     parse_filter,
@@ -87,7 +85,7 @@ class TestBoolOps:
 
 
 class TestLosslessness:
-    ROUNDTRIP_CASES = [
+    ROUNDTRIP_CASES = (
         "Payments",
         "prefix:Checkout-",
         "regex:^Cart(V2)?$",
@@ -96,7 +94,7 @@ class TestLosslessness:
             "op": "AND",
             "items": ["Payments", {"op": "OR", "items": ["prefix:Checkout-", "regex:^Cart(V2)?$"]}],
         },
-    ]
+    )
 
     @pytest.mark.parametrize("data", ROUNDTRIP_CASES, ids=str)
     def test_roundtrip_is_exact(self, data):

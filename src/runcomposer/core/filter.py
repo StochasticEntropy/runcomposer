@@ -18,8 +18,11 @@ Semantics:
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
-from typing import Any, Collection, Union
+from typing import Any, Union
+
+from .errors import InvalidRequest
 
 __all__ = [
     "BoolOp",
@@ -33,8 +36,10 @@ __all__ = [
 ]
 
 
-class FilterError(ValueError):
+class FilterError(InvalidRequest):
     """Raised when filter data does not conform to the grammar."""
+
+    code = "invalid-filter"
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,7 @@ class TagPattern:
 @dataclass(frozen=True)
 class BoolOp:
     op: str  # "AND" | "OR"
-    items: tuple["FilterNode", ...]
+    items: tuple[FilterNode, ...]
 
     def matches(self, tags: Collection[str]) -> bool:
         if self.op == "AND":
@@ -64,7 +69,7 @@ class BoolOp:
 
 @dataclass(frozen=True)
 class NotNode:
-    item: "FilterNode"
+    item: FilterNode
 
     def matches(self, tags: Collection[str]) -> bool:
         return not self.item.matches(tags)

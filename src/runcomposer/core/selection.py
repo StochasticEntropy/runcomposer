@@ -10,17 +10,21 @@ Rules (DESIGN.md §3.1):
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
-from .filter import FilterNode, parse_filter, to_data
+from .errors import InvalidRequest
+from .filter import FilterNode, parse_filter
 from .model import Item
 
 __all__ = ["Selection", "SelectionError"]
 
 
-class SelectionError(ValueError):
+class SelectionError(InvalidRequest):
     """Raised for invalid or uncompilable selections."""
+
+    code = "invalid-selection"
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class Selection:
     item_ids: tuple[str, ...] = ()
 
     @classmethod
-    def from_data(cls, data: Mapping[str, Any]) -> "Selection":
+    def from_data(cls, data: Mapping[str, Any]) -> Selection:
         """Build from the selection *inputs* of a spec's ``selection`` section.
 
         Derived keys (``materialized``, ``derived_from``) are outputs of a
@@ -49,14 +53,6 @@ class Selection:
         if node is None and not raw_ids:
             raise SelectionError("selection is empty: provide tag_filter and/or item_ids")
         return cls(tag_filter=node, item_ids=tuple(raw_ids))
-
-    def to_data(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
-        if self.tag_filter is not None:
-            data["tag_filter"] = to_data(self.tag_filter)
-        if self.item_ids:
-            data["item_ids"] = list(self.item_ids)
-        return data
 
     def compile(self, items: Sequence[Item]) -> list[Item]:
         """Materialize against a catalog. Preserves catalog order."""

@@ -1,13 +1,18 @@
-"""The runcomposer Robot listener (DESIGN.md §6.2a): streams per-item verdicts
-to the RunStore *during* execution, giving the UI live status. The terminal
-output.xml parse remains the authoritative reconciliation — live rows are
-cleared when the shard's real delivery lands.
+"""The runcomposer Robot listener (DESIGN.md §6.2a): streams per-item status
+while a shard is still executing.
 
-Part of the robot plugin family, which owns the ``id = longname`` id space
-(§6.1) — hence the listener may write longnames as item ids directly.
+It writes to a ``LiveChannel`` — a picklable handle the dispatch context
+gives the runner — so it works in a worker process and with any RunStore.
+The parse of the finished output is the authoritative result; live status is
+replaced by it when the shard delivers.
+
+Part of the Robot plugin family, which owns the ``id = longname`` id space
+(§6.1) — hence the listener reports longnames as item ids.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 __all__ = ["LiveStatusListener"]
 
@@ -17,26 +22,18 @@ _STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "NOT RUN": "SKIP"
 class LiveStatusListener:
     ROBOT_LISTENER_API_VERSION = 3
 
-    def __init__(self, store, run_id: str, dispatch_id: str, shard: str):
-        self._store = store
-        self._run_id = run_id
-        self._dispatch_id = dispatch_id
+    def __init__(self, channel: Any, shard: str):
+        self._channel = channel
         self._shard = shard
 
-    def end_test(self, data, result):  # noqa: ANN001 - robot API signature
-        from runcomposer.core.model import Verdict
-
+    def end_test(self, data: Any, result: Any) -> None:
         try:
-            self._store.record_live_verdict(
-                self._run_id,
-                self._dispatch_id,
+            self._channel.live(
                 self._shard,
-                Verdict(
-                    item_id=result.longname,
-                    status=_STATUS_MAP.get(result.status, "ERROR"),
-                    duration_ms=int(result.elapsedtime),
-                    message=result.message or "",
-                ),
+                result.longname,
+                _STATUS_MAP.get(result.status, "ERROR"),
+                duration_ms=int(result.elapsedtime),
+                message=result.message or "",
             )
-        except Exception:  # streaming is best-effort; never break the run
+        except Exception:  # streaming is best-effort; it never breaks the run
             pass

@@ -2,9 +2,8 @@
 output.xml into ParsedVerdicts. Native name = the test's longname; correlation
 to Item ids happens only through TestSource.resolve.
 
-Defused parsing is a stated ResultParser obligation (§5): any document
-carrying a DOCTYPE/ENTITY declaration is refused outright before parsing —
-no external entities, no DTD expansion, no entity-blowup surface.
+The document is checked with the SDK's defused reader first: a DTD anywhere
+in it, in any encoding, is refused before Robot's own reader sees the file.
 """
 
 from __future__ import annotations
@@ -12,64 +11,53 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from runcomposer.core.ports import ParsedVerdict
+from runcomposer.sdk import ParsedVerdict, ParseError, forbid_dtd
 
-__all__ = ["ParseError", "RobotOutputXmlParser"]
+__all__ = ["RobotOutputXmlParser"]
 
 _STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "NOT RUN": "SKIP"}
 
 
-class ParseError(ValueError):
-    """Raised for malformed or refused result documents."""
-
-
-def _require_robot():
+def _require_robot() -> tuple[Any, Any]:
     try:
         from robot.api import ExecutionResult, ResultVisitor
     except ImportError as exc:
-        raise ImportError(
-            "the robot-output-xml parser needs Robot Framework — install the extra "
+        raise ParseError(
+            "the robot-output-xml parser needs Robot Framework — install the extra: "
             "pip install 'runcomposer[robot]'"
         ) from exc
     return ExecutionResult, ResultVisitor
 
 
-def _refuse_doctype(file: Path) -> None:
-    head = file.read_bytes()[: 64 * 1024]
-    for token in (b"<!DOCTYPE", b"<!ENTITY"):
-        if token in head:
-            raise ParseError(
-                f"{file}: XML contains a {token.decode()} declaration — refused "
-                "(defused parsing, DESIGN.md §5: no external entities, no DTD expansion)"
-            )
-
-
 class RobotOutputXmlParser:
     format_id = "robot-output-xml"
 
+    def __init__(self, pattern: str = "output*.xml"):
+        """``pattern``: which files of a bundle directory are Robot outputs."""
+        self.pattern = pattern
+
     def parse(self, path: Any) -> list[ParsedVerdict]:
         root = Path(path)
-        if root.is_file():
-            files = [root]
-        else:
-            files = sorted(p for p in root.rglob("output*.xml") if p.is_file())
+        files = (
+            [root] if root.is_file() else sorted(p for p in root.rglob(self.pattern) if p.is_file())
+        )
         parsed: list[ParsedVerdict] = []
         for file in files:
             parsed.extend(self._parse_file(file))
         return parsed
 
     def _parse_file(self, file: Path) -> list[ParsedVerdict]:
-        ExecutionResult, ResultVisitor = _require_robot()
-        _refuse_doctype(file)
+        execution_result, result_visitor = _require_robot()
+        forbid_dtd(file)
         try:
-            result = ExecutionResult(str(file))
+            result = execution_result(str(file))
         except Exception as exc:  # robot raises DataError and friends
             raise ParseError(f"{file}: not a parsable output.xml: {exc}") from None
 
         collected: list[ParsedVerdict] = []
 
-        class _Collector(ResultVisitor):
-            def visit_test(self, test):  # noqa: ANN001 - robot API signature
+        class _Collector(result_visitor):  # type: ignore[misc, valid-type]
+            def visit_test(self, test: Any) -> None:
                 collected.append(
                     ParsedVerdict(
                         native_name=test.longname,

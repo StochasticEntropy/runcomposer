@@ -1,0 +1,618 @@
+"""``Service`` — a thin facade over the application layer, and the embedding
+surface (``runcomposer.sdk.Service``).
+
+```python
+from runcomposer.sdk import Service, load_config
+
+with Service(load_config("config.yaml")) as service:
+    run = service.compose_run({"tag_filter": "Checkout"}, title="Nightly", origin="script").run
+    service.dispatch(run.id, "robot-pool", foreground=True)
+    print(service.wait(run.id).completion)
+```
+
+Each responsibility lives in its own module (``compose``, ``dispatching``,
+``ingestion``, ``ledger``, …); this class builds them once, lazily, and
+offers the operations the transports share.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any, Generic, TypeVar, overload
+
+import yaml
+
+from runcomposer.core import lifecycle
+from runcomposer.core.errors import (
+    ConfigError,
+    Conflict,
+    InvalidRequest,
+    NotFound,
+    RunActive,
+    UnknownRun,
+    UnknownRunner,
+)
+from runcomposer.core.model import DispatchRecord, RunPage, RunRecord
+from runcomposer.core.ports import Health, RunnerInfo
+from runcomposer.core.registry import installed_plugins
+from runcomposer.core.taxonomy import TaxonomyError, resolve_taxonomy, validate_taxonomy
+from runcomposer.core.timeutil import epoch_ms, normalize_time
+
+from .artifacts import Artifacts
+from .catalog import Catalog
+from .compose import Composer, ComposeResult, ExportResult, Preview
+from .config import Config, _resolve_env, redact
+from .dispatching import DispatchManager, Outcome
+from .eventbus import EventBus, ObserverBinding
+from .housekeeping import collect_garbage, remove_run_artifacts
+from .ingestion import Ingestion, IngestReport, QuarantineReport
+from .ledger import Ledger
+from .quarantine import Quarantine
+from .recovery import recover
+
+__all__ = ["Service"]
+
+log = logging.getLogger("runcomposer.service")
+
+_T = TypeVar("_T")
+
+
+class _part(Generic[_T]):
+    """A part of the Service, built on first use — exactly once, also when
+    the first use comes from several threads at the same moment (a server's
+    request threads all reach for the dispatch manager; two managers would
+    each believe they are the only one)."""
+
+    def __init__(self, factory: Callable[[Any], _T]):
+        self._factory = factory
+        self._name = factory.__name__
+        self.__doc__ = factory.__doc__
+
+    @overload
+    def __get__(self, instance: None, owner: type | None = None) -> _part[_T]: ...
+
+    @overload
+    def __get__(self, instance: object, owner: type | None = None) -> _T: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        parts = instance.__dict__
+        if self._name not in parts:
+            with instance._parts_lock:
+                if self._name not in parts:
+                    parts[self._name] = self._factory(instance)
+        return parts[self._name]
+
+_HEALTH_TTL_S = 30.0
+
+
+class Service:
+    def __init__(self, config: Config):
+        self.config = config
+        self._parts_lock = threading.RLock()
+        self._runners: dict[str, Any] = {}
+        self._runner_lock = threading.Lock()
+        self._health: dict[str, tuple[float, Health]] = {}
+
+    def __enter__(self) -> Service:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    # -- the parts, built once ----------------------------------------------------
+
+    @_part
+    def store(self) -> Any:
+        return self.config.build(self.config.store_spec())
+
+    @_part
+    def catalog(self) -> Catalog:
+        return Catalog(self.config)
+
+    @property
+    def source(self) -> Catalog:
+        """The catalog under the name the TestSource role goes by."""
+        return self.catalog
+
+    @_part
+    def bus(self) -> EventBus:
+        bindings = []
+        for spec in self.config.plugin_specs("observers"):
+            options = dict(spec.options)
+            wanted = options.pop("events", None)
+            if wanted is not None and (
+                not isinstance(wanted, (list, tuple)) or not all(isinstance(k, str) for k in wanted)
+            ):
+                raise ConfigError(f"{spec.where}.events must be a list of event kinds")
+            observer = self.config.build(type(spec)(spec.section, spec.key, spec.cls, options))
+            binding = ObserverBinding(spec.key, observer)
+            if wanted is not None:
+                binding = ObserverBinding(spec.key, observer, tuple(wanted))
+            bindings.append(binding)
+        return EventBus(self.store, bindings, redact=self.redact)
+
+    @_part
+    def ledger(self) -> Ledger:
+        return Ledger(self.store, self.bus, redact=self.redact)
+
+    @_part
+    def quarantine(self) -> Quarantine:
+        return Quarantine(
+            self.config.quarantine_dir, max_entries=int(self.config.ingestion["quarantine_max"])
+        )
+
+    @_part
+    def ingestion(self) -> Ingestion:
+        return Ingestion(self)
+
+    @_part
+    def composer(self) -> Composer:
+        return Composer(self)
+
+    @_part
+    def artifacts(self) -> Artifacts:
+        return Artifacts(self.store, self.config.artifact_dir)
+
+    @_part
+    def dispatcher(self) -> DispatchManager:
+        return DispatchManager(self, max_concurrent=int(self.config.dispatch["max_concurrent"]))
+
+    def redact(self, value: Any) -> Any:
+        """``value`` with every secret this deployment takes from the
+        environment blanked out. A runner may quote a configured option in a
+        refusal, an error or its health — a hook command with a token in it,
+        say; what is recorded, logged and answered goes through here."""
+        return redact(value, self._secrets)
+
+    @_part
+    def _secrets(self) -> frozenset[str]:
+        return self.config.secret_values()
+
+    # -- startup --------------------------------------------------------------------
+
+    def validate(self) -> None:
+        """§8: fail loudly, now. Builds every configured plugin once — store,
+        sources, runners, parsers, observers — and reads the taxonomy, so a
+        typo in an option or a malformed tree refuses the start instead of
+        surfacing at the first dispatch. Raises ConfigError / TaxonomyError."""
+        self.config.validate()
+        _ = self.store
+        self.catalog.refresh()
+        for runner_id in self.config.runner_ids():
+            self.runner(runner_id)
+        for spec in self.config.plugin_specs("parsers"):
+            self.ingestion.parser(spec.key)
+        _ = self.bus
+        self.taxonomy()
+
+    def recover(self) -> list[DispatchRecord]:
+        """Mark dispatches a dead process left executing as STALE."""
+        return recover(self)
+
+    def close(self) -> None:
+        """Stop what this process is executing and release resources."""
+        parts = self.__dict__
+        if "dispatcher" in parts:
+            self.dispatcher.shutdown()
+        if "bus" in parts:
+            self.bus.close()
+        if "store" in parts:
+            closer = getattr(self.store, "close", None)
+            if closer is not None:
+                closer()
+
+    # -- runners ----------------------------------------------------------------------
+
+    def runner(self, runner_id: str) -> Any:
+        """The runner configured under ``runner_id`` — one instance per id.
+        Only what is configured under ``runners:`` is dispatchable."""
+        with self._runner_lock:
+            if runner_id not in self._runners:
+                spec = self.config.plugin_spec("runners", runner_id)
+                if spec is None:
+                    raise UnknownRunner(
+                        f"no runner is configured under the id {runner_id!r} "
+                        f"(configured: {self.config.runner_ids() or 'none'})"
+                    )
+                self._runners[runner_id] = self.config.build(spec)
+            return self._runners[runner_id]
+
+    def runner_options(self, runner_id: str) -> dict[str, Any]:
+        """The runner's configured options as its constructor received them."""
+        spec = self.config.plugin_spec("runners", runner_id)
+        if spec is None:
+            return {}
+        return {name: _resolve_env(value, spec.where) for name, value in spec.options.items()}
+
+    def runner_health(self, runner_id: str, *, refresh: bool = False) -> Health:
+        cached = self._health.get(runner_id)
+        if cached and not refresh and time.monotonic() - cached[0] < _HEALTH_TTL_S:
+            return cached[1]
+        try:
+            probe = getattr(self.runner(runner_id), "health", None)
+            health = probe() if probe is not None else Health()
+            if not isinstance(health, Health):
+                health = Health(status="unknown", detail=str(health))
+        except Exception as exc:
+            health = Health(status="down", detail=f"{type(exc).__name__}: {exc}")
+        health = Health(
+            status=health.status,
+            detail=str(self.redact(health.detail)),
+            data=self.redact(dict(health.data)),
+        )
+        self._health[runner_id] = (time.monotonic(), health)
+        return health
+
+    def runner_infos(self, *, refresh: bool = False, health: bool = True) -> list[dict[str, Any]]:
+        """Every configured runner, under the id it is dispatched by, with
+        its declared per-run parameters and cached health."""
+        infos = []
+        for runner_id in self.config.runner_ids():
+            entry: dict[str, Any] = {"id": runner_id}
+            try:
+                info: RunnerInfo = self.runner(runner_id).describe()
+            except Exception as exc:  # surfaced, not hidden: the UI lists it with the reason
+                entry["error"] = str(exc)
+                infos.append(entry)
+                continue
+            entry.update(
+                {
+                    "plugin": info.id,
+                    "title": info.title or runner_id,
+                    "description": info.description,
+                    "capabilities": list(info.capabilities),
+                    "result_format": info.result_format,
+                    "parameters": [
+                        {
+                            "name": p.name,
+                            "kind": p.kind,
+                            "label": p.label or p.name,
+                            "help": p.help,
+                            "default": p.default,
+                            "choices": list(p.choices),
+                            "required": p.required,
+                        }
+                        for p in info.parameters
+                    ],
+                }
+            )
+            if health:
+                state = self.runner_health(runner_id, refresh=refresh)
+                entry["health"] = {
+                    "status": state.status, "detail": state.detail, "data": dict(state.data)
+                }
+            infos.append(entry)
+        return infos
+
+    def configured_plugins(self) -> list[dict[str, Any]]:
+        """What this deployment actually loads: every configured entry with
+        the class behind it and the distribution that class comes from —
+        entry-point plugins and ``module:`` plugins alike."""
+        from importlib import metadata
+
+        providers = metadata.packages_distributions()
+        by_target = {plugin.target: plugin for plugin in installed_plugins()}
+        plugins = []
+        for section in ("store", "sources", "runners", "parsers", "observers"):
+            for spec in self.config.plugin_specs(section):
+                module = getattr(spec.cls, "__module__", "") or ""
+                target = f"{module}:{getattr(spec.cls, '__qualname__', spec.cls)}"
+                # An entry-point plugin names its distribution itself; for an
+                # import path, the distribution that provides the package.
+                registered = by_target.get(target)
+                if registered is not None and registered.distribution:
+                    distribution, version = registered.distribution, registered.version
+                else:
+                    distribution = next(iter(providers.get(module.split(".")[0], [])), "")
+                    try:
+                        version = metadata.version(distribution) if distribution else ""
+                    except metadata.PackageNotFoundError:
+                        version = ""
+                plugins.append(
+                    {
+                        "section": section,
+                        "id": spec.key,
+                        "plugin": target,
+                        "distribution": distribution,
+                        "version": version,
+                    }
+                )
+        return plugins
+
+    # -- compose ------------------------------------------------------------------------
+
+    def preview(self, selection_data: Mapping[str, Any]) -> Preview:
+        return self.composer.preview(selection_data)
+
+    def resolve_history(
+        self, query: str, *, labels: Mapping[str, str] | None = None
+    ) -> tuple[list[str], dict[str, Any]]:
+        return self.composer.resolve_history(query, labels=labels)
+
+    def build_spec_document(self, selection_data: Mapping[str, Any], **kwargs: Any) -> ComposeResult:
+        return self.composer.build_spec_document(selection_data, **kwargs)
+
+    def compose_run(self, selection_data: Mapping[str, Any], **kwargs: Any) -> ComposeResult:
+        return self.composer.compose_run(selection_data, **kwargs)
+
+    def import_spec(self, doc: Mapping[str, Any], *, origin: str) -> str:
+        return self.composer.import_spec(doc, origin=origin)
+
+    def export(self, run_id: str, *, format: str = "json") -> ExportResult:
+        return self.composer.export(run_id, format=format)
+
+    def dispatch_spec(self, run_id: str, dispatch_id: str) -> tuple[bytes, str, DispatchRecord]:
+        """The exact bytes handed out for a dispatch — their sha256 is the
+        dispatch's ``spec_sha256``. They never contain the ingest token."""
+        dispatch = self._dispatch_of(run_id, dispatch_id)
+        stored = self.store.get_dispatch_spec(dispatch_id)
+        if stored is None:
+            raise NotFound(
+                f"dispatch {dispatch_id} has no handed-out document — only export dispatches "
+                "and runners that hand a spec to an external executor keep one"
+            )
+        return stored[0], stored[1], dispatch
+
+    def rotate_token(self, run_id: str, dispatch_id: str) -> str | None:
+        """Replace a dispatch's ingest token. The previous one stops working;
+        the new one is returned once."""
+        self._dispatch_of(run_id, dispatch_id)
+        return self.ingestion.mint_token(run_id, dispatch_id)
+
+    # -- dispatch -----------------------------------------------------------------------
+
+    def dispatch(
+        self,
+        run_id: str,
+        runner_id: str,
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        foreground: bool = False,
+        document: Mapping[str, Any] | None = None,
+    ) -> Outcome:
+        """Dispatch a stored run to a configured runner. Returns as soon as
+        the dispatch is recorded — or, with ``foreground``, when the runner's
+        ``dispatch()`` returned (the CLI's mode). ``document`` is a copy of
+        the run's spec handed in for this dispatch (``import_spec`` accepted
+        it): its ``runner.<id>`` section states the per-run parameters."""
+        return self.dispatcher.start(
+            run_id, runner_id, parameters, foreground=foreground, document=document
+        )
+
+    def cancel(self, run_id: str, *, force: bool = False) -> DispatchRecord:
+        return self.dispatcher.cancel(run_id, force=force)
+
+    def rerun(
+        self,
+        run_id: str,
+        *,
+        scope: str = "all",
+        runner_id: str | None = None,
+        parameters: Mapping[str, Any] | None = None,
+        foreground: bool = False,
+    ) -> tuple[str, Outcome]:
+        """``all``: a new dispatch of the same run. ``failed``: a new run
+        composed from what did not pass (FAIL, ERROR, MISSING) in this one —
+        with ``derived_from`` provenance — and dispatched. Returns the id of
+        the run that was dispatched and the outcome handle."""
+        run = self.require_run(run_id)
+        latest = run.latest_dispatch
+        previous = latest.mode if latest and latest.mode not in ("export", "ingest") else None
+        runner = runner_id or previous
+        if runner is None:
+            raise InvalidRequest(
+                f"run {run_id} was never dispatched to a runner — name the runner to rerun it with"
+            )
+        if parameters is None and latest is not None and latest.mode == runner:
+            parameters = dict(latest.parameters)
+        if scope == "all":
+            return run_id, self.dispatch(run_id, runner, parameters, foreground=foreground)
+        if scope != "failed":
+            raise InvalidRequest(f"rerun scope must be 'all' or 'failed', got {scope!r}")
+        if run.state not in lifecycle.TERMINAL_STATES:
+            raise RunActive(f"run {run_id} is {run.state} — its failures are not known yet")
+        composed = self.compose_run(
+            {"history": f"failed+error+missing@run:{run_id}"},
+            title=f"Rerun of failures: {run.title}",
+            labels=dict(run.labels),
+            origin="rerun",
+            runner_id=runner,
+            parameters=parameters,
+        )
+        assert composed.run is not None
+        try:
+            outcome = self.dispatch(composed.run.id, runner, parameters, foreground=foreground)
+        except Exception:
+            self.delete_run(composed.run.id)
+            raise
+        return composed.run.id, outcome
+
+    def finalize(self, run_id: str) -> RunRecord:
+        """Close the run's latest dispatch as it stands: outstanding shards
+        are given up, never-reported items become ``MISSING``, completion is
+        computed. Refused while something is still executing it."""
+        run = self.require_run(run_id)
+        dispatch = run.latest_dispatch
+        if dispatch is None:
+            raise Conflict(
+                f"run {run_id} was never dispatched and has no results — there is nothing to "
+                "finalize"
+            )
+        if dispatch.state in ("DISPATCHED", "RUNNING"):
+            raise RunActive(
+                f"run {run_id} is {dispatch.state} — cancel it, or wait for the runner, "
+                "before finalizing"
+            )
+        if dispatch.state == "CANCELLED":
+            raise Conflict(
+                f"run {run_id} was cancelled — a cancelled dispatch has no result to settle; "
+                "dispatch the run again instead"
+            )
+        self.ledger.recompute(dispatch.dispatch_id, finalize=True)
+        return self.require_run(run_id)
+
+    def wait(
+        self, run_id: str, *, timeout: float | None = None, dispatch_id: str | None = None
+    ) -> RunRecord:
+        """Block until the run (or the given dispatch) is in a terminal
+        state, or the timeout passes; returns the run as it is then."""
+
+        def settled() -> bool:
+            run = self.store.get_run(run_id)
+            if run is None:
+                return True
+            if dispatch_id is None:
+                return run.state in lifecycle.TERMINAL_STATES or run.state == "COMPOSED"
+            dispatch = next((d for d in run.dispatches if d.dispatch_id == dispatch_id), None)
+            return dispatch is None or dispatch.state in lifecycle.TERMINAL_STATES
+
+        self.bus.wait(settled, timeout)
+        return self.require_run(run_id)
+
+    # -- ingestion ----------------------------------------------------------------------
+
+    def ingest(self, bundle_path: str | Path, **kwargs: Any) -> IngestReport:
+        return self.ingestion.ingest(bundle_path, **kwargs)
+
+    def ingest_or_quarantine(
+        self, bundle_path: str | Path, **kwargs: Any
+    ) -> IngestReport | QuarantineReport:
+        return self.ingestion.ingest_or_quarantine(bundle_path, **kwargs)
+
+    # -- runs ---------------------------------------------------------------------------
+
+    def require_run(self, run_id: str) -> RunRecord:
+        run: RunRecord | None = self.store.get_run(run_id)
+        if run is None:
+            raise UnknownRun(run_id)
+        return run
+
+    def require_spec(self, run_id: str) -> dict[str, Any]:
+        spec: dict[str, Any] | None = self.store.get_spec_document(run_id)
+        if spec is None:
+            raise UnknownRun(run_id)
+        return spec
+
+    def _dispatch_of(self, run_id: str, dispatch_id: str) -> DispatchRecord:
+        run = self.require_run(run_id)
+        for dispatch in run.dispatches:
+            if dispatch.dispatch_id == dispatch_id:
+                return dispatch
+        raise NotFound(f"run {run_id} has no dispatch {dispatch_id!r}")
+
+    def list_runs(
+        self,
+        *,
+        state: str | None = None,
+        labels: Mapping[str, str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> RunPage:
+        if state is not None and state not in lifecycle.RUN_STATES:
+            raise InvalidRequest(
+                f"unknown run state {state!r} (one of {list(lifecycle.RUN_STATES)})"
+            )
+        if limit < 0 or offset < 0:
+            raise InvalidRequest("limit and offset must not be negative")
+        page: RunPage = self.store.list_runs(
+            state=state,
+            labels=labels or None,
+            since=normalize_time(since) if since else None,
+            until=normalize_time(until) if until else None,
+            q=q or None,
+            limit=limit,
+            offset=offset,
+        )
+        return page
+
+    def delete_run(self, run_id: str) -> None:
+        """Remove a run, everything recorded for it, and its artifact
+        directory. Refused while a runner is executing it."""
+        run = self.require_run(run_id)
+        latest = run.latest_dispatch
+        if latest is not None and latest.state in ("DISPATCHED", "RUNNING") and latest.owner:
+            raise RunActive(f"run {run_id} is {latest.state} — cancel it before deleting it")
+        self.store.delete_run(run_id)
+        remove_run_artifacts(self.config.artifact_dir, run_id)
+        log.info("run %s deleted", run_id)
+
+    def gc(self) -> dict[str, Any]:
+        return collect_garbage(self)
+
+    def export_ctrf(self, run_id: str) -> dict[str, Any]:
+        """A normalized cross-tool result document (CTRF) of the run's latest
+        dispatch — effective verdicts, ``MISSING`` reported as ``other``."""
+        run = self.require_run(run_id)
+        dispatch = run.latest_dispatch
+        verdicts = (
+            lifecycle.effective_verdicts(self.ledger.scored_verdicts(dispatch)) if dispatch else []
+        )
+        status_map = {
+            "PASS": "passed", "FAIL": "failed", "SKIP": "skipped", "ERROR": "other",
+            "MISSING": "other",
+        }
+        tests = []
+        for verdict in verdicts:
+            test: dict[str, Any] = {
+                "name": verdict.item_id,
+                "status": status_map[verdict.status],
+                "duration": verdict.duration_ms,
+            }
+            if verdict.status in ("ERROR", "MISSING"):
+                test["rawStatus"] = verdict.status
+            if verdict.message:
+                test["message"] = verdict.message
+            if verdict.shard:
+                test["extra"] = {"shard": verdict.shard, "attempt": verdict.attempt}
+            tests.append(test)
+        counts = dict.fromkeys(("passed", "failed", "skipped", "pending", "other"), 0)
+        for test in tests:
+            counts[test["status"]] += 1
+        return {
+            "results": {
+                "tool": {"name": "runcomposer"},
+                "summary": {
+                    "tests": len(tests),
+                    **counts,
+                    "start": epoch_ms(run.created_at),
+                    "stop": epoch_ms(run.completed_at),
+                },
+                "tests": tests,
+                "extra": {"run_id": run.id, "state": run.state, "completion": run.completion},
+            }
+        }
+
+    # -- taxonomy -------------------------------------------------------------------------
+
+    def taxonomy(self) -> dict[str, Any]:
+        """Read and validate the configured taxonomy file (DESIGN.md §2, §8)
+        — on every read, because the file can change under a running server."""
+        source = self.config.taxonomy_source
+        origin = str(source)
+        try:
+            text = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise TaxonomyError(
+                f"{origin}: taxonomy file cannot be read ({exc.strerror or exc}) — "
+                "core.taxonomy_file is resolved relative to the config file's directory"
+            ) from None
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise TaxonomyError(f"{origin}: taxonomy file is not valid YAML: {exc}") from None
+        return validate_taxonomy(document, origin=origin)
+
+    def resolved_taxonomy(self) -> dict[str, Any]:
+        """The taxonomy resolved against the live catalog (DESIGN.md §2)."""
+        return resolve_taxonomy(
+            self.taxonomy(), self.catalog.items(), origin=str(self.config.taxonomy_source)
+        )

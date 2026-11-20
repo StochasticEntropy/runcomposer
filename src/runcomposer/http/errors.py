@@ -1,0 +1,126 @@
+"""Errors over HTTP (DESIGN.md §9): the ONE place an exception type becomes a
+status code.
+
+Every error answer has the same body — ``{"detail": <string>, "code":
+<stable identifier>}`` — whatever raised it: a domain error, a request that
+failed validation, a missing route. ``detail`` is always a string; a
+validation failure adds ``fields`` (one entry per offending field), and a few
+errors add context of their own (``run_kept``, ``quarantine_entry``).
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from runcomposer.core.errors import (
+    AuthRequired,
+    ConfigError,
+    Conflict,
+    Forbidden,
+    IngestError,
+    InvalidRequest,
+    NotFound,
+    ParseError,
+    PayloadTooLarge,
+    RunComposerError,
+)
+from runcomposer.core.taxonomy import TaxonomyError
+
+__all__ = ["error_body", "install_error_handlers", "status_of"]
+
+log = logging.getLogger("runcomposer.http")
+
+# First match wins, so subclasses come before their bases.
+_STATUS: tuple[tuple[type[BaseException], int], ...] = (
+    (NotFound, 404),
+    (AuthRequired, 401),
+    (Forbidden, 403),
+    (PayloadTooLarge, 413),
+    (ParseError, 422),
+    (Conflict, 409),
+    (InvalidRequest, 400),
+    # Reaching a request with these means the deployment broke under a running
+    # server (the taxonomy file was edited, a plugin vanished): a server-side
+    # fault that still says exactly what is wrong.
+    (TaxonomyError, 500),
+    (ConfigError, 500),
+)
+# Why a bundle was refused decides the status, not the fact that it was.
+_INGEST_STATUS = {
+    "unknown-run": 404,
+    "unknown-dispatch": 404,
+    "sha-mismatch": 409,
+    "marker-conflict": 409,
+    "dispatch-cancelled": 409,
+}
+
+
+def status_of(exc: BaseException) -> int:
+    if isinstance(exc, IngestError):
+        return _INGEST_STATUS.get(exc.reason, 422)
+    for error_type, status in _STATUS:
+        if isinstance(exc, error_type):
+            return status
+    return 500
+
+
+def error_body(detail: str, code: str, **extra: Any) -> dict[str, Any]:
+    return {"detail": detail, "code": code, **extra}
+
+
+def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RunComposerError)
+    async def _domain(request: Request, exc: RunComposerError) -> JSONResponse:
+        extra = dict(getattr(exc, "extra", None) or {})
+        # A runner may have quoted a configured option in what it raised.
+        service = getattr(request.app.state, "service", None)
+        detail = service.redact(str(exc)) if service is not None else str(exc)
+        return JSONResponse(
+            status_code=status_of(exc), content=error_body(detail, str(exc.code), **extra)
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        fields = []
+        for error in exc.errors():
+            location = [str(part) for part in error.get("loc", ()) if part != "body"]
+            fields.append({"field": ".".join(location), "message": str(error.get("msg", ""))})
+        summary = "; ".join(
+            f"{field['field']}: {field['message']}" if field["field"] else field["message"]
+            for field in fields
+        )
+        return JSONResponse(
+            status_code=400,
+            content=error_body(
+                f"invalid request — {summary}" if summary else "invalid request",
+                "invalid-request",
+                fields=fields,
+            ),
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        codes = {404: "not-found", 405: "method-not-allowed"}
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_body(
+                str(exc.detail), codes.get(exc.status_code, f"http-{exc.status_code}")
+            ),
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(Exception)
+    async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
+        log.error("unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+        return JSONResponse(
+            status_code=500,
+            content=error_body(
+                f"internal error: {type(exc).__name__} (see the server log)", "internal-error"
+            ),
+        )

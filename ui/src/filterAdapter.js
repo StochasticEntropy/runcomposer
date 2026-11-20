@@ -198,7 +198,7 @@ export function removePattern(filterSet, pattern) {
 // choices — include or exclude, how the picked patterns combine with each
 // other, how that group joins the filter already built — and one action that
 // applies them together. It is also the usable way to reach a nested filter:
-// `TZR AND (Krankenkasse OR Drittrecht)` is picking two tags with within=OR
+// `Payments AND (Checkout-Express OR Checkout-Gift)` is picking two tags with within=OR
 // and join=AND, not assembling rows one at a time.
 //
 // **Exclusion is de Morgan, not a second field.** The runspec grammar has

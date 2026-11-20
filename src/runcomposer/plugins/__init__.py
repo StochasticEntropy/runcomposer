@@ -1,6 +1,7 @@
-"""Reference plugins shipped with runcomposer.
+"""Reference connectors: sources, runners, parsers, a store and observers.
 
-These are ordinary plugins: they register through the same entry-point groups
-(`runcomposer.sources`, `runcomposer.runners`) any third-party plugin uses,
-and the core never imports them (guarded by a test).
+They register through the same entry-point groups any third-party connector
+uses, and they import **only** ``runcomposer.sdk`` from this package — the
+same surface a connector outside this repository has. A guard test holds them
+to it.
 """

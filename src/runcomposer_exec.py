@@ -23,7 +23,16 @@ Execution modes:
   --command TEMPLATE   run a shell command; placeholders: {ids_file} (a file
                        with one item id per line), {run_id}, {out_dir}. The
                        command writes its own native result files into the
-                       output directory.
+                       output directory. Only these three placeholders are
+                       replaced — any other braces in the template (an awk
+                       program, a shell expansion) are left exactly as written.
+
+The marker is the bundle's completion signal, so it is written **only when
+the execution succeeded**: after --simulate, or when the command exited with
+an accepted code (--ok-exit-codes, default 0). A command that failed leaves
+no marker — a half-written bundle is then never mistaken for a result. If
+your framework exits non-zero when tests fail, say which codes still mean
+"the results are valid": --ok-exit-codes 0-249.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import random
 import subprocess
 import sys
@@ -97,12 +107,48 @@ def simulate(item_ids: list[str], seed: str) -> list[dict]:
     return verdicts
 
 
+PLACEHOLDERS = ("ids_file", "run_id", "out_dir")
+
+
+def render_command(template: str, values: dict) -> str:
+    """Replace the known {placeholders} literally; touch nothing else.
+
+    Deliberately not str.format: a template is a shell command line, and
+    shell is full of braces that are not ours."""
+    command = template
+    for name in PLACEHOLDERS:
+        command = command.replace("{" + name + "}", values[name])
+    return command
+
+
 def run_command(template: str, item_ids: list[str], run_id: str, out_dir: Path) -> int:
     ids_file = out_dir / "item_ids.txt"
     ids_file.write_text("\n".join(item_ids) + "\n", encoding="utf-8")
-    command = template.format(ids_file=str(ids_file), run_id=run_id, out_dir=str(out_dir))
+    command = render_command(
+        template, {"ids_file": str(ids_file), "run_id": run_id, "out_dir": str(out_dir)}
+    )
     print(f"runcomposer-exec: running: {command}", file=sys.stderr)
     return subprocess.run(command, shell=True).returncode
+
+
+def parse_exit_codes(text: str) -> set[int]:
+    """'0', '0,1', '0-249', '0-5,250' -> the set of accepted exit codes."""
+    codes: set[int] = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        low, sep, high = part.partition("-")
+        try:
+            first, last = int(low), int(high) if sep else int(low)
+        except ValueError:
+            raise SystemExit(f"error: --ok-exit-codes: not a code or range: {part!r}") from None
+        if first > last:
+            raise SystemExit(f"error: --ok-exit-codes: empty range {part!r}")
+        codes.update(range(first, last + 1))
+    if not codes:
+        raise SystemExit("error: --ok-exit-codes: no exit code given")
+    return codes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,7 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--command", default=None,
                       help="shell command template; placeholders {ids_file} {run_id} {out_dir}")
     parser.add_argument("--seed", default="exec", help="seed for --simulate (default: exec)")
+    parser.add_argument("--ok-exit-codes", default="0", metavar="CODES",
+                        help="exit codes of --command after which the bundle is complete and "
+                        "the marker is written, e.g. '0', '0,1' or '0-249' (default: 0)")
     args = parser.parse_args(argv)
+    ok_codes = parse_exit_codes(args.ok_exit_codes)
 
     spec_path = Path(args.spec)
     spec, spec_sha256 = load_spec(spec_path)
@@ -147,15 +197,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"runcomposer-exec: simulated {len(verdicts)} items ({summary})", file=sys.stderr)
     else:
         exit_code = run_command(args.command, item_ids, run_id, out_dir)
+        if exit_code not in ok_codes:
+            # No marker: the marker says "this bundle is complete", and a
+            # failed execution cannot say that.
+            stale = out_dir / MARKER_FILENAME
+            if stale.exists():
+                stale.unlink()
+            print(
+                f"runcomposer-exec: the command exited {exit_code} (accepted: "
+                f"{args.ok_exit_codes}) — no marker written, {out_dir} is NOT a complete bundle",
+                file=sys.stderr,
+            )
+            return exit_code or 1
 
+    # Written last, on purpose: its presence is what tells a file-drop inbox
+    # that everything before it is in place.
     marker = {"run_id": run_id, "spec_sha256": spec_sha256}
     if args.dispatch:
         marker["dispatch_id"] = args.dispatch
     if args.shard:
         marker["shard"] = args.shard
-    (out_dir / MARKER_FILENAME).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+    # …and atomically: it appears complete or not at all, never half-written.
+    pending = out_dir / (MARKER_FILENAME + ".tmp")
+    pending.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+    os.replace(pending, out_dir / MARKER_FILENAME)
     print(f"runcomposer-exec: bundle ready at {out_dir} (marker: {MARKER_FILENAME})", file=sys.stderr)
-    return exit_code
+    return 0
 
 
 if __name__ == "__main__":

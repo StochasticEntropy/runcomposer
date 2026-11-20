@@ -1,10 +1,13 @@
-"""End-to-end tests through the CLI: demo boots, validate validates (DESIGN.md §12, §14 P0)."""
+"""End to end through the CLI: `runcomposer demo` boots the web-shop world
+(DESIGN.md §12), the commands it prints work when pasted, and the quickstart
+round trip of .github/workflows/ci.yml reaches COMPLETE."""
 
 import json
 import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 from runcomposer.cli import main
 
@@ -31,11 +34,21 @@ def next_steps(out: str) -> list[list[str]]:
     return steps
 
 
-def demo_service(workdir: Path, workspace: str = "runcomposer-demo"):
-    from runcomposer.config import load_config
-    from runcomposer.service import Service
+@pytest.fixture()
+def demo_service(workdir):
+    """The Service over the workspace a demo run seeded — closed afterwards."""
+    from runcomposer.sdk import Service, load_config
 
-    return Service(load_config(str(workdir / workspace / "config.yaml")))
+    opened = []
+
+    def open_it(workspace: str = "runcomposer-demo"):
+        service = Service(load_config(str(workdir / workspace / "config.yaml")))
+        opened.append(service)
+        return service
+
+    yield open_it
+    for service in opened:
+        service.close()
 
 
 class TestDemo:
@@ -48,6 +61,26 @@ class TestDemo:
         assert "Results:" in out and "PASS" in out
         assert "Rerun what failed" in out
         assert "derived_from" in out
+
+    def test_demo_says_that_it_simulates(self, workdir, capsys):
+        """Nothing is executed by the demo runner; the demo must not read as
+        if something had been."""
+        assert main(["demo"]) == 0
+        out = capsys.readouterr().out
+        assert "Dispatched to the 'demo' runner (simulated)" in out
+        assert "simulated failure (demo runner)" in out
+        assert "s simulated)" in out
+
+    def test_the_generated_config_configures_the_demo_runner_explicitly(self, workdir):
+        """Only what is configured under `runners:` is dispatchable — the demo
+        workspace is no exception, so its config says so in the open."""
+        assert main(["demo"]) == 0
+        text = (workdir / "runcomposer-demo" / "config.yaml").read_text(encoding="utf-8")
+        config = yaml.safe_load(text)
+        assert config["runners"] == {"demo": {}}
+        assert config["store"] == {"sqlite": {"path": "runcomposer.db"}}
+        assert "sources" not in config  # the bundled corpus is the default catalog
+        assert "SIMULATES" in text
 
     def test_demo_is_deterministic(self, workdir, capsys):
         """Seeded runner: verdict lines must be identical across invocations
@@ -83,24 +116,30 @@ class TestDemoSeedsRealHistory:
             if argv[0] == "serve":  # a blocking server, not runnable in-process
                 assert Path(argv[argv.index("--config") + 1]).is_file()
                 continue
-            assert main(argv) == 0, argv
+            # `run` answers with its exit code whether the run is PASS: the
+            # simulated Checkout run has one failure, so the pasted command
+            # works and exits 1 — "the run is not PASS", not "it broke".
+            assert main(argv) == (1 if argv[0] == "run" else 0), argv
             commands.append(argv[0])
         printed = capsys.readouterr().out
 
-        assert {"runs", "compile", "export"} <= set(commands)
+        assert {"runs", "compile", "export", "run"} <= set(commands)
         assert "no runs stored" not in printed
+        assert "state: COMPLETE (FAIL) — 11 PASS, 1 FAIL, 1 SKIP" in printed
         # the flagship loop, answered from the store the demo just wrote
         failed = next(line for line in printed.splitlines() if "item(s) FAILED in run" in line)
         assert failed.startswith("# 5 item(s) FAILED in run")
 
-    def test_history_is_persisted_at_both_levels(self, workdir):
+    def test_history_is_persisted_at_both_levels(self, workdir, demo_service):
         assert main(["demo"]) == 0
-        service = demo_service(workdir)
+        service = demo_service()
 
-        runs = service.store.list_runs(limit=50)
+        runs = service.list_runs(limit=50).runs
         assert len(runs) == 5
         assert {run.state for run in runs} == {"COMPLETE"}
         assert all(run.completed_at for run in runs)
+        assert {run.latest_dispatch.mode for run in runs} == {"demo"}
+        assert {run.origin for run in runs} == {"demo"}
 
         nightly = [run for run in runs if run.labels.get("suite") == "nightly"]
         assert len(nightly) == 3
@@ -112,9 +151,9 @@ class TestDemoSeedsRealHistory:
         # level two: the duration aggregates duration-balanced chunking reads.
         assert len(service.store.duration_aggregates(last_n=5)) >= 46
 
-    def test_the_scoped_history_selector_resolves_out_of_the_store(self, workdir):
+    def test_the_scoped_history_selector_resolves_out_of_the_store(self, workdir, demo_service):
         assert main(["demo"]) == 0
-        item_ids, provenance = demo_service(workdir).resolve_history(
+        item_ids, provenance = demo_service().resolve_history(
             "failed@latest?suite=nightly"
         )
         assert len(item_ids) == 5
@@ -127,10 +166,20 @@ class TestDemoSeedsRealHistory:
         # run in this directory would then share with fake data.
         assert not (workdir / "runcomposer.db").exists()
 
-    def test_re_running_re_seeds_instead_of_piling_up(self, workdir):
+    def test_re_running_re_seeds_instead_of_piling_up(self, workdir, demo_service):
         assert main(["demo"]) == 0
         assert main(["demo"]) == 0
-        assert len(demo_service(workdir).store.list_runs(limit=50)) == 5
+        assert demo_service().list_runs(limit=50).total == 5
+
+    def test_the_seed_travels_in_the_document_as_a_declared_parameter(self, workdir, demo_service):
+        """Three nightly runs differ through ONE configured runner because the
+        seed is a per-run parameter, written into the spec's open section."""
+        assert main(["demo"]) == 0
+        service = demo_service()
+        nightly = [r for r in service.list_runs(limit=50).runs if r.labels.get("suite") == "nightly"]
+        seeds = {service.require_spec(run.id)["runner"]["demo"]["seed"] for run in nightly}
+        assert seeds == {"nightly-1", "nightly-2", "nightly-3"}
+        assert {run.latest_dispatch.parameters["seed"] for run in nightly} == seeds
 
     def test_workspace_flag_puts_it_where_asked(self, workdir, capsys):
         assert main(["demo", "--workspace", "elsewhere/demo"]) == 0
@@ -176,7 +225,7 @@ class TestDemoSeedsRealHistory:
         assert "not a demo workspace" in capsys.readouterr().err
 
 
-class TestValidateCli:
+class TestValidateAndCatalogCli:
     def test_validate_accepts_the_shipped_example(self, capsys):
         assert main(["validate", EXAMPLE_SPEC]) == 0
         assert main(["validate", "--for-dispatch", EXAMPLE_SPEC]) == 0
@@ -198,13 +247,13 @@ class TestValidateCli:
     def test_validate_reports_unreadable_files(self, capsys):
         assert main(["validate", "does-not-exist.yaml"]) == 2
 
-    def test_catalog_lists_the_demo_corpus(self, capsys):
+    def test_catalog_lists_the_demo_corpus(self, workdir, capsys):
         assert main(["catalog", "--limit", "3"]) == 0
         out = capsys.readouterr().out
         assert out.startswith("# 60 items, 47 distinct tags — snapshot sha256:")
         assert "Shop.Payments.Cards.T001" in out
 
-    def test_catalog_tags_lists_the_tag_world_with_counts(self, capsys):
+    def test_catalog_tags_lists_the_tag_world_with_counts(self, workdir, capsys):
         assert main(["catalog", "--tags"]) == 0
         out = capsys.readouterr().out
         assert "# 60 items, 47 distinct tags" in out
@@ -213,45 +262,6 @@ class TestValidateCli:
         assert "    46  Regression" in out
         assert "     1  SHOP-1200" in out
         assert len([line for line in out.splitlines() if not line.startswith("#")]) == 47
-
-
-    def test_taxonomy_check_names_tags_no_leaf_claims(self, capsys):
-        # The bundled taxonomy is a demo tree, not a complete one — so the
-        # check has something to report, which is the point: drift between a
-        # hand-written tree and a moving catalog is invisible otherwise.
-        assert main(["taxonomy-check"]) == 1
-        out = capsys.readouterr().out
-        assert "taxonomy leaf pattern(s) over 47 distinct catalog tag(s)" in out
-        assert "tags no leaf claims" in out
-        assert "Payments-Cards" in out
-        assert "every taxonomy leaf matches at least one tag" in out
-
-    def test_taxonomy_check_warn_only_still_reports(self, capsys):
-        assert main(["taxonomy-check", "--warn-only"]) == 0
-        assert "tags no leaf claims" in capsys.readouterr().out
-
-    def test_taxonomy_check_names_leaves_that_match_nothing(self, tmp_path, capsys):
-        (tmp_path / "taxonomy.yaml").write_text(
-            "taxonomy:\n"
-            "  - label: Areas\n"
-            "    children:\n"
-            "      - label: Payments\n"
-            "        filter: Payments\n"
-            "      - label: Renamed away\n"
-            "        filter: Billing\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "config.yaml").write_text(
-            f"core:\n  taxonomy_file: taxonomy.yaml\nstore:\n"
-            f"  sqlite: {{ path: {tmp_path / 'runs.db'} }}\n",
-            encoding="utf-8",
-        )
-        assert main(["taxonomy-check", "--config", str(tmp_path / "config.yaml")]) == 1
-        out = capsys.readouterr().out
-        # A leaf whose tag was renamed stays clickable and selects nothing —
-        # the failure mode nothing else surfaces.
-        assert "leaves that match nothing" in out
-        assert "Areas › Renamed away  →  Billing" in out
 
 
     def test_piping_into_head_is_not_an_error(self, tmp_path):
@@ -272,8 +282,8 @@ class TestValidateCli:
         manifest = tmp_path / "big.json"
         manifest.write_text(
             json.dumps({"items": [
-                {"id": f"suite.module{n // 50}.test_case_number_{n:05d}",
-                 "tags": ["Regression", f"Sprint-{n % 30}", f"TICKET-{n:05d}"]}
+                {"id": f"Shop.Catalog.Browse{n // 50}.T{n:05d}",
+                 "tags": ["Regression", f"Sprint-{n % 30}", f"SHOP-{n:05d}"]}
                 for n in range(4000)
             ]}),
             encoding="utf-8",
@@ -304,20 +314,83 @@ class TestExampleSpecHonesty:
 
     @pytest.fixture()
     def source(self):
-        from importlib import resources
+        from runcomposer.plugins.demo_source import DemoCorpusSource
 
-        from runcomposer.plugins.manifest_source import ManifestSource
-
-        return ManifestSource(resources.files("runcomposer.demo") / "corpus.json")
+        return DemoCorpusSource()
 
     def test_snapshot_matches_the_bundled_corpus(self, example, source):
         assert example["source"]["snapshot"] == source.snapshot()
 
     def test_materialized_list_is_the_filter_result(self, example, source):
-        from runcomposer.core.selection import Selection
+        from runcomposer.sdk import Selection
 
         compiled = Selection.from_data({"tag_filter": example["selection"]["tag_filter"]}).compile(
             source.items()
         )
         assert [item.id for item in compiled] == example["selection"]["materialized"]["item_ids"]
         assert example["selection"]["materialized"]["count"] == len(compiled)
+
+    def test_it_is_dispatchable_as_shipped(self, tmp_path, monkeypatch, capsys):
+        """The example is not only valid: `dispatch` takes the file and a
+        configured runner executes exactly its item list."""
+        monkeypatch.chdir(tmp_path)  # built-in defaults: demo corpus, demo runner
+        assert main(["dispatch", EXAMPLE_SPEC, "--runner", "demo", "--json"]) in (0, 1)
+        detail = json.loads(capsys.readouterr().out)
+        assert detail["state"] == "COMPLETE"
+        assert detail["planned_count"] == sum(detail["verdict_summary"].values())
+
+
+class TestQuickstartRoundTrip:
+    """The export loop the README and CI's `quickstart` job run:
+    spec --export → runcomposer-exec --simulate → ingest → COMPLETE."""
+
+    def test_spec_exec_ingest_reaches_complete(self, tmp_path, capsys):
+        import runcomposer_exec
+
+        config = tmp_path / "rt-config.yaml"
+        config.write_text("store:\n  sqlite: { path: rt.db }\n", encoding="utf-8")
+        spec, bundle = tmp_path / "rt-spec.json", tmp_path / "rt-bundle"
+        assert main([
+            "spec", "Regression", "--title", "CI round trip", "--format", "json",
+            "-o", str(spec), "--export", "--config", str(config),
+        ]) == 0
+        err = capsys.readouterr().err
+        assert "export dispatch:" in err and "state AWAITING_RESULTS" in err
+
+        assert runcomposer_exec.main([str(spec), "--out", str(bundle), "--simulate"]) == 0
+        assert main(["ingest", str(bundle), "--config", str(config)]) == 0
+        assert "run state: COMPLETE" in capsys.readouterr().out
+
+        assert main(["runs", "--config", str(config)]) == 0
+        listing = capsys.readouterr().out
+        assert "COMPLETE" in listing and "CI round trip" in listing
+        # A config file configures no runner by leaving `runners:` out: this
+        # loop needs none, and the store sits next to the config file.
+        assert (tmp_path / "rt.db").is_file()
+
+    def test_the_exported_file_is_byte_for_byte_what_the_marker_hashes(self, tmp_path, capsys):
+        import hashlib
+
+        import runcomposer_exec
+
+        config = tmp_path / "rt-config.yaml"
+        config.write_text("store:\n  sqlite: { path: rt.db }\n", encoding="utf-8")
+        spec, bundle = tmp_path / "spec.json", tmp_path / "bundle"
+        assert main([
+            "spec", "Payments", "--title", "Zahlungen prüfen", "--format", "json",
+            "-o", str(spec), "--export", "--config", str(config),
+        ]) == 0
+        err = capsys.readouterr().err
+        sha = hashlib.sha256(spec.read_bytes()).hexdigest()
+        assert f"spec sha256: {sha}" in err
+        assert "prüfen" in spec.read_text(encoding="utf-8")  # not \u-escaped
+        # The token is shown once, next to the document — never inside it.
+        assert "ingest token (shown once" in err
+        assert "token" not in json.loads(spec.read_text(encoding="utf-8"))["results"]
+
+        assert runcomposer_exec.main([str(spec), "--out", str(bundle), "--simulate"]) == 0
+        marker = json.loads((bundle / "runcomposer_run.json").read_text(encoding="utf-8"))
+        assert marker["spec_sha256"] == sha
+        assert main(["ingest", str(bundle), "--config", str(config)]) == 0
+        out = capsys.readouterr().out
+        assert "run state: COMPLETE" in out and "warning" not in out

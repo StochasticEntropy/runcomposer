@@ -6,9 +6,8 @@ A plain JSON document any executor can emit with a few lines of stdlib code::
      "verdicts": [{"name": "<native test name>", "status": "PASS",
                    "duration_ms": 120, "message": "", "attempt": 1}]}
 
-``name`` is the executor's *native* name; correlation to Item ids happens in
-the core via TestSource.resolve, never here. Framework-native parsers
-(robot-output-xml, junit-xml) arrive with P2/P3 (DESIGN.md §14).
+``name`` is the executor's *native* name; correlation to Item ids happens
+through ``TestSource.resolve``, never here.
 """
 
 from __future__ import annotations
@@ -17,14 +16,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from runcomposer.core.model import VERDICT_STATUSES
-from runcomposer.core.ports import ParsedVerdict
+from runcomposer.sdk import REPORTABLE_STATUSES, ParsedVerdict, ParseError
 
-__all__ = ["ParseError", "VerdictsParser"]
-
-
-class ParseError(ValueError):
-    """Raised for malformed result documents."""
+__all__ = ["VerdictsParser"]
 
 
 class VerdictsParser:
@@ -32,22 +26,21 @@ class VerdictsParser:
 
     def parse(self, path: Any) -> list[ParsedVerdict]:
         """Parse a results file, or every matching ``*.json`` in a bundle
-        directory (files that are not this format are skipped)."""
+        directory (JSON files that are not this format are skipped)."""
         root = Path(path)
         files = [root] if root.is_file() else sorted(root.rglob("*.json"))
         parsed: list[ParsedVerdict] = []
         for file in files:
             document = self._try_load(file)
-            if document is None:
-                continue
-            parsed.extend(self._parse_document(document, file))
+            if document is not None:
+                parsed.extend(self._parse_document(document, file))
         return parsed
 
     @staticmethod
     def _try_load(file: Path) -> dict[str, Any] | None:
         try:
             document = json.loads(file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             return None
         if isinstance(document, dict) and document.get("format") == VerdictsParser.format_id:
             return document
@@ -67,15 +60,22 @@ class VerdictsParser:
             status = entry.get("status")
             if not isinstance(name, str) or not name:
                 raise ParseError(f"{where}: 'name' is required")
-            if status not in VERDICT_STATUSES:
-                raise ParseError(f"{where}: 'status' must be one of {VERDICT_STATUSES}, got {status!r}")
+            if status not in REPORTABLE_STATUSES:
+                raise ParseError(
+                    f"{where}: 'status' must be one of {REPORTABLE_STATUSES}, got {status!r}"
+                )
+            try:
+                duration_ms = int(entry.get("duration_ms", 0))
+                attempt = int(entry.get("attempt", 1))
+            except (TypeError, ValueError):
+                raise ParseError(f"{where}: 'duration_ms' and 'attempt' must be integers") from None
             parsed.append(
                 ParsedVerdict(
                     native_name=name,
                     status=status,
-                    duration_ms=int(entry.get("duration_ms", 0)),
+                    duration_ms=duration_ms,
                     message=str(entry.get("message", "")),
-                    attempt=int(entry.get("attempt", 1)),
+                    attempt=attempt,
                 )
             )
         return parsed

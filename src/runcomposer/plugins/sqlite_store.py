@@ -1,33 +1,55 @@
 """`sqlite` RunStore — the zero-setup reference store (DESIGN.md §6.3).
 
-Persists the normative schema (runs, specs, dispatches, deliveries, verdicts,
-artifact_refs) and nothing else — in particular no runner-lifecycle fields.
-Connections are opened per operation, so concurrent CLI invocations and the
-API server can share one database file without a daemon.
+Safe to share: several threads of one server, and several processes (a
+server, a CLI invocation, an inbox watcher) on one database file.
+
+- WAL journal + a busy timeout, so readers never block writers and a writer
+  waits for another instead of failing;
+- one connection per thread, never shared;
+- every write is one short ``BEGIN IMMEDIATE`` transaction, so a
+  check-then-write (``record_delivery``) cannot interleave with another;
+- the schema is versioned in ``PRAGMA user_version`` and migrated in place —
+  a database written by 0.1.x opens as it is.
+
+``path: ":memory:"`` is supported for tests and throwaway use: one private
+in-memory database for the lifetime of the store object, serialised through a
+lock (an in-memory database has no second process to be safe against).
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
-from runcomposer.core.ids import new_ulid
-from runcomposer.core.model import (
+from runcomposer.sdk import (
     ArtifactRef,
     DeliveryRecord,
     DispatchRecord,
+    RunEvent,
+    RunPage,
     RunRecord,
+    StoreError,
     Verdict,
+    completion_of,
+    missing_verdicts,
+    new_ulid,
+    normalize_time,
+    sha256_hex,
+    summarize,
+    utc_now,
 )
 
-__all__ = ["SqliteRunStore", "StoreError"]
+__all__ = ["SCHEMA_VERSION", "SqliteRunStore"]
 
-#: sqlite spellings for ``store.sqlite.path`` that name something other than a
-#: file on disk, and must therefore survive path resolution untouched (§8).
-_NOT_A_PATH = (":memory:", "file:")
+#: Bumped with every schema change; see ``_migrate``.
+SCHEMA_VERSION = 2
+
+_BUSY_TIMEOUT_MS = 30_000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -39,7 +61,8 @@ CREATE TABLE IF NOT EXISTS runs (
     state TEXT NOT NULL,
     completion TEXT,
     completed_at TEXT,
-    ingest_token_sha256 TEXT
+    ingest_token_sha256 TEXT,
+    planned_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS specs (
     run_id TEXT PRIMARY KEY REFERENCES runs(id),
@@ -51,17 +74,39 @@ CREATE TABLE IF NOT EXISTS dispatches (
     mode TEXT NOT NULL,
     declared_shards INTEGER,
     spec_sha256 TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'AWAITING_RESULTS',
+    shards TEXT NOT NULL DEFAULT '[]',
+    shard_items TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    plan TEXT NOT NULL DEFAULT '',
+    links TEXT NOT NULL DEFAULT '{}',
+    parameters TEXT NOT NULL DEFAULT '{}',
+    completion TEXT,
+    completed_at TEXT,
+    summary TEXT NOT NULL DEFAULT '{}',
+    owner TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS dispatch_specs (
+    dispatch_id TEXT PRIMARY KEY,
+    content BLOB NOT NULL,
+    media_type TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ingest_tokens (
+    token_sha256 TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    dispatch_id TEXT
 );
 CREATE TABLE IF NOT EXISTS deliveries (
     delivery_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(id),
-    dispatch_id TEXT,
+    dispatch_id TEXT NOT NULL,
     shard TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     format TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE (run_id, content_hash)
+    UNIQUE (run_id, dispatch_id, shard)
 );
 CREATE TABLE IF NOT EXISTS verdicts (
     run_id TEXT NOT NULL,
@@ -74,78 +119,202 @@ CREATE TABLE IF NOT EXISTS verdicts (
     message TEXT NOT NULL DEFAULT '',
     attempt INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS live_verdicts (
+    run_id TEXT NOT NULL,
+    dispatch_id TEXT NOT NULL,
+    shard TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT '',
+    attempt INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (dispatch_id, shard, item_id)
+);
 CREATE TABLE IF NOT EXISTS artifact_refs (
     run_id TEXT NOT NULL,
     dispatch_id TEXT,
     name TEXT NOT NULL,
     media_type TEXT NOT NULL DEFAULT '',
-    url_or_path TEXT NOT NULL
+    url_or_path TEXT NOT NULL,
+    shard TEXT
+);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    dispatch_id TEXT,
+    data TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_verdicts_run ON verdicts(run_id, dispatch_id);
-CREATE INDEX IF NOT EXISTS idx_deliveries_run ON deliveries(run_id, dispatch_id, shard);
 CREATE INDEX IF NOT EXISTS idx_runs_state ON runs(state);
+CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatches_run ON dispatches(run_id);
+CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_tokens_run ON ingest_tokens(run_id)
 """
 
+#: Columns ``update_dispatch`` may set, and how each value is stored.
+_JSON_COLUMNS = ("shards", "shard_items", "links", "summary", "parameters")
+_PLAIN_COLUMNS = ("state", "spec_sha256", "error", "plan", "completion", "completed_at", "owner")
 
-class StoreError(RuntimeError):
-    """Raised for store-level contract violations (e.g. unknown run)."""
+
+def _fold(value: Any) -> str:
+    return value.casefold() if isinstance(value, str) else ""
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+class _NoLock:
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+_NO_LOCK = _NoLock()
 
 
 class SqliteRunStore:
     store_id = "sqlite"
 
     @staticmethod
-    def resolve_config_paths(options, resolve):
-        """§8 opt-in: ``path`` is a file, and relative means "next to the
-        config file". ``:memory:`` and the ``file:`` URI form name no file on
-        disk, so they are handed back as written — which is exactly why this
-        decision lives in the store and not in the core."""
+    def resolve_config_paths(options: dict[str, Any], resolve: Any) -> dict[str, Any]:
+        """``path`` is a file next to the config file — except ``:memory:``,
+        which names no file at all, which is exactly why this decision is the
+        store's and not the core's."""
         path = options.get("path")
-        if isinstance(path, str) and not path.startswith(_NOT_A_PATH):
+        if isinstance(path, str) and path != ":memory:":
             options["path"] = resolve(path)
         return options
 
     def __init__(self, path: str = "runcomposer.db"):
         self._path = str(path)
-        with self._conn() as conn:
-            conn.executescript(_SCHEMA)
+        if self._path.startswith("file:"):
+            raise StoreError(
+                "store.sqlite.path takes a file path or ':memory:' — the 'file:' URI form is "
+                "not supported (its options would bypass the journal settings this store relies on)"
+            )
+        self._memory = self._path == ":memory:"
+        if not self._memory:
+            # The directory the store lives in is created on first use, like
+            # every other directory a config names (artifacts, inbox, quarantine).
+            try:
+                Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise StoreError(
+                    f"cannot create the directory of the sqlite store {self._path!r}: {exc}"
+                ) from None
+        self._local = threading.local()
+        self._lock = threading.RLock()
+        self._shared: sqlite3.Connection | None = None
+        if self._memory:
+            self._shared = self._open()
+        with self._write() as conn:
+            self._migrate(conn)
+
+    # -- connections ---------------------------------------------------------
+
+    def _open(self) -> sqlite3.Connection:
+        try:
+            conn = sqlite3.connect(
+                self._path,
+                timeout=_BUSY_TIMEOUT_MS / 1000,
+                isolation_level=None,  # transactions are explicit, below
+                check_same_thread=not self._memory,
+            )
+        except sqlite3.Error as exc:
+            raise StoreError(f"cannot open the sqlite store at {self._path!r}: {exc}") from None
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys = ON")
+        if not self._memory:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+        conn.create_function("rc_fold", 1, _fold, deterministic=True)
+        return conn
+
+    def _connection(self) -> sqlite3.Connection:
+        if self._memory:
+            if self._shared is None:
+                raise StoreError("the in-memory store was closed")
+            return self._shared
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._local.conn = self._open()
+        return conn
 
     @contextmanager
-    def _conn(self):
-        conn = sqlite3.connect(self._path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            yield conn
-            conn.commit()
-        finally:
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        with self._lock if self._memory else _NO_LOCK:
+            yield self._connection()
+
+    @contextmanager
+    def _write(self) -> Iterator[sqlite3.Connection]:
+        """One short write transaction. ``BEGIN IMMEDIATE`` takes the write
+        lock up front, so what is read inside is still true when written."""
+        with self._lock if self._memory else _NO_LOCK:
+            conn = self._connection()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+
+    def close(self) -> None:
+        """Close this thread's connection (and the in-memory database)."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
             conn.close()
+            self._local.conn = None
+        if self._shared is not None:
+            self._shared.close()
+            self._shared = None
 
-    # -- runs & specs ------------------------------------------------------
+    # -- schema & migration ----------------------------------------------------
 
-    def create_run(
-        self,
-        spec: Mapping[str, Any],
-        *,
-        origin: str,
-        ingest_token_sha256: str | None = None,
-    ) -> RunRecord:
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise StoreError(
+                f"{self._path}: database schema version {version} is newer than this "
+                f"runcomposer understands ({SCHEMA_VERSION}) — upgrade runcomposer"
+            )
+        if version == SCHEMA_VERSION:
+            return
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if version == 0 and "runs" in tables:
+            _migrate_from_0_1(conn)
+        for statement in _SCHEMA.split(";"):
+            if statement.strip():
+                conn.execute(statement)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    # -- runs & specs ----------------------------------------------------------
+
+    def create_run(self, spec: Mapping[str, Any], *, origin: str) -> RunRecord:
         run = spec["run"]
-        with self._conn() as conn:
+        materialized = (spec.get("selection") or {}).get("materialized") or {}
+        with self._write() as conn:
+            if conn.execute("SELECT 1 FROM runs WHERE id = ?", (run["id"],)).fetchone():
+                raise StoreError(f"run id {run['id']!r} already exists")
             conn.execute(
-                "INSERT INTO runs (id, title, created_at, origin, labels, state, ingest_token_sha256)"
+                "INSERT INTO runs (id, title, created_at, origin, labels, state, planned_count)"
                 " VALUES (?, ?, ?, ?, ?, 'COMPOSED', ?)",
                 (
                     run["id"],
                     run.get("title", ""),
-                    run["created_at"],
+                    # Stored in the one spelling stored times have (UTC, Z), so
+                    # that filters, ordering and retention compare times — a
+                    # document may spell its own with an offset.
+                    normalize_time(run["created_at"]),
                     origin,
-                    json.dumps(run.get("labels", {})),
-                    ingest_token_sha256,
+                    json.dumps(run.get("labels", {}), ensure_ascii=False),
+                    len(materialized.get("item_ids") or ()),
                 ),
             )
             conn.execute(
@@ -157,19 +326,17 @@ class SqliteRunStore:
         return record
 
     def get_run(self, run_id: str) -> RunRecord | None:
-        with self._conn() as conn:
+        with self._read() as conn:
             row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
             if row is None:
                 return None
             dispatches = conn.execute(
-                "SELECT * FROM dispatches WHERE run_id = ? ORDER BY created_at, dispatch_id",
-                (run_id,),
+                "SELECT * FROM dispatches WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
             deliveries = conn.execute(
-                "SELECT * FROM deliveries WHERE run_id = ? ORDER BY created_at, delivery_id",
-                (run_id,),
+                "SELECT * FROM deliveries WHERE run_id = ? ORDER BY rowid", (run_id,)
             ).fetchall()
-        return self._run_record(row, dispatches, deliveries)
+        return _run_record(row, dispatches, deliveries)
 
     def list_runs(
         self,
@@ -178,11 +345,12 @@ class SqliteRunStore:
         labels: Mapping[str, str] | None = None,
         since: str | None = None,
         until: str | None = None,
+        q: str | None = None,
         limit: int = 50,
-    ) -> list[RunRecord]:
-        """Filters per §9: state, labels (all given pairs must match), time
-        window on created_at (ISO-8601 UTC strings compare lexicographically)."""
-        conditions, params = [], []
+        offset: int = 0,
+    ) -> RunPage:
+        conditions: list[str] = []
+        params: list[Any] = []
         if state is not None:
             conditions.append("state = ?")
             params.append(state)
@@ -192,25 +360,77 @@ class SqliteRunStore:
         if until is not None:
             conditions.append("created_at <= ?")
             params.append(until)
-        query = "SELECT * FROM runs"
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY created_at DESC, id DESC"
-        with self._conn() as conn:
-            rows = conn.execute(query, params).fetchall()
-        records = [self._shallow_run_record(row) for row in rows]
-        if labels:
-            records = [
-                record
-                for record in records
-                if all(record.labels.get(key) == value for key, value in labels.items())
+        if q:
+            conditions.append("instr(rc_fold(title), ?) > 0")
+            params.append(q.casefold())
+        for key, value in (labels or {}).items():
+            conditions.append("json_extract(labels, ?) = ?")
+            params.extend(['$."' + key.replace("\\", "\\\\").replace('"', '\\"') + '"', value])
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        with self._read() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM runs{where}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM runs{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (*params, max(0, int(limit)), max(0, int(offset))),
+            ).fetchall()
+            by_run: dict[str, list[sqlite3.Row]] = {row["id"]: [] for row in rows}
+            if rows:
+                marks = ",".join("?" for _ in rows)
+                for dispatch in conn.execute(
+                    f"SELECT * FROM dispatches WHERE run_id IN ({marks}) ORDER BY rowid",
+                    list(by_run),
+                ):
+                    by_run[dispatch["run_id"]].append(dispatch)
+        return RunPage(
+            runs=tuple(_run_record(row, by_run[row["id"]], ()) for row in rows), total=total
+        )
+
+    def delete_run(self, run_id: str) -> bool:
+        with self._write() as conn:
+            if conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+                return False
+            _delete_run(conn, run_id)
+        return True
+
+    def prune_runs(self, *, before: str | None = None, max_runs: int | None = None) -> list[str]:
+        """§6.4 retention: delete runs created before ``before`` and/or beyond
+        the newest ``max_runs``, with everything recorded for them."""
+        with self._write() as conn:
+            rows = conn.execute(
+                "SELECT id, created_at FROM runs ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+            doomed = [
+                row["id"]
+                for index, row in enumerate(rows)
+                if (before is not None and row["created_at"] < before)
+                or (max_runs is not None and index >= max_runs)
             ]
-        return records[:limit]
+            for run_id in doomed:
+                _delete_run(conn, run_id)
+        return doomed
 
     def get_spec_document(self, run_id: str) -> dict[str, Any] | None:
-        with self._conn() as conn:
+        with self._read() as conn:
             row = conn.execute("SELECT document FROM specs WHERE run_id = ?", (run_id,)).fetchone()
         return json.loads(row["document"]) if row else None
+
+    def set_spec_document(self, run_id: str, spec: Mapping[str, Any]) -> None:
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            conn.execute(
+                "UPDATE specs SET document = ? WHERE run_id = ?",
+                (json.dumps(spec, ensure_ascii=False), run_id),
+            )
+
+    def set_run_headline(
+        self, run_id: str, state: str, *, completion: str | None, completed_at: str | None
+    ) -> None:
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            conn.execute(
+                "UPDATE runs SET state = ?, completion = ?, completed_at = ? WHERE id = ?",
+                (state, completion, completed_at, run_id),
+            )
 
     def latest_completed_run(
         self,
@@ -218,23 +438,13 @@ class SqliteRunStore:
         completed_before: str | None = None,
         labels: Mapping[str, str] | None = None,
     ) -> RunRecord | None:
-        """§6.3/§7: 'latest' means latest COMPLETED — selected by completion
-        status and completed_at, optionally bounded by a cutoff and scoped to
-        runs carrying all of ``labels``.
-
-        The label scope is not a nicety: unscoped, "latest" is the latest
-        completed run of anything in the store, so on a shared deployment the
-        next person's five-test selection silently becomes the reference for
-        the nightly rerun. Labels are matched in Python, exactly as
-        ``list_runs`` does — they live in a JSON column, and a run's label set
-        is small."""
         query = "SELECT id, labels FROM runs WHERE state = 'COMPLETE'"
         params: list[Any] = []
         if completed_before is not None:
             query += " AND completed_at <= ?"
             params.append(completed_before)
         query += " ORDER BY completed_at DESC, id DESC"
-        with self._conn() as conn:
+        with self._read() as conn:
             rows = conn.execute(query, params).fetchall()
         for row in rows:
             if labels:
@@ -244,14 +454,7 @@ class SqliteRunStore:
             return self.get_run(row["id"])
         return None
 
-    def get_ingest_token_sha256(self, run_id: str) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT ingest_token_sha256 FROM runs WHERE id = ?", (run_id,)
-            ).fetchone()
-        return row["ingest_token_sha256"] if row else None
-
-    # -- dispatches --------------------------------------------------------
+    # -- dispatches --------------------------------------------------------------
 
     def add_dispatch(
         self,
@@ -259,84 +462,156 @@ class SqliteRunStore:
         *,
         dispatch_id: str,
         mode: str,
-        declared_shards: int | None,
-        spec_sha256: str | None = None,
+        state: str,
+        owner: str | None = None,
+        parameters: Mapping[str, Any] | None = None,
     ) -> DispatchRecord:
-        created_at = _utc_now()
-        with self._conn() as conn:
-            self._require_run(conn, run_id)
-            existing = conn.execute(
-                "SELECT run_id, created_at FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            if conn.execute(
+                "SELECT 1 FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone():
+                raise StoreError(f"dispatch id {dispatch_id!r} already exists")
+            conn.execute(
+                "INSERT INTO dispatches (dispatch_id, run_id, mode, state, owner, parameters,"
+                " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    dispatch_id,
+                    run_id,
+                    mode,
+                    state,
+                    owner,
+                    json.dumps(dict(parameters or {}), ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone()
-            if existing is not None:
-                # Re-declaration of the same dispatch (§6.3): a dispatch is
-                # recorded when the hand-off happens and refined from the
-                # runner's handle afterwards. Same row, original created_at.
-                if existing["run_id"] != run_id:
-                    raise StoreError(
-                        f"dispatch id {dispatch_id!r} already belongs to run "
-                        f"{existing['run_id']!r} — refusing to move it to {run_id!r}"
-                    )
-                created_at = existing["created_at"]
-                conn.execute(
-                    "UPDATE dispatches SET mode = ?, declared_shards = ?, spec_sha256 = ?"
-                    " WHERE dispatch_id = ?",
-                    (mode, declared_shards, spec_sha256, dispatch_id),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO dispatches (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (dispatch_id, run_id, mode, declared_shards, spec_sha256, created_at),
-                )
-        return DispatchRecord(
-            dispatch_id=dispatch_id,
-            run_id=run_id,
-            mode=mode,
-            declared_shards=declared_shards,
-            created_at=created_at,
-            spec_sha256=spec_sha256,
-        )
+        return _dispatch_record(row)
 
-    # -- deliveries & verdicts (§5 idempotency) -----------------------------
+    def update_dispatch(self, dispatch_id: str, **changes: Any) -> DispatchRecord:
+        assignments: list[str] = []
+        params: list[Any] = []
+        for column, value in changes.items():
+            if column in _JSON_COLUMNS:
+                if column == "shards":
+                    value = list(value)
+                elif column == "shard_items":
+                    value = {shard: list(items) for shard, items in value.items()}
+                else:
+                    value = dict(value or {})
+                value = json.dumps(value, ensure_ascii=False)
+            elif column == "cancel_requested":
+                value = int(bool(value))
+            elif column not in _PLAIN_COLUMNS:
+                raise StoreError(f"update_dispatch cannot set {column!r}")
+            assignments.append(f"{column} = ?")
+            params.append(value)
+        with self._write() as conn:
+            if assignments:
+                conn.execute(
+                    f"UPDATE dispatches SET {', '.join(assignments)} WHERE dispatch_id = ?",
+                    (*params, dispatch_id),
+                )
+            row = conn.execute(
+                "SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"unknown dispatch id {dispatch_id!r}")
+        return _dispatch_record(row)
+
+    def get_dispatch(self, dispatch_id: str) -> DispatchRecord | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT * FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
+            ).fetchone()
+        return _dispatch_record(row) if row else None
+
+    def delete_dispatch(self, dispatch_id: str) -> None:
+        with self._write() as conn:
+            for table in _DISPATCH_TABLES:
+                conn.execute(f"DELETE FROM {table} WHERE dispatch_id = ?", (dispatch_id,))
+
+    def owned_dispatches(self) -> list[DispatchRecord]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM dispatches WHERE owner IS NOT NULL ORDER BY rowid"
+            ).fetchall()
+        return [_dispatch_record(row) for row in rows]
+
+    def set_dispatch_spec(self, dispatch_id: str, content: bytes, media_type: str) -> None:
+        with self._write() as conn:
+            conn.execute(
+                "INSERT INTO dispatch_specs (dispatch_id, content, media_type) VALUES (?, ?, ?)"
+                " ON CONFLICT(dispatch_id) DO UPDATE SET content = excluded.content,"
+                " media_type = excluded.media_type",
+                (dispatch_id, content, media_type),
+            )
+
+    def get_dispatch_spec(self, dispatch_id: str) -> tuple[bytes, str] | None:
+        with self._read() as conn:
+            row = conn.execute(
+                "SELECT content, media_type FROM dispatch_specs WHERE dispatch_id = ?",
+                (dispatch_id,),
+            ).fetchone()
+        return (bytes(row["content"]), row["media_type"]) if row else None
+
+    # -- ingest tokens -------------------------------------------------------------
+
+    def set_ingest_token(self, run_id: str, dispatch_id: str | None, token_sha256: str) -> None:
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            if dispatch_id is not None:
+                conn.execute("DELETE FROM ingest_tokens WHERE dispatch_id = ?", (dispatch_id,))
+            conn.execute(
+                "INSERT INTO ingest_tokens (token_sha256, run_id, dispatch_id) VALUES (?, ?, ?)",
+                (token_sha256, run_id, dispatch_id),
+            )
+
+    def ingest_tokens(self, run_id: str) -> dict[str, str | None]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT token_sha256, dispatch_id FROM ingest_tokens WHERE run_id = ?", (run_id,)
+            ).fetchall()
+        return {row["token_sha256"]: row["dispatch_id"] for row in rows}
+
+    # -- deliveries & verdicts (§5 idempotency) -----------------------------------
 
     def record_delivery(
         self,
         run_id: str,
         *,
-        dispatch_id: str | None,
+        dispatch_id: str,
         shard: str,
         content_hash: str,
         format: str,
         verdicts: Sequence[Verdict],
     ) -> str:
-        with self._conn() as conn:
-            self._require_run(conn, run_id)
-            duplicate = conn.execute(
-                "SELECT delivery_id FROM deliveries WHERE run_id = ? AND content_hash = ?",
-                (run_id, content_hash),
-            ).fetchone()
-            if duplicate is not None:
-                return "duplicate"  # byte-identical bundle: no-op
-
-            outcome = "new"
-            replaced = conn.execute(
-                "SELECT delivery_id FROM deliveries WHERE run_id = ? AND dispatch_id IS ? AND shard = ?",
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            existing = conn.execute(
+                "SELECT delivery_id, content_hash FROM deliveries"
+                " WHERE run_id = ? AND dispatch_id = ? AND shard = ?",
                 (run_id, dispatch_id, shard),
-            ).fetchall()
-            if replaced:
-                # Last-writer-wins per shard: corrections may flip FAIL→PASS.
+            ).fetchone()
+            outcome = "new"
+            if existing is not None:
+                if existing["content_hash"] == content_hash:
+                    return "duplicate"  # the same bundle again: a no-op
+                # Last-writer-wins per shard: a correction may flip FAIL→PASS.
                 outcome = "replaced"
-                ids = [row["delivery_id"] for row in replaced]
-                marks = ",".join("?" for _ in ids)
-                conn.execute(f"DELETE FROM verdicts WHERE delivery_id IN ({marks})", ids)
-                conn.execute(f"DELETE FROM deliveries WHERE delivery_id IN ({marks})", ids)
-
+                conn.execute(
+                    "DELETE FROM verdicts WHERE delivery_id = ?", (existing["delivery_id"],)
+                )
+                conn.execute(
+                    "DELETE FROM deliveries WHERE delivery_id = ?", (existing["delivery_id"],)
+                )
             delivery_id = new_ulid()
             conn.execute(
-                "INSERT INTO deliveries (delivery_id, run_id, dispatch_id, shard, content_hash, format, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (delivery_id, run_id, dispatch_id, shard, content_hash, format, _utc_now()),
+                "INSERT INTO deliveries (delivery_id, run_id, dispatch_id, shard, content_hash,"
+                " format, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (delivery_id, run_id, dispatch_id, shard, content_hash, format, utc_now()),
             )
             conn.executemany(
                 "INSERT INTO verdicts (run_id, dispatch_id, shard, delivery_id, item_id, status,"
@@ -356,21 +631,39 @@ class SqliteRunStore:
                     for v in verdicts
                 ],
             )
+            conn.execute(
+                "DELETE FROM live_verdicts WHERE dispatch_id = ? AND shard = ?",
+                (dispatch_id, shard),
+            )
         return outcome
 
-    def record_live_verdict(self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict) -> None:
-        """Streamed by a runner's listener DURING execution (§6.2a). Live rows
-        use a sentinel delivery id and are cleared when the shard's terminal
-        delivery reconciles them — no schema beyond the normative tables."""
-        with self._conn() as conn:
+    def delivered_shards(self, run_id: str, dispatch_id: str) -> set[str]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT shard FROM deliveries WHERE run_id = ? AND dispatch_id = ?",
+                (run_id, dispatch_id),
+            ).fetchall()
+        return {row["shard"] for row in rows}
+
+    def verdicts_for(
+        self, run_id: str, dispatch_id: str | None = None, *, shard: str | None = None
+    ) -> list[Verdict]:
+        return self._verdict_rows("verdicts", run_id, dispatch_id, shard)
+
+    def record_live_verdict(
+        self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict
+    ) -> None:
+        with self._write() as conn:
             conn.execute(
-                "INSERT INTO verdicts (run_id, dispatch_id, shard, delivery_id, item_id, status,"
-                " duration_ms, message, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO live_verdicts (run_id, dispatch_id, shard, item_id, status,"
+                " duration_ms, message, attempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(dispatch_id, shard, item_id) DO UPDATE SET status = excluded.status,"
+                " duration_ms = excluded.duration_ms, message = excluded.message,"
+                " attempt = excluded.attempt",
                 (
                     run_id,
                     dispatch_id,
                     shard,
-                    f"live-{dispatch_id}",
                     verdict.item_id,
                     verdict.status,
                     verdict.duration_ms,
@@ -379,43 +672,51 @@ class SqliteRunStore:
                 ),
             )
 
-    def clear_live_verdicts(self, run_id: str, dispatch_id: str) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                "DELETE FROM verdicts WHERE run_id = ? AND delivery_id = ?",
-                (run_id, f"live-{dispatch_id}"),
-            )
+    def live_verdicts(self, run_id: str, dispatch_id: str) -> list[Verdict]:
+        return self._verdict_rows("live_verdicts", run_id, dispatch_id, None)
+
+    def _verdict_rows(
+        self, table: str, run_id: str, dispatch_id: str | None, shard: str | None
+    ) -> list[Verdict]:
+        query = f"SELECT * FROM {table} WHERE run_id = ?"
+        params: tuple[Any, ...] = (run_id,)
+        if dispatch_id is not None:
+            query += " AND dispatch_id = ?"
+            params += (dispatch_id,)
+        if shard is not None:
+            query += " AND shard = ?"
+            params += (shard,)
+        with self._read() as conn:
+            rows = conn.execute(query + " ORDER BY rowid", params).fetchall()
+        return [_verdict(row) for row in rows]
 
     def duration_aggregates(
         self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
     ) -> dict[str, float]:
-        """§6.3 history surface: average duration per item id over the last N
-        completed dispatches of runs matching the label selector. A dispatch
-        counts as completed when it has delivered (the deliveries join below);
-        the run's *current* state is irrelevant — a re-dispatch of the same
-        run must still see its own earlier history."""
-        with self._conn() as conn:
-            runs = conn.execute(
-                "SELECT id, labels FROM runs ORDER BY created_at DESC, id DESC"
-            ).fetchall()
-            matching_run_ids = []
-            for row in runs:
-                run_labels = json.loads(row["labels"])
-                if labels and not all(run_labels.get(k) == v for k, v in labels.items()):
-                    continue
-                matching_run_ids.append(row["id"])
-            if not matching_run_ids:
+        """Mean duration per item id over the last N dispatches that
+        delivered, of runs matching the label selector. A run's *current*
+        state is irrelevant — a re-dispatch must still see its own history."""
+        with self._read() as conn:
+            run_ids = [
+                row["id"]
+                for row in conn.execute("SELECT id, labels FROM runs").fetchall()
+                if not labels
+                or all(json.loads(row["labels"]).get(k) == v for k, v in labels.items())
+            ]
+            if not run_ids:
                 return {}
-            marks = ",".join("?" for _ in matching_run_ids)
-            dispatches = conn.execute(
-                f"SELECT DISTINCT d.dispatch_id, d.created_at FROM dispatches d"
-                f" JOIN deliveries dv ON dv.dispatch_id = d.dispatch_id"
-                f" WHERE d.run_id IN ({marks}) ORDER BY d.created_at DESC LIMIT ?",
-                (*matching_run_ids, last_n),
-            ).fetchall()
-            if not dispatches:
+            marks = ",".join("?" for _ in run_ids)
+            dispatch_ids = [
+                row["dispatch_id"]
+                for row in conn.execute(
+                    f"SELECT d.dispatch_id FROM dispatches d WHERE d.run_id IN ({marks})"
+                    " AND EXISTS (SELECT 1 FROM deliveries dv WHERE dv.dispatch_id = d.dispatch_id)"
+                    " ORDER BY d.rowid DESC LIMIT ?",
+                    (*run_ids, max(0, int(last_n))),
+                ).fetchall()
+            ]
+            if not dispatch_ids:
                 return {}
-            dispatch_ids = [row["dispatch_id"] for row in dispatches]
             marks = ",".join("?" for _ in dispatch_ids)
             rows = conn.execute(
                 f"SELECT item_id, AVG(duration_ms) AS avg_ms FROM verdicts"
@@ -424,76 +725,7 @@ class SqliteRunStore:
             ).fetchall()
         return {row["item_id"]: float(row["avg_ms"]) for row in rows}
 
-    def delivered_shards(self, run_id: str, dispatch_id: str | None) -> set[str]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT shard FROM deliveries WHERE run_id = ? AND dispatch_id IS ?",
-                (run_id, dispatch_id),
-            ).fetchall()
-        return {row["shard"] for row in rows}
-
-    def verdicts_for(
-        self, run_id: str, dispatch_id: str | None = None, *, shard: str | None = None
-    ) -> list[Verdict]:
-        """Verdicts of a run, narrowable to one dispatch and one shard. The
-        shard column has always been stored; returning it is what makes a
-        partition fan-out readable through the port instead of by opening the
-        database file (§4 identity layering: run → dispatch → shard)."""
-        query = "SELECT * FROM verdicts WHERE run_id = ?"
-        params: tuple[Any, ...] = (run_id,)
-        if dispatch_id is not None:
-            query += " AND dispatch_id = ?"
-            params += (dispatch_id,)
-        if shard is not None:
-            query += " AND shard = ?"
-            params += (shard,)
-        with self._conn() as conn:
-            rows = conn.execute(query + " ORDER BY rowid", params).fetchall()
-        return [
-            Verdict(
-                item_id=row["item_id"],
-                status=row["status"],
-                duration_ms=row["duration_ms"],
-                message=row["message"],
-                attempt=row["attempt"],
-                shard=row["shard"],
-            )
-            for row in rows
-        ]
-
-    def prune_runs(self, *, before: str | None = None, max_runs: int | None = None) -> list[str]:
-        """§6.4 retention: delete runs older than ``before`` and/or beyond the
-        newest ``max_runs``, cascading to all dependent tables."""
-        with self._conn() as conn:
-            rows = conn.execute("SELECT id, created_at FROM runs ORDER BY created_at DESC, id DESC").fetchall()
-            doomed = []
-            for index, row in enumerate(rows):
-                too_old = before is not None and row["created_at"] < before
-                overflow = max_runs is not None and index >= max_runs
-                if too_old or overflow:
-                    doomed.append(row["id"])
-            for run_id in doomed:
-                for table in ("verdicts", "deliveries", "dispatches", "artifact_refs", "specs"):
-                    conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
-                conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
-        return doomed
-
-    # -- state & artifacts ---------------------------------------------------
-
-    def set_run_state(
-        self,
-        run_id: str,
-        state: str,
-        *,
-        completion: str | None = None,
-        completed_at: str | None = None,
-    ) -> None:
-        with self._conn() as conn:
-            self._require_run(conn, run_id)
-            conn.execute(
-                "UPDATE runs SET state = ?, completion = ?, completed_at = ? WHERE id = ?",
-                (state, completion, completed_at, run_id),
-            )
+    # -- artifacts ------------------------------------------------------------------
 
     def add_artifact_ref(
         self,
@@ -503,24 +735,23 @@ class SqliteRunStore:
         name: str,
         media_type: str,
         url_or_path: str,
+        shard: str | None = None,
     ) -> None:
-        with self._conn() as conn:
-            self._require_run(conn, run_id)
+        with self._write() as conn:
+            _require_run(conn, run_id)
             conn.execute(
-                "INSERT INTO artifact_refs (run_id, dispatch_id, name, media_type, url_or_path)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (run_id, dispatch_id, name, media_type, url_or_path),
+                "INSERT INTO artifact_refs (run_id, dispatch_id, name, media_type, url_or_path,"
+                " shard) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, dispatch_id, name, media_type, url_or_path, shard),
             )
 
     def artifact_refs(self, run_id: str, dispatch_id: str | None = None) -> list[ArtifactRef]:
-        """§6.4: read back the references ``add_artifact_ref`` writes, in
-        insertion order, optionally narrowed to one dispatch."""
         query = "SELECT * FROM artifact_refs WHERE run_id = ?"
         params: tuple[Any, ...] = (run_id,)
         if dispatch_id is not None:
             query += " AND dispatch_id = ?"
             params += (dispatch_id,)
-        with self._conn() as conn:
+        with self._read() as conn:
             rows = conn.execute(query + " ORDER BY rowid", params).fetchall()
         return [
             ArtifactRef(
@@ -529,54 +760,359 @@ class SqliteRunStore:
                 name=row["name"],
                 media_type=row["media_type"],
                 url_or_path=row["url_or_path"],
+                shard=row["shard"],
             )
             for row in rows
         ]
 
-    # -- helpers -------------------------------------------------------------
+    # -- events ------------------------------------------------------------------------
 
-    @staticmethod
-    def _require_run(conn: sqlite3.Connection, run_id: str) -> None:
-        if conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
-            raise StoreError(f"unknown run id {run_id!r}")
-
-    @staticmethod
-    def _shallow_run_record(row: sqlite3.Row) -> RunRecord:
-        return RunRecord(
-            id=row["id"],
-            title=row["title"],
-            created_at=row["created_at"],
-            origin=row["origin"],
-            labels=json.loads(row["labels"]),
-            state=row["state"],
-            completion=row["completion"],
-            completed_at=row["completed_at"],
+    def append_event(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        at: str,
+        dispatch_id: str | None = None,
+        data: Mapping[str, Any] | None = None,
+    ) -> RunEvent:
+        payload = dict(data or {})
+        with self._write() as conn:
+            cursor = conn.execute(
+                "INSERT INTO events (run_id, at, kind, dispatch_id, data) VALUES (?, ?, ?, ?, ?)",
+                (run_id, at, kind, dispatch_id, json.dumps(payload, ensure_ascii=False)),
+            )
+            seq = cursor.lastrowid
+        assert seq is not None
+        return RunEvent(
+            seq=seq, run_id=run_id, at=at, kind=kind, dispatch_id=dispatch_id, data=payload
         )
 
-    @classmethod
-    def _run_record(cls, row: sqlite3.Row, dispatches, deliveries) -> RunRecord:
-        shallow = cls._shallow_run_record(row)
-        return RunRecord(
-            **{**shallow.__dict__, "dispatches": tuple(
-                DispatchRecord(
-                    dispatch_id=d["dispatch_id"],
-                    run_id=d["run_id"],
-                    mode=d["mode"],
-                    declared_shards=d["declared_shards"],
-                    created_at=d["created_at"],
-                    spec_sha256=d["spec_sha256"],
-                )
-                for d in dispatches
-            ), "deliveries": tuple(
-                DeliveryRecord(
-                    delivery_id=d["delivery_id"],
-                    run_id=d["run_id"],
-                    dispatch_id=d["dispatch_id"],
-                    shard=d["shard"],
-                    content_hash=d["content_hash"],
-                    format=d["format"],
-                    created_at=d["created_at"],
-                )
-                for d in deliveries
-            )},
+    def events(self, run_id: str, *, after: int = 0, limit: int = 500) -> list[RunEvent]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+                (run_id, int(after), max(0, int(limit))),
+            ).fetchall()
+        return [
+            RunEvent(
+                seq=row["seq"],
+                run_id=row["run_id"],
+                at=row["at"],
+                kind=row["kind"],
+                dispatch_id=row["dispatch_id"],
+                data=json.loads(row["data"]),
+            )
+            for row in rows
+        ]
+
+
+# -- helpers -------------------------------------------------------------------------
+
+_RUN_TABLES = (
+    "verdicts",
+    "live_verdicts",
+    "deliveries",
+    "artifact_refs",
+    "events",
+    "ingest_tokens",
+    "specs",
+)
+_DISPATCH_TABLES = (
+    "verdicts",
+    "live_verdicts",
+    "deliveries",
+    "artifact_refs",
+    "dispatch_specs",
+    "ingest_tokens",
+    "dispatches",
+)
+
+
+def _require_run(conn: sqlite3.Connection, run_id: str) -> None:
+    if conn.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+        raise StoreError(f"unknown run id {run_id!r}")
+
+
+def _delete_run(conn: sqlite3.Connection, run_id: str) -> None:
+    conn.execute(
+        "DELETE FROM dispatch_specs WHERE dispatch_id IN"
+        " (SELECT dispatch_id FROM dispatches WHERE run_id = ?)",
+        (run_id,),
+    )
+    for table in _RUN_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+    conn.execute("DELETE FROM dispatches WHERE run_id = ?", (run_id,))
+    conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+
+def _verdict(row: sqlite3.Row) -> Verdict:
+    return Verdict(
+        item_id=row["item_id"],
+        status=row["status"],
+        duration_ms=row["duration_ms"],
+        message=row["message"],
+        attempt=row["attempt"],
+        shard=row["shard"],
+    )
+
+
+def _dispatch_record(row: sqlite3.Row) -> DispatchRecord:
+    return DispatchRecord(
+        dispatch_id=row["dispatch_id"],
+        run_id=row["run_id"],
+        mode=row["mode"],
+        state=row["state"],
+        created_at=row["created_at"],
+        shards=tuple(json.loads(row["shards"])),
+        shard_items={
+            shard: tuple(items) for shard, items in json.loads(row["shard_items"]).items()
+        },
+        spec_sha256=row["spec_sha256"],
+        error=row["error"],
+        plan=row["plan"],
+        links=json.loads(row["links"]),
+        parameters=json.loads(row["parameters"]),
+        completion=row["completion"],
+        completed_at=row["completed_at"],
+        summary=json.loads(row["summary"]),
+        owner=row["owner"],
+        cancel_requested=bool(row["cancel_requested"]),
+    )
+
+
+def _run_record(
+    row: sqlite3.Row, dispatches: Sequence[sqlite3.Row], deliveries: Sequence[sqlite3.Row]
+) -> RunRecord:
+    return RunRecord(
+        id=row["id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        origin=row["origin"],
+        labels=json.loads(row["labels"]),
+        state=row["state"],
+        completion=row["completion"],
+        completed_at=row["completed_at"],
+        planned_count=row["planned_count"],
+        dispatches=tuple(_dispatch_record(d) for d in dispatches),
+        deliveries=tuple(
+            DeliveryRecord(
+                delivery_id=d["delivery_id"],
+                run_id=d["run_id"],
+                dispatch_id=d["dispatch_id"],
+                shard=d["shard"],
+                content_hash=d["content_hash"],
+                format=d["format"],
+                created_at=d["created_at"],
+            )
+            for d in deliveries
+        ),
+    )
+
+
+# -- migration from the 0.1.x schema ---------------------------------------------------
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns: Mapping[str, str]) -> None:
+    present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, declaration in columns.items():
+        if name not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
+def _migrate_from_0_1(conn: sqlite3.Connection) -> None:
+    """Bring a database written by runcomposer 0.1.x to the current schema,
+    in place and inside the caller's transaction.
+
+    What changes for the data, beyond new columns:
+
+    - every delivery belongs to a dispatch: deliveries recorded against a run
+      directly get an ``ingest`` dispatch of their own;
+    - the idempotency key becomes (run, dispatch, shard): where 0.1's
+      check-then-write left several deliveries for one shard, the newest wins;
+    - the lifecycle moves onto the dispatch, and completion is **recomputed**
+      under the current rules — a run 0.1 called ``PASS`` although planned
+      items never reported is ``INCOMPLETE`` now, which is what it was;
+    - a dispatch that was still executing is ``STALE``: the process that
+      owned it is necessarily gone;
+    - a run's ``created_at`` is normalized to UTC (0.1 stored a document's
+      own spelling, offset and all);
+    - streamed live rows are dropped (they were never results);
+    - a plaintext ingest token inside a stored document is removed; its hash
+      stays valid for the run.
+    """
+    _add_columns(conn, "runs", {"planned_count": "INTEGER NOT NULL DEFAULT 0"})
+    _add_columns(
+        conn,
+        "dispatches",
+        {
+            "state": "TEXT NOT NULL DEFAULT 'AWAITING_RESULTS'",
+            "shards": "TEXT NOT NULL DEFAULT '[]'",
+            "shard_items": "TEXT NOT NULL DEFAULT '{}'",
+            "error": "TEXT NOT NULL DEFAULT ''",
+            "plan": "TEXT NOT NULL DEFAULT ''",
+            "links": "TEXT NOT NULL DEFAULT '{}'",
+            "parameters": "TEXT NOT NULL DEFAULT '{}'",
+            "completion": "TEXT",
+            "completed_at": "TEXT",
+            "summary": "TEXT NOT NULL DEFAULT '{}'",
+            "owner": "TEXT",
+            "cancel_requested": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _add_columns(conn, "artifact_refs", {"shard": "TEXT"})
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ingest_tokens"
+        " (token_sha256 TEXT NOT NULL, run_id TEXT NOT NULL, dispatch_id TEXT)"
+    )
+
+    # Streamed status rows shared the verdicts table under a sentinel id.
+    conn.execute("DELETE FROM verdicts WHERE delivery_id LIKE 'live-%'")
+
+    runs = conn.execute("SELECT * FROM runs ORDER BY created_at, id").fetchall()
+    for run in runs:
+        run_id = run["id"]
+        spec_row = conn.execute(
+            "SELECT document FROM specs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        spec = json.loads(spec_row["document"]) if spec_row else {}
+        materialized = (spec.get("selection") or {}).get("materialized") or {}
+        planned = list(materialized.get("item_ids") or [])
+        try:
+            created_at = normalize_time(run["created_at"])
+        except ValueError:
+            created_at = run["created_at"]  # not a time 0.2 can read: left as it is
+        conn.execute(
+            "UPDATE runs SET planned_count = ?, created_at = ? WHERE id = ?",
+            (len(planned), created_at, run_id),
         )
+
+        # The token: keep the hash, drop the plaintext.
+        results = spec.get("results") if isinstance(spec.get("results"), dict) else None
+        token_hash = run["ingest_token_sha256"]
+        if results and isinstance(results.get("token"), str):
+            token_hash = token_hash or sha256_hex(results["token"].encode("utf-8"))
+            del results["token"]
+            conn.execute(
+                "UPDATE specs SET document = ? WHERE run_id = ?",
+                (json.dumps(spec, ensure_ascii=False), run_id),
+            )
+        if token_hash:
+            conn.execute(
+                "INSERT INTO ingest_tokens (token_sha256, run_id, dispatch_id) VALUES (?, ?, NULL)",
+                (token_hash, run_id),
+            )
+
+        # Deliveries attached to the run directly get a dispatch of their own.
+        orphan = conn.execute(
+            "SELECT MIN(created_at) AS first FROM deliveries"
+            " WHERE run_id = ? AND dispatch_id IS NULL",
+            (run_id,),
+        ).fetchone()
+        if orphan["first"] is not None:
+            ingest_id = new_ulid()
+            conn.execute(
+                "INSERT INTO dispatches (dispatch_id, run_id, mode, declared_shards, created_at)"
+                " VALUES (?, ?, 'ingest', 1, ?)",
+                (ingest_id, run_id, orphan["first"]),
+            )
+            for table in ("deliveries", "verdicts"):
+                conn.execute(
+                    f"UPDATE {table} SET dispatch_id = ? WHERE run_id = ? AND dispatch_id IS NULL",
+                    (ingest_id, run_id),
+                )
+
+        # One delivery per (dispatch, shard): the newest wins.
+        for group in conn.execute(
+            "SELECT dispatch_id, shard FROM deliveries WHERE run_id = ?"
+            " GROUP BY dispatch_id, shard HAVING COUNT(*) > 1",
+            (run_id,),
+        ).fetchall():
+            losers = conn.execute(
+                "SELECT delivery_id FROM deliveries WHERE run_id = ? AND dispatch_id = ?"
+                " AND shard = ? ORDER BY created_at DESC, delivery_id DESC",
+                (run_id, group["dispatch_id"], group["shard"]),
+            ).fetchall()[1:]
+            for loser in losers:
+                conn.execute("DELETE FROM verdicts WHERE delivery_id = ?", (loser["delivery_id"],))
+                conn.execute(
+                    "DELETE FROM deliveries WHERE delivery_id = ?", (loser["delivery_id"],)
+                )
+
+        # The lifecycle moves onto the dispatch.
+        dispatches = conn.execute(
+            "SELECT * FROM dispatches WHERE run_id = ? ORDER BY created_at, dispatch_id",
+            (run_id,),
+        ).fetchall()
+        headline: tuple[str, str | None, str | None] = ("COMPOSED", None, None)
+        for index, dispatch in enumerate(dispatches):
+            latest = index == len(dispatches) - 1
+            delivered = [
+                row["shard"]
+                for row in conn.execute(
+                    "SELECT shard FROM deliveries WHERE dispatch_id = ? ORDER BY rowid",
+                    (dispatch["dispatch_id"],),
+                ).fetchall()
+            ]
+            declared = dispatch["declared_shards"] or 1
+            names = list(delivered)
+            filler = 1
+            while len(names) < declared:  # shards 0.1 counted but never named
+                if str(filler) not in names:
+                    names.append(str(filler))
+                filler += 1
+            verdicts = [
+                _verdict(row)
+                for row in conn.execute(
+                    "SELECT * FROM verdicts WHERE dispatch_id = ? ORDER BY rowid",
+                    (dispatch["dispatch_id"],),
+                ).fetchall()
+            ]
+            finalized = latest and run["state"] == "COMPLETE"
+            if len(delivered) >= declared or finalized:
+                state = "COMPLETE"
+            elif latest and run["state"] in ("AWAITING_RESULTS", "COMPOSED"):
+                state = "AWAITING_RESULTS"
+            else:
+                state = "STALE"
+            completion = completed_at = None
+            scored = verdicts
+            if state == "COMPLETE":
+                scored = verdicts + missing_verdicts(planned, verdicts)
+                completion = completion_of(scored)
+                completed_at = (run["completed_at"] if latest else None) or dispatch["created_at"]
+            conn.execute(
+                "UPDATE dispatches SET state = ?, shards = ?, completion = ?, completed_at = ?,"
+                " summary = ?, error = ? WHERE dispatch_id = ?",
+                (
+                    state,
+                    json.dumps(names),
+                    completion,
+                    completed_at,
+                    json.dumps(summarize(scored)),
+                    "interrupted before the upgrade to schema 2" if state == "STALE" else "",
+                    dispatch["dispatch_id"],
+                ),
+            )
+            headline = (state, completion, completed_at)
+        conn.execute(
+            "UPDATE runs SET state = ?, completion = ?, completed_at = ? WHERE id = ?",
+            (*headline, run_id),
+        )
+
+    # 0.1 keyed deliveries on (run, content_hash); the constraint is part of
+    # the table definition, so the table is rebuilt.
+    conn.execute("DROP INDEX IF EXISTS idx_deliveries_run")
+    conn.execute("ALTER TABLE deliveries RENAME TO deliveries_v1")
+    conn.execute(
+        "CREATE TABLE deliveries ("
+        " delivery_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id),"
+        " dispatch_id TEXT NOT NULL, shard TEXT NOT NULL, content_hash TEXT NOT NULL,"
+        " format TEXT NOT NULL, created_at TEXT NOT NULL,"
+        " UNIQUE (run_id, dispatch_id, shard))"
+    )
+    conn.execute(
+        "INSERT INTO deliveries SELECT delivery_id, run_id, dispatch_id, shard, content_hash,"
+        " format, created_at FROM deliveries_v1 ORDER BY rowid"
+    )
+    conn.execute("DROP TABLE deliveries_v1")

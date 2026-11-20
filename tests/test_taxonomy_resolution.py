@@ -1,6 +1,6 @@
 """Resolving the taxonomy against the catalog (DESIGN.md §2, §9).
 
-A written leaf carries exactly one pattern, which is what keeps the format
+The filter of a written leaf is a single pattern, which is what keeps the format
 hand-writable and also what hides a family of tags behind a single opaque
 node: `regex:^Cart(V2)?$` renders as one row, and the tags it stands for have
 no row of their own and cannot be picked. These tests hold the resolved tree
@@ -8,16 +8,17 @@ to the claim the docs make for it — every tag its own node, nothing dead, and
 nothing left out.
 """
 
+from typing import ClassVar
+
 import pytest
 from fastapi.testclient import TestClient
 
-from runcomposer.api import create_app
 from runcomposer.cli import main as cli_main
-from runcomposer.config import Config, load_config
-from runcomposer.core.filter import parse_filter
-from runcomposer.core.model import Item
 from runcomposer.core.taxonomy import TaxonomyError, resolve_taxonomy, validate_taxonomy
-from runcomposer.service import Service
+from runcomposer.http import create_app
+from runcomposer.sdk import Item, Service, load_config, parse_filter
+
+from .conftest import write_config
 
 ITEMS = [
     Item(id="t1", tags=("Cart", "Smoke", "Sprint-12")),
@@ -94,14 +95,14 @@ class TestExpansion:
         assert not parse_filter(node["filter"]).matches(("oops",))
 
     def test_case_variant_tags_get_a_node_each_that_means_itself(self):
-        # Literals match case-insensitively (§3.1), so `Adapter` as a literal
-        # would select `ADAPTER` too and the node would promise one tag and
+        # Literals match case-insensitively (§3.1), so `Cart` as a literal
+        # would select `CART` too and the node would promise one tag and
         # deliver two.
-        items = [Item(id="a", tags=("Adapter",)), Item(id="b", tags=("ADAPTER",))]
-        tree = resolve({"taxonomy": [{"label": "Adapters", "filter": "Adapter"}]}, items)
+        items = [Item(id="a", tags=("Cart",)), Item(id="b", tags=("CART",))]
+        tree = resolve({"taxonomy": [{"label": "Carts", "filter": "Cart"}]}, items)
         children = tree["taxonomy"][0]["children"]
         # Tag order is case-insensitive, ties broken by the exact spelling.
-        assert [child["label"] for child in children] == ["ADAPTER", "Adapter"]
+        assert [child["label"] for child in children] == ["CART", "Cart"]
         for child in children:
             pattern = parse_filter(child["filter"])
             assert pattern.matches((child["label"],))
@@ -132,7 +133,7 @@ class TestCollapsing:
                 ]
             }
         )
-        assert [node["label"] for node in tree["taxonomy"]][0] == "Payments"
+        assert tree["taxonomy"][0]["label"] == "Payments"
         assert tree["resolved"]["nodes_dropped"] == 2
 
     def test_ids_are_file_positions_so_a_collapse_does_not_renumber_the_rest(self):
@@ -251,7 +252,7 @@ class TestTheResolvedTreeIsATaxonomyDocument:
         assert validate_taxonomy({"taxonomy": tree["taxonomy"]})
 
     def test_a_malformed_document_is_refused_before_anything_is_resolved(self):
-        with pytest.raises(TaxonomyError, match="did you mean 'filter'?"):
+        with pytest.raises(TaxonomyError, match=r"did you mean 'filter'\?"):
             resolve({"taxonomy": [{"label": "A", "pattern": "Payments"}]})
 
 
@@ -307,7 +308,13 @@ class TestTheTagUniverse:
 @pytest.fixture()
 def config(tmp_path):
     """Default config: the bundled demo corpus and the bundled demo taxonomy."""
-    return Config(data={"store": {"sqlite": {"path": str(tmp_path / "tx.db")}}})
+    return load_config(str(write_config(tmp_path)))
+
+
+def taxonomy_config(tmp_path, text):
+    """A config whose taxonomy file holds ``text``."""
+    (tmp_path / "taxonomy.yaml").write_text(text, encoding="utf-8")
+    return write_config(tmp_path, core={"taxonomy_file": "taxonomy.yaml"})
 
 
 class TestTheDemoWorldResolves:
@@ -376,18 +383,19 @@ class TestExcludingASelection:
         ],
     )
     def test_the_readings_of_excluding_two_tags(self, config, name, tag_filter, expected):
-        items, _ = Service(config).preview({"tag_filter": tag_filter})
-        assert len(items) == expected, name
+        preview = Service(config).preview({"tag_filter": tag_filter})
+        assert len(preview.items) == expected, name
+        assert preview.catalog_size == 60
 
     def test_the_wrong_glue_is_the_whole_corpus(self, config):
         """Stated separately because it is the point: the failure mode is a
         filter that reports no problem and removes nothing."""
         service = Service(config)
         everything = len(service.source.items())
-        items, _ = service.preview(
+        preview = service.preview(
             {"tag_filter": {"op": "OR", "items": [{"not": "Payments"}, {"not": "Cart"}]}}
         )
-        assert len(items) == everything == 60
+        assert len(preview.items) == everything == 60
 
 
 class TestTheEndpoint:
@@ -421,15 +429,7 @@ class TestTheEndpoint:
         assert "tags" not in body
 
     def test_a_broken_file_still_names_the_node_when_resolving(self, tmp_path):
-        (tmp_path / "taxonomy.yaml").write_text(
-            "taxonomy:\n  - {label: A, filter: Payments}\n", encoding="utf-8"
-        )
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "core:\n  taxonomy_file: taxonomy.yaml\n  ingestion: { inbox: null }\n"
-            f"store:\n  sqlite: {{ path: {tmp_path / 'tx.db'} }}\n",
-            encoding="utf-8",
-        )
+        config_file = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, filter: Payments}\n")
         client = TestClient(
             create_app(load_config(str(config_file))), raise_server_exceptions=False
         )
@@ -440,22 +440,210 @@ class TestTheEndpoint:
         response = client.get("/api/v1/taxonomy?resolve=true")
         assert response.status_code == 500
         assert "did you mean 'filter'?" in response.json()["detail"]
+        # …in the one error shape every endpoint answers with (§9).
+        assert response.json()["code"] == "taxonomy-invalid"
+
+
+class TestValidation:
+    """§8: hand-written deployment data fails loudly, like an unknown plugin
+    id — never a 200 with an empty tree."""
+
+    GOOD: ClassVar[dict] = {
+        "taxonomy": [
+            {"label": "Areas", "children": [
+                {"label": "Payments", "filter": "Payments"},
+                {"label": "Checkout", "filter": "prefix:Checkout-"},
+            ]},
+            {"label": "Quarantine", "filter": "prefix:Quarantine-"},
+        ]
+    }
+
+    def test_a_good_document_passes_unchanged(self):
+        assert validate_taxonomy(self.GOOD) == self.GOOD
+
+    @pytest.mark.parametrize(
+        "document, expected",
+        [
+            (None, "is empty"),
+            ([{"label": "x", "filter": "y"}], "nested under 'taxonomy:'"),
+            ({"nodes": []}, "no top-level 'taxonomy' key"),
+            ({"taxonomy": {"label": "x"}}, "must be a list of nodes"),
+            ({"taxonomy": ["Payments"]}, "must be a node mapping"),
+            ({"taxonomy": [{"filter": "Payments"}]}, "needs a non-empty 'label'"),
+            ({"taxonomy": [{"label": "A", "filter": ["Payments", "Cart"]}]}, "single pattern string"),
+            ({"taxonomy": [{"label": "A", "filter": "regex:^(unclosed"}]}, "invalid regular"),
+            ({"taxonomy": [{"label": "A", "filter": "x", "children": {}}]}, "must be a list"),
+            ({"taxonomy": [{"label": "A", "pattern": "Payments"}]}, "did you mean 'filter'?"),
+            ({"taxonomy": [{"label": "A", "filter": "x"}, {"label": "A", "filter": "y"}]},
+             "sibling labels must be distinct"),
+        ],
+    )
+    def test_bad_documents_are_refused_with_an_actionable_message(self, document, expected):
+        with pytest.raises(TaxonomyError, match=expected):
+            validate_taxonomy(document, origin="taxonomy.yaml")
+
+    def test_the_message_names_the_offending_node(self):
+        document = {"taxonomy": [
+            {"label": "Areas", "children": [
+                {"label": "Payments", "filter": "Payments"},
+                {"label": "Checkout", "tags": "Checkout-"},
+            ]},
+        ]}
+        with pytest.raises(TaxonomyError) as excinfo:
+            validate_taxonomy(document, origin="my-taxonomy.yaml")
+        message = str(excinfo.value)
+        assert "my-taxonomy.yaml" in message
+        assert "taxonomy[0].children[1] ('Checkout')" in message
+        assert "['tags']" in message
+
+    def test_unknown_node_keys_are_tolerated_next_to_a_real_one(self):
+        # §3 versioning stance: unknown fields inside a known section are
+        # ignored — only a node that is neither clickable nor openable fails.
+        validate_taxonomy({"taxonomy": [{"label": "A", "filter": "x", "color": "red"}]})
+
+    def test_the_error_is_part_of_the_taxonomy_of_errors(self):
+        """Typed and coded, so no transport classifies it by its message."""
+        from runcomposer.sdk import RunComposerError
+
+        with pytest.raises(RunComposerError) as excinfo:
+            validate_taxonomy({"nodes": []})
+        assert excinfo.value.code == "taxonomy-invalid"
+
+    def test_bundled_demo_taxonomy_is_valid(self, config):
+        assert Service(config).taxonomy()["taxonomy"][0]["label"] == "Areas"
+
+
+class TestStartup:
+    """Checked at startup and on every request, with the same validator."""
+
+    def test_a_broken_taxonomy_refuses_the_boot(self, tmp_path):
+        config_file = taxonomy_config(tmp_path, "nodes:\n  - {label: A}\n")
+        with pytest.raises(TaxonomyError, match="no top-level 'taxonomy' key"):
+            create_app(load_config(str(config_file)))
+
+    def test_service_validate_is_what_refuses_it(self, tmp_path):
+        """The embedding surface gets the same check as the server."""
+        config_file = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, tags: Payments}\n")
+        with Service(load_config(str(config_file))) as service, pytest.raises(
+            TaxonomyError, match=r"taxonomy\[0\] \('A'\)"
+        ):
+            service.validate()
+
+    def test_serve_exits_2_with_a_one_liner(self, tmp_path, capsys):
+        config_file = taxonomy_config(tmp_path, "nodes:\n  - {label: A}\n")
+        assert cli_main(["serve", "--config", str(config_file)]) == 2
+        err = capsys.readouterr().err
+        assert "no top-level 'taxonomy' key" in err and "Traceback" not in err
+
+    def test_a_missing_file_says_where_it_looked(self, tmp_path):
+        config_file = taxonomy_config(tmp_path, "taxonomy: []\n")
+        (tmp_path / "taxonomy.yaml").unlink()
+        with pytest.raises(TaxonomyError, match="cannot be read"):
+            create_app(load_config(str(config_file)))
+
+    def test_a_relative_taxonomy_file_is_found_from_any_working_directory(
+        self, tmp_path, monkeypatch
+    ):
+        config_file = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, filter: Payments}\n")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        with Service(load_config(str(config_file))) as service:
+            assert service.taxonomy() == {"taxonomy": [{"label": "A", "filter": "Payments"}]}
+
+    def test_a_file_broken_after_boot_is_a_500_that_explains(self, tmp_path):
+        config_file = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, filter: Payments}\n")
+        client = TestClient(
+            create_app(load_config(str(config_file))), raise_server_exceptions=False
+        )
+        assert client.get("/api/v1/taxonomy").status_code == 200
+        # the file is re-read per request (docs/taxonomy.md), so it can rot
+        # under a running server — a 200 with an empty tree is the one answer
+        # that must not happen
+        (tmp_path / "taxonomy.yaml").write_text("groups: []\n", encoding="utf-8")
+        response = client.get("/api/v1/taxonomy")
+        assert response.status_code == 500
+        assert "no top-level 'taxonomy' key" in response.json()["detail"]
+
+    def test_meta_says_whether_a_taxonomy_is_configured(self, tmp_path, config):
+        assert TestClient(create_app(config)).get("/api/v1/meta").json()["taxonomy"] == {
+            "configured": False
+        }
+        configured = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, filter: Payments}\n")
+        body = TestClient(create_app(load_config(str(configured)))).get("/api/v1/meta").json()
+        assert body["taxonomy"] == {"configured": True}
+
+
+@pytest.fixture()
+def in_tmp(tmp_path, monkeypatch):
+    """The CLI without --config runs on built-in defaults relative to the
+    working directory — never the repository."""
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
 
 
 class TestTheCli:
-    def test_taxonomy_check_reports_what_resolution_reaches(self, capsys):
+    def test_taxonomy_check_reports_what_resolution_reaches(self, in_tmp, capsys):
         assert cli_main(["taxonomy-check", "--warn-only"]) == 0
         out = capsys.readouterr().out
         assert "resolved tree" in out
         assert "selectable on their own" in out
 
-    def test_tree_prints_the_resolved_tree_with_its_tag_nodes(self, capsys):
+    def test_tree_prints_the_resolved_tree_with_its_tag_nodes(self, in_tmp, capsys):
         assert cli_main(["taxonomy-check", "--tree"]) == 0
         out = capsys.readouterr().out
         assert "Cart" in out and "CartV2" in out
         assert "item(s)" in out
 
-    def test_tree_respects_limit(self, capsys):
+    def test_tree_respects_limit(self, in_tmp, capsys):
         assert cli_main(["taxonomy-check", "--tree", "--limit", "3"]) == 0
         out = capsys.readouterr().out
         assert "more (use --limit 0 for all)" in out
+
+    def test_taxonomy_check_names_tags_no_leaf_claims(self, in_tmp, capsys):
+        # The bundled taxonomy is a demo tree, not a complete one — so the
+        # check has something to report, which is the point: drift between a
+        # hand-written tree and a moving catalog is invisible otherwise.
+        assert cli_main(["taxonomy-check"]) == 1
+        out = capsys.readouterr().out
+        assert "taxonomy leaf pattern(s) over 47 distinct catalog tag(s)" in out
+        assert "tags no leaf claims" in out
+        assert "Payments-Cards" in out
+        assert "every taxonomy leaf matches at least one tag" in out
+        assert list(in_tmp.iterdir()) == []  # a read-only check writes nothing
+
+    def test_taxonomy_check_warn_only_still_reports(self, in_tmp, capsys):
+        assert cli_main(["taxonomy-check", "--warn-only"]) == 0
+        assert "tags no leaf claims" in capsys.readouterr().out
+
+    def test_taxonomy_check_names_leaves_that_match_nothing(self, tmp_path, capsys):
+        config_file = taxonomy_config(
+            tmp_path,
+            "taxonomy:\n"
+            "  - label: Areas\n"
+            "    children:\n"
+            "      - label: Payments\n"
+            "        filter: Payments\n"
+            "      - label: Renamed away\n"
+            "        filter: Billing\n",
+        )
+        assert cli_main(["taxonomy-check", "--config", str(config_file)]) == 1
+        out = capsys.readouterr().out
+        # A leaf whose tag was renamed stays clickable and selects nothing —
+        # the failure mode nothing else surfaces.
+        assert "leaves that match nothing" in out
+        assert "Areas › Renamed away  →  Billing" in out
+
+    def test_a_malformed_taxonomy_is_exit_2_with_a_one_liner(self, tmp_path, capsys):
+        config_file = taxonomy_config(tmp_path, "taxonomy:\n  - {label: A, pattern: Payments}\n")
+        assert cli_main(["taxonomy-check", "--config", str(config_file)]) == 2
+        err = capsys.readouterr().err
+        assert "did you mean 'filter'?" in err and "Traceback" not in err
+
+    def test_doctor_reports_the_drift_of_a_configured_taxonomy(self, tmp_path, capsys):
+        config_file = taxonomy_config(
+            tmp_path, "taxonomy:\n  - {label: Payments, filter: Payments}\n"
+        )
+        assert cli_main(["doctor", "--config", str(config_file)]) == 1
+        out = capsys.readouterr().out
+        assert "46 tag(s) no leaf claims" in out and "runcomposer taxonomy-check" in out

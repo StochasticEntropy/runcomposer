@@ -1,74 +1,88 @@
 """`manifest` TestSource — a JSON/YAML catalog of items (DESIGN.md §6.1).
 
 The zero-dependency adopter path: the manifest requires only ``id`` + ``tags``
-per item; ``name``, ``hierarchy``, and ``meta`` are optional. Document shape::
+per item; ``name``, ``hierarchy``, ``meta`` and ``aliases`` are optional::
 
     {"items": [{"id": "...", "tags": ["..."], ...}, ...]}
 
-Ids are opaque strings minted by whatever produced the manifest. This source
-resolves native names by identity — and additionally through per-item
-``aliases``: since the manifest's author owns the id space (§2), the manifest
-itself may declare which result-artifact spellings map onto each id (e.g. a
-pytest manifest with nodeid ids and junit ``classname.name`` aliases). Alias
-collisions are refused at load time so every native name resolves to at most
-one id.
+Ids are opaque strings minted by whatever produced the manifest. Native names
+resolve by identity — and through per-item ``aliases``: the manifest's author
+owns the id space (§2), so the manifest may declare which result-artifact
+spellings map onto each id. Alias collisions are refused at load time, so
+every native name resolves to at most one id.
+
+The snapshot hashes what a selection can depend on — each item's ``id`` and
+``tags`` — so renaming a test or editing its ``meta`` is not drift.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
+import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
-from runcomposer.core.model import Item
+from runcomposer.sdk import ConfigError, Item, canonical_json, sha256_hex
 
 __all__ = ["ManifestError", "ManifestSource"]
 
 
-class ManifestError(ValueError):
+class ManifestError(ConfigError):
     """Raised when a manifest file is malformed."""
+
+    code = "manifest-invalid"
 
 
 class ManifestSource:
     provider_id = "manifest"
-
-    @staticmethod
-    def resolve_config_paths(options, resolve):
-        """§8 opt-in: ``path`` is the catalog file, relative to the config
-        file's directory. Absent (the zero-config default) it stays absent —
-        the core then supplies the bundled demo corpus as a package
-        resource, which is not a configured path at all."""
-        if "path" in options:
-            options["path"] = resolve(options["path"])
-        return options
+    PATH_OPTIONS: tuple[str, ...] = ("path",)
 
     def __init__(self, path: Any):
         """``path``: a filesystem path, or any object with ``read_text()``
-        (e.g. an ``importlib.resources`` traversable)."""
-        source = path
-        if hasattr(source, "read_text"):
-            text = source.read_text(encoding="utf-8")
-            label = getattr(source, "name", str(source))
+        (an ``importlib.resources`` traversable)."""
+        self._file: Path | None = None
+        if hasattr(path, "read_text"):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ManifestError(f"{path}: cannot read manifest: {exc}") from None
+            label = getattr(path, "name", str(path))
+            if isinstance(path, Path):
+                self._file = path
         else:
-            text = Path(source).read_text(encoding="utf-8")
-            label = str(source)
+            self._file = Path(path)
+            try:
+                text = self._file.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ManifestError(f"{path}: cannot read manifest: {exc}") from None
+            label = str(path)
         self._label = label
+        self._stamp = self.fingerprint()
         data = self._parse(text, label)
         self._items = self._build_items(data, label)
         self._ids = {item.id for item in self._items}
         self._aliases = self._build_aliases(data, label, self._ids)
-        self._snapshot = self._hash_catalog(data)
+        self._snapshot = "sha256:" + sha256_hex(
+            canonical_json([{"id": item.id, "tags": list(item.tags)} for item in self._items])
+        )
+
+    def fingerprint(self) -> str:
+        """Cheap staleness token: the file's size and modification time."""
+        if self._file is None:
+            return "static"
+        try:
+            stat = os.stat(self._file)
+        except OSError:
+            return "missing"
+        return f"{stat.st_size}:{stat.st_mtime_ns}"
 
     @staticmethod
     def _parse(text: str, label: str) -> Mapping[str, Any]:
         try:
-            if label.endswith(".json"):
-                data = json.loads(text)
-            else:
-                data = yaml.safe_load(text)
+            data = json.loads(text) if label.endswith(".json") else yaml.safe_load(text)
         except (json.JSONDecodeError, yaml.YAMLError) as exc:
             raise ManifestError(f"{label}: cannot parse manifest: {exc}") from None
         if not isinstance(data, Mapping) or not isinstance(data.get("items"), list):
@@ -91,7 +105,9 @@ class ManifestSource:
             seen.add(item_id)
             tags = entry.get("tags")
             if not isinstance(tags, list) or not all(isinstance(t, str) and t for t in tags):
-                raise ManifestError(f"{where}: 'tags' is required and must be a list of non-empty strings")
+                raise ManifestError(
+                    f"{where}: 'tags' is required and must be a list of non-empty strings"
+                )
             items.append(
                 Item(
                     id=item_id,
@@ -104,17 +120,14 @@ class ManifestSource:
         return items
 
     @staticmethod
-    def _hash_catalog(data: Mapping[str, Any]) -> str:
-        canonical = json.dumps(data["items"], sort_keys=True, separators=(",", ":"))
-        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-    @staticmethod
     def _build_aliases(data: Mapping[str, Any], label: str, ids: set[str]) -> dict[str, str]:
         aliases: dict[str, str] = {}
         for index, entry in enumerate(data["items"]):
             for alias in entry.get("aliases") or []:
                 if not isinstance(alias, str) or not alias:
-                    raise ManifestError(f"{label}: items[{index}]: aliases must be non-empty strings")
+                    raise ManifestError(
+                        f"{label}: items[{index}]: aliases must be non-empty strings"
+                    )
                 if alias in aliases or alias in ids:
                     raise ManifestError(
                         f"{label}: items[{index}]: alias {alias!r} collides — every native "

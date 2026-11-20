@@ -24,7 +24,7 @@ how it works, in one page.
   the document itself, the three ways to execute it, results returning from any
   transport, and rerunning what failed.
 
-Version 0.1.0. Read [ADOPTING.md](ADOPTING.md) to connect it to your own corpus
+Version 0.2.0. Read [ADOPTING.md](ADOPTING.md) to connect it to your own corpus
 and machines, [DESIGN.md](DESIGN.md) for the architecture and the reasoning
 behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
 
@@ -63,16 +63,22 @@ detectable. Core sections are generic and closed; exactly one section,
 `runner`, is open, and the core never looks inside it. `runcomposer validate`
 checks a document against the published JSON Schema.
 
-**Execute — three ways, one document.** In-process on a `robot-pool` (partition
-fan-out, duration-balanced chunking, listener-streamed live verdicts, drift
-refusal); on *your own agent anywhere* via `runcomposer-exec`; or by triggering
-an existing parameterized CI job with `ci-trigger`.
+**Execute — three ways, one document.** On this machine with a configured
+runner — `robot-pool` for Robot Framework (partition fan-out,
+duration-balanced chunking, live verdicts, readable logs, drift refusal) or
+`command` for any framework with a command line; on *your own agent anywhere*
+via `runcomposer-exec`; or by triggering an existing parameterized Jenkins job
+with `jenkins`. A dispatch runs off the request path: the API answers at once,
+and the run is followed through its state and event stream, can be cancelled,
+and tells an observer (`webhook`, `jsonl`, `command`) when it is over.
 
 **Ingest.** Results return over a token-guarded HTTP push, a watched file-drop
 directory, or `runcomposer ingest` on the command line. Redelivery rules are
-explicit — a byte-identical bundle is a no-op, a different bundle replaces that
-shard. A bundle whose marker matches no dispatched run lands in a visible
-quarantine inbox rather than quietly entering history.
+explicit — the same bundle again is a no-op, a different bundle replaces that
+shard. Completion is computed against what was planned: an item that never
+reported is `MISSING`, and its run is `INCOMPLETE`, not green. A dropped bundle
+that cannot be matched to a run lands in a visible quarantine rather than
+quietly entering history.
 
 **Reuse.** Once runs accrue, history becomes a selection source:
 `runcomposer runs --failed-in latest --label suite=nightly`, `spec
@@ -133,6 +139,7 @@ pip install "runcomposer[robot]"
 
 ```bash
 pip install -e ".[dev]" && pytest         # Python 3.10–3.13
+ruff check src tests && mypy              # lint + type check, both kept clean
 cd ui && npm ci && npm run dev            # UI dev server (proxies to :8100)
 npm run build                             # rebuild src/runcomposer/ui_dist
 ```

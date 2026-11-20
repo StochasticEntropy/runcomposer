@@ -3,8 +3,9 @@
 The whole loop, through the real machinery rather than a parallel in-process
 imitation of it: manifest source → taxonomy view → tag-filter selection →
 materialized runspec (validated against the shipped schema) → dispatch to the
-`demo` runner → verdicts recorded in a store → a *history-derived* "rerun what
-failed" selection resolved back out of that store, with provenance.
+`demo` runner (which *simulates* execution — no test is run) → verdicts
+recorded in a store → a *history-derived* "rerun what failed" selection
+resolved back out of that store, with provenance.
 
 It seeds a real store to do it, because the run it demonstrates last —
 "rerun what failed" — is precisely the one a fresh store cannot answer, and a
@@ -23,16 +24,13 @@ the complete uninstall.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
-from runcomposer.config import load_config
-from runcomposer.core.filter import format_filter, parse_filter
-from runcomposer.core.model import Item, Verdict
-from runcomposer.core.selection import Selection
-from runcomposer.service import Service
+from runcomposer.sdk import Item, Selection, Service, Verdict, format_filter, load_config, parse_filter
 
 _RULE = "─" * 64
 
@@ -58,6 +56,11 @@ _CONFIG = f"""{_MARKER}
 store:
   sqlite:
     path: runcomposer.db
+
+# Only what is configured under `runners:` can be dispatched to. The `demo`
+# runner SIMULATES execution — no test is run; verdicts derive from a seed.
+runners:
+  demo: {{}}
 """
 
 
@@ -132,7 +135,7 @@ def _print_taxonomy_node(node: dict, items: list[Item], out: Out, indent: int) -
 
 
 def _summarize(verdicts: list[Verdict], out: Out) -> None:
-    counts = {status: 0 for status in ("PASS", "FAIL", "SKIP", "ERROR")}
+    counts = dict.fromkeys(("PASS", "FAIL", "SKIP", "ERROR"), 0)
     for verdict in verdicts:
         counts[verdict.status] += 1
     total_s = sum(v.duration_ms for v in verdicts) / 1000
@@ -157,7 +160,8 @@ def _compose_and_run(
     to the `demo` runner, then read the verdicts back **out of the store** —
     the summary the demo prints is what was persisted, not what was in hand.
 
-    The per-run seed rides in the spec's one open section (`runner.demo.seed`,
+    The seed is a per-run parameter the `demo` runner declares; the accepted
+    value is written into the spec's one open section (`runner.demo.seed`,
     §3), which is what makes three nightly runs differ through one configured
     runner.
     """
@@ -166,11 +170,14 @@ def _compose_and_run(
         title=title,
         labels=labels,
         origin="demo",
-        runner_section={"demo": {"seed": seed}},
+        runner_id="demo",
+        parameters={"seed": seed},
     )
     assert result.run is not None
-    dispatch = service.dispatch_runner(result.run.id, "demo")
-    verdicts = service.store.verdicts_for(result.run.id, dispatch.dispatch_id)
+    # In the foreground: the call returns when the runner did, as the CLI's
+    # `run` and `dispatch` do. The server runs the same code off-request.
+    outcome = service.dispatch(result.run.id, "demo", {"seed": seed}, foreground=True)
+    verdicts = service.store.verdicts_for(result.run.id, outcome.dispatch_id)
     return result.spec, result.run.id, verdicts
 
 
@@ -178,7 +185,11 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
     workspace_dir, note = _prepare_workspace(workspace)
     config_file = workspace_dir / "config.yaml"
     config_arg = str(config_file)
-    service = Service(load_config(config_arg))
+    with Service(load_config(config_arg)) as service:
+        return _narrate(service, out, workspace_dir, note, config_arg)
+
+
+def _narrate(service: Service, out: Out, workspace_dir: Path, note: str, config_arg: str) -> int:
     items = service.source.items()
 
     out(_RULE)
@@ -223,9 +234,9 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
     out(f"  … ({len(excerpt) - 14} more lines)")
     out("")
 
-    run = service.store.get_run(run_id)
+    run = service.require_run(run_id)
     out(
-        f"Dispatched to the 'demo' runner: dispatch {run.dispatches[-1].dispatch_id}, "
+        f"Dispatched to the 'demo' runner (simulated): dispatch {run.dispatches[-1].dispatch_id}, "
         f"{len(run.deliveries)} shard delivered — run {run.state} ({run.completion})"
     )
     _summarize(verdicts, out)
@@ -251,8 +262,8 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
         f"({len(regression)} items each), persisted in {workspace_dir / 'runcomposer.db'}"
     )
 
-    # The scope is the point (§7): "latest" unscoped is the latest completed
-    # run of ANYTHING — including the ad-hoc one above, and, once the rerun
+    # The scope is the point (§7): unscoped, "latest" ranges over every
+    # completed run — including the one-off run above, and, once the rerun
     # below completes, the rerun itself.
     failed_ids, provenance = service.resolve_history("failed@latest", labels={"suite": "nightly"})
     out(
@@ -270,7 +281,7 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
         selection={"history": "failed@latest?suite=nightly"},
         labels={"suite": "adhoc"},
     )
-    rerun_spec = service.store.get_spec_document(rerun_id)
+    rerun_spec = service.require_spec(rerun_id)
     derived = rerun_spec["selection"]["derived_from"][0]
     out(
         f"Derived selection: {len(failed_ids)} items, provenance recorded in "
@@ -280,7 +291,7 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
     _summarize(rerun_verdicts, out)
     out("")
 
-    stored = service.store.list_runs(limit=50)
+    stored = service.list_runs(limit=50).runs
     out(_RULE)
     out(
         f"Demo complete. {len(stored)} completed runs and "
@@ -294,5 +305,6 @@ def run_demo(out: Out = print, workspace: str | None = None) -> int:
     out(f"  runcomposer runs --config {config_arg} --failed-in latest --label suite=nightly")
     out(f"  runcomposer compile --config {config_arg} Payments")
     out(f"  runcomposer export {nightly_ids[-1]} --format ctrf --config {config_arg}")
+    out(f"  runcomposer run Checkout --runner demo --config {config_arg}")
     out(f"  runcomposer serve --config {config_arg}")
     return 0

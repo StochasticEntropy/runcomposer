@@ -63,7 +63,7 @@ selection:
 source:
   provider: manifest
   root: corpus.json
-  snapshot: sha256:734b1c4803268df2d3246b38c30c9fa1c675767d6bfc904aad06dfc4ece9f0a2
+  snapshot: sha256:ee00db96d49d82f4564bfb894e0de60a363672643b0a82d9afcb6298d67fe79f
 results:
   expect:
   - format: runcomposer-verdicts

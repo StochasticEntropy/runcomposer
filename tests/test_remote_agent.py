@@ -16,16 +16,25 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytest.importorskip("robot", reason="requires the runcomposer[robot] extra")
+from runcomposer.app.inbox import InboxWatcher
+from runcomposer.sdk import Service, load_config
 
-from runcomposer.config import load_config
-from runcomposer.inbox import InboxWatcher
-from runcomposer.plugins.robot_output_parser import RobotOutputXmlParser
-from runcomposer.service import Service
+from .conftest import REPO, ROBOT_SHOP, needs_robot
 
-REPO = Path(__file__).parent.parent
+pytestmark = [
+    needs_robot,
+    pytest.mark.skipif(os.name == "nt", reason="the kit's transport script is POSIX shell"),
+]
+
 KIT = REPO / "examples" / "remote-agent"
-CORPUS = REPO / "examples" / "robot-shop" / "tests"
+CORPUS = ROBOT_SHOP
+
+
+def parse_output(path):
+    """What a Robot output says, through the stock parser."""
+    from runcomposer.plugins.robot_output_parser import RobotOutputXmlParser
+
+    return RobotOutputXmlParser().parse(path)
 
 # A hand-picked subset the adapter tests request explicitly.
 PAYMENTS_IDS = [
@@ -151,14 +160,14 @@ class TestRobotAdapter:
         picked = ["Tests.Payments.Visa Payment Succeeds", "Tests.Catalog.Sort By Price Ascending"]
         process, out_dir = run_adapter(tmp_path, picked)
         assert process.returncode == 0, process.stderr
-        parsed = {p.native_name: p.status for p in RobotOutputXmlParser().parse(out_dir)}
-        assert parsed == {name: "PASS" for name in picked}
+        parsed = {p.native_name: p.status for p in parse_output(out_dir)}
+        assert parsed == dict.fromkeys(picked, "PASS")
 
     def test_a_failing_test_still_produces_a_valid_bundle(self, tmp_path):
         failing = "Tests.Payments.Expired Card Is Rejected Loudly"
         process, out_dir = run_adapter(tmp_path, [failing])
         assert process.returncode == 0
-        parsed = RobotOutputXmlParser().parse(out_dir)
+        parsed = parse_output(out_dir)
         assert [(p.native_name, p.status) for p in parsed] == [(failing, "FAIL")]
 
     def test_drift_is_refused_by_default(self, tmp_path, drifted_checkout):
@@ -175,7 +184,7 @@ class TestRobotAdapter:
             tmp_path / "w", PAYMENTS_IDS, suite_root=drifted_checkout, RC_ALLOW_DRIFT="1"
         )
         assert process.returncode == 0, process.stderr
-        executed = {p.native_name for p in RobotOutputXmlParser().parse(out_dir)}
+        executed = {p.native_name for p in parse_output(out_dir)}
         assert executed == set(PAYMENTS_IDS) - {"Tests.Payments.Refund Restores Balance"}
         assert (out_dir / "drift.json").is_file()  # the difference rides home named
 
@@ -197,8 +206,6 @@ class TestShippedConfigIsDirectoryIndependent:
     to `cd` there first."""
 
     def test_relative_paths_all_land_in_the_kit_directory(self, tmp_path, monkeypatch):
-        from runcomposer.plugins.sqlite_store import SqliteRunStore
-
         monkeypatch.chdir(tmp_path)  # anywhere but the config's directory
         config = load_config(str(KIT / "config.yaml"))
 
@@ -206,17 +213,26 @@ class TestShippedConfigIsDirectoryIndependent:
         assert config.quarantine_dir == KIT / "state" / "quarantine"
         assert config.artifact_dir == KIT / "state" / "artifacts"
 
-        # The store path, resolved the way build_store() resolves it — without
-        # creating the file, which would drop runtime state into the repo.
-        store_options = SqliteRunStore.resolve_config_paths(
-            dict(config.data["store"]["sqlite"]), config.resolve_path
-        )
-        assert Path(store_options["path"]) == KIT / "state" / "runcomposer.db"
+        # The store path as the store will be constructed with it — read off
+        # the resolved plugin spec, without building the store (which would
+        # drop runtime state into the repository).
+        assert Path(config.store_spec().options["path"]) == KIT / "state" / "runcomposer.db"
 
-        # The source root: pre-fix this raised "robotframework source root not
+        # The source root: it used to raise "robotframework source root not
         # found: ../robot-shop/tests" from any directory but the kit's.
-        items = {item.id for item in config.build_source().items()}
+        with Service(config) as service:
+            items = {item.id for item in service.catalog.items()}
         assert "Tests.Payments.Visa Payment Succeeds" in items
+        assert not (KIT / "state").exists() or not (KIT / "state" / "runcomposer.db").exists()
+
+    def test_the_kit_configures_no_runner_and_validates(self, tmp_path):
+        """The pattern exports and ingests; nothing is dispatched in-process —
+        so the shipped config leaves `runners:` out, and that is a valid
+        deployment (checked on a copy, so nothing is created in the repo)."""
+        with Service(load_config(str(kit_config(tmp_path)))) as service:
+            service.validate()
+            assert service.runner_infos() == []
+            assert service.config.tokens_required is False
 
     def test_sync_sh_does_not_cd_into_the_config_directory(self):
         """The workaround is gone, and stays gone."""
@@ -231,9 +247,10 @@ def round_trip(tmp_path_factory):
     result = run_sync(work)
     assert result.returncode == 0, result.stdout + result.stderr
     service = Service(load_config(str(work / "config.yaml")))
-    runs = service.store.list_runs(limit=2)
+    runs = service.list_runs(limit=2).runs
     assert len(runs) == 1
-    return {"work": work, "service": service, "run": service.store.get_run(runs[0].id)}
+    yield {"work": work, "service": service, "run": service.require_run(runs[0].id), "out": result}
+    service.close()
 
 
 class TestRoundTrip:
@@ -246,6 +263,7 @@ class TestRoundTrip:
             item_id: "FAIL" if item_id == FAILING_ID else "PASS" for item_id in PAYMENTS_TAG_IDS
         }
         assert {d.format for d in run.deliveries} == {"robot-output-xml"}
+        assert dict(run.latest_dispatch.summary) == {"PASS": 12, "FAIL": 1}  # nothing MISSING
 
     def test_the_marker_correlates_the_export_dispatch(self, round_trip):
         run = round_trip["run"]
@@ -257,10 +275,28 @@ class TestRoundTrip:
         assert marker["dispatch_id"] == dispatch.dispatch_id
         assert marker["spec_sha256"] == dispatch.spec_sha256  # §5 marker verification
         assert marker["shard"] == "1"
+        assert dispatch.shards == ("1",) and dispatch.state == "COMPLETE"
+
+    def test_the_spec_that_travelled_is_the_bytes_the_export_recorded(self, round_trip):
+        """What was carried out is byte for byte what the export dispatch's
+        hash was computed over — and it can be downloaded again."""
+        import hashlib
+
+        run, service = round_trip["run"], round_trip["service"]
+        carried = (round_trip["work"] / "state" / "outbox" / "spec.json").read_bytes()
+        dispatch = run.dispatches[-1]
+        assert hashlib.sha256(carried).hexdigest() == dispatch.spec_sha256
+        content, media_type, _ = service.dispatch_spec(run.id, dispatch.dispatch_id)
+        assert content == carried and media_type == "application/json"
+        # Tokens are disabled in this kit (results return by file drop): none
+        # was minted, and the document carries none either way.
+        assert "token" not in json.loads(carried)["results"]
+        assert service.store.ingest_tokens(run.id) == {}
+        assert "ingest token" not in round_trip["out"].stdout + round_trip["out"].stderr
 
     def test_the_agent_executed_exactly_the_materialized_ids(self, round_trip):
         run, service = round_trip["run"], round_trip["service"]
-        spec = service.store.get_spec_document(run.id)
+        spec = service.require_spec(run.id)
         ids_file = round_trip["work"] / "state" / "inbox" / run.id / "item_ids.txt"
         carried = ids_file.read_text(encoding="utf-8").split("\n")
         assert [i for i in carried if i] == spec["selection"]["materialized"]["item_ids"]
@@ -277,13 +313,44 @@ class TestRoundTrip:
         run, service = round_trip["run"], round_trip["service"]
         drop = tmp_path / "inbox"
         shutil.copytree(round_trip["work"] / "state" / "inbox" / run.id, drop / run.id)
-        reports = InboxWatcher(service, drop).poll_once(min_age_s=0)
+        # The marker — written last by runcomposer-exec — is the bundle's
+        # completion signal, so the watcher takes it at once.
+        reports = InboxWatcher(service, drop).poll_once()
         assert [(r.run_id, r.outcome) for r in reports] == [(run.id, "duplicate")]
+        assert not (drop / run.id).exists() and len(list((drop / "processed").iterdir())) == 1
 
     def test_drift_stops_the_loop_and_leaves_the_run_awaiting(self, tmp_path, drifted_checkout):
         result = run_sync(tmp_path, suite_root=drifted_checkout)
         assert result.returncode != 0
         assert "refusing to execute" in result.stdout + result.stderr
         assert list((tmp_path / "state" / "inbox").glob("*/output.xml")) == []
-        service = Service(load_config(str(tmp_path / "config.yaml")))
-        assert [r.state for r in service.store.list_runs(limit=2)] == ["AWAITING_RESULTS"]
+        with Service(load_config(str(tmp_path / "config.yaml"))) as service:
+            assert [r.state for r in service.list_runs(limit=2).runs] == ["AWAITING_RESULTS"]
+
+    def test_a_refused_execution_leaves_no_marker_behind(self, tmp_path, drifted_checkout):
+        """The marker says "this bundle is complete". runcomposer-exec used to
+        write it even after the command had failed — so the refused run's
+        half-bundle looked finished to whatever carried it home. Now the
+        directory the agent left has the drift report and NO marker, and a
+        watcher that is handed it anyway takes nothing in."""
+        result = run_sync(tmp_path, suite_root=drifted_checkout)
+        assert result.returncode != 0
+        assert "no marker written" in result.stdout + result.stderr
+        (left_behind,) = (tmp_path / "state" / "remote").glob("*/results")
+        assert (left_behind / "drift.json").is_file()
+        assert list((tmp_path / "state").rglob("runcomposer_run.json")) == []
+
+        with Service(load_config(str(tmp_path / "config.yaml"))) as service:
+            (run,) = service.list_runs(limit=2).runs
+            drop = tmp_path / "state" / "inbox"
+            shutil.copytree(left_behind, drop / run.id)
+            watcher = InboxWatcher(service, drop, poll_interval_s=1, settle_s=5)
+            # Without the marker a bundle counts as complete only once it has
+            # held still for the settle window — and then it is quarantined
+            # (it names no run), never attached.
+            assert watcher.poll_once(now=100.0) == []
+            assert watcher.poll_once(now=102.0) == []
+            (report,) = watcher.poll_once(now=106.0)
+            assert report.reason == "unsolicited" and report.entry_id
+            assert service.require_run(run.id).state == "AWAITING_RESULTS"
+            assert service.store.verdicts_for(run.id) == []

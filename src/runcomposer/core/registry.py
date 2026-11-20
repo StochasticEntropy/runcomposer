@@ -10,18 +10,44 @@ Two first-class mechanisms, no env-var loading:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import entry_points
 from typing import Any
+
+from .errors import PluginError
+
+__all__ = [
+    "GROUPS",
+    "OBSERVER_GROUP",
+    "PARSER_GROUP",
+    "RUNNER_GROUP",
+    "SOURCE_GROUP",
+    "STORE_GROUP",
+    "PluginError",
+    "PluginInfo",
+    "installed_plugins",
+    "load_entry_point",
+    "load_import_path",
+]
 
 SOURCE_GROUP = "runcomposer.sources"
 RUNNER_GROUP = "runcomposer.runners"
 STORE_GROUP = "runcomposer.stores"
 PARSER_GROUP = "runcomposer.parsers"
+OBSERVER_GROUP = "runcomposer.observers"
+GROUPS = (SOURCE_GROUP, RUNNER_GROUP, STORE_GROUP, PARSER_GROUP, OBSERVER_GROUP)
 
 
-class PluginError(RuntimeError):
-    """Raised when a declared plugin cannot be loaded."""
+@dataclass(frozen=True)
+class PluginInfo:
+    """One installed entry-point plugin and the distribution it came from."""
+
+    group: str
+    name: str
+    target: str
+    distribution: str
+    version: str
 
 
 def load_import_path(ref: str) -> Any:
@@ -41,16 +67,32 @@ def load_import_path(ref: str) -> Any:
 
 def load_entry_point(group: str, name: str) -> Any:
     for ep in entry_points(group=group, name=name):
-        return ep.load()
-    raise PluginError(f"no entry point {name!r} in group {group!r}")
+        try:
+            return ep.load()
+        except ImportError as exc:
+            raise PluginError(
+                f"entry point {name!r} in group {group!r} cannot be imported: {exc}"
+            ) from exc
+    raise PluginError(
+        f"no entry point {name!r} in group {group!r} "
+        f"(installed: {sorted(ep.name for ep in entry_points(group=group)) or 'none'})"
+    )
 
 
-def available_entry_points(group: str) -> dict[str, str]:
-    return {ep.name: ep.value for ep in entry_points(group=group)}
-
-
-def resolve_plugin(ref: str, group: str) -> Any:
-    """A ref containing ':' is an import path; otherwise an entry-point name."""
-    if ":" in ref:
-        return load_import_path(ref)
-    return load_entry_point(group, ref)
+def installed_plugins(group: str | None = None) -> list[PluginInfo]:
+    """Every entry-point plugin installed in this environment — which
+    distribution provides it, at which version."""
+    found = []
+    for candidate in GROUPS if group is None else (group,):
+        for ep in entry_points(group=candidate):
+            dist = getattr(ep, "dist", None)
+            found.append(
+                PluginInfo(
+                    group=candidate,
+                    name=ep.name,
+                    target=ep.value,
+                    distribution=dist.name if dist is not None else "",
+                    version=dist.version if dist is not None else "",
+                )
+            )
+    return sorted(found, key=lambda info: (info.group, info.name))

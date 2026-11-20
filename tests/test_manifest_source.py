@@ -92,3 +92,19 @@ def test_pytest_flavored_manifest_example_loads():
     items = source.items()
     assert len(items) >= 5
     assert all("::" in item.id for item in items)  # pytest nodeids, opaque to the core
+
+
+def test_the_snapshot_covers_what_a_selection_depends_on_and_nothing_else(tmp_path):
+    """The snapshot is an integrity check of ids and tags. Renaming a test or
+    editing its meta is not drift; adding a tag is."""
+
+    def snapshot(items):
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps({"items": items}), encoding="utf-8")
+        return ManifestSource(str(path)).snapshot()
+
+    base = [{"id": "Shop.Cart.Core.T001", "tags": ["Cart"], "name": "Add to cart"}]
+    renamed = [{"id": "Shop.Cart.Core.T001", "tags": ["Cart"], "name": "Add an item", "meta": {"owner": "team-cart"}}]
+    retagged = [{"id": "Shop.Cart.Core.T001", "tags": ["Cart", "Smoke"], "name": "Add to cart"}]
+    assert snapshot(base) == snapshot(renamed)
+    assert snapshot(base) != snapshot(retagged)
