@@ -22,8 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 PRODUCTS = [
-    {"sku": "CATALOG-7", "title": "A Field Guide to Carts"},
-    {"sku": "CART-2", "title": "Checkout Mug"},
+    {"sku": "catalog-7", "title": "A Field Guide to Carts"},
+    {"sku": "cart-2", "title": "Checkout Mug"},
 ]
 
 

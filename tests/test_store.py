@@ -816,7 +816,7 @@ class TestArtifactRefs:
     def test_reads_back_what_it_wrote_with_the_shard(self, store, run_id):
         store.add_artifact_ref(
             run_id, "D1", name="log.html (env1)", media_type="text/html",
-            url_or_path="/var/artifacts/env1/log.html", shard="env1",
+            url_or_path="/srv/shop/artifacts/env1/log.html", shard="env1",
         )
         store.add_artifact_ref(
             run_id, None, name="build", media_type="text/html",
@@ -827,7 +827,7 @@ class TestArtifactRefs:
             ("log.html (env1)", "D1", "env1"), ("build", None, None),
         ]
         assert refs[0].media_type == "text/html"
-        assert refs[0].url_or_path == "/var/artifacts/env1/log.html"
+        assert refs[0].url_or_path == "/srv/shop/artifacts/env1/log.html"
         assert refs[1].url_or_path == "https://ci.shop.example/job/regression/7/"
 
     def test_narrowing_by_dispatch(self, store, run_id):

@@ -3,523 +3,515 @@
 `test_self_containment.py` lists tokens the *core* must not contain, which
 only works for vocabulary this project already knows about. It cannot catch
 vocabulary from outside the example world — a deny-list would have to name
-it. So these guards are built from *structure*: wherever the repository
-spells something tag-shaped, the tag must exist in the bundled demo corpus.
-Anything else fails without ever being named here.
+it. So these guards are built from *structure* and from allow-lists: wherever
+the repository spells something host-shaped, path-shaped, ticket-shaped,
+tag-shaped or name-shaped, it must be of the example world, of this
+project's own infrastructure, or of a reviewed vocabulary. Anything else
+fails without ever being named here.
 
-Shapes checked, each over every tracked text file it can occur in:
+The rules, and the structure each one relies on, are documented in
+``tests/example_world_rules.py`` (shared with ``ci/check_commit_messages.py``,
+which holds commit messages to the same rules). This module
 
-1. **Tag literals in the UI's test files** — unit tests and browser
-   end-to-end tests alike (quoted strings, comments included): every bare
-   word, `prefix:` and `regex:` pattern must match the demo corpus.
-2. **Filter expressions anywhere in the tracked tree** — prose, comments,
-   docs: the operands of an uppercase `AND` / `OR` / `NOT` are tags by
-   construction, so each capitalised operand must be a demo tag (or a
-   one-letter metavariable such as `A`).
-3. **Tags wherever data spells them** — `tags:` lists in JSON/YAML,
-   Robot `[Tags]` lines (in suites and in suites embedded in tests), and
-   `tags` / `tag_filter` values in Python: each must be made of the example
-   world's words.
-4. **Hosts** — every host a URL or an e-mail address names is a reserved
-   example name (`*.example`, `*.invalid`, `*.test`), a local address, or a
-   piece of this project's own public infrastructure.
-5. **Ticket keys** — every token shaped like `SHOP-1200` has a prefix of the example
-   world (`SHOP-1200`) or of a standard (`ISO-8601`, `UTF-8`).
+* runs every rule over every text file of the repository — tracked and
+  not-yet-tracked files of a git checkout, or a directory walk where there
+  is no checkout (an sdist, a container) — and fails with ``file:line``,
+  the offending token, the rule and what to do;
+* proves every rule with a planted violation in a temporary tree, and with
+  an allowed look-alike that must pass.
 
-No list of forbidden names exists here, and none may be added: something
-from outside fails because it is not of this world, not because it was
-foreseen. What the example world may say beyond the bundled corpus is
-`INVENTED_WORDS` below — words invented for examples and tests.
+The planted violations are assembled at run time from innocuous synthetic
+pieces (``"Zzz-" + "Unknown"``), so this file never spells the thing it shows
+being caught and needs no exemption of its own.
 """
 
 from __future__ import annotations
 
 import json
-import re
-import subprocess
-from importlib import resources
+import shutil
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+import pytest
 
-#: Suffixes scanned as text. Media and the minified UI bundle are not prose.
-TEXT_SUFFIXES = {
-    ".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".json", ".yaml", ".yml", ".toml",
-    ".html", ".css", ".robot", ".resource", ".sh", ".txt", ".cfg", ".ini", ".vtt", "",
-}
-SKIPPED_DIRS = ("src/runcomposer/ui_dist/", "ui/node_modules/")
-SKIPPED_FILES = {"ui/package-lock.json"}
+from . import example_world_rules as rules
+from .example_world_rules import REPO, Violation
+
+# -- the real tree -----------------------------------------------------------------------
 
 
-def demo_tags() -> set[str]:
-    corpus = json.loads(
-        (resources.files("runcomposer.demo") / "corpus.json").read_text(encoding="utf-8")
-    )
-    return {tag for item in corpus["items"] for tag in item["tags"]}
+def violations_of(rule: str) -> tuple[Violation, ...]:
+    return rules.scan_tree(REPO)[rule]
 
 
-#: Words the example world uses beyond the bundled corpus — invented for the
-#: example suites and for tests. Adding one is a statement that it was
-#: invented here and not borrowed from anybody's real suite.
-INVENTED_WORDS = {
-    "account", "orders", "profile", "basics", "slow", "lane", "var", "check",
-    "returns", "loose", "oops", "no", "such", "tag", "anywhere",
-}
+def fail_with(rule: str, what: str) -> None:
+    found = violations_of(rule)
+    assert not found, f"{what} — {len(found)} violation(s):\n{rules.report(found)}"
 
 
-def demo_vocabulary() -> set[str]:
-    """Every word the example world is made of: tag components, taxonomy
-    labels, item names and hierarchy segments of the bundled corpus —
-    case-folded — plus ``INVENTED_WORDS``. A tag invented for a test must be
-    assembled from these."""
-    corpus = json.loads(
-        (resources.files("runcomposer.demo") / "corpus.json").read_text(encoding="utf-8")
-    )
-    taxonomy = (resources.files("runcomposer.demo") / "taxonomy.yaml").read_text(encoding="utf-8")
-    words: set[str] = set()
-    for item in corpus["items"]:
-        for text in (*item["tags"], item.get("name", ""), *item.get("hierarchy", ())):
-            words.update(re.findall(r"[A-Za-z]+", text))
-    words.update(re.findall(r"label:\s*([A-Za-z]+)", taxonomy))
-    return {word.casefold() for word in words} | INVENTED_WORDS
+def test_every_host_is_of_the_example_world():
+    fail_with("host", "hosts outside the example world and this project's infrastructure")
 
 
-def word_parts(text: str) -> list[str]:
-    """The words of a tag or a pattern: split at anything not a letter or a
-    digit and at lowercase→uppercase steps (``SlowLane`` → slow, lane)."""
-    parts: list[str] = []
-    for run in re.findall(r"[A-Za-z0-9]+", text):
-        parts.extend(re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", run))
-    return parts
+def test_every_absolute_path_is_generic():
+    fail_with("path", "home-directory or machine-specific absolute paths")
 
 
-def of_this_world(part: str, vocabulary: set[str]) -> bool:
-    part = part.casefold()
-    if part.isdigit() or part in vocabulary:
-        return True
-    return len(part) >= 3 and any(word.startswith(part) for word in vocabulary)
+def test_every_ticket_key_is_of_the_example_world():
+    fail_with("ticket-key", "ticket-key-shaped tokens outside the example world")
 
 
-def tracked_text_files() -> list[Path]:
-    """Every tracked text file; falls back to walking the tree outside a git
-    checkout (an sdist), where "tracked" has no meaning."""
-    try:
-        listed = subprocess.run(
-            ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
-        ).stdout.splitlines()
-    except (OSError, subprocess.CalledProcessError):
-        listed = [
-            path.relative_to(REPO).as_posix()
-            for path in REPO.rglob("*")
-            if path.is_file() and not any(part.startswith(".") for part in path.parts)
-        ]
-    files = []
-    for name in listed:
-        if name in SKIPPED_FILES or name.startswith(SKIPPED_DIRS):
-            continue
-        path = REPO / name
-        if path.suffix.lower() in TEXT_SUFFIXES and path.is_file():
-            files.append(path)
-    return files
+def test_every_tag_is_of_the_example_world():
+    fail_with("tag", "tags outside the example world's tag vocabulary")
 
 
-# -- 1. tag literals in the UI's test files ------------------------------------
-
-
-def quoted_strings(text: str) -> list[str]:
-    found = re.findall(r'"([^"\n]{1,80})"|\'([^\'\n]{1,80})\'|`([^`\n]{1,80})`', text)
-    return [next(part for part in parts if part) for parts in found if any(parts)]
-
-
-def pattern_is_of_the_demo_world(value: str, tags: set[str]) -> bool | None:
-    """True/False for a tag-shaped literal, None when the literal is not
-    tag-shaped at all (prose, identifiers, paths)."""
-    folded = {tag.casefold() for tag in tags}
-    if value.startswith("prefix:"):
-        body = value[len("prefix:"):]
-        return bool(body) and any(tag.startswith(body) for tag in tags)
-    if value.startswith("regex:"):
-        try:
-            compiled = re.compile(value[len("regex:"):])
-        except re.error:
-            return None  # a deliberately broken expression is a grammar test
-        if any(compiled.search(tag) for tag in tags):
-            return True
-        # A pattern that matches nothing (a test of the empty selection) is
-        # still of this world when its words are.
-        words = [w for w in word_parts(value[len("regex:"):]) if len(w) > 1]
-        vocabulary = demo_vocabulary()
-        return bool(words) and all(of_this_world(w, vocabulary) for w in words)
-    if not re.fullmatch(r"[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*", value):
-        return None  # not shaped like a tag of this world or any other
-    if len(value) == 1 or value.casefold() in folded:
-        return True  # a one-letter metavariable, or a tag of the corpus
-    # An invented tag is still of this world when every hyphen-separated part
-    # is (a stem of) a word the bundled corpus uses — `Checkout-Cart` is, a
-    # word out of somebody's real suite is not.
-    vocabulary = demo_vocabulary()
-    return all(of_this_world(part, vocabulary) for part in word_parts(value))
-
-
-def test_pattern_classifier_checks_bare_prefix_and_regex_literals():
-    """Bare tags, `prefix:` and `regex:` literals are all classified — a
-    pattern is example data as much as a tag is."""
-    tags = demo_tags()
-    assert pattern_is_of_the_demo_world("Payments", tags) is True
-    assert pattern_is_of_the_demo_world("prefix:Checkout-", tags) is True
-    assert pattern_is_of_the_demo_world("regex:^Cart(V2)?$", tags) is True
-    assert pattern_is_of_the_demo_world("Checkout-Cart", tags) is True  # invented from its words
-    assert pattern_is_of_the_demo_world("Warehouse", tags) is False
-    assert pattern_is_of_the_demo_world("Checkout-Warehouse", tags) is False
-    assert pattern_is_of_the_demo_world("prefix:Warehouse-", tags) is False
-    assert pattern_is_of_the_demo_world("regex:^Warehouse", tags) is False
-    assert pattern_is_of_the_demo_world("some prose here", tags) is None
-
-
-#: Names of keys a browser test presses. Not tags, and nobody's test data.
-_KEYBOARD_KEYS = {"Tab"}
-
-
-def ui_test_files() -> list[Path]:
-    """The UI's unit tests (anywhere under ``ui/src``) and its browser
-    end-to-end tests (``ui/e2e``)."""
-    ui = REPO / "ui"
-    unit = [path for pattern in ("*.test.ts", "*.test.tsx") for path in (ui / "src").rglob(pattern)]
-    return sorted([*unit, *(ui / "e2e").glob("*.ts")])
-
-
-def ui_own_vocabulary() -> set[str]:
-    """What the UI itself spells, and may therefore be spelled back by its
-    tests: operator ids, field ids, node kinds — whatever its non-test source
-    has in quotes — and every text of its locale files (a test names a button
-    by its label). Derived, so this guard needs no hand-kept list."""
-    ui_src = REPO / "ui" / "src"
-    own: set[str] = {"AND", "OR", "NOT"}
-    for pattern in ("*.ts", "*.tsx"):
-        for source in ui_src.rglob(pattern):
-            if ".test." not in source.name:
-                own.update(quoted_strings(source.read_text(encoding="utf-8")))
-
-    def texts(node: object) -> None:
-        if isinstance(node, dict):
-            for child in node.values():
-                texts(child)
-        elif isinstance(node, str):
-            own.add(node)
-
-    for locale in (ui_src / "locales").glob("*.json"):
-        texts(json.loads(locale.read_text(encoding="utf-8")))
-        # The keys too: a state or status the server sends (`INCOMPLETE`) is a key.
-        own.update(re.findall(r'"([A-Za-z_-]+)":', locale.read_text(encoding="utf-8")))
-    # A runner declares the labels of its per-run parameters and the UI shows
-    # them verbatim, so a test of the form names them: what the bundled
-    # plugins spell is the product's vocabulary as well.
-    for plugin in (REPO / "src" / "runcomposer" / "plugins").glob("*.py"):
-        own.update(quoted_strings(plugin.read_text(encoding="utf-8")))
-    return own | _KEYBOARD_KEYS
-
-
-def test_the_ui_has_tests_to_check():
-    """The guard below is vacuous if a change of layout hides the files from
-    it — so the files it reads are counted."""
-    names = {path.name for path in ui_test_files()}
-    if not (REPO / "ui" / "src").is_dir():  # the UI is optional in a source checkout
-        return
-    assert {"filter.test.ts", "editor.test.ts", "compose.spec.ts", "run.spec.ts"} <= names
-
-
-def test_ui_test_data_uses_only_the_demo_corpus_vocabulary():
-    """The UI's tests pin filter behaviour, so they carry tag names. Those
-    names must come from the shipped example world — a real corpus's tags in
-    this repository are a self-containment failure."""
-    test_files = ui_test_files()
-    if not test_files:  # the UI is optional in a source checkout
-        return
-    tags = demo_tags()
-    own = ui_own_vocabulary()
-    suspects: dict[str, set[str]] = {}
-    for test_file in test_files:
-        for value in quoted_strings(test_file.read_text(encoding="utf-8")):
-            value = value.strip()
-            if value in own:
-                continue
-            if pattern_is_of_the_demo_world(value, tags) is False:
-                suspects.setdefault(test_file.name, set()).add(value)
-    assert not suspects, (
-        f"UI test data uses tag names that are not in the bundled demo corpus: "
-        f"{ {name: sorted(values) for name, values in suspects.items()} } — example data must "
-        "use the shipped example world (DESIGN.md §12), never a real corpus"
-    )
-
-
-# -- 2. filter expressions anywhere, comments included --------------------------
-
-_OPERAND = r"(?<![\w.-])[A-Z][A-Za-z0-9_]*(?:-[A-Za-z0-9]+)*(?![\w.-])"
-_EXPRESSION = re.compile(
-    rf"(?:({_OPERAND})\)?\s+(?:AND|OR)\s+(?:NOT\s+)?\(?({_OPERAND}))"
-    rf"|(?:\bNOT\s+\(?({_OPERAND}))"
+#: The prose vocabulary includes identifiers of the UI's code, and the
+#: allow-lists below are checked against every file that uses them: both need
+#: the whole tree. An sdist ships without the UI, the workflows and the media
+#: captions, so there these tests skip and say why.
+needs_full_tree = pytest.mark.skipif(
+    not ((REPO / "ui" / "src").is_dir() and (REPO / ".github").is_dir()),
+    reason="a partial tree (an sdist): the UI's identifiers and the files the allow-lists serve are not here",
 )
-_OPERATORS = {"AND", "OR", "NOT"}
-#: Uppercase words that follow NOT in query-language and status spellings
-#: (`IS NOT NULL`, `IF NOT EXISTS`, `NOT RUN`). Language keywords, not tags.
-_KEYWORDS = {"NULL", "EXISTS", "RUN", "IN", "LIKE"}
-#: Verbatim legal text is written in capitals and is nobody's example data.
-_NOT_EXAMPLE_DATA = {"LICENSE"}
 
 
-def expression_operands(text: str) -> set[str]:
-    operands: set[str] = set()
-    position = 0
-    while True:
-        match = _EXPRESSION.search(text, position)
-        if match is None:
-            return operands
-        operands.update(group for group in match.groups() if group)
-        # Overlapping scan: `A AND B OR C` must yield B as a left operand too.
-        position = match.start() + 1
+@needs_full_tree
+def test_every_prose_word_is_in_the_reviewed_vocabulary():
+    fail_with(
+        "prose-token",
+        f"capitalised words in prose that are neither code identifiers nor in {rules.WORDS_FILE_NAME}",
+    )
 
 
-def test_expression_scanner_reads_operands_out_of_prose_and_comments():
-    assert expression_operands("// `Payments AND (Cart OR Auth)` picks two") >= {
-        "Payments", "Cart", "Auth"
-    }
-    assert expression_operands("NOT (A OR B) == (NOT A) AND (NOT B)") >= {"A", "B"}
-    assert expression_operands("this and that, or nothing") == set()
-    assert expression_operands("An OR of negations is prose") == set()
-    assert expression_operands("`Auth AND (Checkout-Express OR Checkout-Gift)`") == {
-        "Auth", "Checkout-Express", "Checkout-Gift"
-    }
+# -- the lists the rules allow are themselves kept honest ----------------------------------
 
 
-def test_filter_expressions_everywhere_speak_the_example_world():
-    """A filter expression in a comment or a document is example data like any
-    other. Its capitalised operands are tags, so they must be tags of the
-    bundled corpus — which is how a real suite's vocabulary in a code comment
-    fails here without this file ever listing it."""
-    tags = demo_tags()
-    suspects: dict[str, set[str]] = {}
-    for path in tracked_text_files():
-        name = path.relative_to(REPO).as_posix()
-        if name in _NOT_EXAMPLE_DATA:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for operand in expression_operands(text):
-            if operand in _OPERATORS or operand in _KEYWORDS:
+@needs_full_tree
+def test_every_project_host_is_used():
+    """An allowed host nothing names any more is stale: remove it."""
+    text = "\n".join(t for name, t in rules.text_files(REPO) if name != rules.RULES_MODULE_NAME)
+    unused = [host for host in rules.PROJECT_HOSTS if host not in text]
+    assert not unused, f"PROJECT_HOSTS entries nothing uses: {unused}"
+
+
+@needs_full_tree
+def test_every_generic_path_is_used():
+    text = "\n".join(t for name, t in rules.text_files(REPO) if name != rules.RULES_MODULE_NAME)
+    unused = [path for path in rules.GENERIC_PATHS if path not in text]
+    assert not unused, f"GENERIC_PATHS entries nothing uses: {unused}"
+
+
+@needs_full_tree
+def test_every_reviewed_word_is_still_used():
+    """The words file is the vocabulary, not a dictionary: a word nothing
+    spells any more is removed, so the list stays a reviewed record of what
+    the repository actually says."""
+    import re
+
+    spelled: set[str] = set()
+    for name, text in rules.text_files(REPO):
+        if name != rules.WORDS_FILE_NAME and not rules.is_generated(name):
+            for word in re.findall(r"[^\W_]+(?:-[^\W_]+)*", text):
+                spelled.add(word.casefold())
+                spelled.update(part.casefold() for part in word.split("-"))
+    vocab = rules.vocabulary(REPO)
+    unused = sorted(
+        word for words in vocab.sections.values() for word in words
+        if word.casefold() not in spelled
+    )
+    assert not unused, f"{rules.WORDS_FILE_NAME} lists words nothing spells any more: {unused}"
+
+
+def test_the_words_file_is_sectioned_and_free_of_duplicates():
+    vocab = rules.vocabulary(REPO)
+    assert rules.INVENTED_TAGS_HEADING in vocab.sections
+    seen: dict[str, str] = {}
+    duplicates = []
+    for heading, words in vocab.sections.items():
+        assert heading, f"{rules.WORDS_FILE_NAME}: words before the first '## heading'"
+        for word in words:
+            if word.casefold() in seen:
+                duplicates.append((word, seen[word.casefold()], heading))
+            seen[word.casefold()] = heading
+    assert not duplicates, f"listed twice: {duplicates}"
+
+
+def test_the_scan_reads_every_text_shape_of_the_tree():
+    """The guard is vacuous if a change of layout hides files from it — so
+    the shapes it must read are counted: every suffix the tree has, files
+    without a suffix, the UI's tests at any depth."""
+    names = rules.list_files(REPO)
+    read = {name for name, _text in rules.text_files(REPO)}
+    for name in names:  # every file that is text is read, whatever its suffix
+        if Path(name).suffix.lower() not in rules.BINARY_SUFFIXES:
+            try:
+                (REPO / name).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
                 continue
-            if pattern_is_of_the_demo_world(operand, tags) is False:
-                suspects.setdefault(name, set()).add(operand)
-    assert not suspects, (
-        "filter expressions outside the example world (DESIGN.md §12) — every operand of "
-        f"AND/OR/NOT must be a tag of the bundled demo corpus: "
-        f"{ {name: sorted(values) for name, values in suspects.items()} }"
-    )
+            assert name in read, name
+    assert not any(Path(name).suffix.lower() in rules.BINARY_SUFFIXES for name in read)
+    assert "Dockerfile" in read and "LICENSE" in read
+    for suffix in (".py", ".md", ".yaml", ".json", ".robot", ".csv", ".sql", ".sh", ".toml", ".html", ".css"):
+        assert any(name.endswith(suffix) for name in read), f"no {suffix} file is read"
+    if any(name.startswith("ui/") for name in names):  # the UI and the captions are not in an sdist
+        assert any(name.endswith(".vtt") for name in read) and any(name.endswith(".tsx") for name in read)
+        tests = set(rules.ui_test_files(REPO))
+        assert {"ui/src/lib/filter.test.ts", "ui/e2e/compose.spec.ts", "ui/e2e/run.spec.ts"} <= tests
 
 
-def test_a_foreign_expression_in_a_comment_would_be_caught():
-    """A filter expression outside the example world, sitting in a code
-    comment, is caught. Demonstrated with an invented one."""
-    tags = demo_tags()
-    # Assembled, so that this file does not itself contain the expression it
-    # shows the guard catching.
-    both, either = "AND", "OR"
-    comment = f"// `Warehouse {both} (Forklift {either} Pallet)` is picking two tags"
-    foreign = {
-        operand
-        for operand in expression_operands(comment)
-        if pattern_is_of_the_demo_world(operand, tags) is False
+# -- self-tests: a planted violation is caught, an allowed look-alike is not ---------------
+#
+# Every planted string is assembled from pieces, so that this file does not
+# itself contain what it shows the guard catching.
+
+FOREIGN_HOST = "intranet." + "corp-internal" + ".zz"
+HOME_PATH = "/Us" + "ers/someone/project/x"
+LINUX_HOME_PATH = "/ho" + "me/someone/x"
+MOUNT_PATH = "/Vol" + "umes/Shared/x"
+WINDOWS_PATH = "C:" + "\\Users\\someone\\x"
+UNC_PATH = "\\\\" + "fileserver\\share"
+FOREIGN_TICKET = "QWX" + "-991"
+UNKNOWN_TAG = "Zzz-" + "Unknown"
+UNKNOWN_WORD = "Qwertz" + "uiop"
+UNKNOWN_CAMEL = "Qwertz" + "Uiop"
+TOOL = "runc" + "omposer"
+#: A host package metadata names: allowed in a lock file, not elsewhere.
+REGISTRY = next(iter(rules.DEPENDENCY_HOSTS))
+TAGS = "[Ta" + "gs]"
+
+
+def plant(tmp_path: Path, files: dict[str, str]) -> dict[str, tuple[Violation, ...]]:
+    """Write ``files`` into a fresh tree (not a git checkout: the directory
+    walk lists it) and scan it with this repository's vocabulary."""
+    root = tmp_path / "tree"
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return rules.scan_tree(root.resolve(), REPO)
+
+
+def tokens(found: dict[str, tuple[Violation, ...]], rule: str) -> set[tuple[str, int, str]]:
+    return {(violation.path, violation.line, violation.token) for violation in found[rule]}
+
+
+def test_hosts_without_a_scheme_are_caught_everywhere(tmp_path):
+    found = plant(tmp_path, {
+        "notes.md": f"Reach it at {FOREIGN_HOST}:8443 from the office.\n",
+        "deploy/config.yaml": f"url: https://{FOREIGN_HOST}/job/x\nbare: {FOREIGN_HOST}\n",
+        "tool.py": f'ENDPOINT = "{FOREIGN_HOST}"  # see also builds.{FOREIGN_HOST}\n',
+        "run.sh": f"curl -s {FOREIGN_HOST}/health\n",
+        "mail.txt": f"Write to ops@{FOREIGN_HOST}.\n",
+        "web.ts": f'const base = "{FOREIGN_HOST}";\n',
+    })
+    assert tokens(found, "host") >= {
+        ("notes.md", 1, FOREIGN_HOST),
+        ("deploy/config.yaml", 1, FOREIGN_HOST),
+        ("deploy/config.yaml", 2, FOREIGN_HOST),
+        ("tool.py", 1, FOREIGN_HOST),
+        ("tool.py", 1, "builds." + FOREIGN_HOST),
+        ("run.sh", 1, FOREIGN_HOST),
+        ("mail.txt", 1, FOREIGN_HOST),
+        ("web.ts", 1, FOREIGN_HOST),
     }
-    assert foreign == {"Warehouse", "Forklift", "Pallet"}
 
 
-
-# -- 3. tags wherever data spells them ---------------------------------------------
-
-_ROBOT_TAGS = re.compile(r"\[Tags\]((?:[ \t]+[^\s\\]+)+)")
-
-
-def tags_in_data(data: object) -> list[str]:
-    """`tags:` list entries and string `tag_filter:` values, at any depth."""
-    found: list[str] = []
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if key == "tags" and isinstance(value, (list, tuple)):
-                found.extend(str(tag) for tag in value)
-            elif key == "tag_filter" and isinstance(value, str):
-                found.append(value)
-            found.extend(tags_in_data(value))
-    elif isinstance(data, list):
-        for value in data:
-            found.extend(tags_in_data(value))
-    return found
+def test_host_look_alikes_are_not_hosts(tmp_path):
+    found = plant(tmp_path, {
+        "notes.md": (
+            "Point it at ci.shop.example:8443 or https://shop.example/ or localhost:8100.\n"
+            "Edit config.yaml and output.xml; import runcomposer.sdk.robot; version 1.2.3.\n"
+            "The item Shop.Checkout.Cards.T001 and `item.id` are no hosts; nor is 127.0.0.1.\n"
+            "Docs live at https://github.com/StochasticEntropy/runcomposer and pypi.org.\n"
+        ),
+        "tool.py": "value = self.store.get(run.id)  # run.id is code\n",
+        "ci.yml": "runs-on: ${{ matrix.os }}\n",
+    })
+    assert found["host"] == ()
 
 
-def tags_in_python(source: str) -> list[str]:
-    """String constants given as ``tags`` / ``tag_filter`` — dict entries and
-    keyword arguments — except the operator of a filter node (``op``)."""
-    import ast
-
-    found: list[str] = []
-
-    def strings(node: ast.AST) -> None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            found.append(node.value)
-        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            for element in node.elts:
-                strings(element)
-        elif isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values, strict=True):
-                if not (isinstance(key, ast.Constant) and key.value == "op"):
-                    strings(value)
-
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Dict):
-            for key, value in zip(node.keys, node.values, strict=True):
-                if isinstance(key, ast.Constant) and key.value in ("tags", "tag_filter"):
-                    strings(value)
-        elif isinstance(node, ast.keyword) and node.arg in ("tags", "tag_filter"):
-            strings(node.value)
-    return found
+def test_a_github_url_must_be_the_projects_own(tmp_path):
+    found = plant(tmp_path, {"README.md": "Fork of https://github.com/" + "someone-else/tool.\n"})
+    assert tokens(found, "host") == {("README.md", 1, "github.com/someone-else")}
 
 
-def spelled_tags(path: Path, text: str) -> list[str]:
-    import yaml
-
-    found = [tag for match in _ROBOT_TAGS.finditer(text) for tag in match.group(1).split()]
-    try:
-        if path.suffix == ".json":
-            found += tags_in_data(json.loads(text))
-        elif path.suffix in (".yaml", ".yml"):
-            for document in yaml.safe_load_all(text):
-                found += tags_in_data(document)
-        elif path.suffix == ".py":
-            found += tags_in_python(text)
-    except (ValueError, yaml.YAMLError, SyntaxError):
-        pass  # not data (a template, a deliberately broken fixture)
-    return found
+def test_private_addresses_are_caught_documentation_addresses_are_not(tmp_path):
+    private = "10.20." + "30.40"
+    found = plant(tmp_path, {"hosts.txt": f"good 192.0.2.10 and 127.0.0.1\nbad {private}\n"})
+    assert tokens(found, "host") == {("hosts.txt", 2, private)}
 
 
-def test_the_tag_scanners_find_tags_in_each_shape():
-    assert spelled_tags(Path("x.robot"), "    [Tags]    Cart    Smoke\n") == ["Cart", "Smoke"]
-    assert spelled_tags(Path("x.yaml"), "checks: [{id: a, tags: [Cart, Auth]}]\n") == ["Cart", "Auth"]
-    assert spelled_tags(Path("x.json"), '{"items": [{"id": "a", "tags": ["Payments"]}]}') == ["Payments"]
-    assert spelled_tags(Path("x.py"), (
-        "Item(id='a', tags=('Cart', 'Smoke'))\n"
-        "compose({'tag_filter': {'op': 'AND', 'items': ['Auth', {'not': 'Smoke'}]}})\n"
-    )) == ["Cart", "Smoke", "Auth", "Smoke"]
+def test_generated_files_are_read_for_hosts_and_paths_only(tmp_path):
+    """A bundle is minified code: bare dotted names there are identifiers.
+    What it says behind a scheme, and the paths it carries, still count."""
+    bundle = "src/runcomposer/ui_dist/assets/index.js"
+    found = plant(tmp_path, {
+        bundle: f'a.name=e.run;fetch("https://{FOREIGN_HOST}/x");p="{HOME_PATH}";t="{UNKNOWN_TAG}"\n',
+        "ui/package-lock.json": f'{{"resolved": "https://{REGISTRY}/x/-/x-1.0.0.tgz"}}\n',
+    })
+    assert tokens(found, "host") == {(bundle, 1, FOREIGN_HOST)}
+    assert tokens(found, "path") == {(bundle, 1, HOME_PATH)}
+    assert found["tag"] == () and found["prose-token"] == ()
 
 
-def test_tags_in_examples_tests_and_fixtures_are_of_the_example_world():
-    tags = demo_tags()
-    suspects: dict[str, set[str]] = {}
-    for path in tracked_text_files():
-        name = path.relative_to(REPO).as_posix()
-        if name in _NOT_EXAMPLE_DATA:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for tag in spelled_tags(path, text):
-            if pattern_is_of_the_demo_world(tag.strip(), tags) is False:
-                suspects.setdefault(name, set()).add(tag)
-    assert not suspects, (
-        "tags that are not made of the example world's words (DESIGN.md §12; invent new "
-        f"words deliberately via INVENTED_WORDS): { {k: sorted(v) for k, v in suspects.items()} }"
+def test_home_and_machine_paths_are_caught(tmp_path):
+    found = plant(tmp_path, {
+        "notes.md": f"Run it from {HOME_PATH} or {LINUX_HOME_PATH}.\n",
+        "job.groovy": f'sh "cp {MOUNT_PATH} ."\n',
+        "win.ps1": f"Copy-Item {WINDOWS_PATH}\nnet use {UNC_PATH}\n",
+    })
+    assert tokens(found, "path") == {
+        ("notes.md", 1, HOME_PATH),
+        ("notes.md", 1, LINUX_HOME_PATH),
+        ("job.groovy", 1, MOUNT_PATH),
+        ("win.ps1", 1, WINDOWS_PATH),
+        ("win.ps1", 2, UNC_PATH),
+    }
+
+
+def test_generic_paths_routes_and_placeholders_are_not_caught(tmp_path):
+    found = plant(tmp_path, {
+        "notes.md": (
+            "Scratch files go to /tmp/x, the shop lives in /srv/shop, the image works in /data.\n"
+            "Your checkout: /ho" "me/<user>/src or $HOME/src; the API: /api/runs/{run_id}.\n"
+        ),
+    })
+    assert found["path"] == ()
+
+
+def test_ticket_keys_must_be_of_the_example_world(tmp_path):
+    found = plant(tmp_path, {"CHANGES.md": f"Fixes {FOREIGN_TICKET}; see SHOP-1203, UTF-8 and ISO-8601.\n"})
+    assert tokens(found, "ticket-key") == {("CHANGES.md", 1, FOREIGN_TICKET)}
+
+
+def test_tags_are_caught_in_every_shape(tmp_path):
+    files = {
+        "suite.robot": (
+            "*** Settings ***\n"
+            f"Test Tags    Cart\n"
+            "\n*** Test Cases ***\nAdd A Thing\n"
+            f"    {TAGS}    Cart    Smoke\n"
+            f"    ...    {UNKNOWN_TAG}\n"
+        ),
+        "manifest.json": json.dumps({"items": [{"id": "a", "tags": ["Payments", UNKNOWN_TAG]}]}) + "\n",
+        "spec.yaml": f"selection:\n  tag_filter:\n    op: AND\n    items: [Payments, {{not: {UNKNOWN_TAG}}}]\n",
+        "test_x.py": (
+            f"Item(id='a', tags=('Cart', '{UNKNOWN_TAG}'))\nTAGS = frozenset({{'Smoke', '{UNKNOWN_TAG}'}})\n"
+            f"tags = []\ntags.append('{UNKNOWN_TAG}')\n"
+        ),
+        "history.csv": f"item,tags,duration_ms\nShop.Cart.T001,Cart;{UNKNOWN_TAG},10\n",
+        "guide.md": (
+            f"`Cart AND NOT {UNKNOWN_TAG}` selects little.\n"
+            f"Pick by prefix:{UNKNOWN_TAG} or regex:^{UNKNOWN_TAG}$.\n"
+            "```console\n"
+            f"$ {TOOL} compile '{UNKNOWN_TAG}' --config x.yaml\n"
+            f"$ {TOOL} run --runner demo {UNKNOWN_TAG}\n"
+            "```\n"
+        ),
+        "ui/e2e/pick.spec.ts": f'await page.getByRole("option", {{ name: "{UNKNOWN_TAG}" }}).click();\n',
+    }
+    found = tokens(plant(tmp_path, files), "tag")
+    assert found >= {
+        ("suite.robot", 7, UNKNOWN_TAG),
+        ("manifest.json", 1, UNKNOWN_TAG),
+        ("spec.yaml", 4, UNKNOWN_TAG),
+        ("test_x.py", 1, UNKNOWN_TAG),
+        ("test_x.py", 2, UNKNOWN_TAG),
+        ("test_x.py", 4, UNKNOWN_TAG),
+        ("history.csv", 2, UNKNOWN_TAG),
+        ("guide.md", 1, UNKNOWN_TAG),
+        ("guide.md", 2, "prefix:" + UNKNOWN_TAG),
+        ("guide.md", 2, f"regex:^{UNKNOWN_TAG}$"),
+        ("guide.md", 4, UNKNOWN_TAG),
+        ("guide.md", 5, UNKNOWN_TAG),
+        ("ui/e2e/pick.spec.ts", 1, UNKNOWN_TAG),
+    }, found
+    assert {token for _path, _line, token in found} <= {
+        UNKNOWN_TAG, "prefix:" + UNKNOWN_TAG, f"regex:^{UNKNOWN_TAG}$"
+    }
+
+
+def test_tags_of_the_vocabulary_and_derived_forms_pass(tmp_path):
+    found = plant(tmp_path, {
+        "suite.robot": f"*** Test Cases ***\nPay\n    {TAGS}    Payments-Cards    Sprint-15    RanOn-eu    SHOP-1207\n",
+        "guide.md": "`Payments AND NOT prefix:Quarantine-` and regex:^Cart(V2)?$ select a lot.\n",
+        "test_y.py": "Item(id='a', tags=['Checkout-20', 'smoke'])\nrouter = APIRouter(tags=['runs'])\n",
+    })
+    assert found["tag"] == ()
+
+
+def test_the_expression_scanner_reads_operands_not_prose():
+    """Operands of an upper-case AND/OR/NOT are tags; an English sentence
+    with a capitalised word near "OR" is not an expression."""
+    operands = [operand for operand, _offset in rules.expression_operands("`A AND B OR NOT (Cart)`")]
+    assert {"A", "B", "Cart"} <= set(operands)
+    assert rules.expression_operands("this and that, or nothing") == []
+    assert rules.expression_operands("An OR of negations is prose") == []
+
+
+def test_the_tag_vocabulary_has_one_source_of_truth():
+    """The demo corpus, the shipped examples' manifests and suites, and the
+    reviewed invented tags — nothing else."""
+    vocab = rules.vocabulary(REPO)
+    corpus = {tag.casefold() for tag in rules.corpus_tags(REPO)}
+    examples = {tag.casefold() for tag in rules.example_tags(REPO)}
+    invented = {tag.casefold() for tag in vocab.sections[rules.INVENTED_TAGS_HEADING]}
+    assert corpus <= vocab.tags and examples <= vocab.tags
+    assert vocab.tags == corpus | examples | invented
+
+
+def test_an_example_cannot_bring_in_a_tag_of_its_own(tmp_path):
+    """The shipped examples' tags join the vocabulary only when they are made
+    of words it already has — so a word nobody reviewed fails right where an
+    example spells it, instead of becoming vocabulary by being there."""
+    root = tmp_path / "tree"
+    for name in ("src/runcomposer/demo/corpus.json", "src/runcomposer/demo/taxonomy.yaml", rules.WORDS_FILE_NAME):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / name, root / name)
+    (root / "examples").mkdir()
+    (root / "examples/manifest.yaml").write_text(
+        f"items:\n  - id: a\n    tags: [Checkout-Express, {UNKNOWN_TAG}]\n", encoding="utf-8"
+    )
+    vocab = rules.vocabulary(root.resolve())
+    assert "checkout-express" in vocab.tags and UNKNOWN_TAG.casefold() not in vocab.tags
+    assert tokens(rules.scan_tree(root.resolve()), "tag") == {("examples/manifest.yaml", 3, UNKNOWN_TAG)}
+
+
+def test_unknown_prose_words_are_caught(tmp_path):
+    found = plant(tmp_path, {
+        "notes.md": f"We ship it with {UNKNOWN_WORD} every night.\n{UNKNOWN_CAMEL} starts the day.\n",
+        "tool.py": f'"""Talks to {UNKNOWN_WORD} over HTTP."""\n# Ask {UNKNOWN_WORD} first.\n',
+        "talk.vtt": f"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nThen {UNKNOWN_WORD} answers.\n",
+        "ui/e2e/x.spec.ts": f'test("hands the run to {UNKNOWN_WORD}", async () => {{}});\n',
+    })
+    assert tokens(found, "prose-token") == {
+        ("notes.md", 1, UNKNOWN_WORD),
+        ("notes.md", 2, UNKNOWN_CAMEL),
+        ("tool.py", 1, UNKNOWN_WORD),
+        ("tool.py", 2, UNKNOWN_WORD),
+        ("talk.vtt", 4, UNKNOWN_WORD),
+        ("ui/e2e/x.spec.ts", 1, UNKNOWN_WORD),
+    }
+
+
+def test_known_prose_words_pass(tmp_path):
+    """A sentence-initial ordinary word, a word of the reviewed list, a code
+    identifier and a word of the example world all pass; code and URLs are
+    not prose."""
+    found = plant(tmp_path, {
+        "notes.md": (
+            "Every night Jenkins runs the Checkout suite through RunnerBase.\n"
+            f"Inline `{UNKNOWN_WORD}` code is code, and so is https://shop.example/{UNKNOWN_WORD}.\n"
+            "```python\n"
+            f"{UNKNOWN_WORD} = 1\n"
+            "```\n"
+        ),
+        "tool.py": f"{UNKNOWN_WORD.lower()} = '{UNKNOWN_WORD}'  # a lower-case comment\n",
+    })
+    assert found["prose-token"] == ()
+
+
+def test_a_prose_failure_says_which_file_to_edit():
+    message = rules.report([Violation("notes.md", 1, "prose-token", UNKNOWN_WORD)])
+    assert f"notes.md:1: [prose-token] '{UNKNOWN_WORD}'" in message
+    assert rules.WORDS_FILE_NAME in message and "review" in message
+
+
+def test_process_words_are_caught_in_commit_messages_with_their_carve_outs():
+    word, other = "review" + "er", "another" + " agent"
+    message = f"Address the {word} notes from round 2\n\nIt was judge" f"d so; {other} agreed.\n"
+    found = rules.scan_message("abc1234", message)
+    assert {(f.line, f.token) for f in found if f.rule == "process-word"} == {
+        (1, word), (1, "round 2"), (3, "judged"), (3, other),
+    }
+    fine = rules.scan_message(
+        "abc1234",
+        "Send a user agent header; the run agent of examples/remote-agent reports back\n",
+    )
+    assert [f for f in fine if f.rule == "process-word"] == []
+
+
+def test_a_commit_message_is_held_to_the_tree_rules():
+    message = f"Point the job at {FOREIGN_HOST}, fix {FOREIGN_TICKET}, read {HOME_PATH}\n\nTalk to {UNKNOWN_WORD}.\n"
+    found = {(f.rule, f.token) for f in rules.scan_message("abc1234", message)}
+    assert found >= {
+        ("host", FOREIGN_HOST), ("ticket-key", FOREIGN_TICKET), ("path", HOME_PATH),
+        ("prose-token", UNKNOWN_WORD),
+    }
+
+
+def commit_check():
+    """``ci/check_commit_messages.py``, loaded from its path (``ci`` is no package)."""
+    import importlib.util
+
+    script = REPO / "ci" / "check_commit_messages.py"
+    if not script.is_file():
+        pytest.skip("ci/ is not part of this tree")
+    spec = importlib.util.spec_from_file_location("check_commit_messages", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_commit_check_reads_a_range_and_leaves_trailers_alone(tmp_path):
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    check = commit_check()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=shop", "-c", "user.email=ci@shop.example", "-c", "commit.gpgsign=false", *args],
+            cwd=repo, check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "Add the cart page")
+    git("commit", "-q", "--allow-empty", "-m", (
+        f"Point the job at {FOREIGN_HOST}\n\nIt now talks to {UNKNOWN_WORD}.\n\n"
+        f"Co-Authored-By: {UNKNOWN_CAMEL} <bot@{FOREIGN_HOST}>\n"
+    ))
+    found = {(f.line, f.rule, f.token) for f in check.check("HEAD~1..HEAD", repo)}
+    assert found == {(1, "host", FOREIGN_HOST), (3, "prose-token", UNKNOWN_WORD)}
+    assert check.main(["check", "HEAD~1..HEAD"], repo) == 1
+    assert check.main(["check", "HEAD~1"], repo) == 0  # the first commit alone passes
+
+
+def test_the_commit_check_skips_outside_a_checkout(tmp_path, capsys):
+    check = commit_check()
+    assert check.main(["check"], tmp_path) == 0
+    assert "skipped — not a git checkout" in capsys.readouterr().out
+
+
+def test_the_walk_outside_a_checkout_skips_caches_installs_and_ignored_files(tmp_path):
+    root = tmp_path / "unpacked"
+    files = {
+        "src/a.py": "x\n", "node_modules/x/index.js": "x\n", ".venv/lib/y.py": "x\n",
+        "pkg.egg-info/PKG-INFO": "x\n", "docs/b.vtt": "x\n", "Dockerfile": "x\n",
+        ".gitignore": "# local state\n*.tmp\nstate/\nconfig.yaml\n!examples/config.yaml\n",
+        "notes.tmp": "x\n", "examples/state/run.json": "x\n",
+        "config.yaml": "x\n", "examples/config.yaml": "x\n", "ui/.gitignore": "out/\n", "ui/out/b.js": "x\n",
+    }
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text, encoding="utf-8")
+    assert rules.list_files(root.resolve()) == (
+        ".gitignore", "Dockerfile", "docs/b.vtt", "examples/config.yaml", "src/a.py", "ui/.gitignore",
     )
 
 
-def test_a_foreign_tag_in_a_suite_would_be_caught():
-    tags = demo_tags()
-    suite = "*** Test Cases ***\nPick\n    [Tags]    Cart    " + "Fork" + "lift-Pallet\n"
-    foreign = [t for t in spelled_tags(Path("x.robot"), suite) if pattern_is_of_the_demo_world(t, tags) is False]
-    assert foreign == ["Forklift-Pallet"]
-
-
-# -- 4. hosts ---------------------------------------------------------------------------
-
-#: This project's own public infrastructure, and the public standards and
-#: services its pages and files link to. Nobody's example data.
-PROJECT_HOSTS = {
-    "github.com", "users.noreply.github.com", "stochasticentropy.github.io", "img.shields.io",
-    "pypi.org", "json-schema.org", "www.w3.org", "fonts.googleapis.com", "fonts.gstatic.com",
-}
-#: The only GitHub account this repository links to: its own.
-PROJECT_OWNER = "StochasticEntropy"
-_URL_HOST = re.compile(r"https?://([A-Za-z0-9.-]+)(/[A-Za-z0-9_.-]+)?")
-_MAIL_HOST = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
-
-
-def host_is_of_the_example_world(host: str, path: str = "") -> bool:
-    host = host.lower().rstrip(".")
-    if host in ("localhost", "host.docker.internal") or re.fullmatch(r"[0-9.]+", host):
-        return True
-    if host.endswith((".example", ".invalid", ".test", ".localhost")) or host in ("example.com", "example.org", "example.net"):
-        return True
-    if host == "github.com" and path:
-        return path.strip("/").split("/")[0] == PROJECT_OWNER
-    return host in PROJECT_HOSTS
-
-
-def hosts_in(text: str) -> list[tuple[str, str]]:
-    found = [(m.group(1), m.group(2) or "") for m in _URL_HOST.finditer(text)]
-    found += [(m.group(1), "") for m in _MAIL_HOST.finditer(text)]
-    return found
-
-
-def test_the_host_classifier():
-    assert host_is_of_the_example_world("ci.shop.example")
-    assert host_is_of_the_example_world("guest.example.invalid")
-    assert host_is_of_the_example_world("127.0.0.1") and host_is_of_the_example_world("localhost")
-    assert host_is_of_the_example_world("github.com", f"/{PROJECT_OWNER}/runcomposer")
-    assert not host_is_of_the_example_world("github.com", "/somebody-else/tool")
-    assert not host_is_of_the_example_world("ci." + "warehouse-co" + ".com")
-    assert hosts_in("see https://ci.shop.example/job/7 or ops@chat.shop.example") == [
-        ("ci.shop.example", "/job"), ("chat.shop.example", "")
-    ]
-
-
-def test_every_host_in_the_tracked_tree_is_of_the_example_world():
-    suspects: dict[str, set[str]] = {}
-    for path in tracked_text_files():
-        name = path.relative_to(REPO).as_posix()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for host, url_path in hosts_in(text):
-            if not host_is_of_the_example_world(host, url_path):
-                suspects.setdefault(name, set()).add(host + url_path)
-    assert not suspects, (
-        "hosts outside the example world — use a reserved name (*.example, *.invalid): "
-        f"{ {k: sorted(v) for k, v in suspects.items()} }"
-    )
-
-
-# -- 5. ticket keys -------------------------------------------------------------------
-
-_TICKET_KEY = re.compile(r"(?<![\w-])([A-Z][A-Z0-9]{1,9})-[0-9]+(?![\w])")
-#: Standards whose names are spelled like a ticket key.
-STANDARD_PREFIXES = {"ISO", "UTF", "SHA", "RFC", "PEP", "CVE"}
-
-
-def test_every_ticket_key_shaped_token_is_of_the_example_world():
-    vocabulary = demo_vocabulary()
-    suspects: dict[str, set[str]] = {}
-    for path in tracked_text_files():
-        name = path.relative_to(REPO).as_posix()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        for match in _TICKET_KEY.finditer(text):
-            prefix = match.group(1)
-            if prefix in STANDARD_PREFIXES or of_this_world(prefix, vocabulary):
-                continue
-            suspects.setdefault(name, set()).add(match.group(0))
-    assert not suspects, (
-        f"ticket-key-shaped tokens outside the example world (SHOP-1200 is of it): "
-        f"{ {k: sorted(v) for k, v in suspects.items()} }"
-    )
+def test_the_guard_runs_without_a_git_checkout(tmp_path):
+    """In an sdist or a container there is no ``.git``: the walk lists the
+    same files the checkout tracks, and the scan works on them."""
+    if not (REPO / ".git").exists():
+        pytest.skip("not a git checkout: this run already is the walk")
+    copy = tmp_path / "copy"
+    for name in ("src/runcomposer/demo/corpus.json", "src/runcomposer/demo/taxonomy.yaml", rules.WORDS_FILE_NAME, "README.md"):
+        (copy / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / name, copy / name)
+    listed = rules.list_files(copy.resolve())
+    assert "README.md" in listed and rules.WORDS_FILE_NAME in listed
+    assert rules.scan_tree(copy.resolve(), REPO)["host"] == ()

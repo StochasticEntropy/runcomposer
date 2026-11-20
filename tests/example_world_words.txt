@@ -1,0 +1,538 @@
+# The reviewed vocabulary of this repository (DESIGN.md §12).
+#
+# tests/test_example_world.py checks every capitalised word in prose (and
+# every CamelCase, ALL-CAPS or hyphenated-capitalised word anywhere in it)
+# against three sources: identifiers of the code, words of the example
+# world's demo corpus, and this file. There is no system dictionary: this
+# file IS the vocabulary, so a new word fails the guard until it is added
+# here, under the heading it belongs to.
+#
+# Adding a word is a statement, and needs review:
+#   * no names of people — this list is people-free (an eponymous technical
+#     term is listed as the term, with a comment);
+#   * no names of companies, products, systems, hosts or teams from outside
+#     this project — a third-party tool is listed only when the project
+#     integrates with it by design or its pages target it, with a comment;
+#   * example data stays inside the web-shop example world.
+#
+# Format: "## heading" opens a section; every other non-blank line is one
+# word (matching is case-insensitive); "# ..." is a comment. Words nothing
+# spells any more are removed (the guard says which).
+
+## Invented tags
+# Tags the tests invent beyond the demo corpus and the shipped examples.
+Loose
+No-Such-Tag
+Returns
+
+## Example world
+# Names of the web shop: its suites, items, and the wording of their tests.
+Accounts
+Basics
+Basket
+Book
+Booked
+Customer
+Home
+Mail
+Masked
+Opt
+Orders
+Pdf
+Points
+Promo
+Receipts
+Secure
+Shops
+Subtotal
+Tracking
+Warehouse
+oops
+
+## Ordinary English words
+# Capitalised mid-sentence: in test names, titles, labels and emphasis.
+Above
+Adopter
+Air
+Anywhere
+Are
+Asks
+Authentication
+Badged
+Basic
+Batch
+Branch
+Bundles
+Byte
+Can
+Cannot
+Chunking
+Clears
+Configuration
+Configure
+Confirmation
+Consumer
+Conversion
+Cron
+Days
+Decreases
+Deletion
+Deliberately
+Desktop
+Different
+Distinct
+Distributed
+Do
+Documentation
+Drives
+Edit
+English
+Enter
+Entity
+Eventually
+Executor
+Expires
+Fan
+Finishes
+Five
+Flakiness
+Forward
+Fourteen
+Framework
+Frameworks
+Free
+Front
+Gap
+Half
+Holds
+Honoured
+Hooks
+How
+Include
+Increases
+Installation
+Issue
+Issues
+Laptop
+Lingua
+Loudly
+Maintainer
+Making
+Moment
+No
+Offered
+Override
+Paginates
+Passes
+Past
+Persisted
+Pipeline
+Play
+Point
+Poller
+Preselected
+Reaches
+Reduces
+Repeats
+Repository
+Returned
+Scheduler
+Schema
+Schemas
+Screenshot
+Sends
+Servers
+Several
+Site
+Software
+Space
+Stack
+Success
+Such
+Sums
+Survives
+Sync
+System
+Team
+Thirty
+Threshold
+Toggle
+Toolchain
+Tracker
+Transfer
+Tuesday
+Walks
+Was
+Web
+Webhooks
+Wheel
+Whole
+
+## Technical terms, standards and formats
+AA                # WCAG conformance level
+ALL-CAPS
+ASCII
+ASGI
+CA                # certificate authority
+CamelCase
+CAPS
+CDATA
+CDN
+CLIs
+Crockford         # Crockford base32, the ULID alphabet (an eponymous term)
+CSRF
+Ctrl
+DIVISION          # Unicode character names in a test of hostile names
+DNS
+DOCTYPE
+DOM
+DoS
+DOT
+DTD
+EOF
+EPERM
+FULLWIDTH
+HA                # high availability
+IPv4
+IPv6
+kB
+KiB
+LEADER
+Makefile
+Markdown
+MAY               # RFC 2119 keywords
+MB
+MINOR             # semantic versioning
+Morgan            # De Morgan's laws (an eponymous term)
+MUST
+NOTs
+NUL
+OIDC
+PNG
+POSIX
+POSTed
+PRAGMA            # SQL keywords
+PRs
+Publishing        # Trusted Publishing, the package index's token-free upload
+RETURNING
+RFC
+SAVEPOINT
+Sec               # the Sec-Fetch-Site request header
+SHALL
+SIM115            # a linter rule code
+SLASH
+SOLIDUS
+SQL
+SSRF
+TLS
+testserver        # the default host name of the HTTP test client
+TOML
+Trusted
+ULID
+UNC
+UNSTABLE          # a CI build result
+UPSERT
+URLs
+UTF
+VCS
+WAL               # write-ahead logging
+WCAG
+WebP
+WebVTT
+XSS
+
+## Third-party tools, platforms and services the project integrates with or targets
+buildWithParameters           # Jenkins REST API names the Jenkins runner calls
+Docker            # the container image and the CI examples
+GitHub            # the project's repository and workflows
+JavaScript        # the UI's language
+JUnit             # the junit-xml result parser
+LinkedIn          # a link-preview target of the homepage's social card
+Linux             # platforms the test matrix runs on
+macOS
+ParametersDefinitionProperty
+Playwright        # the UI's browser tests
+PyPI              # the package index the project is published to
+relativePath
+SVAR              # the UI component library of an earlier UI stack (decision log)
+TypeScript        # the UI's language
+Vite              # the UI's build tool
+Windows
+
+## Project identity
+StochasticEntropy # the project's account (repository, package author, licence holder)
+ADOPTING          # the repository's documents, named without their suffix (ADOPTING.md, DESIGN.md)
+DESIGN
+
+## Placeholders and labels of the documentation
+D1                # a dispatch id in a test
+DataError         # Robot Framework's exception for broken suites
+MyClass           # placeholder class names in examples
+MyRunner
+P1                # the phases of DESIGN.md §14
+P4
+ParsedVerdicts    # the verdict list a parser returns (DESIGN.md §5)
+RanOn             # the executed-tag prefix of a pool runner (RanOn-{partition})
+SpecBuilder       # the compose step's name in the phase plan of DESIGN.md §14
+V2
+VAR
+
+## License text (verbatim)
+AN
+ARISING
+AUTHORS
+BE
+BUT
+CLAIM
+CONTRACT
+CONTRIBUTING
+COPYRIGHT
+DAMAGES
+DEALINGS
+FITNESS
+HOLDERS
+IMPLIED
+INCLUDING
+LIABILITY
+LIABLE
+LICENSE
+MERCHANTABILITY
+MIT
+NONINFRINGEMENT
+OTHERWISE
+PARTICULAR
+PURPOSE
+TORT
+WARRANTIES
+WARRANTY
+WHETHER
+
+## German (the homepage, captions and UI translation)
+Abfrage
+Abhängigkeit
+Abkürzung
+Abschluss
+Abschnitt
+Abschnitte
+Abschnitten
+Absicht
+Agent
+Agenten
+Ansicht
+Anspruch
+Antwort
+Arbeit
+Arbeitsschritt
+Architektur
+Argumentation
+Art
+Artefakten
+Ausführen
+Ausführung
+Ausgabe
+Ausprobieren
+Auswahl
+Auswahlen
+Baum
+Befehl
+Befehle
+Begründung
+Beispiel
+Beispiele
+Beispielwelt
+Beleg
+Bereich
+Bereiche
+Berichte
+Bewegung
+Blick
+Datei
+Daten
+Datenbank
+Dauer
+Deklarationen
+Deutsch
+Die
+Dienstag
+Differenz
+Dinge
+Dokument
+Ebene
+Eigenheit
+Ein
+Eingangstür
+Einlesen
+Einrichtung
+Einstellung
+Einstieg
+Eintreffen
+Englisch
+Entscheidung
+Entscheidungsprotokoll
+Entwurf
+Erfährt
+Ergebnis
+Ergebnisnamen
+Ergebnisse
+Ergebnissen
+Exportieren
+Fehlschlägen
+Felder
+Filtersprache
+Fingerabdruck
+Formen
+Funktionen
+Führt
+Ganze
+Gegenseite
+Geht
+Geschichte
+Grenze
+Grenzen
+Grund
+Größe
+Hälften
+Historie
+Idee
+Inhalt
+Karte
+Katalog
+Katalogs
+Kern
+Kernabschnitte
+Kernstück
+Klick
+Knopf
+Kollege
+Kollegen
+Kommando
+Kommandozeile
+Konfiguration
+Konfigurationsdatei
+Kontrolle
+Korpora
+Korpus
+Korrektur
+Korrelation
+Korrelations
+Labor
+Lauf
+Laufs
+Läufe
+Leiste
+Letzter
+Liste
+Lizenz
+Magie
+Mal
+Maschine
+Maschinen
+Meldung
+Mensch
+Minute
+Minuten
+Mitkopieren
+Mitte
+Morgen
+Mund
+Mustern
+Nachmittag
+Nacht
+Nachvollziehbarkeit
+Nachweis
+Namen
+Namensnormalisierung
+Netz
+Netzlaufwerk
+Netzwerkroute
+NICHT
+Normalisierung
+Notausgang
+Oberfläche
+Ort
+Partitionen
+Passwort
+Persistenz
+Platz
+Produkt
+Projekt
+Protokoll
+Prozess
+Punkt
+Quarantäne
+Quelle
+Raum
+Referenz
+Referenznummer
+Regel
+Regeln
+Robots            # "Robots output.xml": the German genitive of Robot (Framework)
+Rot
+Rückweg
+Sache
+Schleife
+Schnittmenge
+Schnittstelle
+Schreiber
+Schritt
+Schritte
+Schulter
+Schwierige
+Seite
+Sekunden
+Skript
+Sonderfall
+Spezifische
+Sprecher
+Standardbibliothek
+Stelle
+Steuert
+Tabelle
+Tafeln
+Taxonomie
+Teil
+Teile
+Teilen
+Teilmenge
+Testauswahl
+Testkommando
+Testkorpus
+Testmaschinen
+Testmenge
+Testnamen
+Tippen
+Transportweg
+Transportwege
+Umgebungsvariablen
+Vermutung
+Versionen
+Versuchszähler
+Vertrag
+Verzeichnis
+Vokabular
+Voreinstellung
+Vorlage
+Vorschau
+Warnung
+Weg
+Wege
+Welt
+Werkzeug
+Wochen
+Wort
+Worten
+Zahl
+Zeile
+Zeit
+Zucker
+Zug
+Zugangsdaten
+Zugriff
+Zusammenführen
+Zusammenstellen
+Zuschnitt
+Zustand
+Zustellung
+Zustellungen
+Übergabe
+Übrige

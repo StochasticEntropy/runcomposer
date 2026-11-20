@@ -14,6 +14,11 @@ the vocabulary the core is allowed.
 3. **The toolkits are connector code too.** They are built from
    ``runcomposer.sdk`` alone: what they export could have been written
    outside this repository.
+
+Every scanner below takes the directory it scans and walks it at any depth
+(a module in a sub-package is checked like any other); the guards call them
+on the installed package, and the self-tests at the end call them on a
+planted tree with a violation in a nested sub-package.
 """
 
 from __future__ import annotations
@@ -59,12 +64,29 @@ FORBIDDEN_TOKENS = [
 ALLOWED_THIRD_PARTY = {"jsonschema", "yaml"}
 
 
-def core_files() -> list[Path]:
-    return sorted(CORE_DIR.glob("*.py"))
+# -- scanners: each takes the directory it scans --------------------------------------
 
 
-def plugin_files() -> list[Path]:
-    return sorted(PLUGINS_DIR.glob("*.py"))
+def python_files(directory: Path) -> list[Path]:
+    """Every module under ``directory``, at any depth."""
+    return sorted(path for path in directory.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def core_files(core_dir: Path = CORE_DIR) -> list[Path]:
+    return python_files(core_dir)
+
+
+def plugin_files(plugins_dir: Path = PLUGINS_DIR) -> list[Path]:
+    return python_files(plugins_dir)
+
+
+def toolkit_files(sdk_dir: Path = SDK_DIR) -> list[Path]:
+    """The SDK's toolkits: every module under ``sdk/`` but the facade itself."""
+    return [path for path in python_files(sdk_dir) if path != sdk_dir / "__init__.py"]
+
+
+def shown(path: Path, base: Path) -> str:
+    return path.relative_to(base).as_posix()
 
 
 def imports_of(source: str, package: list[str]) -> list[tuple[str, int]]:
@@ -84,8 +106,10 @@ def imports_of(source: str, package: list[str]) -> list[tuple[str, int]]:
     return sorted(found, key=lambda entry: entry[1])
 
 
-def imported_modules(path: Path) -> list[tuple[str, int]]:
-    package = ["runcomposer", *path.relative_to(PACKAGE_DIR).parts[:-1]]
+def imported_modules(path: Path, package_dir: Path = PACKAGE_DIR) -> list[tuple[str, int]]:
+    """The imports of the module at ``path``, which lives in the
+    ``runcomposer`` package rooted at ``package_dir``."""
+    package = ["runcomposer", *path.relative_to(package_dir).parts[:-1]]
     return imports_of(path.read_text(encoding="utf-8"), package)
 
 
@@ -104,6 +128,92 @@ def outside_the_sdk(imports: list[tuple[str, int]], allowed_prefixes: tuple[str,
     return offending
 
 
+def forbidden_vocabulary(core_dir: Path) -> list[str]:
+    """``file:line: token`` for every forbidden token in core source."""
+    found = []
+    for path in core_files(core_dir):
+        for number, line in enumerate(path.read_text(encoding="utf-8").lower().splitlines(), 1):
+            found.extend(
+                f"core/{shown(path, core_dir)}:{number}: {token!r}"
+                for token in FORBIDDEN_TOKENS if token in line
+            )
+    return found
+
+
+def core_import_violations(core_dir: Path, package_dir: Path) -> list[str]:
+    stdlib = set(sys.stdlib_module_names)
+    found = []
+    for path in core_files(core_dir):
+        for name, line in imported_modules(path, package_dir):
+            top = name.split(".")[0]
+            if top in stdlib or top in ALLOWED_THIRD_PARTY:
+                continue
+            if name != "runcomposer.core" and not name.startswith("runcomposer.core."):
+                found.append(f"core/{shown(path, core_dir)}:{line}: imports {name!r}")
+    return found
+
+
+def id_normalization(core_dir: Path) -> list[str]:
+    needles = ("item_id.split", "item_id.partition", "id.lower(", "id.upper(", "id.casefold")
+    return [
+        f"core/{shown(path, core_dir)}: {needle!r}"
+        for path in core_files(core_dir)
+        for needle in needles if needle in path.read_text(encoding="utf-8")
+    ]
+
+
+def runtime_checkable_protocols(core_dir: Path) -> list[str]:
+    return [
+        f"core/{shown(path, core_dir)}"
+        for path in core_files(core_dir) if "runtime_checkable" in path.read_text(encoding="utf-8")
+    ]
+
+
+def plugin_imports_beyond_the_sdk(plugins_dir: Path, package_dir: Path) -> dict[str, list[str]]:
+    offending = {}
+    for path in plugin_files(plugins_dir):
+        name_here = shown(path, plugins_dir)
+        imports = [
+            (name, line)
+            for name, line in imported_modules(path, package_dir)
+            if name not in SIBLING_IMPORTS.get(name_here, set())
+        ]
+        if found := outside_the_sdk(imports, ()):
+            offending[name_here] = found
+    return offending
+
+
+def layers_named(files: list[Path], base: Path, label: str, layers: tuple[str, ...]) -> list[str]:
+    return [
+        f"{label}/{shown(path, base)}: names {layer!r}"
+        for path in files
+        for layer in layers if layer in path.read_text(encoding="utf-8")
+    ]
+
+
+def toolkit_violations(sdk_dir: Path, package_dir: Path) -> list[str]:
+    found = []
+    for path in toolkit_files(sdk_dir):
+        names = {name for name, _line in imported_modules(path, package_dir) if name.startswith("runcomposer")}
+        if not names <= {"runcomposer.sdk"}:
+            found.append(f"sdk/{shown(path, sdk_dir)} imports {sorted(names - {'runcomposer.sdk'})}")
+    found += layers_named(
+        toolkit_files(sdk_dir), sdk_dir, "sdk",
+        ("runcomposer.core", "runcomposer.app", "runcomposer.http", "runcomposer.plugins"),
+    )
+    return found
+
+
+def plugin_imports_from_layers_above(package_dir: Path) -> list[str]:
+    found = []
+    for layer in ("app", "http", "cli", "core"):
+        for path in python_files(package_dir / layer):
+            for name, line in imported_modules(path, package_dir):
+                if name.startswith(("runcomposer.plugins", "runcomposer.testing")):
+                    found.append(f"{layer}/{shown(path, package_dir / layer)}:{line} imports {name!r}")
+    return found
+
+
 # -- rule 1: the core is the bottom ------------------------------------------------
 
 
@@ -117,23 +227,15 @@ def test_core_has_files():
 
 
 def test_no_forbidden_vocabulary_in_core():
-    for path in core_files():
-        text = path.read_text(encoding="utf-8").lower()
-        for token in FORBIDDEN_TOKENS:
-            assert token not in text, f"core/{path.name} contains forbidden token {token!r}"
+    found = forbidden_vocabulary(CORE_DIR)
+    assert not found, "framework or upper-layer vocabulary in the core:\n" + "\n".join(found)
 
 
 def test_core_imports_only_stdlib_allowed_deps_and_itself():
-    stdlib = set(sys.stdlib_module_names)
-    for path in core_files():
-        for name, line in imported_modules(path):
-            top = name.split(".")[0]
-            if top in stdlib or top in ALLOWED_THIRD_PARTY:
-                continue
-            assert name == "runcomposer.core" or name.startswith("runcomposer.core."), (
-                f"core/{path.name}:{line} imports {name!r} — core may only import stdlib, "
-                f"{sorted(ALLOWED_THIRD_PARTY)}, or runcomposer.core"
-            )
+    found = core_import_violations(CORE_DIR, PACKAGE_DIR)
+    assert not found, (
+        f"core may only import stdlib, {sorted(ALLOWED_THIRD_PARTY)}, or runcomposer.core:\n" + "\n".join(found)
+    )
 
 
 def test_core_never_splits_or_normalizes_item_ids():
@@ -141,31 +243,24 @@ def test_core_never_splits_or_normalizes_item_ids():
     partition, or lower/upper call on an id would be normalization creeping in.
     Tag matching (filter.py) is the one place case folding is a documented
     part of the grammar."""
-    for path in core_files():
-        text = path.read_text(encoding="utf-8")
-        for needle in ("item_id.split", "item_id.partition", "id.lower(", "id.upper(", "id.casefold"):
-            assert needle not in text, f"core/{path.name} contains {needle!r}"
+    found = id_normalization(CORE_DIR)
+    assert not found, "item ids split or case-folded in the core:\n" + "\n".join(found)
 
 
 def test_core_protocols_are_not_runtime_checkable():
     """A ``runtime_checkable`` protocol invites ``isinstance`` checks that
     only look at member *names* — a conformance claim nothing verifies.
     Conformance is a matter of behaviour, checked by tests."""
-    for path in core_files():
-        assert "runtime_checkable" not in path.read_text(encoding="utf-8"), path.name
+    found = runtime_checkable_protocols(CORE_DIR)
+    assert not found, "runtime_checkable protocols in:\n" + "\n".join(found)
 
 
 def test_the_layers_above_do_not_import_plugins():
     """Plugins are loaded by name (entry points, ``module:``), never imported
     by the application layer or a transport — otherwise a "reference" plugin
     is quietly a dependency of the tool."""
-    for layer in ("app", "http", "cli", "core"):
-        for path in sorted((PACKAGE_DIR / layer).rglob("*.py")):
-            for name, line in imported_modules(path):
-                assert not name.startswith(("runcomposer.plugins", "runcomposer.testing")), (
-                    f"{layer}/{path.name}:{line} imports {name!r} — plugins are loaded by name, "
-                    "and the conformance kit is for tests"
-                )
+    found = plugin_imports_from_layers_above(PACKAGE_DIR)
+    assert not found, "plugins are loaded by name, and the conformance kit is for tests:\n" + "\n".join(found)
 
 
 # -- rule 2: a connector sees the SDK and nothing else ------------------------------
@@ -183,7 +278,8 @@ def test_there_are_plugins_to_check():
 
 #: Sibling imports among the reference plugins that are allowed: none. What
 #: two plugins share — and what the worker-side half of a runner needs —
-#: lives in the SDK's toolkits, where a connector can use it too.
+#: lives in the SDK's toolkits, where a connector can use it too. Keys are
+#: paths relative to ``plugins/``.
 SIBLING_IMPORTS: dict[str, set[str]] = {}
 
 
@@ -192,15 +288,7 @@ def test_plugins_import_only_the_sdk_from_runcomposer():
     ``runcomposer.sdk`` or one of its toolkits — including imports made
     inside a function, which is where a worker process would hide one — and
     plugins do not import each other."""
-    offending = {}
-    for path in plugin_files():
-        imports = [
-            (name, line)
-            for name, line in imported_modules(path)
-            if name not in SIBLING_IMPORTS.get(path.name, set())
-        ]
-        if found := outside_the_sdk(imports, ()):
-            offending[path.name] = found
+    offending = plugin_imports_beyond_the_sdk(PLUGINS_DIR, PACKAGE_DIR)
     assert not offending, (
         "reference plugins must import only runcomposer.sdk from the runcomposer package "
         f"(sibling exceptions: SIBLING_IMPORTS): {offending}"
@@ -218,10 +306,9 @@ def test_plugins_do_not_name_the_layers_they_may_not_import():
     """The AST check above sees ``import`` statements. A dynamic import by
     string would slip past it, so the inner layers are not *named* in plugin
     source at all."""
-    for path in plugin_files():
-        text = path.read_text(encoding="utf-8")
-        for layer in ("runcomposer.core", "runcomposer.app", "runcomposer.http", "runcomposer.cli"):
-            assert layer not in text, f"plugins/{path.name} names {layer!r}"
+    layers = ("runcomposer.core", "runcomposer.app", "runcomposer.http", "runcomposer.cli")
+    found = layers_named(plugin_files(), PLUGINS_DIR, "plugins", layers)
+    assert not found, "\n".join(found)
 
 
 def test_the_import_scanner_sees_function_level_and_relative_imports():
@@ -261,10 +348,17 @@ def test_the_import_scanner_sees_function_level_and_relative_imports():
 
 def test_the_demo_imports_only_the_sdk():
     """`runcomposer demo` drives the tool the way an embedder would — so it
-    is written against the embedding surface, and proves that one too."""
-    imports = imported_modules(DEMO_DIR / "demo.py")
-    assert outside_the_sdk(imports, ()) == []
-    assert {name for name, _ in imports if name.startswith("runcomposer")} == {"runcomposer.sdk"}
+    is written against the embedding surface, and proves that one too. Every
+    module of the demo package is held to it."""
+    demo_modules = python_files(DEMO_DIR)
+    assert DEMO_DIR / "demo.py" in demo_modules
+    for path in demo_modules:
+        imports = imported_modules(path)
+        assert outside_the_sdk(imports, ()) == [], shown(path, DEMO_DIR)
+        assert {name for name, _ in imports if name.startswith("runcomposer")} <= {"runcomposer.sdk"}
+    assert {
+        name for name, _ in imported_modules(DEMO_DIR / "demo.py") if name.startswith("runcomposer")
+    } == {"runcomposer.sdk"}
 
 
 def test_the_sdk_is_built_from_the_core_at_import_time():
@@ -285,24 +379,16 @@ def test_the_sdk_is_built_from_the_core_at_import_time():
 # -- rule 3: the toolkits are built from the SDK alone --------------------------------
 
 
-def toolkit_files() -> list[Path]:
-    return sorted(path for path in SDK_DIR.glob("*.py") if path.name != "__init__.py")
-
-
 def test_the_sdk_has_exactly_its_two_toolkits():
-    assert [path.name for path in toolkit_files()] == ["jenkins.py", "robot.py"]
+    assert [shown(path, SDK_DIR) for path in toolkit_files()] == ["jenkins.py", "robot.py"]
 
 
 def test_the_toolkits_import_only_the_sdk_from_runcomposer():
     """A toolkit is what a reference runner is made of, offered to every
     connector — so it is held to the connector's rule: of runcomposer it
     imports ``runcomposer.sdk`` and nothing below or beside it."""
-    for path in toolkit_files():
-        names = {name for name, _line in imported_modules(path) if name.startswith("runcomposer")}
-        assert names <= {"runcomposer.sdk"}, f"sdk/{path.name} imports {sorted(names)}"
-        text = path.read_text(encoding="utf-8")
-        for layer in ("runcomposer.core", "runcomposer.app", "runcomposer.http", "runcomposer.plugins"):
-            assert layer not in text, f"sdk/{path.name} names {layer!r}"
+    found = toolkit_violations(SDK_DIR, PACKAGE_DIR)
+    assert not found, "\n".join(found)
 
 
 def test_the_robot_toolkit_imports_robot_framework_only_inside_functions():
@@ -333,3 +419,81 @@ def test_the_reference_runners_are_built_on_the_toolkits():
     assert not {"multiprocessing", "robot", "robot.api"} & pool
     # … and no HTTP of its own in the Jenkins runner.
     assert not {"urllib.request", "http.cookiejar", "ssl", "base64"} & jenkins
+
+
+# -- self-tests: a violation in a nested sub-package is seen ----------------------------
+
+
+def planted_package(tmp_path: Path) -> Path:
+    """A ``runcomposer`` package with one violation of every rule, each in a
+    module two levels below the directory its scanner is pointed at."""
+    package = tmp_path / "runcomposer"
+    framework = "jen" + "kins"  # assembled: this file stays free of the planted word's context
+    files = {
+        "core/__init__.py": "",
+        "core/model.py": "import json\n",
+        "core/deep/er/leak.py": (
+            "from __future__ import annotations\n"
+            "import runcomposer.app.service\n"
+            f"WORD = '{framework}'\n"
+            "def f(item_id):\n"
+            "    return item_id.split('.')\n"
+            "from typing import runtime_checkable\n"
+        ),
+        "plugins/__init__.py": "",
+        "plugins/ok.py": "from runcomposer.sdk import Verdict\n",
+        "plugins/vendor/inner/sneaky.py": (
+            "from runcomposer.sdk import Verdict\n"
+            "def worker():\n"
+            "    from runcomposer.core.model import Item\n"
+            "TARGET = 'runcomposer.app'\n"
+        ),
+        "sdk/__init__.py": "",
+        "sdk/robot.py": "from runcomposer.sdk import Verdict\n",
+        "sdk/kits/more/tool.py": "from ....app import service\n",
+        "app/__init__.py": "",
+        "app/sub/mod/uses.py": "from runcomposer.plugins import demo_runner\n",
+    }
+    for name, text in files.items():
+        path = package / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return package
+
+
+def test_the_scanners_see_a_violation_in_a_nested_sub_package(tmp_path):
+    package = planted_package(tmp_path)
+    core, plugins, sdk = package / "core", package / "plugins", package / "sdk"
+    assert "core/deep/er/leak.py:3: 'jenkins'" in forbidden_vocabulary(core)
+    assert core_import_violations(core, package) == ["core/deep/er/leak.py:2: imports 'runcomposer.app.service'"]
+    assert id_normalization(core) == ["core/deep/er/leak.py: 'item_id.split'"]
+    assert runtime_checkable_protocols(core) == ["core/deep/er/leak.py"]
+    assert plugin_imports_beyond_the_sdk(plugins, package) == {
+        "vendor/inner/sneaky.py": ["line 3: runcomposer.core.model"]
+    }
+    assert layers_named(plugin_files(plugins), plugins, "plugins", ("runcomposer.app",)) == [
+        "plugins/vendor/inner/sneaky.py: names 'runcomposer.app'"
+    ]
+    assert [shown(path, sdk) for path in toolkit_files(sdk)] == ["kits/more/tool.py", "robot.py"]
+    assert toolkit_violations(sdk, package) == ["sdk/kits/more/tool.py imports ['runcomposer.app']"]
+    assert plugin_imports_from_layers_above(package) == [
+        "app/sub/mod/uses.py:1 imports 'runcomposer.plugins'"
+    ]
+
+
+def test_the_scanners_pass_a_clean_nested_tree(tmp_path):
+    package = tmp_path / "runcomposer"
+    for name, text in {
+        "core/nested/clean.py": "from runcomposer.core.model import Item\nimport json\n",
+        "core/model.py": "",
+        "plugins/nested/clean.py": "from runcomposer.sdk import Verdict\nfrom runcomposer.sdk.robot import supervise\n",
+        "sdk/robot.py": "from runcomposer.sdk import Verdict\n",
+        "app/nested/clean.py": "from runcomposer.core.model import Item\n",
+    }.items():
+        (package / name).parent.mkdir(parents=True, exist_ok=True)
+        (package / name).write_text(text, encoding="utf-8")
+    assert forbidden_vocabulary(package / "core") == []
+    assert core_import_violations(package / "core", package) == []
+    assert plugin_imports_beyond_the_sdk(package / "plugins", package) == {}
+    assert toolkit_violations(package / "sdk", package) == []
+    assert plugin_imports_from_layers_above(package) == []

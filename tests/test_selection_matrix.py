@@ -17,8 +17,8 @@ from runcomposer.core.selection import Selection, SelectionError
 def build_corpus() -> list[Item]:
     items = []
     n = 0
-    for area in ("Alpha", "Beta", "Gamma", "delta"):  # one lowercase area on purpose
-        for group in ("One", "Two", "Three"):
+    for area in ("Payments", "Checkout", "Cart", "catalog"):  # one lowercase area on purpose
+        for group in ("Cards", "Wallets", "Refunds"):
             for i in range(1, 5):
                 tags = [area, f"{area}-{group}", f"Sprint-{i}"]
                 if n % 2 == 0:
@@ -28,7 +28,7 @@ def build_corpus() -> list[Item]:
                 if n % 7 == 0:
                     tags.append("Quarantine-Flaky")
                 if n % 11 == 0:
-                    tags.append("MIXED-case-TAG")
+                    tags.append("AUTH-sso")
                 items.append(Item(id=f"{area}.{group}.T{i:03d}", tags=tuple(tags)))
                 n += 1
     assert len(items) == 48
@@ -58,28 +58,28 @@ def oracle(node) -> set[str]:
 
 
 FILTER_MATRIX = [
-    "Alpha",
-    "alpha",  # case-insensitive literal
-    "MIXED-CASE-tag",
+    "Payments",
+    "payments",  # case-insensitive literal
+    "auth-SSO",
     "Smoke",
-    "prefix:Alpha-",
+    "prefix:Payments-",
     "prefix:Sprint-",
     "regex:^Sprint-[12]$",
-    "regex:Two",
+    "regex:Wallets",
     {"not": "Quarantine-Flaky"},
-    {"op": "AND", "items": ["Alpha", "Smoke"]},
-    {"op": "OR", "items": ["Alpha", "Beta"]},
+    {"op": "AND", "items": ["Payments", "Smoke"]},
+    {"op": "OR", "items": ["Payments", "Checkout"]},
     {"op": "AND", "items": ["Regression", {"not": "prefix:Quarantine-"}]},
-    {"op": "OR", "items": [{"op": "AND", "items": ["Gamma", "Smoke"]}, "prefix:delta-"]},
+    {"op": "OR", "items": [{"op": "AND", "items": ["Cart", "Smoke"]}, "prefix:catalog-"]},
     {
         "op": "AND",
         "items": [
-            {"op": "OR", "items": ["Alpha", "Beta", "Gamma"]},
+            {"op": "OR", "items": ["Payments", "Checkout", "Cart"]},
             {"not": {"op": "OR", "items": ["Sprint-3", "Sprint-4"]}},
             "Regression",
         ],
     },
-    {"not": {"not": "Alpha"}},
+    {"not": {"not": "Payments"}},
 ]
 
 

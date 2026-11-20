@@ -711,7 +711,7 @@ BROKEN = [
     pytest.param(lambda tmp: check_source(SourceHidingDuplicates()), "[source.duplicate-ids]", id="source-hides-duplicates"),
     pytest.param(lambda tmp: check_source(SourceWithMovingSnapshot()), "[source.snapshot-stable]", id="source-snapshot-moves"),
     pytest.param(lambda tmp: check_source(SourceWithoutBase()), "[source.contract]", id="source-missing-members"),
-    pytest.param(lambda tmp: check_source(_Source(), native_names={"CART-1": CART[0]}), "[source.resolve-native]",
+    pytest.param(lambda tmp: check_source(_Source(), native_names={"cart-1": CART[0]}), "[source.resolve-native]",
                  id="source-native-name-unresolved"),
     pytest.param(lambda tmp: check_parser(ParserThatRaisesKeyError(), _parser_bundle(tmp),
                                           bad_bundles=[write(tmp / "bad.txt", "garbage")]),
