@@ -9,6 +9,29 @@ export type Theme = (typeof AVAILABLE_THEMES)[number];
 export const LOCALE_KEY = "runcomposer.locale";
 export const THEME_KEY = "runcomposer.theme";
 
+/**
+ * The language to speak: what the viewer chose, else the first language their
+ * browser asks for that there are texts in, else the deployment's default.
+ */
+export function chooseLocale(
+  available: readonly string[],
+  chosen: string | null,
+  browser: readonly string[],
+  deployment: string | null | undefined,
+): string {
+  const known = (candidate: string | null | undefined) => (candidate && available.includes(candidate) ? candidate : null);
+  // "de-CH" asks for German: the texts are per language, not per region.
+  const fromBrowser = browser.map((tag) => known(tag.toLowerCase().split("-")[0])).find((code) => code !== null);
+  return known(chosen) ?? fromBrowser ?? known(deployment) ?? "en";
+}
+
+/** The browser's languages, most wanted first; empty where the browser does not say. */
+export function browserLanguages(): string[] {
+  if (typeof navigator === "undefined") return [];
+  const list = navigator.languages?.length ? [...navigator.languages] : [navigator.language];
+  return list.filter((tag): tag is string => typeof tag === "string" && tag !== "");
+}
+
 export function readPref<T extends string>(key: string, allowed: readonly T[]): T | null {
   try {
     const value = window.localStorage.getItem(key);

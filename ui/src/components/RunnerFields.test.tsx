@@ -63,7 +63,7 @@ describe("the parameter form", () => {
         specs={SPECS}
         values={initialValues(SPECS)}
         onChange={() => undefined}
-        problems={{ retries: "Enter a whole number." }}
+        problems={{ retries: { text: "Enter a whole number." } }}
       />,
     );
     const retries = screen.getByRole("textbox", { name: "Retries" });
@@ -103,10 +103,22 @@ describe("text and mapping parameters", () => {
   });
 
   it("says which form a value must have", () => {
+    // The message is a sentence; the pattern is shown once, as the form the field expects — not inside the message.
+    expect(problemTexts(translator.t, { build: "pattern" })).toEqual({ build: { text: "This does not have the form the field expects." } });
     const patterned = [spec("build", "string", { label: "Build number", pattern: "\\d{4}\\.\\d{1,2}" })];
-    expect(problemTexts(translator.t, patterned, { build: "pattern" })).toEqual({
-      build: "This does not match the required form: \\d{4}\\.\\d{1,2}",
-    });
+    renderWithI18n(
+      <ParameterForm
+        specs={patterned}
+        values={{ build: "x" }}
+        onChange={() => undefined}
+        problems={{ build: { text: "This value was not accepted.", foreign: "parameter 'build': 'x' does not match the pattern" } }}
+      />,
+    );
+    expect(document.querySelector(".pattern-hint code")!.textContent).toBe("\\d{4}\\.\\d{1,2}");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("This value was not accepted.");
+    // The server's own words are marked as text the UI did not write.
+    expect(alert.querySelector('[lang="en"]')!.textContent).toContain("does not match the pattern");
   });
 });
 

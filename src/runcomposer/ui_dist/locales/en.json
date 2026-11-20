@@ -205,7 +205,13 @@
     },
     "negateAll": "NOT: negate the whole filter",
     "pickForGroup": "Pick tags for this group…",
-    "addGroupInGroup": "Add a group inside this group"
+    "addGroupInGroup": "Add a group inside this group",
+    "applied": "In effect now:",
+    "appliedNone": "no filter",
+    "ruleCount": {
+      "one": "{count} rule in this group.",
+      "other": "{count} rules in this group — they scroll."
+    }
   },
   "picker": {
     "title": "Pick tags",
@@ -316,10 +322,13 @@
     "countChanged": "The catalog changed since the preview: {count} planned, {expected} were shown.",
     "blocked": {
       "updating": "The preview is updating…",
-      "error": "The preview is out of date — fix the error first.",
+      "error": "The filter or an option has an error — fix it first.",
       "empty": "Nothing is selected yet.",
       "nothing": "No item is selected.",
-      "runner": "Choose a runner."
+      "runner": "Choose a runner.",
+      "textDraft": "The filter text is not applied yet — apply it or go back to the builder.",
+      "network": "The server cannot be reached — check the connection and retry the preview.",
+      "failed": "The preview could not be updated — retry it."
     },
     "reset": "Start over",
     "reloadCatalog": "Reload catalog",
@@ -354,7 +363,9 @@
     "presetApplied": "Preset “{label}” applied: selection, runner, options, title and labels.",
     "presetWithoutRunner": "Preset “{label}” applied. Its runner {runner} is not available here; choose another.",
     "usePreset": "Use",
-    "usePresetNamed": "Use the preset {label}"
+    "usePresetNamed": "Use the preset {label}",
+    "quickFilters": "Quick filters",
+    "presetsOfDeployment": "Presets of this deployment"
   },
   "runner": {
     "label": "Runner",
@@ -370,7 +381,7 @@
       "required": "This is required.",
       "integer": "Enter a whole number.",
       "choice": "Choose one of the listed values.",
-      "pattern": "This does not match the required form: {pattern}",
+      "pattern": "This does not have the form the field expects.",
       "duplicate": "Every row needs a name, and each name only once.",
       "line": "This must be a single line."
     },
@@ -383,7 +394,8 @@
     "mappingKeyOf": "{label}, name {number}",
     "mappingValueOf": "{label}, value {number}",
     "mappingRemoveOf": "Remove row {number} of {label}",
-    "mappingAdd": "Add a row"
+    "mappingAdd": "Add a row",
+    "expectedForm": "Expected form:"
   },
   "labels": {
     "label": "Labels",
@@ -464,7 +476,7 @@
     "actions": "Actions for this run",
     "cancel": "Cancel run",
     "cancelTitle": "Cancel this run?",
-    "cancelExplain": "Items that have not started are not run. What already finished keeps its result.",
+    "cancelExplain": "The runner is asked to stop. Results that were already delivered are kept. What was only reported live does not count as a result: those items are shown as missing, with their last live status beside them.",
     "cancelConfirm": "Cancel the run",
     "cancelForce": "Close it now, without waiting for the runner to stop",
     "cancelRequested": "Cancellation was requested — waiting for the runner to stop.",
@@ -545,7 +557,8 @@
       "shard": "Shard",
       "attempt": "Attempt",
       "duration": "Duration",
-      "message": "Message"
+      "message": "Message",
+      "files": "Files"
     },
     "selection": {
       "title": "Selection",
@@ -606,7 +619,12 @@
     },
     "lastLiveRunning": "was running when the run stopped",
     "artifactDirectory": "A directory of files; its files are linked from the reports above.",
-    "rerunOf": "Re-run of"
+    "rerunOf": "Re-run of",
+    "passedShards": {
+      "one": "{count} shard without a failure",
+      "other": "{count} shards without a failure"
+    },
+    "fileOf": "{file} of the shard that ran {item}"
   },
   "rerun": {
     "titleAll": "Run again",
@@ -716,5 +734,86 @@
     "show": "Show the plan",
     "hide": "Hide the plan",
     "fixOptions": "Fix the options above to see the plan."
+  },
+  "saved": {
+    "title": "Saved selections",
+    "where": "Saved selections are kept in this browser only: nobody else sees them, and another browser or device does not have them. Selections for everybody are the deployment's presets (ui.presets in its configuration).",
+    "name": "Name",
+    "save": "Save selection",
+    "replace": "Replace the saved one",
+    "whatIsSaved": "Saved with it: the runner, its options, the title, the labels and the items you unticked. The filter:",
+    "nothingToSave": "There is no filter yet — build one first, then save it here.",
+    "failed": "This browser did not store the selection — its storage is switched off or full.",
+    "list": "In this browser",
+    "empty": "Nothing is saved in this browser yet.",
+    "newName": "New name for {name}",
+    "rename": "Rename",
+    "nameTaken": "Another saved selection already has this name.",
+    "deleteAsk": "Delete “{name}”?",
+    "delete": "Delete",
+    "keep": "Keep",
+    "useNamed": "Use the saved selection {name}",
+    "renameNamed": "Rename the saved selection {name}",
+    "deleteNamed": "Delete the saved selection {name}",
+    "applied": "Loaded the saved selection “{name}”.",
+    "open": "Save selection…",
+    "inThisBrowser": "Saved in this browser"
+  },
+  "foreign": {
+    "hint": "In the runner's or the server's own words — not translated."
+  },
+  "builtin": {
+    "runner": {
+      "demo": {
+        "title": "Demo (simulated)",
+        "description": "Simulates an execution: no test is run, verdicts are derived from a seed."
+      },
+      "command": {
+        "title": "Command",
+        "description": "Runs a configured command per shard on this machine."
+      },
+      "robot-pool": {
+        "title": "Robot Framework (local pool)",
+        "description": "Runs Robot Framework on this machine in worker processes."
+      },
+      "jenkins": {
+        "title": "Jenkins",
+        "description_callback": "Triggers the configured Jenkins job; the results come back by callback.",
+        "description_poll": "Triggers the configured Jenkins job; the results are fetched by polling the build."
+      }
+    },
+    "param": {
+      "demo": {
+        "seed": {
+          "label": "Seed",
+          "help": "Same seed, same simulated verdicts; change it to see results flip."
+        }
+      },
+      "robot-pool": {
+        "partitions": {
+          "label": "Partitions",
+          "help_each": "Run the selection once per chosen partition.",
+          "help_split": "Distribute the selection over the chosen partitions (every test runs once)."
+        },
+        "allow_drift": {
+          "label": "Allow drift",
+          "help": "If the corpus changed since composing, run what still exists instead of refusing."
+        }
+      }
+    },
+    "health": {
+      "demo": {
+        "ok": "simulated — always available"
+      },
+      "command": {
+        "ok": "command configured"
+      },
+      "robot-pool": {
+        "ok": "Robot Framework {version}"
+      },
+      "jenkins": {
+        "ok": "Jenkins {version}"
+      }
+    }
   }
 }

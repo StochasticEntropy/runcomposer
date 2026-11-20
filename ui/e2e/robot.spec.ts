@@ -169,15 +169,55 @@ test("a run in lanes: the plan and the results per group as well as per shard", 
 
   await expect(status(page)).toContainText(msg("runState.COMPLETE"), { timeout: 90_000 });
   // The mapping reached the dispatch as declared.
-  const detail = await api.get<{ groups: { group: string; declared_shards: number; delivered_shards: number; count: number }[]; dispatches: { parameters: Record<string, unknown> }[]; artifacts: { kind: string; name: string }[] }>(`/runs/${runId}`);
+  const detail = await api.get<{
+    groups: { group: string; declared_shards: number; delivered_shards: number; count: number }[];
+    shard_groups: Record<string, string>;
+    verdicts: { item_id: string; status: string; shard: string }[];
+    dispatches: { parameters: Record<string, unknown> }[];
+    artifacts: { kind: string; name: string }[];
+  }>(`/runs/${runId}`);
   expect(detail.dispatches[0]!.parameters.variables).toEqual({ locale: "de" });
   for (const group of detail.groups) {
     const card = page.locator(`.group-card[data-group="${group.group}"]`);
     await expect(card).toContainText(msg("run.groupShards", { done: group.declared_shards, total: group.declared_shards }));
     await expect(card.locator(".shard-card")).toHaveCount(group.declared_shards);
-    // Each shard keeps its own log, inside its group.
-    await expect(card.locator(".shard-card").first().getByRole("link", { name: /^log\.html/ })).toBeVisible();
   }
+
+  // One test of this selection fails. What failed is where the eye lands:
+  // its group is the first and open, with the failing shard first in it…
+  const failed = detail.verdicts.filter((verdict) => verdict.status === "FAIL");
+  expect(failed).toHaveLength(1);
+  const troubled = detail.shard_groups[failed[0]!.shard]!;
+  const passed = detail.groups.find((group) => group.group !== troubled)!;
+  await expect(groups.first()).toHaveAttribute("data-group", troubled);
+  const bad = page.locator(`.group-card[data-group="${troubled}"]`);
+  await expect(bad.locator("details.group-shards")).toHaveJSProperty("open", true);
+  await expect(bad.locator(".shard-card").first()).toHaveAttribute("data-shard", failed[0]!.shard);
+  // Each shard keeps its own log, inside its group.
+  await expect(bad.locator(".shard-card").first().getByRole("link", { name: /^log\.html/ })).toBeVisible();
+  // …and the group that passed is one line: folded, not gone.
+  const good = page.locator(`.group-card[data-group="${passed.group}"]`);
+  await expect(good).toContainText(msg("completion.PASS"));
+  await expect(good.locator("details.group-shards")).toHaveJSProperty("open", false);
+  await expect(good.locator(".shard-card").first()).toBeHidden();
+  await good.locator("details.group-shards > summary").click();
+  await expect(good.locator(".shard-card").first().getByRole("link", { name: /^log\.html/ })).toBeVisible();
+
+  // The failed item is the first row, and the row itself leads to the log and the report of its shard.
+  const first = page.locator(".verdict-table tbody tr[data-item-id]").first();
+  await expect(first).toHaveAttribute("data-status", "FAIL");
+  await expect(first).toHaveAttribute("data-item-id", failed[0]!.item_id);
+  const log = first.getByRole("link", { name: msg("run.fileOf", { file: "log", item: failed[0]!.item_id }) });
+  await expect(log).toHaveText("log");
+  await expect(log).toHaveAttribute("href", new RegExp(`/${failed[0]!.shard}/log\\.html$`));
+  await expect(first.getByRole("link", { name: msg("run.fileOf", { file: "report", item: failed[0]!.item_id }) })).toHaveAttribute("href", new RegExp(`/${failed[0]!.shard}/report\\.html$`));
+  const opened = await page.request.get(new URL((await log.getAttribute("href"))!, page.url()).href);
+  expect(opened.status()).toBe(200);
+  expect(await opened.text()).toContain("Stage Variable Reaches The Test");
+  // A row of another shard links to that shard's files, not to these.
+  const last = page.locator('.verdict-table tbody tr[data-item-id][data-status="PASS"]').first();
+  const lastShard = (await last.locator(".col-shard").innerText()).trim();
+  await expect(last.locator(".col-files a").first()).toHaveAttribute("href", new RegExp(`/${lastShard}/log\\.html$`));
   await expect(page.locator(".verdict-table .live-dot")).toHaveCount(0);
   await expect(page.locator('.verdict-table tbody tr[data-status="RUNNING"]')).toHaveCount(0);
 

@@ -40,9 +40,10 @@ test("the form is rendered from the runner's declared parameters, and its values
   const build = form.getByRole("textbox", { name: /^Build number/ });
   await build.fill("build 11");
   await runButton(page, 3).click();
-  await expect(form.locator('[data-param="build"]').getByRole("alert")).toHaveText(
-    msg("runner.problem.pattern", { pattern: "\\d{4}\\.\\d{1,2}" }),
-  );
+  // A sentence says what is wrong; the form itself stands under the field, once, as it is written.
+  await expect(form.locator('[data-param="build"]').getByRole("alert")).toHaveText(msg("runner.problem.pattern"));
+  await expect(form.locator('[data-param="build"] .pattern-hint')).toHaveText(`${msg("runner.expectedForm")} \\d{4}\\.\\d{1,2}`);
+  expect(await form.locator('[data-param="build"]').innerText()).not.toContain("\\\\");
   await expect(build).toBeFocused();
   expect(await api.runs()).toHaveLength(0);
   await build.fill("2026.11");
@@ -189,6 +190,13 @@ test("watch a run progress live, then cancel it", async ({ page, open, api }) =>
 
   await page.getByRole("button", { name: msg("run.cancel") }).click();
   const confirm = page.getByRole("dialog", { name: msg("run.cancelTitle") });
+  // The dialog says what will be true afterwards — every sentence of it is checked below, on this very run:
+  // delivered results are kept; what was only reported live is no result, and shows as missing with its last live status.
+  await expect(confirm.locator("p").first()).toHaveText(msg("run.cancelExplain"));
+  await expect(confirm).not.toContainText("keeps its result");
+  const before = await api.get<{ verdicts: { status: string; live: boolean }[] }>(`/runs/${runId}`);
+  expect(before.verdicts.filter((row) => row.live && row.status !== "RUNNING").length).toBeGreaterThan(0);
+  expect(before.verdicts.filter((row) => !row.live)).toHaveLength(0);
   await confirm.getByRole("button", { name: msg("run.cancelConfirm") }).click();
   await expect(confirm).toBeHidden();
   await expect(status(page)).toContainText(msg("runState.CANCELLED"));
@@ -243,6 +251,14 @@ test("results are failures first, filterable, and a message opens in full", asyn
   await expect(status(page)).toContainText(msg("completion.FAIL"));
 
   const rows = page.locator(".verdict-table tbody tr[data-item-id]");
+  // The columns are as wide as what they hold: a badge is narrow, the item has the room — and stays on one line.
+  const columns = Object.fromEntries(
+    await page.locator(".verdict-table thead th").evaluateAll((cells) => cells.map((cell) => [cell.className, cell.getBoundingClientRect().width] as const)),
+  ) as Record<string, number>;
+  expect(columns["col-status"]).toBeLessThan(150);
+  expect(columns["col-item"]).toBeGreaterThan(2.5 * columns["col-status"]!);
+  const item = rows.first().locator(".col-item .clamp");
+  expect(await item.evaluate((element) => element.getClientRects().length)).toBe(1);
   // Every failure comes before the first row that is not one.
   const statuses = await rows.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-status")));
   expect(statuses.slice(0, failed).every((value) => value === "FAIL" || value === "ERROR")).toBe(true);
@@ -264,6 +280,8 @@ test("results are failures first, filterable, and a message opens in full", asyn
   await rows.first().locator(".message-btn").click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator(".message-full")).toContainText("simulated failure");
+  // A test's message is data — shown as written, and not marked as anybody's wording.
+  await expect(dialog.locator(".foreign")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 

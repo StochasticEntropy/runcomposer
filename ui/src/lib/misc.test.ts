@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { absoluteTime, elapsedMs, formatDuration, naturalCompare, parseLabel, relativeTime, sumCounts } from "./format.ts";
 import { createTranslator } from "./i18n.ts";
+import { chooseLocale } from "./prefs.ts";
 import { composeHref, formatHash, parseHash, runHref, runsHref } from "./router.ts";
 
 describe("router", () => {
@@ -93,5 +94,24 @@ describe("translator", () => {
     expect(has("verdict.PASS")).toBe(true);
     expect(has("verdict.NOT_A_STATUS")).toBe(false);
     expect(t("hello")).toBe("Hello {name}");
+  });
+});
+
+describe("the language to start in", () => {
+  const available = ["en", "de"];
+
+  it("is the viewer's stored choice before anything else", () => {
+    expect(chooseLocale(available, "en", ["de-DE"], "de")).toBe("en");
+  });
+
+  it("follows the browser when nothing is stored — the language, whatever the region", () => {
+    expect(chooseLocale(available, null, ["de-CH", "en-US"], "en")).toBe("de");
+    expect(chooseLocale(available, null, ["fr-FR", "de"], "en")).toBe("de");
+  });
+
+  it("falls back to the deployment's default, then to English", () => {
+    expect(chooseLocale(available, null, ["fr-FR"], "de")).toBe("de");
+    expect(chooseLocale(available, null, [], undefined)).toBe("en");
+    expect(chooseLocale(available, "xx", ["fr"], "yy")).toBe("en");
   });
 });

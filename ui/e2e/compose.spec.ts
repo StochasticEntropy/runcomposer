@@ -1,7 +1,12 @@
 // Composing: the filter builder, the picker, and a preview that can be
 // trusted — it is the answer to the filter on screen, or it says it is not.
 
+import type { Page } from "@playwright/test";
+
 import { addRule, currentRunId, expect, expectPreview, msg, runButton, test } from "./fixtures.ts";
+
+/** The filter the address bar carries. */
+const filterOf = (page: Page) => new URLSearchParams(new URL(page.url()).hash.split("?")[1] ?? "").get("f");
 
 interface Compiled {
   count: number;
@@ -28,6 +33,51 @@ test("the landing state says what is there and offers a way in", async ({ page, 
   await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: msg("filter.everything") }) })).toBeVisible();
   const everything = await api.post<Compiled>("/selection/compile", { tag_filter: { not: "regex:^$" }, limit: 0 });
   expect(everything.count).toBe(60);
+});
+
+test("everything is written * — as a rule, as text, in the link and as the title of the run", async ({ page, open, api }) => {
+  await open();
+  await page.getByRole("button", { name: msg("compose.landing.all", { count: 60 }) }).click();
+  await expectPreview(page, 60, 60);
+
+  // One plain rule that says what it is: not a negation, not an error, nothing to negate.
+  const rule = page.locator(".expr .chip");
+  await expect(rule).toHaveCount(1);
+  await expect(rule).toHaveAttribute("data-pattern", "*");
+  await expect(rule).not.toHaveClass(/is-negated|is-invalid/);
+  await expect(rule).toContainText(msg("filter.everything"));
+  await expect(rule.locator("[aria-pressed]")).toHaveCount(0);
+  // The way "everything" travels to the server shows nowhere on the page or in the link.
+  await expect(page.getByTestId("filter-text")).toHaveText("*");
+  await expect(page).toHaveURL(/#\/compose\?f=(\*|%2A)$/);
+  await expect(page.locator(".compose")).not.toContainText("regex:^$");
+  expect(decodeURIComponent(page.url())).not.toContain("regex");
+  const title = page.getByRole("textbox", { name: msg("compose.title") });
+  await expect(title).toHaveAttribute("placeholder", msg("filter.everything"));
+
+  // As text it is `*`, and `*` typed is everything again.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  const area = page.getByRole("textbox", { name: msg("filter.textLabel") });
+  await expect(area).toHaveValue("*");
+  await area.fill("Payments");
+  await area.press("Enter");
+  await expectPreview(page, 17, 60);
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  await area.fill("*");
+  await area.press("Enter");
+  await expectPreview(page, 60, 60);
+  await expect(rule).toHaveAttribute("data-pattern", "*");
+
+  // The link opens as the same selection, and the run it starts is called what the rule says.
+  await page.reload();
+  await expectPreview(page, 60, 60);
+  await expect(rule).toHaveAttribute("data-pattern", "*");
+  await runButton(page, 60).click();
+  const runId = await currentRunId(page);
+  await expect(page.getByRole("heading", { level: 1, name: msg("filter.everything") })).toBeVisible();
+  const stored = await api.get<{ title: string; planned_count: number }>(`/runs/${runId}`);
+  expect(stored.title).toBe(msg("filter.everything"));
+  expect(stored.planned_count).toBe(60);
 });
 
 test("build a filter: picker with counts, a group, NOT and a raw pattern — kept in the URL", async ({ page, open, api }) => {
@@ -195,7 +245,9 @@ test("when the server cannot be reached the preview says so, keeps nothing runna
   await expect(alert).toContainText(msg("error.code.network"));
   // The 17 rows of the last answer are still shown — as old, and not runnable.
   await expect(page.locator(".preview-scroll")).toHaveClass(/is-stale/);
-  await expect(page.getByTestId("run-summary")).toHaveText(msg("compose.blocked.error"));
+  // The run bar says what is true: the server is out of reach — there is no error of the viewer's to fix.
+  await expect(page.getByTestId("run-summary")).toHaveText(msg("compose.blocked.network"));
+  await expect(page.getByTestId("run-summary")).not.toHaveText(msg("compose.blocked.error"));
   await expect(page.getByRole("button", { name: msg("compose.run", { count: 0 }) })).toBeDisabled();
 
   await page.unroute("**/api/v1/selection/compile");
@@ -391,4 +443,225 @@ test("a link whose filter cannot be read says so instead of guessing", async ({ 
   await open("#/compose?f=" + encodeURIComponent("Payments AND ("));
   await expect(page.getByText(msg("compose.unreadableLink"))).toBeVisible();
   await expect(page.getByText(msg("compose.landing.title"))).toBeVisible();
+});
+
+test("text that is typed and not applied never outlives the selection it was typed for", async ({ page, open }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  const area = page.getByRole("textbox", { name: msg("filter.textLabel") });
+
+  // Another link opened while a draft is open: the draft is gone, the builder shows the link.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  await area.fill("Payments AND Smoke");
+  await page.evaluate(() => {
+    window.location.hash = "#/compose?f=Checkout";
+  });
+  await expectPreview(page, 13, 60);
+  await expect(area).toHaveCount(0);
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Checkout" }) })).toBeVisible();
+  // Opening the text again shows the selection of the link, not what was typed before.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  await expect(area).toHaveValue("Checkout");
+
+  // Back while a draft is open: the same — the draft belonged to the step that was left.
+  await area.fill("Checkout AND Auth");
+  await page.goBack();
+  await expectPreview(page, 17, 60);
+  await expect(area).toHaveCount(0);
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Payments" }) })).toBeVisible();
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Checkout" }) })).toHaveCount(0);
+});
+
+test("while typed text differs from the filter in effect, nothing can be run, planned or exported", async ({ page, open, api }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  const bar = page.getByRole("group", { name: msg("compose.runBar") });
+  const actions = [msg("compose.plan"), msg("compose.export"), msg("compose.run", { count: 17 })].map((name) => bar.getByRole("button", { name, exact: true }));
+  for (const action of actions) await expect(action).toBeEnabled();
+
+  // Opening the text editor changes nothing yet: the text IS the filter.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  const area = page.getByRole("textbox", { name: msg("filter.textLabel") });
+  for (const action of actions) await expect(action).toBeEnabled();
+
+  // Typed and not applied: the screen says which filter is in effect, and every action is off.
+  await area.fill("Payments AND Smoke");
+  await expect(page.getByTestId("applied-filter")).toContainText(msg("filter.applied"));
+  await expect(page.getByTestId("applied-filter").locator("code")).toHaveText("Payments");
+  await expect(page.getByTestId("run-summary")).toHaveText(msg("compose.blocked.textDraft"));
+  for (const action of actions) await expect(action).toBeDisabled();
+  // Enter in the form does not start a run either.
+  await page.getByRole("textbox", { name: msg("compose.title") }).press("Enter");
+  await expect(page).toHaveURL(/#\/compose/);
+  expect(await api.runs()).toHaveLength(0);
+
+  // Text that is no expression: still off, with the mistake explained — and the filter in effect unchanged.
+  await area.fill("Payments AND (");
+  await area.press("Enter");
+  await expect(page.locator(".expr-text").getByRole("alert")).toBeVisible();
+  await expect(page.getByTestId("applied-filter").locator("code")).toHaveText("Payments");
+  for (const action of actions) await expect(action).toBeDisabled();
+  await expectPreview(page, 17, 60);
+
+  // Applied: the text is the filter, and the actions are back — for the new selection.
+  await area.fill("Payments AND Smoke");
+  await area.press("Enter");
+  await expectPreview(page, 4, 60);
+  await expect(runButton(page, 4)).toBeEnabled();
+  await expect(bar.getByRole("button", { name: msg("compose.export"), exact: true })).toBeEnabled();
+
+  // Cancelled: what was typed is dropped, and the filter in effect can be run as before.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  await area.fill("Checkout");
+  await expect(runButton(page, 4)).toBeDisabled();
+  await page.locator(".expr-text").getByRole("button", { name: msg("action.cancel") }).click();
+  await expect(runButton(page, 4)).toBeEnabled();
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke");
+});
+
+test("a step in the history that arrives while the page still digests the one before is never written over", async ({ page, open }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  const steps = ["Payments AND Smoke", "Payments AND Smoke AND Sprint-12", "Payments AND Smoke AND Sprint-12 AND Regression"];
+  for (const [index, tag] of ["Smoke", "Sprint-12", "Regression"].entries()) {
+    await addRule(page, tag);
+    await expect(page.getByTestId("filter-text")).toHaveText(steps[index]!);
+    await expect.poll(() => filterOf(page)).toBe(steps[index]);
+  }
+
+  // The exact collision: Back lands, the page takes the step in — and before
+  // it has rendered it, the address moves again (here: a link is followed).
+  // What the page then holds comes from an address that is no longer the
+  // current one, and must not be written into the current one.
+  // (A listener added now runs after the page's own: the page has taken the
+  // step in, and has not yet rendered what it made of it.)
+  await page.evaluate((landing) => {
+    const onStep = () => {
+      // Only the step back itself: the event of the edit before may still be on its way.
+      if (new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("f") !== landing) return;
+      window.removeEventListener("hashchange", onStep);
+      window.location.hash = "#/compose?f=Checkout";
+    };
+    window.addEventListener("hashchange", onStep);
+  }, steps[1]!);
+  await page.goBack();
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Checkout" }) })).toBeVisible();
+  await expectPreview(page, 13, 60);
+  expect(filterOf(page)).toBe("Checkout");
+  // The step Back went to is still its own entry, one further back.
+  await page.goBack();
+  await expect(page.getByTestId("filter-text")).toHaveText(steps[1]!);
+  expect(filterOf(page)).toBe(steps[1]);
+  await page.goBack();
+  await expect(page.getByTestId("filter-text")).toHaveText(steps[0]!);
+  await page.goForward();
+  await page.goForward();
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Checkout" }) })).toBeVisible();
+  expect(filterOf(page)).toBe("Checkout");
+});
+
+test("Back pressed faster than a slow page can follow lands where the browser is, and keeps the history whole", async ({ page, open }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  const steps = ["Payments AND Smoke", "Payments AND Smoke AND Sprint-12", "Payments AND Smoke AND Sprint-12 AND Regression"];
+  for (const [index, tag] of ["Smoke", "Sprint-12", "Regression"].entries()) {
+    await addRule(page, tag);
+    await expect(page.getByTestId("filter-text")).toHaveText(steps[index]!);
+    await expect.poll(() => filterOf(page)).toBe(steps[index]);
+  }
+  // A page that is busy for a moment on every step — a slow machine.
+  await page.evaluate(() => {
+    window.addEventListener(
+      "hashchange",
+      () => {
+        const until = performance.now() + 40;
+        while (performance.now() < until);
+      },
+      true,
+    );
+  });
+
+  for (let round = 0; round < 3; round += 1) {
+    // Three steps back in one breath…
+    await page.evaluate(() => {
+      history.back();
+      history.back();
+      history.back();
+    });
+    await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Smoke" }) })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Payments" }) })).toBeVisible();
+    await expectPreview(page, 17, 60);
+    await expect.poll(() => filterOf(page)).toBe("Payments");
+    // …and nothing was written over on the way: every step forward is the step that was taken.
+    for (const step of steps) {
+      await page.goForward();
+      await expect(page.getByTestId("filter-text")).toHaveText(step);
+      expect(filterOf(page)).toBe(step);
+    }
+  }
+});
+
+test("many rules in a group are chips that wrap: the operator is said once, and the panel stays in view", async ({ page, open, api }) => {
+  // 31 tags of the catalog, as somebody picks a sprint's tickets one by one.
+  const catalog = await api.get<{ tags: { tag: string }[] }>("/catalog/tags");
+  const tags = catalog.tags.map((entry) => entry.tag).sort().slice(0, 31);
+  expect(tags).toHaveLength(31);
+  await open("#/compose?f=" + encodeURIComponent(tags.join(" OR ")));
+  await expect(page.locator(".preview")).toHaveAttribute("aria-busy", "false");
+  const chips = page.locator(".expr .chip");
+  await expect(chips).toHaveCount(31);
+
+  // Chips share rows instead of taking one each, and the whole panel is on one screen.
+  const boxes = await chips.evaluateAll((elements) => elements.slice(0, 6).map((element) => element.getBoundingClientRect().top));
+  expect(new Set(boxes.map((top) => Math.round(top))).size).toBeLessThan(6);
+  const panel = (await page.locator(".filter-panel").boundingBox())!;
+  expect(panel.height).toBeLessThan(700);
+  // The operator is said by the group, once — not between every two rules.
+  await expect(page.getByRole("combobox", { name: msg("filter.combine") })).toHaveCount(1);
+  await expect(page.getByRole("combobox", { name: msg("filter.combine") })).toHaveValue("OR");
+  await expect(page.locator(".expr-rules")).not.toContainText(/\bOR\b/);
+  await expect(page.locator(".expr-rules")).toHaveClass(/is-long/);
+  await expect(page.getByText(msg("filter.ruleCount", { count: 31 }))).toBeVisible();
+
+  // Every rule keeps its controls, in the order they read: the pattern, NOT, Remove — also the last one, scrolled to by focus.
+  const last = tags[30]!;
+  const named = (key: string) => page.getByRole("button", { name: msg(key, { pattern: last }), exact: true });
+  await named("filter.editPattern").focus();
+  await expect(named("filter.editPattern")).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("Tab");
+  await expect(named("filter.negateRule")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(named("filter.removeRule")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(chips).toHaveCount(30);
+  const negate = page.getByRole("button", { name: msg("filter.negateRule", { pattern: tags[0]! }), exact: true });
+  await negate.click();
+  await expect(negate).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(`.chip[data-pattern="${tags[0]!}"]`)).toHaveClass(/is-negated/);
+});
+
+test("the preview is as tall as its rows, and at most reaches down to the run bar", async ({ page, open }) => {
+  // Many rows: the table uses the window — it ends just above the run bar, not half-way down.
+  await open("#/compose?f=Regression");
+  await expectPreview(page, 46, 60);
+  const bar = page.getByRole("group", { name: msg("compose.runBar") });
+  const scroll = page.locator(".preview-scroll");
+  const gap = async () => {
+    const [table, barBox] = [(await page.locator(".preview").boundingBox())!, (await bar.boundingBox())!];
+    return barBox.y - (table.y + table.height);
+  };
+  expect(await gap()).toBeGreaterThanOrEqual(0);
+  expect(await gap()).toBeLessThan(48);
+  expect(await scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  // A taller window: more rows, the same small gap.
+  await page.setViewportSize({ width: 1440, height: 1200 });
+  await expect.poll(gap).toBeLessThan(48);
+  expect(await gap()).toBeGreaterThanOrEqual(0);
+
+  // Few rows: the panel ends with them — no empty box, nothing to scroll.
+  await open("#/compose?f=Auth-SSO");
+  await expectPreview(page, 3, 60);
+  expect(await scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(false);
+  const rows = (await scroll.boundingBox())!;
+  expect(rows.height).toBeLessThan(200);
 });

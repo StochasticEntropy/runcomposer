@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FilterParseError, MATCH_ALL, errorPath, formatFilter, leaves, parseFilter, quotePattern } from "./filter.ts";
+import { FilterParseError, MATCH_ALL, errorPath, formatFilter, isEverything, leaves, parseFilter, quotePattern } from "./filter.ts";
 import type { FilterAst } from "./types.ts";
 
 const problemOf = (text: string): string => {
@@ -68,6 +68,20 @@ describe("parseFilter", () => {
       MATCH_ALL,
     ];
     for (const ast of cases) expect(parseFilter(formatFilter(ast))).toEqual(ast);
+  });
+
+  it("writes and reads everything as *, never as its wire encoding", () => {
+    expect(formatFilter(MATCH_ALL)).toBe("*");
+    expect(parseFilter("*")).toEqual(MATCH_ALL);
+    expect(isEverything(MATCH_ALL)).toBe(true);
+    expect(isEverything({ not: "Smoke" })).toBe(false);
+    const narrowed: FilterAst = { op: "AND", items: [MATCH_ALL, { not: "prefix:Quarantine-" }] };
+    expect(formatFilter(narrowed)).toBe("* AND NOT prefix:Quarantine-");
+    expect(parseFilter("* AND NOT prefix:Quarantine-")).toEqual(narrowed);
+    // A tag that is literally an asterisk is quoted, and stays a tag.
+    expect(quotePattern("*")).toBe('"*"');
+    expect(parseFilter('"*"')).toBe("*");
+    expect(problemOf("Payments *")).toBe("missing-operator");
   });
 
   it("says what is wrong and where", () => {

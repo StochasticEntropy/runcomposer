@@ -3,7 +3,7 @@
 // and nothing else — a link, a reload and the Back button all land in the
 // same place.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { EmptyState, ErrorState, Loading } from "./components/ui.tsx";
@@ -15,7 +15,7 @@ import { useRoute } from "./hooks/useRoute.ts";
 import { createApi } from "./lib/api.ts";
 import { AVAILABLE_LOCALES, createTranslator } from "./lib/i18n.ts";
 import type { Messages } from "./lib/i18n.ts";
-import { AVAILABLE_THEMES, LOCALE_KEY, THEME_KEY, applyTheme, readPref, writePref } from "./lib/prefs.ts";
+import { AVAILABLE_THEMES, LOCALE_KEY, THEME_KEY, applyTheme, browserLanguages, chooseLocale, readPref, writePref } from "./lib/prefs.ts";
 import type { Theme } from "./lib/prefs.ts";
 import { composeHref, inboxHref, runsHref } from "./lib/router.ts";
 import type { Route } from "./lib/router.ts";
@@ -32,9 +32,6 @@ import { RunsView } from "./views/RunsView.tsx";
 const MESSAGES: Record<string, Messages> = { en, de };
 const INBOX_POLL_MS = 60_000;
 
-const pickLocale = (candidate: string | null | undefined): string | null =>
-  candidate && (AVAILABLE_LOCALES as readonly string[]).includes(candidate) ? candidate : null;
-
 const api = createApi();
 
 export function App() {
@@ -42,14 +39,14 @@ export function App() {
   const [theme, setThemeState] = useState<Theme>(() => readPref(THEME_KEY, AVAILABLE_THEMES) ?? "system");
   const meta = useResource(useCallback((signal: AbortSignal) => api.meta(signal), []), "meta");
 
-  // Before the server has said what its default language is, the browser's
-  // is the best guess — the loading screen is already in a language.
-  const locale =
-    chosenLocale ?? pickLocale(meta.data?.locale_default) ?? pickLocale(navigator.language.slice(0, 2)) ?? "en";
+  // The viewer's own choice, else the language their browser asks for, else
+  // the deployment's default — so the page speaks a language from its first
+  // paint, and the document says which one.
+  const locale = chooseLocale(AVAILABLE_LOCALES, chosenLocale, browserLanguages(), meta.data?.locale_default);
   const translator = useMemo(() => createTranslator(MESSAGES[locale] ?? en, locale), [locale]);
 
   useEffect(() => applyTheme(theme), [theme]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
 

@@ -14,6 +14,12 @@
 // AND binds tighter than OR. A pattern is quoted when it contains a space, a
 // parenthesis or a quote, or would read as an operator — `"regex:^Cart(V2)?$"`.
 // Operators are upper case only, so a tag called `and` needs no quotes.
+//
+// `*` stands for every item of the catalog. The run spec's grammar has no
+// node that says "everything" (an empty AND is refused), so on the wire it is
+// the one expression that is true for every item — NOT of a pattern no tag
+// can match. That encoding is a detail of the wire: the text form, the URL
+// and the editor say `*`, and read `*`.
 
 import type { FilterAst } from "./types.ts";
 
@@ -21,6 +27,13 @@ export type { FilterAst };
 
 /** A filter that matches every item of the catalog: no tag is the empty string. */
 export const MATCH_ALL: FilterAst = { not: "regex:^$" };
+/** How "everything" is written in the text form. */
+export const EVERYTHING = "*";
+const NO_TAG = "regex:^$";
+
+/** This node is the wire encoding of "everything". */
+export const isEverything = (node: FilterAst | null): boolean =>
+  node !== null && typeof node === "object" && "not" in node && node.not === NO_TAG;
 
 export const isGroup = (node: FilterAst): node is { op: "AND" | "OR"; items: FilterAst[] } =>
   typeof node === "object" && node !== null && "op" in node;
@@ -31,13 +44,14 @@ const OPERATORS = new Set(["AND", "OR", "NOT"]);
 const NEEDS_QUOTES = /[\s()"\\]/;
 
 export function quotePattern(pattern: string): string {
-  if (pattern !== "" && !NEEDS_QUOTES.test(pattern) && !OPERATORS.has(pattern)) return pattern;
+  if (pattern !== "" && pattern !== EVERYTHING && !NEEDS_QUOTES.test(pattern) && !OPERATORS.has(pattern)) return pattern;
   return `"${pattern.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 export function formatFilter(node: FilterAst | null): string {
   if (node == null) return "";
   if (typeof node === "string") return quotePattern(node);
+  if (isEverything(node)) return EVERYTHING;
   if (isNot(node)) {
     const inner = formatFilter(node.not);
     return isGroup(node.not) ? `NOT (${inner})` : `NOT ${inner}`;
@@ -72,7 +86,7 @@ export class FilterParseError extends Error {
 
 type Token =
   | { type: "op"; value: "AND" | "OR" | "NOT"; at: number }
-  | { type: "open" | "close"; at: number }
+  | { type: "open" | "close" | "all"; at: number }
   | { type: "pattern"; value: string; at: number };
 
 function tokenize(text: string): Token[] {
@@ -114,7 +128,8 @@ function tokenize(text: string): Token[] {
       if (/^(regex|prefix):/.test(word) && index < text.length && /[("]/.test(text[index]!)) {
         throw new FilterParseError("needs-quotes", start, word);
       }
-      if (OPERATORS.has(word)) tokens.push({ type: "op", value: word as "AND" | "OR" | "NOT", at: start });
+      if (word === EVERYTHING) tokens.push({ type: "all", at: start });
+      else if (OPERATORS.has(word)) tokens.push({ type: "op", value: word as "AND" | "OR" | "NOT", at: start });
       else tokens.push({ type: "pattern", value: word, at: start });
     }
   }
@@ -133,6 +148,7 @@ export function parseFilter(text: string): FilterAst | null {
     const token = peek();
     if (!token) throw new FilterParseError("unexpected-end", end);
     cursor += 1;
+    if (token.type === "all") return { not: NO_TAG };
     if (token.type === "pattern") {
       if (token.value === "") throw new FilterParseError("empty", token.at);
       return token.value;
@@ -166,7 +182,7 @@ export function parseFilter(text: string): FilterAst | null {
   const rest = peek();
   if (rest) {
     if (rest.type === "close") throw new FilterParseError("unbalanced-close", rest.at);
-    throw new FilterParseError("missing-operator", rest.at, rest.type === "pattern" || rest.type === "op" ? rest.value : "(");
+    throw new FilterParseError("missing-operator", rest.at, rest.type === "pattern" || rest.type === "op" ? rest.value : rest.type === "all" ? EVERYTHING : "(");
   }
   return ast;
 }
