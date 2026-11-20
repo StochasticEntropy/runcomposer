@@ -79,6 +79,10 @@ __all__ = [
 log = logging.getLogger("runcomposer.dispatch")
 
 _LIVE_DIR = ".live"
+#: How often the store is asked whether another process requested a cancel.
+_CANCEL_POLL_S = 0.25
+#: How long settling a cancelled dispatch waits for the runner's cancel().
+_CANCEL_WAIT_S = 60.0
 
 
 #: Owner identities of the dispatch managers alive in this process.
@@ -216,7 +220,6 @@ class _Context:
         self._shards: tuple[str, ...] = dispatch.shards
         self._private_dir: Path | None = None
         self._cancel = threading.Event()
-        self._cancel_checked = 0.0
         self._workdir: Path | None = None
         self._source: Any = None
         self._spec_bytes: bytes | None = None
@@ -469,17 +472,12 @@ class _Context:
 
     @property
     def cancelled(self) -> bool:
-        if self._cancel.is_set():
-            return True
-        now = time.monotonic()
-        if now - self._cancel_checked >= 0.5:  # another process may have asked
-            self._cancel_checked = now
-            try:
-                dispatch = self._service.store.get_dispatch(self.dispatch_id)
-            except Exception:
-                return False
-            if dispatch is not None and dispatch.cancel_requested:
-                self._cancel.set()
+        """Whether cancellation was signalled to this dispatch. The flag has
+        exactly one writer — the dispatch manager's ``_signal`` — which also
+        calls the runner's ``cancel(ctx)``: a context never finds out about a
+        cancel on its own (by reading the store, say), because then a runner
+        that only checks the flag could come back, and the dispatch settle as
+        cancelled, without ``cancel`` ever having been called."""
         return self._cancel.is_set()
 
     def raise_if_cancelled(self) -> None:
@@ -514,6 +512,9 @@ class _Active:
         self.outcome = outcome
         self.future: Future[None] | None = None
         self.cancel_sent = False
+        #: Set once the cancellation was carried out — the flag raised and
+        #: the runner's ``cancel(ctx)`` back. Settling as cancelled waits for it.
+        self.cancel_done = threading.Event()
 
 
 class DispatchManager:
@@ -764,6 +765,18 @@ class DispatchManager:
         # Ctrl-C in a foreground dispatch is the person at the keyboard
         # cancelling it.
         cancelled = ctx.cancelled or isinstance(error, (DispatchCancelled, KeyboardInterrupt))
+        if cancelled and dispatch.state != "COMPLETE":
+            # However the cancellation came about — a request this process or
+            # another one made, Ctrl-C, a runner giving up by itself — the
+            # runner's cancel(ctx) is called, once, before the dispatch is
+            # closed as cancelled: whatever it started is stopped by then.
+            self._signal(active)
+            if not active.cancel_done.wait(_CANCEL_WAIT_S):
+                ctx.log(
+                    f"the runner's cancel() had not returned after {_CANCEL_WAIT_S:g}s — "
+                    "closing the dispatch as cancelled without waiting for it any longer",
+                    level="warning",
+                )
         if dispatch.state == "COMPLETE":
             if error is not None:
                 ctx.log(
@@ -859,24 +872,34 @@ class DispatchManager:
         return refreshed if refreshed is not None else dispatch
 
     def _signal(self, active: _Active) -> None:
+        """THE one way a dispatch executing here learns that it is cancelled:
+        raise the context's flag and call the runner's ``cancel(ctx)`` —
+        once per dispatch, whoever asks first (a cancel made in this process,
+        the monitor that saw another process's request in the store, the
+        settling of a dispatch that ended cancelled). ``active.cancel_done``
+        is set when the runner's ``cancel`` has returned."""
         with self._lock:
             if active.cancel_sent:
                 return
             active.cancel_sent = True
-        active.ctx.request_cancel()
-        if active.future is not None and active.future.cancel():
-            # Still queued: the runner never started, so settle it here.
-            try:
-                self._service.ledger.move(
-                    active.ctx.dispatch_id, "CANCELLED", error="cancelled while queued"
-                )
-            finally:
-                with self._lock:
-                    self._active.pop(active.ctx.dispatch_id, None)
-                active.ctx.handoff.set()
-                active.outcome.done.set()
-            return
-        self._call_runner_cancel(active.runner, active.ctx)
+        try:
+            active.ctx.request_cancel()
+            if active.future is not None and active.future.cancel():
+                # Still queued: the runner never started, so there is nothing
+                # of its to stop — settle it here.
+                try:
+                    self._service.ledger.move(
+                        active.ctx.dispatch_id, "CANCELLED", error="cancelled while queued"
+                    )
+                finally:
+                    with self._lock:
+                        self._active.pop(active.ctx.dispatch_id, None)
+                    active.ctx.handoff.set()
+                    active.outcome.done.set()
+                return
+            self._call_runner_cancel(active.runner, active.ctx)
+        finally:
+            active.cancel_done.set()
 
     def _cancel_detached(self, dispatch: DispatchRecord) -> None:
         service = self._service
@@ -913,9 +936,12 @@ class DispatchManager:
 
     def _watch_cancel_requests(self) -> None:
         """A cancel may be requested by another process (the CLI against a
-        running server): it arrives as a flag in the store."""
+        running server): it arrives as a flag in the store. This loop is the
+        only reader of that flag for dispatches executing here, and it hands
+        what it reads to ``_signal`` — so that no dispatch hears of a cancel
+        without its runner's ``cancel(ctx)`` being called."""
         while True:
-            time.sleep(0.5)
+            time.sleep(_CANCEL_POLL_S)
             with self._lock:
                 actives = [a for a in self._active.values() if not a.cancel_sent]
                 if not self._active:
