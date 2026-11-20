@@ -22,6 +22,7 @@ from runcomposer.core.errors import (
     SpecConflict,
     UnknownRun,
 )
+from runcomposer.core.filtertext import read_filter_string
 from runcomposer.core.hashing import canonical_json, sha256_hex
 from runcomposer.core.lifecycle import ACTIVE_STATES, effective_verdicts
 from runcomposer.core.model import DispatchRecord, Item, RunRecord
@@ -194,7 +195,8 @@ class Composer:
         self, selection_data: Mapping[str, Any], all_items: list[Item]
     ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str], bool]:
         """Resolve compose-time providers (history) into plain selection
-        inputs + provenance. The executed spec stays static (§7). The last
+        inputs + provenance, and a ``tag_filter`` given as text into its AST.
+        The executed spec stays static (§7). The last
         value says the history narrowed the selection to nothing — which is
         an empty result, not "no explicit picks"."""
         if not isinstance(selection_data, Mapping):
@@ -205,6 +207,12 @@ class Composer:
         derived: list[dict[str, Any]] = []
         warnings: list[str] = []
         emptied = False
+        # A filter given as one string is filter text (`Auth OR Cart`); what
+        # the spec stores, and what is compiled, is the AST it reads to.
+        if isinstance(data.get("tag_filter"), str):
+            data["tag_filter"], note = read_filter_string(data["tag_filter"])
+            if note:
+                warnings.append(note)
         history = data.pop("history", None)
         if history:
             if isinstance(history, Mapping):

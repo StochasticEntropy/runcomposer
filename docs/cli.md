@@ -286,7 +286,7 @@ Taxonomy (curated tree over tag patterns — data, not code):
     Payments      17 items   (Payments)
     Checkout      13 items   (Checkout)
 …
-Selection: (Payments OR prefix:Checkout- OR regex:^Cart(V2)?$) AND NOT prefix:Quarantine-
+Selection: (Payments OR prefix:Checkout- OR "regex:^Cart(V2)?$") AND NOT prefix:Quarantine-
   matched 36 of 60 items
 Run spec 01M7X3ATV98NR9RMVVWWHC2TWX: validates against the runspec-1.0 schema (dispatch profile)
 …
@@ -519,7 +519,7 @@ runcomposer compile [FILTER] [--id ITEM_ID ...] [--from-history QUERY]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `FILTER` | — | A tag filter: a pattern string, or a YAML/JSON filter AST. |
+| `FILTER` | — | A tag filter: filter text (`'Auth OR Cart'`, [below](#filter-text)), or a YAML/JSON filter AST. |
 | `--id ITEM_ID` | none | An explicit item pick. Repeatable. **Intersects** with the filter. |
 | `--from-history QUERY` | none | A history selection, e.g. `failed@latest?suite=nightly` ([below](#--from-history--rerun-what-failed)). |
 | `--json` | off | [One JSON document](#--json--one-document-for-a-script): `count`, `total` (the catalog's size), `items`, `warnings`, `derived_from`, `snapshot`. |
@@ -541,8 +541,71 @@ Shop.Payments.Cards.T001  [Payments, Payments-Cards, Smoke, Sprint-12, SHOP-1200
 …
 ```
 
-The `FILTER` argument is parsed as YAML, so the full AST fits in one shell
-argument — which is how you check a boolean selection before composing it:
+### Filter text
+
+A boolean selection is written the way the UI's text field shows it — the
+one-line text form of the filter ([DESIGN.md](../DESIGN.md) §3.1):
+
+```console
+$ runcomposer compile 'Auth OR Cart'
+# 17 item(s) matched
+Shop.Cart.Core.T001  [Cart, Cart-Core, Smoke, Sprint-12, SHOP-1230]
+…
+$ runcomposer compile 'Payments AND NOT (Payments-Cards OR prefix:Quarantine-)'
+# 11 item(s) matched
+Shop.Payments.Wallets.T001  [Payments, Payments-Wallets, Smoke, Sprint-12, SHOP-1206]
+…
+```
+
+- The operators are `AND`, `OR` and `NOT`, in upper case — a tag spelled
+  `and` is just a tag. `NOT` binds tighter than `AND`, and `AND` tighter
+  than `OR`: `Auth OR Cart AND Smoke` is `Auth OR (Cart AND Smoke)`.
+  Parentheses group.
+- A pattern is a literal tag, `prefix:…` or `regex:…`, written bare as long
+  as it reads back as one pattern. A pattern that contains whitespace, a
+  parenthesis, a double quote or a backslash, or that is one of the operator
+  words, is written in double quotes; inside them a backslash takes the next
+  character literally (`\"`, `\\`). A colon needs nothing: `Checkout:Gift`.
+
+  ```console
+  $ runcomposer compile '"Payments-Cards" OR "regex:^Cart(V2)?$"'
+  # 15 item(s) matched
+  ```
+- `AND (x)` and `OR (x)` are a group of a single item — the one filter shape
+  that infix notation cannot write otherwise; you will only meet it in the
+  text of a stored filter that has one.
+
+Text that cannot be read is a mistake on the command line: exit `2`, with
+the column where reading stopped and what was expected there.
+
+```console
+$ runcomposer compile 'Payments AND (Smoke'
+error: cannot read the filter text at column 14: the '(' opened here is not closed — expected AND, OR or ')'
+  Payments AND (Smoke
+               ^
+```
+
+A filter that named one pattern before filter text existed still names that
+pattern: a `FILTER` that is not readable as text, and contains neither an
+operator word nor a double quote, is taken as the single pattern it spells,
+with a warning that shows how to write it unambiguously:
+
+```console
+$ runcomposer compile 'regex:^Cart(V2)?$'
+warning: the filter 'regex:^Cart(V2)?$' is not filter text (needs-quotes at column 1) and was read as the single pattern 'regex:^Cart(V2)?$' — write it as "regex:^Cart(V2)?$" to say so, or put AND/OR between patterns
+# 9 item(s) matched
+…
+```
+
+A tag that is itself spelled like an expression — a tag literally named
+`Auth OR Cart` — is the one case that reads differently now: unquoted it is
+the union of two tags, so write it as `'"Auth OR Cart"'`.
+
+### A filter as a YAML/JSON AST
+
+A `FILTER` that starts with `{` or `[`, or is a YAML mapping of a filter node
+(`not: …`, `op: …` with `items: …`), is the AST itself, so the stored form
+fits in one shell argument too:
 
 ```console
 $ runcomposer compile '{op: AND, items: [Payments, {not: prefix:Quarantine-}]}'
@@ -551,10 +614,12 @@ Shop.Payments.Cards.T001  [Payments, Payments-Cards, Smoke, Sprint-12, SHOP-1200
 …
 ```
 
-Seventeen items down to sixteen: one quarantined test dropped out. Remember
-that a bare literal matches **case-insensitively** while `prefix:` and `regex:`
-do not ([DESIGN.md](../DESIGN.md) §3.1) — a filter that matches nothing is
-usually that, not a typo. A filter that is not a filter exits `1`:
+Seventeen items down to sixteen: one quarantined test dropped out. Whichever
+way the filter is written, the run spec stores the AST — never the text.
+Remember that a bare literal matches **case-insensitively** while `prefix:`
+and `regex:` do not ([DESIGN.md](../DESIGN.md) §3.1) — a filter that matches
+nothing is usually that, not a typo. A filter whose pattern is not a valid
+pattern exits `1`:
 
 ```console
 $ runcomposer compile 'regex:['
@@ -588,7 +653,7 @@ runcomposer spec [FILTER] [--id ITEM_ID ...] [--from-history QUERY]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `FILTER` | — | Tag filter, as in `compile`. |
+| `FILTER` | — | Tag filter — [filter text](#filter-text) or a YAML/JSON AST, as in `compile`. |
 | `--id ITEM_ID` | none | Explicit item pick, repeatable; intersects with the filter. |
 | `--from-history QUERY` | none | History-based selection resolved at compose time, e.g. `failed@latest?suite=nightly`. |
 | `--title TITLE` | `Untitled run` | The run title. |

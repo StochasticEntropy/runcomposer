@@ -1,0 +1,802 @@
+{
+  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1). parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. A case with `ui` set to `pending` is not yet read alike by the web UI.",
+  "parse": [
+    {
+      "text": "Payments",
+      "ast": "Payments"
+    },
+    {
+      "text": "Payments AND Smoke AND Sprint-12",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Payments",
+          "Smoke",
+          "Sprint-12"
+        ]
+      }
+    },
+    {
+      "text": "Payments AND Smoke OR Checkout",
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "op": "AND",
+            "items": [
+              "Payments",
+              "Smoke"
+            ]
+          },
+          "Checkout"
+        ]
+      }
+    },
+    {
+      "text": "Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine-",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Payments",
+          {
+            "op": "OR",
+            "items": [
+              "Smoke",
+              "Regression"
+            ]
+          },
+          {
+            "not": "prefix:Quarantine-"
+          }
+        ]
+      }
+    },
+    {
+      "text": "NOT NOT Smoke",
+      "ast": {
+        "not": {
+          "not": "Smoke"
+        }
+      }
+    },
+    {
+      "text": "",
+      "ast": null
+    },
+    {
+      "text": "   ",
+      "ast": null
+    },
+    {
+      "text": "\t\n ",
+      "ast": null
+    },
+    {
+      "text": "and OR not",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "and",
+          "not"
+        ]
+      }
+    },
+    {
+      "text": "\"regex:^Cart(V2)?$\" OR \"Sprint 12\"",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "regex:^Cart(V2)?$",
+          "Sprint 12"
+        ]
+      }
+    },
+    {
+      "text": "\"Checkout \\\"Express\\\"\"",
+      "ast": "Checkout \"Express\""
+    },
+    {
+      "text": "(regex:^Cart)",
+      "ast": "regex:^Cart"
+    },
+    {
+      "text": "Auth OR Cart",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "Checkout AND NOT Payments-Cards",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Checkout",
+          {
+            "not": "Payments-Cards"
+          }
+        ]
+      }
+    },
+    {
+      "text": "NOT Auth OR Cart",
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "not": "Auth"
+          },
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "NOT (Auth OR Cart)",
+      "ast": {
+        "not": {
+          "op": "OR",
+          "items": [
+            "Auth",
+            "Cart"
+          ]
+        }
+      }
+    },
+    {
+      "text": "Auth OR Cart AND Checkout",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          {
+            "op": "AND",
+            "items": [
+              "Cart",
+              "Checkout"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "text": "(Auth OR Cart) AND Checkout",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "OR",
+            "items": [
+              "Auth",
+              "Cart"
+            ]
+          },
+          "Checkout"
+        ]
+      }
+    },
+    {
+      "text": "((Auth))",
+      "ast": "Auth"
+    },
+    {
+      "text": "(Auth AND Cart) AND Checkout",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "AND",
+            "items": [
+              "Auth",
+              "Cart"
+            ]
+          },
+          "Checkout"
+        ]
+      }
+    },
+    {
+      "text": "Auth AND (Cart AND Checkout)",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Auth",
+          {
+            "op": "AND",
+            "items": [
+              "Cart",
+              "Checkout"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "text": "\tAuth\nOR  Cart ",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "(Auth)OR(Cart)",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "Auth\u00a0OR\u3000Cart",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "\ufeffAuth",
+      "ast": "Auth"
+    },
+    {
+      "text": "Auth\u001cOR\u001cCart",
+      "ast": "Auth\u001cOR\u001cCart"
+    },
+    {
+      "text": "regex:^Cart\\d",
+      "ast": "regex:^Cart\\d"
+    },
+    {
+      "text": "\"regex:^Cart\\\\d+$\"",
+      "ast": "regex:^Cart\\d+$"
+    },
+    {
+      "text": "\"Ca\\rt\"",
+      "ast": "Cart"
+    },
+    {
+      "text": "\"AND\" OR \"NOT\"",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "AND",
+          "NOT"
+        ]
+      }
+    },
+    {
+      "text": "prefix:Checkout- AND NOT prefix:Quarantine-",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "prefix:Checkout-",
+          {
+            "not": "prefix:Quarantine-"
+          }
+        ]
+      }
+    },
+    {
+      "text": "Checkout:Gift",
+      "ast": "Checkout:Gift"
+    },
+    {
+      "text": "\" \"",
+      "ast": " "
+    },
+    {
+      "text": "Auth OR \"Cart (V2)\"",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart (V2)"
+        ]
+      }
+    },
+    {
+      "text": "NOT regex:^$",
+      "ast": {
+        "not": "regex:^$"
+      }
+    },
+    {
+      "text": "Auth OR \"Cart \ud83d\uded2\"",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          "Cart \ud83d\uded2"
+        ]
+      }
+    },
+    {
+      "text": "AND (Auth)",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Auth"
+        ]
+      },
+      "ui": "pending"
+    },
+    {
+      "text": "OR (Auth OR Cart)",
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "op": "OR",
+            "items": [
+              "Auth",
+              "Cart"
+            ]
+          }
+        ]
+      },
+      "ui": "pending"
+    },
+    {
+      "text": "NOT AND (Auth)",
+      "ast": {
+        "not": {
+          "op": "AND",
+          "items": [
+            "Auth"
+          ]
+        }
+      },
+      "ui": "pending"
+    },
+    {
+      "text": "Auth OR AND (Cart)",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          {
+            "op": "AND",
+            "items": [
+              "Cart"
+            ]
+          }
+        ]
+      },
+      "ui": "pending"
+    }
+  ],
+  "format": [
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "OR",
+            "items": [
+              "Payments",
+              "prefix:Checkout-"
+            ]
+          },
+          {
+            "not": "prefix:Quarantine-"
+          }
+        ]
+      },
+      "text": "(Payments OR prefix:Checkout-) AND NOT prefix:Quarantine-"
+    },
+    {
+      "ast": {
+        "not": {
+          "op": "OR",
+          "items": [
+            "Smoke",
+            "Regression"
+          ]
+        }
+      },
+      "text": "NOT (Smoke OR Regression)"
+    },
+    {
+      "ast": null,
+      "text": ""
+    },
+    {
+      "ast": "Payments",
+      "text": "Payments"
+    },
+    {
+      "ast": "regex:^Cart(V2)?$",
+      "text": "\"regex:^Cart(V2)?$\""
+    },
+    {
+      "ast": "Sprint 12",
+      "text": "\"Sprint 12\""
+    },
+    {
+      "ast": "AND",
+      "text": "\"AND\""
+    },
+    {
+      "ast": "NOT",
+      "text": "\"NOT\""
+    },
+    {
+      "ast": "and",
+      "text": "and"
+    },
+    {
+      "ast": "Checkout \"Express\"",
+      "text": "\"Checkout \\\"Express\\\"\""
+    },
+    {
+      "ast": "regex:^Cart\\d+$",
+      "text": "\"regex:^Cart\\\\d+$\""
+    },
+    {
+      "ast": {
+        "not": "regex:^$"
+      },
+      "text": "NOT regex:^$"
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          "regex:^Cart(V2)?$",
+          "Sprint 12",
+          "OR"
+        ]
+      },
+      "text": "\"regex:^Cart(V2)?$\" AND \"Sprint 12\" AND \"OR\""
+    },
+    {
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "op": "AND",
+            "items": [
+              "Auth",
+              "Smoke"
+            ]
+          },
+          {
+            "not": {
+              "op": "OR",
+              "items": [
+                "Cart",
+                "Catalog"
+              ]
+            }
+          }
+        ]
+      },
+      "text": "(Auth AND Smoke) OR NOT (Cart OR Catalog)"
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "AND",
+            "items": [
+              "Auth",
+              "Cart"
+            ]
+          },
+          "Checkout"
+        ]
+      },
+      "text": "(Auth AND Cart) AND Checkout"
+    },
+    {
+      "ast": {
+        "not": {
+          "not": "Smoke"
+        }
+      },
+      "text": "NOT NOT Smoke"
+    },
+    {
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          {
+            "op": "AND",
+            "items": [
+              "Cart",
+              "Checkout"
+            ]
+          }
+        ]
+      },
+      "text": "Auth OR (Cart AND Checkout)"
+    },
+    {
+      "ast": " Auth",
+      "text": "\" Auth\""
+    },
+    {
+      "ast": "Auth\u00a0Cart",
+      "text": "\"Auth\u00a0Cart\""
+    },
+    {
+      "ast": "Auth\u001cCart",
+      "text": "Auth\u001cCart"
+    },
+    {
+      "ast": "Checkout:Gift",
+      "text": "Checkout:Gift"
+    },
+    {
+      "ast": "Cart (V2)",
+      "text": "\"Cart (V2)\""
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Auth"
+        ]
+      },
+      "text": "AND (Auth)",
+      "ui": "pending"
+    },
+    {
+      "ast": {
+        "not": {
+          "op": "OR",
+          "items": [
+            "Cart"
+          ]
+        }
+      },
+      "text": "NOT OR (Cart)",
+      "ui": "pending"
+    },
+    {
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          {
+            "op": "AND",
+            "items": [
+              "Cart"
+            ]
+          }
+        ]
+      },
+      "text": "Auth OR AND (Cart)",
+      "ui": "pending"
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "OR",
+            "items": [
+              {
+                "op": "AND",
+                "items": [
+                  "Auth",
+                  "Cart"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "text": "AND (OR (Auth AND Cart))",
+      "ui": "pending"
+    }
+  ],
+  "errors": [
+    {
+      "text": "Payments Smoke",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "Smoke"
+      }
+    },
+    {
+      "text": "Payments AND",
+      "error": {
+        "problem": "unexpected-end",
+        "position": 12
+      }
+    },
+    {
+      "text": "AND Payments",
+      "error": {
+        "problem": "unexpected-operator",
+        "position": 0,
+        "token": "AND"
+      }
+    },
+    {
+      "text": "(Payments OR Smoke",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 0
+      }
+    },
+    {
+      "text": "Payments)",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 8
+      }
+    },
+    {
+      "text": "\"Payments",
+      "error": {
+        "problem": "unterminated-quote",
+        "position": 0
+      }
+    },
+    {
+      "text": "Payments AND \"\"",
+      "error": {
+        "problem": "empty",
+        "position": 13
+      }
+    },
+    {
+      "text": "Payments AND regex:(",
+      "error": {
+        "problem": "needs-quotes",
+        "position": 13,
+        "token": "regex:"
+      }
+    },
+    {
+      "text": "regex:^Cart(V2)?$",
+      "error": {
+        "problem": "needs-quotes",
+        "position": 0,
+        "token": "regex:^Cart"
+      }
+    },
+    {
+      "text": "Payments (Smoke)",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "("
+      }
+    },
+    {
+      "text": "Auth or Cart",
+      "error": {
+        "problem": "missing-operator",
+        "position": 5,
+        "token": "or"
+      }
+    },
+    {
+      "text": "Auth And Cart",
+      "error": {
+        "problem": "missing-operator",
+        "position": 5,
+        "token": "And"
+      }
+    },
+    {
+      "text": "NOT",
+      "error": {
+        "problem": "unexpected-end",
+        "position": 3
+      }
+    },
+    {
+      "text": "()",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 1
+      }
+    },
+    {
+      "text": "Auth AND AND Cart",
+      "error": {
+        "problem": "unexpected-operator",
+        "position": 9,
+        "token": "AND"
+      }
+    },
+    {
+      "text": "Auth OR )",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 8
+      }
+    },
+    {
+      "text": "(Auth Cart)",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 0
+      }
+    },
+    {
+      "text": "\"Cart\\",
+      "error": {
+        "problem": "unterminated-quote",
+        "position": 0
+      }
+    },
+    {
+      "text": "AND \"Cart",
+      "error": {
+        "problem": "unterminated-quote",
+        "position": 4
+      }
+    },
+    {
+      "text": "prefix:Cart\"V2\"",
+      "error": {
+        "problem": "needs-quotes",
+        "position": 0,
+        "token": "prefix:Cart"
+      }
+    },
+    {
+      "text": "regex:^Auth)",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 11
+      }
+    },
+    {
+      "text": "Auth OR",
+      "error": {
+        "problem": "unexpected-end",
+        "position": 7
+      }
+    },
+    {
+      "text": "AND",
+      "error": {
+        "problem": "unexpected-operator",
+        "position": 0,
+        "token": "AND"
+      }
+    },
+    {
+      "text": "Auth OR \ud83d\uded2 \"Cart",
+      "error": {
+        "problem": "unterminated-quote",
+        "position": 10
+      },
+      "ui": "pending"
+    },
+    {
+      "text": "AND (Auth",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 4
+      },
+      "ui": "pending"
+    },
+    {
+      "text": "OR ()",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 4
+      },
+      "ui": "pending"
+    }
+  ]
+}

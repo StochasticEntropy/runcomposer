@@ -1,0 +1,268 @@
+"""The one-line text form of a tag filter (DESIGN.md §3.1) — what a person
+types, reads and shares::
+
+    Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine-
+
+Grammar::
+
+    expr    := and ("OR" and)*
+    and     := unary ("AND" unary)*
+    unary   := "NOT" unary | "(" expr ")" | ("AND" | "OR") "(" expr ")" | pattern
+    pattern := bare | '"' quoted '"'
+
+- NOT binds tighter than AND, AND tighter than OR; parentheses group. A run
+  of one operator is one group: ``A AND B AND C`` is one AND of three.
+- The operators are the upper-case words ``AND``, ``OR`` and ``NOT``; a tag
+  spelled ``and`` is an ordinary tag.
+- A bare pattern runs up to whitespace, a parenthesis or a double quote. A
+  quoted pattern may contain anything; inside it a backslash takes the next
+  character literally (``\\"``, ``\\\\``). A pattern that is an operator
+  word, or contains whitespace, a parenthesis or a quote, is written quoted.
+- A bare ``regex:``/``prefix:`` pattern that runs into a parenthesis or a
+  quote is refused rather than cut short: ``"regex:^Cart(V2)?$"`` is quoted.
+- ``AND (x)`` / ``OR (x)`` is a group of exactly one item — the one AST shape
+  infix notation cannot spell otherwise.
+- Empty or blank text is no filter (``None``).
+
+The text is only an input and a display: what a run spec stores is the AST
+(:mod:`.filter`), and ``parse_filter_text(format_filter(n)) == to_data(n)``
+for every node. Errors name the offset where reading stopped (``position``,
+counted in characters from 0) and what was expected there.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from .filter import (
+    OPERATOR_WORDS,
+    TEXT_WHITESPACE,
+    FilterError,
+    format_filter,
+    parse_filter,
+    quote_pattern,
+)
+
+__all__ = [
+    "FilterSyntaxError",
+    "format_filter_text",
+    "parse_filter_text",
+    "read_filter_string",
+]
+
+_BREAKS = frozenset(TEXT_WHITESPACE + '()"')
+_SPACE = frozenset(TEXT_WHITESPACE)
+
+
+class FilterSyntaxError(FilterError):
+    """The filter text cannot be read. ``problem`` classifies it (the same
+    identifiers the UI's reader uses), ``position`` is the 0-based offset in
+    characters where reading stopped, ``token`` the word found there."""
+
+    code = "filter-syntax"
+
+    def __init__(self, problem: str, position: int, message: str, token: str = ""):
+        super().__init__(f"cannot read the filter text at column {position + 1}: {message}")
+        self.problem = problem
+        self.position = position
+        self.token = token
+        self.extra = {"problem": problem, "position": position}
+
+
+@dataclass(frozen=True)
+class _Token:
+    kind: str  # "op" | "open" | "close" | "pattern"
+    at: int
+    value: str = ""
+
+
+def _tokenize(text: str) -> list[_Token]:
+    tokens: list[_Token] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in _SPACE:
+            index += 1
+        elif char == "(":
+            tokens.append(_Token("open", index))
+            index += 1
+        elif char == ")":
+            tokens.append(_Token("close", index))
+            index += 1
+        elif char == '"':
+            start = index
+            index += 1
+            value: list[str] = []
+            closed = False
+            while index < length:
+                current = text[index]
+                if current == "\\" and index + 1 < length:
+                    value.append(text[index + 1])
+                    index += 2
+                elif current == '"':
+                    closed = True
+                    index += 1
+                    break
+                else:
+                    value.append(current)
+                    index += 1
+            if not closed:
+                raise FilterSyntaxError(
+                    "unterminated-quote", start, 'the quote opened here is never closed — expected a closing \'"\''
+                )
+            tokens.append(_Token("pattern", start, "".join(value)))
+        else:
+            start = index
+            while index < length and text[index] not in _BREAKS:
+                index += 1
+            word = text[start:index]
+            if word.startswith(("regex:", "prefix:")) and index < length and text[index] in '("':
+                raise FilterSyntaxError(
+                    "needs-quotes",
+                    start,
+                    f"the pattern {word!r} runs into {text[index]!r} — a pattern containing a "
+                    'parenthesis or a quote is written in double quotes, e.g. "regex:^Cart(V2)?$"',
+                    word,
+                )
+            tokens.append(_Token("op" if word in OPERATOR_WORDS else "pattern", start, word))
+    return tokens
+
+
+_OPERAND = 'a pattern, NOT or "("'
+
+
+class _Parser:
+    def __init__(self, text: str, tokens: list[_Token]):
+        self.end = len(text)
+        self.tokens = tokens
+        self.cursor = 0
+
+    def peek(self) -> _Token | None:
+        return self.tokens[self.cursor] if self.cursor < len(self.tokens) else None
+
+    def unary(self) -> Any:
+        token = self.peek()
+        if token is None:
+            raise FilterSyntaxError("unexpected-end", self.end, f"the text ends where {_OPERAND} was expected")
+        self.cursor += 1
+        if token.kind == "pattern":
+            if token.value == "":
+                raise FilterSyntaxError("empty", token.at, 'an empty pattern ("") — a pattern needs a character')
+            return token.value
+        if token.kind == "op":
+            if token.value == "NOT":
+                return {"not": self.unary()}
+            following = self.peek()
+            if following is not None and following.kind == "open":
+                # `AND (x)`: a group of one item.
+                self.cursor += 1
+                return {"op": token.value, "items": [self.group(following)]}
+            raise FilterSyntaxError(
+                "unexpected-operator", token.at, f"{token.value!r} where {_OPERAND} was expected", token.value
+            )
+        if token.kind == "open":
+            return self.group(token)
+        raise FilterSyntaxError("unbalanced-close", token.at, f"')' where {_OPERAND} was expected")
+
+    def group(self, opening: _Token) -> Any:
+        inner = self.expression()
+        closing = self.peek()
+        if closing is None or closing.kind != "close":
+            raise FilterSyntaxError(
+                "unbalanced-open", opening.at, "the '(' opened here is not closed — expected AND, OR or ')'"
+            )
+        self.cursor += 1
+        return inner
+
+    def chain(self, op: str, operand: Any) -> Any:
+        items = [operand()]
+        while (token := self.peek()) is not None and token.kind == "op" and token.value == op:
+            self.cursor += 1
+            items.append(operand())
+        return items[0] if len(items) == 1 else {"op": op, "items": items}
+
+    def conjunction(self) -> Any:
+        return self.chain("AND", self.unary)
+
+    def expression(self) -> Any:
+        return self.chain("OR", self.conjunction)
+
+
+def parse_filter_text(text: str) -> Any:
+    """Text → filter AST data (the shape a run spec's ``tag_filter`` holds),
+    or ``None`` for empty or blank text. Only the grammar is checked here;
+    :func:`.filter.parse_filter` checks the patterns themselves (a regular
+    expression that does not compile). Raises :class:`FilterSyntaxError`."""
+    if not isinstance(text, str):
+        raise FilterError(f"filter text must be a string, got {type(text).__name__}")
+    tokens = _tokenize(text)
+    if not tokens:
+        return None
+    parser = _Parser(text, tokens)
+    try:
+        ast = parser.expression()
+    except RecursionError:
+        raise FilterError("the filter text is nested too deeply to read") from None
+    rest = parser.peek()
+    if rest is not None:
+        if rest.kind == "close":
+            raise FilterSyntaxError("unbalanced-close", rest.at, "this ')' closes no '('")
+        found = rest.value if rest.kind in ("pattern", "op") else "("
+        raise FilterSyntaxError(
+            "missing-operator", rest.at, f"{found!r} where AND, OR or the end of the text was expected", found
+        )
+    return ast
+
+
+def format_filter_text(data: Any) -> str:
+    """Filter AST data → its canonical text; ``""`` for no filter. The
+    inverse of :func:`parse_filter_text`."""
+    if data is None:
+        return ""
+    return format_filter(parse_filter(data))
+
+
+def read_filter_string(text: str) -> tuple[Any, str | None]:
+    """A filter given as one string where a filter is taken (a selection's
+    ``tag_filter``, the command line's filter argument) → ``(AST data,
+    warning)``.
+
+    The string is read as filter text. One exception keeps every string
+    that named a single pattern before the text form existed meaning that
+    pattern: a string that cannot be read as text, and contains neither an
+    operator word nor a double quote, is the one pattern it spells
+    (``Sprint 12``, ``regex:^Cart(V2)?$``) — with a warning saying how to
+    write it unambiguously. Blank text is refused: leave the filter out to
+    select without one.
+    """
+    if not isinstance(text, str):
+        raise FilterError(f"filter text must be a string, got {type(text).__name__}")
+    try:
+        data = parse_filter_text(text)
+    except FilterSyntaxError as exc:
+        pattern = text.strip(TEXT_WHITESPACE)
+        if '"' in text or _has_operator_word(text):
+            raise
+        warning = (
+            f"the filter {text!r} is not filter text ({exc.problem} at column {exc.position + 1}) "
+            f"and was read as the single pattern {pattern!r} — write it as "
+            f"{quote_pattern(pattern)} to say so, or put AND/OR between patterns"
+        )
+        return pattern, warning
+    if data is None:
+        raise FilterError("the filter text is empty — leave the filter out to select without one")
+    return data, None
+
+
+def _has_operator_word(text: str) -> bool:
+    word: list[str] = []
+    for char in text + " ":
+        if char in _SPACE or char in "()":
+            if "".join(word) in OPERATOR_WORDS:
+                return True
+            word = []
+        else:
+            word.append(char)
+    return False

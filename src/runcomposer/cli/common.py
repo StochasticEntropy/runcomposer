@@ -49,7 +49,8 @@ def add_selection_args(parser: argparse.ArgumentParser, *, history: bool = True)
     parser.add_argument(
         "filter",
         nargs="?",
-        help="tag filter: a pattern string ('Payments', 'prefix:Checkout-') or a "
+        help="tag filter as text ('Payments', 'Auth OR Cart', "
+        "'Checkout AND NOT prefix:Quarantine-', '\"Sprint 12\"') or as a "
         "YAML/JSON AST ('{op: AND, items: [Payments, {not: prefix:Quarantine-}]}')",
     )
     parser.add_argument("--id", action="append", default=[], dest="item_ids", metavar="ITEM_ID",
@@ -77,13 +78,44 @@ def add_wait_args(parser: argparse.ArgumentParser) -> None:
                         help="give up waiting for results after this long (exit 3)")
 
 
+#: The key sets of a filter node written as a YAML mapping (`not: Smoke`).
+_AST_KEYS = ({"not"}, {"op", "items"})
+
+
+def filter_argument(text: str) -> Any:
+    """The filter argument as the selection takes it: a YAML/JSON AST stays
+    structured (``{op: AND, items: [...]}``, ``[...]``, or a block mapping
+    ``not: Smoke``); anything else is filter text, passed on as written and
+    read once, where the selection is composed. Text that cannot be read is
+    refused here, with the place it stopped marked."""
+    from runcomposer.core.filter import TEXT_WHITESPACE, FilterError
+    from runcomposer.core.filtertext import FilterSyntaxError, read_filter_string
+
+    if text.strip()[:1] in ("{", "["):
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            fail(f"cannot parse filter: {exc}")
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError:
+        loaded = None
+    if isinstance(loaded, dict) and set(loaded) in _AST_KEYS:
+        return loaded
+    try:
+        read_filter_string(text)
+    except FilterSyntaxError as exc:
+        shown = "".join(" " if char in TEXT_WHITESPACE else char for char in text)
+        fail(f"{exc}\n  {shown}\n  {' ' * exc.position}^")
+    except FilterError as exc:
+        fail(str(exc))
+    return text
+
+
 def selection_data(args: argparse.Namespace) -> dict[str, Any]:
     selection: dict[str, Any] = {}
     if getattr(args, "filter", None):
-        try:
-            selection["tag_filter"] = yaml.safe_load(args.filter)
-        except yaml.YAMLError as exc:
-            fail(f"cannot parse filter: {exc}")
+        selection["tag_filter"] = filter_argument(args.filter)
     if getattr(args, "item_ids", None):
         selection["item_ids"] = list(args.item_ids)
     if getattr(args, "from_history", None):

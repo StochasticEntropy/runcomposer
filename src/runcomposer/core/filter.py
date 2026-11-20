@@ -13,6 +13,10 @@ Semantics:
   is case-sensitive; use ``(?i)`` inside the expression to opt out.
 - ``prefix:<t>`` is pure sugar for ``regex:^<t>``.
 - Parsing is lossless: ``to_data(parse_filter(d)) == d``.
+
+The same filter has a one-line text form for people (``Payments AND NOT
+prefix:Quarantine-``): :func:`format_filter` writes it, and
+:mod:`.filtertext` reads it back into this AST.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ __all__ = [
     "TagPattern",
     "format_filter",
     "parse_filter",
+    "quote_pattern",
     "to_data",
 ]
 
@@ -137,19 +142,48 @@ def to_data(node: FilterNode) -> Any:
     raise TypeError(f"not a filter node: {node!r}")
 
 
+#: What the one-line text form (``core.filtertext``) reads as an operator.
+OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
+#: The whitespace of the text form: exactly what ``\\s`` matches in the
+#: browser's regular expressions, so both readers split a text alike.
+TEXT_WHITESPACE = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+_NEEDS_QUOTES = frozenset(TEXT_WHITESPACE + '()"\\')
+
+
+def quote_pattern(pattern: str) -> str:
+    """A pattern as the text form writes it: bare when it reads back as
+    itself, else in double quotes with ``\\`` and ``"`` escaped by a
+    backslash — a space, a parenthesis, a quote or a backslash in it, or a
+    pattern that is an operator word (``"AND"``), is quoted."""
+    if pattern and pattern not in OPERATOR_WORDS and not any(ch in _NEEDS_QUOTES for ch in pattern):
+        return pattern
+    escaped = pattern.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def format_filter(node: FilterNode) -> str:
-    """Human-readable one-line rendering (display only, not spec content)."""
+    """The one-line text form of a filter — the canonical spelling, and
+    readable back: ``parse_filter_text(format_filter(n))`` is ``to_data(n)``
+    for every node (``core.filtertext``).
+
+    AND binds tighter than OR, so a group inside a group, and a group under
+    NOT, is parenthesized. A group of exactly one item has no infix spelling
+    and is written as its operator applied to it: ``AND (Checkout)``.
+    """
     if isinstance(node, TagPattern):
-        return node.raw
+        return quote_pattern(node.raw)
     if isinstance(node, NotNode):
-        inner = format_filter(node.item)
-        if isinstance(node.item, BoolOp):
-            return f"NOT ({inner})"
-        return f"NOT {inner}"
-    parts = []
-    for child in node.items:
-        text = format_filter(child)
-        if isinstance(child, BoolOp):
-            text = f"({text})"
-        parts.append(text)
-    return f" {node.op} ".join(parts)
+        return f"NOT {_operand(node.item)}"
+    if len(node.items) == 1:
+        return f"{node.op} ({format_filter(node.items[0])})"
+    return f" {node.op} ".join(_operand(child) for child in node.items)
+
+
+def _operand(node: FilterNode) -> str:
+    text = format_filter(node)
+    if isinstance(node, BoolOp) and len(node.items) > 1:
+        return f"({text})"
+    return text
