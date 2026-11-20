@@ -4,6 +4,12 @@ and forgotten in the other is a bug, not a style question.
 The i18n helper falls back to printing the key itself when a message is
 missing, which is quiet enough to survive a click-through and end up in a
 release — this is the test that would have caught it.
+
+The messages live in ``ui/src/locales`` and travel inside the bundle; the
+build also ships them next to it, where the server serves them as
+``/locales/<locale>.json``. Which keys the UI *uses*, and which values the
+server can send for a translated family, is checked on the UI's side
+(``ui/src/locales.test.ts``).
 """
 
 import json
@@ -12,7 +18,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).parent.parent
-SOURCE_LOCALES = REPO / "ui" / "public" / "locales"
+SOURCE_LOCALES = REPO / "ui" / "src" / "locales"
 BUNDLED_LOCALES = REPO / "src" / "runcomposer" / "ui_dist" / "locales"
 
 
