@@ -123,15 +123,15 @@ portable, and the same `--config` behaves identically from anywhere:
 ```console
 $ runcomposer runs --config envs/staging/config.yaml --limit 2
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7WSPEJSZC5T858G55Q5CCAM  COMPOSED          -           -             2026-11-20T15:37:42Z  Two picks
-01M7WSPEDE0ZQ2NGP43DPVE66C  AWAITING_RESULTS  -           export        2026-11-20T15:37:42Z  Nightly checkout
+01M7X3BB905RSZHZ3HGKPSX63Y  COMPOSED          -           -             2026-11-20T18:26:24Z  Two picks
+01M7X3BAYWFJ8T23DSVVT3NNV8  AWAITING_RESULTS  -           export        2026-11-20T18:26:23Z  Nightly checkout
 # 2 of 4 run(s) — page with --limit / --offset
 
 $ cd elsewhere
 $ runcomposer runs --config ../envs/staging/config.yaml --limit 2
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7WSPEJSZC5T858G55Q5CCAM  COMPOSED          -           -             2026-11-20T15:37:42Z  Two picks
-01M7WSPEDE0ZQ2NGP43DPVE66C  AWAITING_RESULTS  -           export        2026-11-20T15:37:42Z  Nightly checkout
+01M7X3BB905RSZHZ3HGKPSX63Y  COMPOSED          -           -             2026-11-20T18:26:24Z  Two picks
+01M7X3BAYWFJ8T23DSVVT3NNV8  AWAITING_RESULTS  -           export        2026-11-20T18:26:23Z  Nightly checkout
 # 2 of 4 run(s) — page with --limit / --offset
 $ ls                                # no second database created here
 ```
@@ -178,8 +178,8 @@ prints one JSON object per event, one per line. Exit codes are unchanged.
 ```console
 $ runcomposer ingest results --json --config envs/staging/config.yaml
 {
-  "run_id": "01M7WSPE7XGVHANRCBPBDP0WK4",
-  "dispatch_id": "01M7WSPE83SMR0SP85WZQDMHAX",
+  "run_id": "01M7X3BA2EBNAEW1XZXKWXS8JD",
+  "dispatch_id": "01M7X3BA2M33C4BNM7B6BFMKJ2",
   "shard": "1",
   "outcome": "duplicate",
   "verdict_count": 17,
@@ -196,11 +196,11 @@ loggers at `INFO` on stderr — every event of a run as it is recorded:
 
 ```console
 $ runcomposer -v run Payments-Wallets --runner demo --title "Wallets" --config envs/staging/config.yaml
-INFO runcomposer.events: run.composed run=01M7WSQY073ZGYCV4YWYWF1FX1 dispatch=- 
-INFO runcomposer.events: run.dispatched run=01M7WSQY073ZGYCV4YWYWF1FX1 dispatch=01M7WSQY096RR4GGAY19HRETB7 state=DISPATCHED
-INFO runcomposer.events: run.running run=01M7WSQY073ZGYCV4YWYWF1FX1 dispatch=01M7WSQY096RR4GGAY19HRETB7 state=RUNNING
-INFO runcomposer.events: delivery.recorded run=01M7WSQY073ZGYCV4YWYWF1FX1 dispatch=01M7WSQY096RR4GGAY19HRETB7 shard=1 outcome=new
-INFO runcomposer.events: run.completed run=01M7WSQY073ZGYCV4YWYWF1FX1 dispatch=01M7WSQY096RR4GGAY19HRETB7 state=COMPLETE completion=FAIL
+INFO runcomposer.events: run.composed run=01M7X3KTG1NNP0BWEPPCY4CXG1 dispatch=- 
+INFO runcomposer.events: run.dispatched run=01M7X3KTG1NNP0BWEPPCY4CXG1 dispatch=01M7X3KTG23HRFEWR3H7XDTW1E state=DISPATCHED
+INFO runcomposer.events: run.running run=01M7X3KTG1NNP0BWEPPCY4CXG1 dispatch=01M7X3KTG23HRFEWR3H7XDTW1E state=RUNNING
+INFO runcomposer.events: delivery.recorded run=01M7X3KTG1NNP0BWEPPCY4CXG1 dispatch=01M7X3KTG23HRFEWR3H7XDTW1E shard=1 outcome=new
+INFO runcomposer.events: run.completed run=01M7X3KTG1NNP0BWEPPCY4CXG1 dispatch=01M7X3KTG23HRFEWR3H7XDTW1E state=COMPLETE completion=FAIL
 demo runner: simulating 4 item(s) with seed 'demo'
 …
 ```
@@ -283,14 +283,14 @@ Taxonomy (curated tree over tag patterns — data, not code):
 …
 Selection: (Payments OR prefix:Checkout- OR regex:^Cart(V2)?$) AND NOT prefix:Quarantine-
   matched 36 of 60 items
-Run spec 01M7WSH32XQ57MJ2PQTW7Z2SYX: validates against the runspec-1.0 schema (dispatch profile)
+Run spec 01M7X3ATV98NR9RMVVWWHC2TWX: validates against the runspec-1.0 schema (dispatch profile)
 …
-Dispatched to the 'demo' runner (simulated): dispatch 01M7WSH337FDR3ZA3WHQE3Q8C0, 1 shard delivered — run COMPLETE (FAIL)
+Dispatched to the 'demo' runner (simulated): dispatch 01M7X3ATVGPE63E5T2HYS4S2WH, 1 shard delivered — run COMPLETE (FAIL)
 Results: 28 PASS, 8 FAIL  (36 items, 76.2s simulated)
 …
 Seeded history: 3 completed runs over 'Regression' (46 items each), persisted in runcomposer-demo/runcomposer.db
-Latest completed 'suite=nightly' run 01M7WSH33GVWH25MFRT936HPVH: 5 FAIL
-Derived selection: 5 items, provenance recorded in selection.derived_from (run 01M7WSH33GVWH25MFRT936HPVH, scope {'suite': 'nightly'})
+Latest completed 'suite=nightly' run 01M7X3ATVS9W2EPX3DFNGPV9C0: 5 FAIL
+Derived selection: 5 items, provenance recorded in selection.derived_from (run 01M7X3ATVS9W2EPX3DFNGPV9C0, scope {'suite': 'nightly'})
 Results: 3 PASS, 2 FAIL  (5 items, 9.3s simulated)
 …
 ────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ Next steps:
   runcomposer runs --config runcomposer-demo/config.yaml
   runcomposer runs --config runcomposer-demo/config.yaml --failed-in latest --label suite=nightly
   runcomposer compile --config runcomposer-demo/config.yaml Payments
-  runcomposer export 01M7WSH33GVWH25MFRT936HPVH --format ctrf --config runcomposer-demo/config.yaml
+  runcomposer export 01M7X3ATVS9W2EPX3DFNGPV9C0 --format ctrf --config runcomposer-demo/config.yaml
   runcomposer run Checkout --runner demo --config runcomposer-demo/config.yaml
   runcomposer serve --config runcomposer-demo/config.yaml
 ```
@@ -311,7 +311,7 @@ narrated is in the store it printed:
 
 ```console
 $ runcomposer runs --config runcomposer-demo/config.yaml --failed-in latest --label suite=nightly
-# 5 item(s) FAILED in run 01M7WSH33GVWH25MFRT936HPVH (scope: {'suite': 'nightly'})
+# 5 item(s) FAILED in run 01M7X3ATVS9W2EPX3DFNGPV9C0 (scope: {'suite': 'nightly'})
 Shop.Payments.Cards.T003
 Shop.Cart.Core.T004
 Shop.Cart.Core.T005
@@ -560,7 +560,7 @@ With `--from-history` the preview names the run the selection resolved to:
 
 ```console
 $ runcomposer compile --from-history 'failed@latest?suite=nightly'
-# from history: run 01M7WSPFHVFKSHHNV6DVMGP55P
+# from history: run 01M7X3BQGZF71M0YWCBJ9W0EJD
 # 1 item(s) matched
 Shop.Checkout.Gift.T002  [Checkout, Checkout-Gift, Regression, Sprint-13]
 ```
@@ -606,9 +606,9 @@ the id on stderr is how you find it again.
 $ runcomposer spec 'Payments-Refunds' --title "Refunds smoke" --label suite=nightly
 runspec: '1.0'
 run:
-  id: 01M7WSPDXVJEQBXPGBN6WEK1BJ
+  id: 01M7X3B9PDNEFDHZ9PK7J66N0G
   title: Refunds smoke
-  created_at: '2026-11-20T15:37:41Z'
+  created_at: '2026-11-20T18:26:22Z'
   labels:
     suite: nightly
 selection:
@@ -619,7 +619,7 @@ selection:
     - Shop.Payments.Refunds.T002
     - Shop.Payments.Refunds.T003
     - Shop.Payments.Refunds.T004
-    at: '2026-11-20T15:37:41Z'
+    at: '2026-11-20T18:26:22Z'
     count: 4
 source:
   provider: manifest
@@ -629,7 +629,7 @@ results:
   - format: runcomposer-verdicts
   shards: 1
   deliver: none
-run: 01M7WSPDXVJEQBXPGBN6WEK1BJ (state COMPOSED)
+run: 01M7X3B9PDNEFDHZ9PK7J66N0G (state COMPOSED)
 ```
 
 (The last line is on stderr.) The document carries **no token**: a spec is a
@@ -658,13 +658,13 @@ bundle that comes back can be correlated and its `spec_sha256` verified:
 $ runcomposer spec 'Payments' --title "Nightly payments" --label suite=nightly \
       --format json -o spec.json --export
 spec written to spec.json
-run: 01M7WSPE7XGVHANRCBPBDP0WK4 (state COMPOSED)
-export dispatch: 01M7WSPE83SMR0SP85WZQDMHAX (1 shard(s) declared, state AWAITING_RESULTS)
-spec sha256: 90a172dc211a9c49c0c18d0832816aac5607a33977fd5818e295e8a7ccb79e82
-ingest token (shown once — needed to push results over HTTP): rct_iaOqZ5bKDcqnGHP3QfRRCOudiGTevVAK
+run: 01M7X3BA2EBNAEW1XZXKWXS8JD (state COMPOSED)
+export dispatch: 01M7X3BA2M33C4BNM7B6BFMKJ2 (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: 0683a775a426eb5e335a87015340aff0ae376737e8d86ce129f643aa3903db6b
+ingest token (shown once — needed to push results over HTTP): rct_DhsSnuCooKQRbpZqZbyYjXamrbmEM5hS
 
 $ shasum -a 256 spec.json
-90a172dc211a9c49c0c18d0832816aac5607a33977fd5818e295e8a7ccb79e82  spec.json
+0683a775a426eb5e335a87015340aff0ae376737e8d86ce129f643aa3903db6b  spec.json
 ```
 
 Three things about the **ingest token**:
@@ -686,9 +686,9 @@ Three things about the **ingest token**:
 $ runcomposer spec 'Checkout' --title "Nightly checkout" --format json -o checkout.json \
       --export --token-file checkout.token
 spec written to checkout.json
-run: 01M7WSPEDE0ZQ2NGP43DPVE66C (state COMPOSED)
-export dispatch: 01M7WSPEDNFMG4AV8PTWCX6QS5 (1 shard(s) declared, state AWAITING_RESULTS)
-spec sha256: 5d1e270acacb2a8f2475e85d1a4efcdec20ffb890148830b8fdecea74234f693
+run: 01M7X3BAYWFJ8T23DSVVT3NNV8 (state COMPOSED)
+export dispatch: 01M7X3BAZ2NSV8BDFAGV7KYDDQ (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: 15109ce2b68b88f1485644f3b3a54f1a9030506d05ebf97c36607a906f1cd6c0
 ingest token written to checkout.token
 
 $ ls -l checkout.token | cut -c1-10
@@ -708,9 +708,9 @@ $ runcomposer spec --id Shop.Payments.Cards.T001 --id Shop.Payments.Cards.T002 \
       --title "Two picks" --runner demo --param seed=nightly-7
 runspec: '1.0'
 run:
-  id: 01M7WSPEJSZC5T858G55Q5CCAM
+  id: 01M7X3BB905RSZHZ3HGKPSX63Y
   title: Two picks
-  created_at: '2026-11-20T15:37:42Z'
+  created_at: '2026-11-20T18:26:24Z'
 selection:
   item_ids:
   - Shop.Payments.Cards.T001
@@ -719,13 +719,13 @@ selection:
     item_ids:
     - Shop.Payments.Cards.T001
     - Shop.Payments.Cards.T002
-    at: '2026-11-20T15:37:42Z'
+    at: '2026-11-20T18:26:24Z'
     count: 2
 …
 runner:
   demo:
     seed: nightly-7
-run: 01M7WSPEJSZC5T858G55Q5CCAM (state COMPOSED)
+run: 01M7X3BB905RSZHZ3HGKPSX63Y (state COMPOSED)
 ```
 
 An id the catalog does not know is refused at compose time:
@@ -779,9 +779,9 @@ $ runcomposer spec --from-history 'failed@latest?suite=nightly' \
       --title "Rerun failures" --label suite=adhoc
 runspec: '1.0'
 run:
-  id: 01M7WSPGHF5MZV8Y1Y9P24N9WY
+  id: 01M7X3BR2XJ1AGCYK6YNRNVER3
   title: Rerun failures
-  created_at: '2026-11-20T15:37:44Z'
+  created_at: '2026-11-20T18:26:37Z'
   labels:
     suite: adhoc
 selection:
@@ -790,7 +790,7 @@ selection:
   materialized:
     item_ids:
     - Shop.Checkout.Gift.T002
-    at: '2026-11-20T15:37:44Z'
+    at: '2026-11-20T18:26:37Z'
     count: 1
   derived_from:
   - provider: history
@@ -800,13 +800,13 @@ selection:
       - FAIL
       labels:
         suite: nightly
-    resolved_run_id: 01M7WSPFHVFKSHHNV6DVMGP55P
-    resolved_run_completed_at: '2026-11-20T15:37:43Z'
+    resolved_run_id: 01M7X3BQGZF71M0YWCBJ9W0EJD
+    resolved_run_completed_at: '2026-11-20T18:26:36Z'
     resolved_run_labels:
       suite: nightly
     resolved_run_title: Checkout regression
 …
-run: 01M7WSPGHF5MZV8Y1Y9P24N9WY (state COMPOSED)
+run: 01M7X3BR2XJ1AGCYK6YNRNVER3 (state COMPOSED)
 ```
 
 The resolution happens **once, at compose time**: the emitted spec holds a
@@ -847,7 +847,7 @@ runcomposer run [FILTER] [--id ITEM_ID ...] [--from-history QUERY]
 ```console
 $ runcomposer run Checkout --runner demo --title "Checkout regression" --label suite=nightly
 demo runner: simulating 13 item(s) with seed 'demo'
-run 01M7WSPFHVFKSHHNV6DVMGP55P: dispatch 01M7WSPFHW4A46THSMBEVES14B via 'demo' (1 shard(s))
+run 01M7X3BQGZF71M0YWCBJ9W0EJD: dispatch 01M7X3BQH16V2JPX75VGMVNB5T via 'demo' (1 shard(s))
 state: COMPLETE (FAIL) — 11 PASS, 1 FAIL, 1 SKIP
   shard 1: FAIL — 11 PASS, 1 FAIL, 1 SKIP
 $ echo $?
@@ -855,7 +855,7 @@ $ echo $?
 
 $ runcomposer run Payments-Refunds --runner demo --title "Refunds" --param seed=demo-1
 demo runner: simulating 4 item(s) with seed 'demo-1'
-run 01M7WSPFQ6ZV9E4BWK6KZ4847D: dispatch 01M7WSPFQ7WDA97K9WD0RAV2QT via 'demo' (1 shard(s))
+run 01M7X3BQQ8FY60Q5Y93TBY0RVF: dispatch 01M7X3BQQAE4AXA2KH2DR3TWE1 via 'demo' (1 shard(s))
 state: COMPLETE (PASS) — 4 PASS
   shard 1: PASS — 4 PASS
 $ echo $?
@@ -912,7 +912,7 @@ robot-pool plan: 13 item(s) × 2 partition(s) → 2 chunk(s)/partition, max_work
   cold start: no duration history — round-robin chunking; balance improves as completed dispatches accrue
   chunk 1: 7 item(s), est 0ms
   chunk 2: 6 item(s), est 0ms
-run 01M7WSQHC680NHV73JRQ5EBHQ9: dispatch 01M7WSQHC7JV951A4RA48Q1CGX via 'robot-pool' (4 shard(s))
+run 01M7X3JYYQWXFAT46NMDW5FR2D: dispatch 01M7X3JYYSFVE428AG6Z3SVQ6T via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
   shard env1-1: PASS — 7 PASS
   shard env1-2: FAIL — 5 PASS, 1 FAIL
@@ -921,12 +921,12 @@ state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
 
 $ runcomposer run Payments --runner robot-pool --param 'partitions=[env1]' --title "Payments on env1" --config shop/config.yaml
 robot-pool plan: 13 item(s) × 1 partition(s) → 4 chunk(s)/partition, max_workers=4
-  duration-balanced chunking: history for 4/13 item(s)
+  duration-balanced chunking: history for 3/13 item(s)
   chunk 1: 4 item(s), est 1ms
-  chunk 2: 3 item(s), est 2ms
+  chunk 2: 3 item(s), est 1ms
   chunk 3: 3 item(s), est 1ms
   chunk 4: 3 item(s), est 0ms
-run 01M7WSQJGN5DQ0DM22JJVJ457E: dispatch 01M7WSQJGP3F3DQ4Z7Y2JGVDJG via 'robot-pool' (4 shard(s))
+run 01M7X3JZRJ1SBYP197Q03C72J5: dispatch 01M7X3JZRKFNAN66Y5TKVG6GRR via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 12 PASS, 1 FAIL
   shard env1-1: PASS — 4 PASS
   shard env1-2: FAIL — 2 PASS, 1 FAIL
@@ -973,11 +973,11 @@ stored yet) and then dispatched:
 ```console
 $ runcomposer spec 'Catalog' --title "Catalog check" --format json -o catalog.json
 spec written to catalog.json
-run: 01M7WSPGPKJCA5XY1T0JMJJ06N (state COMPOSED)
+run: 01M7X3BR8KEPYEHH3H5Y4DH6XJ (state COMPOSED)
 
 $ runcomposer dispatch catalog.json --runner demo
 demo runner: simulating 9 item(s) with seed 'demo'
-run 01M7WSPGPKJCA5XY1T0JMJJ06N: dispatch 01M7WSPGW4WZN625AB6H34S4MX via 'demo' (1 shard(s))
+run 01M7X3BR8KEPYEHH3H5Y4DH6XJ: dispatch 01M7X3BREBEJ2TP96QVRRA4VAB via 'demo' (1 shard(s))
 state: COMPLETE (PASS) — 9 PASS
   shard 1: PASS — 9 PASS
 ```
@@ -987,9 +987,9 @@ state: COMPLETE (PASS) — 9 PASS
 document:
 
 ```console
-$ runcomposer dispatch --run 01M7WSPEJSZC5T858G55Q5CCAM --runner demo
+$ runcomposer dispatch --run 01M7X3BB905RSZHZ3HGKPSX63Y --runner demo
 demo runner: simulating 2 item(s) with seed 'nightly-7'
-run 01M7WSPEJSZC5T858G55Q5CCAM: dispatch 01M7WSPH6QFTJDBSKZRTKMYVPA via 'demo' (1 shard(s))
+run 01M7X3BB905RSZHZ3HGKPSX63Y: dispatch 01M7X3BRM26QQ9HF48DBPDP87A via 'demo' (1 shard(s))
 state: COMPLETE (PASS) — 2 PASS
   shard 1: PASS — 2 PASS
 ```
@@ -1006,7 +1006,7 @@ Things to know before you script this:
 
   ```console
   $ runcomposer dispatch catalog-edited.json --runner demo
-  error: run 01M7WSPGPKJCA5XY1T0JMJJ06N is already stored and the given document differs from it — a run's spec does not change after composing. Compose a new run for a different selection (a spec file is a record, not an editable input)
+  error: run 01M7X3BR8KEPYEHH3H5Y4DH6XJ is already stored and the given document differs from it — a run's spec does not change after composing. Compose a new run for a different selection (a spec file is a record, not an editable input)
   ```
 
 - **A document cannot reconfigure the runner.** Of what a spec's
@@ -1025,7 +1025,7 @@ the reason is in its event stream:
 
 ```console
 $ runcomposer dispatch account.json --runner robot-pool --config shop/config.yaml
-refused: live corpus snapshot differs from source.snapshot in the spec — refusing (§3.3 drift check; composed sha256:21ee74fed1fcf5e66b71b3d4b6f4845c96d3acb4d3a9bfd4bcb58603bb1e95e4, live sha256:5a9d2be7f478650499cd840687473b835265e22b2dd79d74611b9052318ae918). Set the allow_drift parameter to execute the intersection.
+refused: live corpus snapshot differs from source.snapshot in the spec — refusing (§3.3 drift check; composed sha256:21ee74fed1fcf5e66b71b3d4b6f4845c96d3acb4d3a9bfd4bcb58603bb1e95e4, live sha256:9e3e09b7be07964e88673e34c1f81fd5a05b9f6b2a31873b5a970eef8086de5f). Set the allow_drift parameter to execute the intersection.
 $ echo $?
 3
 
@@ -1057,9 +1057,9 @@ runcomposer rerun RUN_ID [--scope all|failed] [--runner RUNNER] [--param NAME=VA
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
 ```console
-$ runcomposer rerun 01M7WSPFHVFKSHHNV6DVMGP55P
+$ runcomposer rerun 01M7X3BQGZF71M0YWCBJ9W0EJD
 demo runner: simulating 13 item(s) with seed 'demo'
-run 01M7WSPFHVFKSHHNV6DVMGP55P: dispatch 01M7WSPHTVZVZYVDCFHY5WTAY9 via 'demo' (1 shard(s))
+run 01M7X3BQGZF71M0YWCBJ9W0EJD: dispatch 01M7X3BRZVSNG3EPE3NJP1YA9F via 'demo' (1 shard(s))
 state: COMPLETE (FAIL) — 11 PASS, 1 FAIL, 1 SKIP
   shard 1: FAIL — 11 PASS, 1 FAIL, 1 SKIP
 ```
@@ -1068,10 +1068,10 @@ Same run id, a second dispatch. `--scope failed` is a different thing — a
 different item set is a different run:
 
 ```console
-$ runcomposer rerun 01M7WSPFHVFKSHHNV6DVMGP55P --scope failed --param seed=retry-1
-rerun of 01M7WSPFHVFKSHHNV6DVMGP55P: composed run 01M7WSPJ0A62MN8RK8888YPT6D
+$ runcomposer rerun 01M7X3BQGZF71M0YWCBJ9W0EJD --scope failed --param seed=retry-1
+rerun of 01M7X3BQGZF71M0YWCBJ9W0EJD: composed run 01M7X3BS5MNB5XF32BX5X497NQ
 demo runner: simulating 1 item(s) with seed 'retry-1'
-run 01M7WSPJ0A62MN8RK8888YPT6D: dispatch 01M7WSPJ0BBZ7MQ4M49BRVFPEM via 'demo' (1 shard(s))
+run 01M7X3BS5MNB5XF32BX5X497NQ: dispatch 01M7X3BS5NGCRWSA2688WRZAAR via 'demo' (1 shard(s))
 state: COMPLETE (PASS) — 1 PASS
   shard 1: PASS — 1 PASS
 ```
@@ -1116,22 +1116,22 @@ A run started through the server with a slow runner, cancelled from the CLI:
 $ curl -s -X POST localhost:8200/api/v1/runs -H 'Content-Type: application/json' \
       -d '{"selection": {"tag_filter": "Checkout"}, "title": "Slow checkout", "dispatch": {"runner": "demo-slow"}}'
 …
-$ runcomposer show 01M7WSPQSDDE15FDXTT4TBBYB6
-run 01M7WSPQSDDE15FDXTT4TBBYB6  Slow checkout
+$ runcomposer show 01M7X3H2HEJQN3WD6176WB48R8
+run 01M7X3H2HEJQN3WD6176WB48R8  Slow checkout
 state: RUNNING — no verdicts
-planned: 13 item(s); created 2026-11-20T15:37:51Z; origin api; labels {}
-dispatch 01M7WSPQSE412PVN17APQA24C3  demo-slow  RUNNING  no verdicts
+planned: 13 item(s); created 2026-11-20T18:29:31Z; origin api; labels {}
+dispatch 01M7X3H2HFPK2YAWR2DDNW98A9  demo-slow  RUNNING  no verdicts
   shard 1: outstanding — no verdicts
 
-$ runcomposer cancel 01M7WSPQSDDE15FDXTT4TBBYB6
-run 01M7WSPQSDDE15FDXTT4TBBYB6: cancellation requested for dispatch 01M7WSPQSE412PVN17APQA24C3 (RUNNING) — the process executing it will stop it; follow with `runcomposer watch 01M7WSPQSDDE15FDXTT4TBBYB6`
+$ runcomposer cancel 01M7X3H2HEJQN3WD6176WB48R8
+run 01M7X3H2HEJQN3WD6176WB48R8: cancellation requested for dispatch 01M7X3H2HFPK2YAWR2DDNW98A9 (RUNNING) — the process executing it will stop it; follow with `runcomposer watch 01M7X3H2HEJQN3WD6176WB48R8`
 
-$ runcomposer watch 01M7WSPQSDDE15FDXTT4TBBYB6
-2026-11-20T15:37:51Z  #50   run.composed
-2026-11-20T15:37:51Z  #51   run.dispatched  state=DISPATCHED
-2026-11-20T15:37:51Z  #52   run.running  state=RUNNING
-2026-11-20T15:37:55Z  #53   run.cancel_requested  state=RUNNING
-2026-11-20T15:37:55Z  #54   run.cancelled  state=CANCELLED  error=cancelled on request  13 MISSING
+$ runcomposer watch 01M7X3H2HEJQN3WD6176WB48R8
+2026-11-20T18:29:31Z  #57   run.composed
+2026-11-20T18:29:31Z  #58   run.dispatched  state=DISPATCHED
+2026-11-20T18:29:31Z  #59   run.running  state=RUNNING
+2026-11-20T18:29:32Z  #60   run.cancel_requested  state=RUNNING
+2026-11-20T18:29:32Z  #61   run.cancelled  state=CANCELLED  error=cancelled on request  13 MISSING
 $ echo $?
 3
 ```
@@ -1139,16 +1139,16 @@ $ echo $?
 An export nobody will answer, cancelled at once:
 
 ```console
-$ runcomposer cancel 01M7WSPVV0CMZN2RV2AFKZR0ES
-run 01M7WSPVV0CMZN2RV2AFKZR0ES: dispatch 01M7WSPVV63A9PP9E4JNZ7EYRD CANCELLED
+$ runcomposer cancel 01M7X3BAYWFJ8T23DSVVT3NNV8
+run 01M7X3BAYWFJ8T23DSVVT3NNV8: dispatch 01M7X3BAZ2NSV8BDFAGV7KYDDQ CANCELLED
 ```
 
 `cancel` exits `0` when the request was made. A run with nothing in flight
 exits `1`:
 
 ```console
-$ runcomposer cancel 01M7WSPQSDDE15FDXTT4TBBYB6
-error: run 01M7WSPQSDDE15FDXTT4TBBYB6 has nothing in flight to cancel (state CANCELLED)
+$ runcomposer cancel 01M7X3H2HEJQN3WD6176WB48R8
+error: run 01M7X3H2HEJQN3WD6176WB48R8 has nothing in flight to cancel (state CANCELLED)
 ```
 
 Whatever was delivered before the cancellation is kept; items that never
@@ -1180,16 +1180,16 @@ a run is an event. `watch` reads them out of the store, so it follows a run
 whichever process is executing it:
 
 ```console
-$ runcomposer watch 01M7WSPFHVFKSHHNV6DVMGP55P --no-follow
-2026-11-20T15:37:43Z  #7    run.composed
-2026-11-20T15:37:43Z  #8    run.dispatched  state=DISPATCHED
-2026-11-20T15:37:43Z  #9    run.running  state=RUNNING
-2026-11-20T15:37:43Z  #10   delivery.recorded  shard=1  outcome=new
-2026-11-20T15:37:43Z  #11   run.completed  state=COMPLETE  completion=FAIL  11 PASS, 1 FAIL, 1 SKIP
-2026-11-20T15:37:45Z  #27   run.dispatched  state=DISPATCHED
-2026-11-20T15:37:45Z  #28   run.running  state=RUNNING
-2026-11-20T15:37:45Z  #29   delivery.recorded  shard=1  outcome=new
-2026-11-20T15:37:45Z  #30   run.completed  state=COMPLETE  completion=FAIL  11 PASS, 1 FAIL, 1 SKIP
+$ runcomposer watch 01M7X3BQGZF71M0YWCBJ9W0EJD --no-follow
+2026-11-20T18:26:36Z  #7    run.composed
+2026-11-20T18:26:36Z  #8    run.dispatched  state=DISPATCHED
+2026-11-20T18:26:36Z  #9    run.running  state=RUNNING
+2026-11-20T18:26:36Z  #10   delivery.recorded  shard=1  outcome=new
+2026-11-20T18:26:36Z  #11   run.completed  state=COMPLETE  completion=FAIL  11 PASS, 1 FAIL, 1 SKIP
+2026-11-20T18:26:38Z  #27   run.dispatched  state=DISPATCHED
+2026-11-20T18:26:38Z  #28   run.running  state=RUNNING
+2026-11-20T18:26:38Z  #29   delivery.recorded  shard=1  outcome=new
+2026-11-20T18:26:38Z  #30   run.completed  state=COMPLETE  completion=FAIL  11 PASS, 1 FAIL, 1 SKIP
 ```
 
 Two dispatches of one run, in order (sequence numbers are per store, so a run's
@@ -1200,8 +1200,8 @@ for `PASS`, `1` for any other completion, `3` for no result. That makes
 `watch` the way to block a script on a run somebody else started.
 
 ```console
-$ runcomposer watch 01M7WSPFHVFKSHHNV6DVMGP55P --no-follow --json | tail -1
-{"seq": 30, "run_id": "01M7WSPFHVFKSHHNV6DVMGP55P", "at": "2026-11-20T15:37:45Z", "kind": "run.completed", "dispatch_id": "01M7WSPHTVZVZYVDCFHY5WTAY9", "data": {"state": "COMPLETE", "mode": "demo", "title": "Checkout regression", "labels": {"suite": "nightly"}, "latest": true, "completion": "FAIL", "summary": {"PASS": 11, "SKIP": 1, "FAIL": 1}}}
+$ runcomposer watch 01M7X3BQGZF71M0YWCBJ9W0EJD --no-follow --json | tail -1
+{"seq": 30, "run_id": "01M7X3BQGZF71M0YWCBJ9W0EJD", "at": "2026-11-20T18:26:38Z", "kind": "run.completed", "dispatch_id": "01M7X3BRZVSNG3EPE3NJP1YA9F", "data": {"state": "COMPLETE", "mode": "demo", "title": "Checkout regression", "labels": {"suite": "nightly"}, "latest": true, "completion": "FAIL", "summary": {"PASS": 11, "SKIP": 1, "FAIL": 1}}}
 ```
 
 ---
@@ -1218,18 +1218,18 @@ The headline, every dispatch with its own state and counts, the per-shard
 roll-up of the latest dispatch, and the artifacts recorded for the run:
 
 ```console
-$ runcomposer show 01M7WSQHC680NHV73JRQ5EBHQ9 --config shop/config.yaml
-run 01M7WSQHC680NHV73JRQ5EBHQ9  Payments on both environments
+$ runcomposer show 01M7X3JYYQWXFAT46NMDW5FR2D --config shop/config.yaml
+run 01M7X3JYYQWXFAT46NMDW5FR2D  Payments on both environments
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
-planned: 13 item(s); created 2026-11-20T15:38:17Z; origin cli; labels {}
-dispatch 01M7WSQHC7JV951A4RA48Q1CGX  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
+planned: 13 item(s); created 2026-11-20T18:30:33Z; origin cli; labels {}
+dispatch 01M7X3JYYSFVE428AG6Z3SVQ6T  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
   shard env1-1: PASS — 7 PASS
   shard env1-2: FAIL — 5 PASS, 1 FAIL
   shard env2-1: PASS — 7 PASS
   shard env2-2: FAIL — 5 PASS, 1 FAIL
-  artifact log.html (env1-1): /artifacts/01M7WSQHC680NHV73JRQ5EBHQ9/01M7WSQHC7JV951A4RA48Q1CGX/env1-1/log.html
-  artifact report.html (env1-1): /artifacts/01M7WSQHC680NHV73JRQ5EBHQ9/01M7WSQHC7JV951A4RA48Q1CGX/env1-1/report.html
-  artifact output.xml (env1-1): /artifacts/01M7WSQHC680NHV73JRQ5EBHQ9/01M7WSQHC7JV951A4RA48Q1CGX/env1-1/output.xml
+  artifact log.html (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/log.html
+  artifact report.html (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/report.html
+  artifact output.xml (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/output.xml
 …
 ```
 
@@ -1244,11 +1244,11 @@ never reported. A run with a missing item is `INCOMPLETE` at best, never
 `PASS`:
 
 ```console
-$ runcomposer show 01M7WSPDXVJEQBXPGBN6WEK1BJ
-run 01M7WSPDXVJEQBXPGBN6WEK1BJ  Refunds smoke
+$ runcomposer show 01M7X3B9PDNEFDHZ9PK7J66N0G
+run 01M7X3B9PDNEFDHZ9PK7J66N0G  Refunds smoke
 state: COMPLETE (INCOMPLETE) — 3 PASS, 1 MISSING
-planned: 4 item(s); created 2026-11-20T15:37:41Z; origin cli; labels {'suite': 'nightly'}
-dispatch 01M7WSPMRBNBF1GRW4TCVV721Y  export  COMPLETE (INCOMPLETE)  3 PASS, 1 MISSING
+planned: 4 item(s); created 2026-11-20T18:26:22Z; origin cli; labels {'suite': 'nightly'}
+dispatch 01M7X3DD0GCKQGKG8PT3J34RHS  export  COMPLETE (INCOMPLETE)  3 PASS, 1 MISSING
   shard 1: PASS — 3 PASS
   reported by no shard: 1 MISSING
 ```
@@ -1290,8 +1290,8 @@ runcomposer runs [--state STATE] [--label KEY=VALUE ...] [-q TEXT]
 ```console
 $ runcomposer runs --state COMPLETE --label suite=nightly
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7WSPJ0A62MN8RK8888YPT6D  COMPLETE          PASS        demo          2026-11-20T15:37:45Z  Rerun of failures: Checkout regression
-01M7WSPFHVFKSHHNV6DVMGP55P  COMPLETE          FAIL        demo          2026-11-20T15:37:43Z  Checkout regression
+01M7X3BS5MNB5XF32BX5X497NQ  COMPLETE          PASS        demo          2026-11-20T18:26:38Z  Rerun of failures: Checkout regression
+01M7X3BQGZF71M0YWCBJ9W0EJD  COMPLETE          FAIL        demo          2026-11-20T18:26:36Z  Checkout regression
 ```
 
 `STATE` is the lifecycle state; `RESULT` is the computed completion of a
@@ -1303,14 +1303,14 @@ a run nothing was dispatched for). Filters combine, the window is on
 ```console
 $ runcomposer runs -q checkout --limit 2
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7WSPJ0A62MN8RK8888YPT6D  COMPLETE          PASS        demo          2026-11-20T15:37:45Z  Rerun of failures: Checkout regression
-01M7WSPFHVFKSHHNV6DVMGP55P  COMPLETE          FAIL        demo          2026-11-20T15:37:43Z  Checkout regression
+01M7X3BS5MNB5XF32BX5X497NQ  COMPLETE          PASS        demo          2026-11-20T18:26:38Z  Rerun of failures: Checkout regression
+01M7X3BQGZF71M0YWCBJ9W0EJD  COMPLETE          FAIL        demo          2026-11-20T18:26:36Z  Checkout regression
 # 2 of 3 run(s) — page with --limit / --offset
 
 $ runcomposer runs --since 2026-11-20T00:00:00Z --until 2026-11-22T00:00:00+01:00 --limit 2 --offset 1
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7WSPGPKJCA5XY1T0JMJJ06N  COMPLETE          PASS        demo          2026-11-20T15:37:44Z  Catalog check
-01M7WSPGHF5MZV8Y1Y9P24N9WY  COMPOSED          -           -             2026-11-20T15:37:44Z  Rerun failures
+01M7X3BR8KEPYEHH3H5Y4DH6XJ  COMPLETE          PASS        demo          2026-11-20T18:26:37Z  Catalog check
+01M7X3BR2XJ1AGCYK6YNRNVER3  COMPOSED          -           -             2026-11-20T18:26:37Z  Rerun failures
 # 2 of 9 run(s) — page with --limit / --offset
 ```
 
@@ -1330,26 +1330,28 @@ or `before:<ISO time>`, each optionally scoped:
 
 ```console
 $ runcomposer runs --failed-in latest --label suite=nightly
-# 1 item(s) FAILED in run 01M7WSPFHVFKSHHNV6DVMGP55P (scope: {'suite': 'nightly'})
-Shop.Checkout.Gift.T002
+# 0 item(s) FAILED in run 01M7X3BA2EBNAEW1XZXKWXS8JD (scope: {'suite': 'nightly'})
 ```
 
-So piping means dropping the header:
+"Latest" means latest *completed*: in this store that is "Nightly payments",
+whose exported results were ingested after the other nightly runs finished
+— and nothing failed in it. To ask about the "Checkout regression" run
+instead, name it. Piping means dropping the header:
 
 ```console
-$ runcomposer runs --failed-in 'latest?suite=nightly' | grep -v '^#'
+$ runcomposer runs --failed-in 'run:01M7X3BQGZF71M0YWCBJ9W0EJD' | grep -v '^#'
 Shop.Checkout.Gift.T002
 ```
 
 The scope may be written either way — `--label suite=nightly`, or inline in the
-selector as above. **Scope it.** Unscoped, `latest` ranges over every completed
+selector: `'latest?suite=nightly'`. **Scope it.** Unscoped, `latest` ranges over every completed
 run in the store, so where one-off selections and a nightly stream share an
 instance, the rerun may follow a run it was never meant to. A scope on
 `run:<id>` is refused rather than ignored, since it could only mislead:
 
 ```console
-$ runcomposer runs --failed-in 'run:01M7WSPFHVFKSHHNV6DVMGP55P?suite=nightly'
-error: history selector 'run:01M7WSPFHVFKSHHNV6DVMGP55P' already names one run, so the label scope {'suite': 'nightly'} could only be ignored — drop one of the two
+$ runcomposer runs --failed-in 'run:01M7X3BQGZF71M0YWCBJ9W0EJD?suite=nightly'
+error: history selector 'run:01M7X3BQGZF71M0YWCBJ9W0EJD' already names one run, so the label scope {'suite': 'nightly'} could only be ignored — drop one of the two
 ```
 
 "Latest" is decided by a run's **headline**, which follows its latest
@@ -1380,7 +1382,7 @@ runcomposer export RUN_ID --format ctrf [-o OUT] [--config PATH]
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
 ```console
-$ runcomposer export 01M7WSPFHVFKSHHNV6DVMGP55P --format ctrf -o checkout-ctrf.json
+$ runcomposer export 01M7X3BQGZF71M0YWCBJ9W0EJD --format ctrf -o checkout-ctrf.json
 CTRF report written to checkout-ctrf.json
 $ head -24 checkout-ctrf.json
 {
@@ -1395,8 +1397,8 @@ $ head -24 checkout-ctrf.json
       "skipped": 1,
       "pending": 0,
       "other": 0,
-      "start": 1795189063000,
-      "stop": 1795189065000
+      "start": 1795199196000,
+      "stop": 1795199198000
     },
     "tests": [
       {
@@ -1418,7 +1420,7 @@ Anything else is refused up front (exit `2`), with the supported list in the
 message:
 
 ```console
-$ runcomposer export 01M7WSPFHVFKSHHNV6DVMGP55P --format junit
+$ runcomposer export 01M7X3BQGZF71M0YWCBJ9W0EJD --format junit
 error: unknown export format 'junit' (supported: ctrf)
 ```
 
@@ -1447,11 +1449,11 @@ runcomposer export-spec RUN_ID [--format yaml|json] [-o OUT] [--token-file FILE]
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
 ```console
-$ runcomposer export-spec 01M7WSPDXVJEQBXPGBN6WEK1BJ -o refunds.json
+$ runcomposer export-spec 01M7X3B9PDNEFDHZ9PK7J66N0G -o refunds.json
 spec written to refunds.json
-export dispatch: 01M7WSPMRBNBF1GRW4TCVV721Y (1 shard(s) declared, state AWAITING_RESULTS)
-spec sha256: 087164c68730d01a029b63fc01f6d5694b9b1bc1552466015c92afe2cd7a1391
-ingest token (shown once — needed to push results over HTTP): rct_xM6r7OD145bTucCAtLUKvN1f_I_YqGLF
+export dispatch: 01M7X3DD0GCKQGKG8PT3J34RHS (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: 480c23d5fa2444d8ee042a9b80d24c828b88b4e9191dcc92faa48ddb55988001
+ingest token (shown once — needed to push results over HTTP): rct_DagIT5E2eMqqM8TesLmwfgppSy13_2Wa
 ```
 
 Every call is an explicit hand-out: it mints **a new export dispatch** — with
@@ -1490,7 +1492,7 @@ The normal path needs no flags at all, because the marker
 
 ```console
 $ runcomposer ingest results
-01M7WSPE7XGVHANRCBPBDP0WK4 shard 1: delivery recorded (17 verdict(s))
+01M7X3BA2EBNAEW1XZXKWXS8JD shard 1: delivery recorded (17 verdict(s))
 run state: COMPLETE (PASS)
 ```
 
@@ -1500,7 +1502,7 @@ retries harmless:
 
 ```console
 $ runcomposer ingest results
-01M7WSPE7XGVHANRCBPBDP0WK4 shard 1: the same bundle was already ingested — no-op (17 verdict(s))
+01M7X3BA2EBNAEW1XZXKWXS8JD shard 1: the same bundle was already ingested — no-op (17 verdict(s))
 run state: COMPLETE (PASS)
 ```
 
@@ -1514,8 +1516,8 @@ never reported counts as `MISSING`. Three of four planned results arriving is
 not a green run:
 
 ```console
-$ runcomposer ingest refunds-first --run 01M7WSPDXVJEQBXPGBN6WEK1BJ
-01M7WSPDXVJEQBXPGBN6WEK1BJ shard 1: delivery recorded (3 verdict(s))
+$ runcomposer ingest refunds-first --run 01M7X3B9PDNEFDHZ9PK7J66N0G
+01M7X3B9PDNEFDHZ9PK7J66N0G shard 1: delivery recorded (3 verdict(s))
 run state: COMPLETE (INCOMPLETE)
 ```
 
@@ -1526,26 +1528,29 @@ $ runcomposer ingest stray
 error: bundle has no runcomposer_run.json marker and no run id was given — unsolicited bundles are not auto-attached (DESIGN.md §4/§5); quarantine it, or promote explicitly (--allow-unsolicited)
 
 $ runcomposer ingest stray --allow-unsolicited
-unsolicited bundle promoted to run 01M7WSPME2VB7QB608XB804CG2 (origin: ingested)
-01M7WSPME2VB7QB608XB804CG2 shard 1: delivery recorded (1 verdict(s))
+unsolicited bundle promoted to run 01M7X3DTKNEXWQNQK5WHNR4E6B (origin: ingested)
+01M7X3DTKNEXWQNQK5WHNR4E6B shard 1: delivery recorded (1 verdict(s))
 run state: COMPLETE (PASS)
 ```
 
 Use `--run` and `--shard` when you are correlating by hand:
 
 ```console
-$ runcomposer ingest results-env1 --run 01M7WSRMR1C0SPZ7ABH766DRDA --shard env1
+$ runcomposer ingest results-env1 --run 01M7X3M6CH4EY5JAP6RJ9VH5K8 --shard env1
 warning: run had no dispatch — an 'ingest' dispatch was opened for the delivery
-01M7WSRMR1C0SPZ7ABH766DRDA shard env1: delivery recorded (4 verdict(s))
+01M7X3M6CH4EY5JAP6RJ9VH5K8 shard env1: delivery recorded (4 verdict(s))
 run state: COMPLETE (PASS)
 
-$ runcomposer ingest results-env2 --run 01M7WSRMR1C0SPZ7ABH766DRDA --shard env2
-warning: shard 'env2' was not declared by dispatch 01M7WSRN2ZFP8P5A2V102FWK6N (declared: ['env1']) — recorded, but it completes nothing
-01M7WSRMR1C0SPZ7ABH766DRDA shard env2: delivery recorded (4 verdict(s))
+$ runcomposer ingest results-env2 --run 01M7X3M6CH4EY5JAP6RJ9VH5K8 --shard env2
+warning: marker carries spec_sha256 but the dispatch has no recorded spec hash — verification skipped
+warning: shard 'env2' was not declared by dispatch 01M7X3M6MMRYNMAXT04C2Y661F (declared: ['env1']) — recorded, but it completes nothing
+01M7X3M6CH4EY5JAP6RJ9VH5K8 shard env2: delivery recorded (4 verdict(s))
 run state: COMPLETE (FAIL)
 ```
 
-Both warnings are worth reading. This run was composed and never dispatched or
+The warnings are worth reading. (The first one says the bundle's marker
+carries a spec hash but this dispatch handed no document out, so there is
+nothing to verify it against — it is skipped, and said so.) This run was composed and never dispatched or
 exported, so the first delivery had no dispatch to belong to — one was opened
 for it (mode `ingest`), declaring the one shard it arrived with, and the run
 was complete the moment that shard was in. The second shard was therefore not
@@ -1585,8 +1590,8 @@ run that does not exist, one with no marker at all:
 ```console
 $ runcomposer quarantine list
 ENTRY                         RECEIVED              REASON              VIA        CLAIMED RUN
-q-01M7WSPX11ANGJ7D87PEV0RTRX  2026-11-20T15:37:57Z  unknown-run         file-drop  01HXNOSUCHRUN0000000000000
-q-01M7WSQ0YCPZWKQY6ANXE2V606  2026-11-20T15:38:01Z  unsolicited         file-drop  -
+q-01M7X3HEJ5AM0PXHTJ11H5WFEV  2026-11-20T18:29:44Z  unknown-run         file-drop  01HXNOSUCHRUN0000000000000
+q-01M7X3HMEKD8W9MPXCTBH1TPSF  2026-11-20T18:29:50Z  unsolicited         file-drop  -
 ```
 
 **`attach`** binds an entry to an existing run. It is an explicit decision: the
@@ -1595,14 +1600,14 @@ delivery rules apply from there, and the action is recorded on the run as a
 `delivery.attached` event.
 
 ```console
-$ runcomposer quarantine attach q-01M7WSPX11ANGJ7D87PEV0RTRX 01M7WSPGHF5MZV8Y1Y9P24N9WY
-01M7WSPGHF5MZV8Y1Y9P24N9WY shard 1: delivery recorded (1 verdict(s))
+$ runcomposer quarantine attach q-01M7X3HEJ5AM0PXHTJ11H5WFEV 01M7X3BR2XJ1AGCYK6YNRNVER3
+01M7X3BR2XJ1AGCYK6YNRNVER3 shard 1: delivery recorded (1 verdict(s))
 run state: COMPLETE (PASS)
 
-$ runcomposer watch 01M7WSPGHF5MZV8Y1Y9P24N9WY --no-follow | tail -3
-2026-11-20T15:38:01Z  #60   delivery.recorded  shard=1  outcome=new
-2026-11-20T15:38:01Z  #61   run.completed  state=COMPLETE  completion=PASS  1 PASS
-2026-11-20T15:38:01Z  #62   delivery.attached  shard=1  reason=unknown-run  message=quarantined delivery attached by an explicit action
+$ runcomposer watch 01M7X3BR2XJ1AGCYK6YNRNVER3 --no-follow | tail -3
+2026-11-20T18:30:03Z  #65   delivery.recorded  shard=1  outcome=new
+2026-11-20T18:30:03Z  #66   run.completed  state=COMPLETE  completion=PASS  1 PASS
+2026-11-20T18:30:03Z  #67   delivery.attached  shard=1  reason=unknown-run  message=quarantined delivery attached by an explicit action
 ```
 
 **`promote`** makes an entry its own run, origin `ingested`, whose planned set
@@ -1610,19 +1615,19 @@ is what the bundle reported. An entry that arrived without saying which result
 format it is in (a file drop for no known run) needs to be told:
 
 ```console
-$ runcomposer quarantine promote q-01M7WSQ0YCPZWKQY6ANXE2V606
-error: quarantine entry q-01M7WSQ0YCPZWKQY6ANXE2V606 does not say which result format it is in — name the format to promote it (`--format` on the CLI, `format` in the API)
+$ runcomposer quarantine promote q-01M7X3HMEKD8W9MPXCTBH1TPSF
+error: quarantine entry q-01M7X3HMEKD8W9MPXCTBH1TPSF does not say which result format it is in — name the format to promote it (`--format` on the CLI, `format` in the API)
 
-$ runcomposer quarantine promote q-01M7WSQ0YCPZWKQY6ANXE2V606 --format runcomposer-verdicts
-01M7WSQ26M11GSQ92037WPGRX2 shard 1: delivery recorded (2 verdict(s))
+$ runcomposer quarantine promote q-01M7X3HMEKD8W9MPXCTBH1TPSF --format runcomposer-verdicts
+01M7X3J1WWW9MQVRY2TDGS9WG8 shard 1: delivery recorded (2 verdict(s))
 run state: COMPLETE (FAIL)
 ```
 
 **`discard`** deletes an entry. An id that does not exist exits `1`:
 
 ```console
-$ runcomposer quarantine discard q-01M7WSQ2X3FFVYWMS14X4DNM6K
-quarantine entry q-01M7WSQ2X3FFVYWMS14X4DNM6K discarded
+$ runcomposer quarantine discard q-01M7X3J62PZ5E1KAZKADSRDN7E
+quarantine entry q-01M7X3J62PZ5E1KAZKADSRDN7E discarded
 
 $ runcomposer quarantine list
 quarantine is empty
@@ -1643,8 +1648,8 @@ shards are given up, every planned item that never reported becomes `MISSING`,
 and completion is computed from what is there. An export nobody answered:
 
 ```console
-$ runcomposer finalize 01M7WSPN81YS7ZCVPRSN6NE1KN
-run 01M7WSPN81YS7ZCVPRSN6NE1KN: COMPLETE (INCOMPLETE) — 14 MISSING
+$ runcomposer finalize 01M7X3EBVENA1KXZ0SF6V2RKKR
+run 01M7X3EBVENA1KXZ0SF6V2RKKR: COMPLETE (INCOMPLETE) — 14 MISSING
 $ echo $?
 1
 ```
@@ -1653,8 +1658,8 @@ The exit code is the run's (`0` only for `PASS`). `finalize` cannot invent a
 result, and it does not interrupt anything:
 
 ```console
-$ runcomposer finalize 01M7WSPN81YS7ZCVPRSN6NE1KN        # before it was ever dispatched or exported
-error: run 01M7WSPN81YS7ZCVPRSN6NE1KN was never dispatched and has no results — there is nothing to finalize
+$ runcomposer finalize 01M7X3EBVENA1KXZ0SF6V2RKKR        # before it was ever dispatched or exported
+error: run 01M7X3EBVENA1KXZ0SF6V2RKKR was never dispatched and has no results — there is nothing to finalize
 ```
 
 A run that a runner is still executing is refused — [`cancel`](#cancel) it
@@ -1671,11 +1676,11 @@ runcomposer delete RUN_ID [--config PATH]
 ```
 
 ```console
-$ runcomposer delete 01M7WSPN81YS7ZCVPRSN6NE1KN
-run 01M7WSPN81YS7ZCVPRSN6NE1KN deleted
+$ runcomposer delete 01M7X3EBVENA1KXZ0SF6V2RKKR
+run 01M7X3EBVENA1KXZ0SF6V2RKKR deleted
 
-$ runcomposer show 01M7WSPN81YS7ZCVPRSN6NE1KN
-error: unknown run id '01M7WSPN81YS7ZCVPRSN6NE1KN'
+$ runcomposer show 01M7X3EBVENA1KXZ0SF6V2RKKR
+error: unknown run id '01M7X3EBVENA1KXZ0SF6V2RKKR'
 ```
 
 Not undoable. A run that a runner is executing right now is refused until it
@@ -1849,9 +1854,9 @@ While it runs, the server:
 - **logs** one line per run event (stderr), next to the HTTP access log:
 
   ```
-  2026-11-20T16:37:51 INFO    runcomposer.events: run.running run=01M7WSPQSDDE15FDXTT4TBBYB6 dispatch=01M7WSPQSE412PVN17APQA24C3 state=RUNNING
-  2026-11-20T16:37:55 INFO    runcomposer.events: run.cancelled run=01M7WSPQSDDE15FDXTT4TBBYB6 dispatch=01M7WSPQSE412PVN17APQA24C3 state=CANCELLED error=cancelled on request
-  2026-11-20T16:37:57 WARNING runcomposer.inbox: inbox bundle lost quarantined (unknown-run): unknown run id '01HXNOSUCHRUN0000000000000' — refusing bundle
+  2026-11-20T18:29:31Z INFO    runcomposer.events: run.running run=01M7X3H2HEJQN3WD6176WB48R8 dispatch=01M7X3H2HFPK2YAWR2DDNW98A9 state=RUNNING
+  2026-11-20T18:29:32Z INFO    runcomposer.events: run.cancelled run=01M7X3H2HEJQN3WD6176WB48R8 dispatch=01M7X3H2HFPK2YAWR2DDNW98A9 state=CANCELLED error=cancelled on request
+  2026-11-20T18:29:44Z WARNING runcomposer.inbox: inbox bundle lost quarantined (unknown-run): unknown run id '01HXNOSUCHRUN0000000000000' — refusing bundle
   ```
 
 With no config at all, `serve` comes up on the demo corpus with the `demo`
@@ -1932,8 +1937,8 @@ runcomposer_run.json
 
 $ cat results/runcomposer_run.json
 {
-  "run_id": "01M7WSPE7XGVHANRCBPBDP0WK4",
-  "spec_sha256": "90a172dc211a9c49c0c18d0832816aac5607a33977fd5818e295e8a7ccb79e82"
+  "run_id": "01M7X3BA2EBNAEW1XZXKWXS8JD",
+  "spec_sha256": "0683a775a426eb5e335a87015340aff0ae376737e8d86ce129f643aa3903db6b"
 }
 ```
 
