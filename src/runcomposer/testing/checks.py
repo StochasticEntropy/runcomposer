@@ -278,6 +278,8 @@ def check_runner(
     *,
     expect: str | None = None,
     cancel_after_declare: bool = False,
+    cancel_within: float = 10.0,
+    allow_missing: bool = False,
     timeout: float = 60.0,
 ) -> FakeDispatchContext:
     """Check a :class:`runcomposer.sdk.Runner`: its description, its health,
@@ -292,7 +294,18 @@ def check_runner(
       ``external_delivery`` — ``awaiting``.
     - ``cancel_after_declare`` — once the runner has declared, cancel the
       dispatch the way runcomposer does (flag, then ``runner.cancel(ctx)``)
-      and require ``dispatch`` to return within ``timeout``.
+      and require ``dispatch`` to return within ``cancel_within`` seconds of
+      that, without delivering every shard afterwards (which would mean it
+      did not stop). Meant for a runner held in execution — a command that
+      blocks, a build that holds — so that the cancel meets it working.
+    - ``allow_missing`` — accept a ``complete`` dispatch that left planned
+      items unreported or delivered native names the catalog does not know
+      (both are ``INCOMPLETE`` runs in runcomposer); off by default.
+    - ``timeout`` — how long ``dispatch`` may take at all.
+
+    When the runner's ``RunnerInfo.result_format`` is set and the context
+    built its own document, the document expects that format — as a run
+    composed for the runner does in runcomposer.
 
     Returns the context, with everything the runner did recorded on it.
     """
@@ -308,7 +321,10 @@ def check_runner(
     _require(isinstance(health.detail, str), "runner.health", "health().detail must be a string")
 
     ctx = ctx if ctx is not None else FakeDispatchContext(DEFAULT_ITEM_IDS)
+    if info.result_format:
+        ctx.adopt_result_format(info.result_format)
     outcome: dict[str, Any] = {}
+    delivered_before_cancel = 0
 
     def target() -> None:
         try:
@@ -324,9 +340,17 @@ def check_runner(
         while not ctx.is_declared and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
         _require(ctx.is_declared, "runner.cancel", "the runner never declared, so there was nothing to cancel")
+        delivered_before_cancel = len(ctx.deliveries)
         ctx.request_cancel()
         ctx.cancel_calls += 1
         runner.cancel(ctx)
+        thread.join(cancel_within)
+        if thread.is_alive():
+            raise _fail(
+                "runner.cancel",
+                f"dispatch() did not return within {cancel_within:g}s of being cancelled — check "
+                "ctx.cancelled between units of work, and stop what is running in cancel(ctx)",
+            )
     thread.join(timeout)
     if thread.is_alive():
         if not ctx.cancelled:
@@ -359,8 +383,21 @@ def check_runner(
     else:
         ended = "awaiting" if ctx.outstanding else "complete"
 
+    if (
+        cancel_after_declare
+        and error is None
+        and not ctx.outstanding
+        and len(ctx.deliveries) > delivered_before_cancel
+    ):
+        raise _fail(
+            "runner.cancel",
+            "every declared shard was delivered after the cancellation — the runner did not stop "
+            "(raise DispatchCancelled via ctx.raise_if_cancelled(), or return with shards outstanding)",
+        )
     if ctx.is_declared:
         _check_declared(ctx)
+        if ended == "complete" and not allow_missing:
+            _check_reported(ctx)
     if expect is not None:
         _require(
             ended == expect,
@@ -385,6 +422,26 @@ def check_runner(
             "runner.cancel", f"after a cancellation the dispatch ended {ended!r}",
         )
     return ctx
+
+
+def _check_reported(ctx: FakeDispatchContext) -> None:
+    """A complete dispatch reports every planned item, under names the
+    catalog knows — otherwise runcomposer scores the run INCOMPLETE."""
+    unknown = [message for message in ctx.warnings() if message.startswith("unknown native name")]
+    _require(
+        not unknown,
+        "runner.correlates",
+        f"delivered native names the catalog does not resolve: {unknown[:3]} — the source's "
+        "resolve() must map every name the results spell (or pass allow_missing=True)",
+    )
+    reported = {v.item_id for v in ctx.verdicts}
+    unreported = [item_id for item_id in ctx.item_ids if item_id not in reported]
+    _require(
+        not unreported,
+        "runner.reports-every-item",
+        f"{len(unreported)} planned item(s) were never reported (first: {unreported[:3]}) — "
+        "runcomposer counts them MISSING and the run INCOMPLETE (or pass allow_missing=True)",
+    )
 
 
 def _is_order_error(error: RuntimeError) -> bool:

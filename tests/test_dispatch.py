@@ -994,6 +994,36 @@ class TestCancel:
         with pytest.raises(Conflict, match="state COMPLETE"):
             service.cancel(run_id)
 
+    def test_a_cancel_from_another_process_reaches_a_foreground_dispatch(self, scripted, tmp_path):
+        """Regression: the CLI's `run` executes in the foreground, and a
+        cancel written to the store by another process (a second shell's
+        `runcomposer cancel`) used to be seen only through `ctx.cancelled` —
+        the runner's cancel(ctx), which stops its executor, was never called.
+        Here the runner never looks at the flag: only cancel(ctx) frees it."""
+        declared, released = threading.Event(), threading.Event()
+
+        def script(ctx: DispatchContext) -> None:
+            ctx.declare(["1"])
+            declared.set()
+            assert released.wait(60)
+
+        service = scripted(script, cancel=lambda ctx: released.set())
+        other = Service(load_config(str(tmp_path / "config.yaml")))  # stands for another process
+        try:
+            run_id = compose(service, "Auth-SSO")
+            worker = threading.Thread(
+                target=service.dispatch, args=(run_id, "fake"), kwargs={"foreground": True}
+            )
+            worker.start()
+            assert declared.wait(30)
+            other.cancel(run_id)
+            worker.join(20)
+            assert not worker.is_alive(), "cancel(ctx) was not called for the foreground dispatch"
+            assert service.require_run(run_id).state == "CANCELLED"
+        finally:
+            released.set()
+            other.close()
+
     def test_results_for_a_cancelled_dispatch_are_not_taken_in(self, scripted):
         service = scripted(lambda ctx: ctx.declare(["1"]))
         run_id = compose(service, "Auth-SSO")

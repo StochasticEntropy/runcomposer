@@ -109,7 +109,7 @@ class ShopRunner(RunnerBase):
         )
 
     def dispatch(self, ctx: DispatchContext) -> None:
-        if ctx.source.snapshot() != ctx.spec["source"]["snapshot"]:
+        if ctx.source.snapshot() != (ctx.spec.get("source") or {}).get("snapshot"):
             ctx.refuse("the corpus changed since this run was composed — compose it again")
         region = ctx.options["region"]
         ctx.declare([region], plan=f"{len(ctx.item_ids)} check(s) in {region}")
@@ -127,7 +127,11 @@ status, an artifact, health.
 ### 3.1 `describe()` — who it is and what a run may choose
 
 `RunnerInfo` carries `id` (the plugin's name), `title`, `description`,
-`capabilities`, `parameters` and `result_format` (when it is fixed).
+`capabilities`, `parameters` and `result_format`. When `result_format` is set,
+a run composed for the runner expects that format back
+(`results.expect[0].format`), so `ctx.deliver(shard, bundle=…)` without
+`format=` parses it with that parser — leave it `None` for a runner that
+delivers verdicts it built itself.
 Capabilities with meaning to runcomposer and its clients: `live_status`,
 `partitions`, `cancel`, `external_delivery` (results arrive by ingestion after
 `dispatch` returns), `simulated` (nothing is really executed).
@@ -158,7 +162,11 @@ configures `jenkins` twice, once per completion mode).
 (the CLI's `run` executes the same code in the foreground). It may block for
 as long as the execution takes. One runner instance serves every dispatch of
 its config key, possibly several at once: keep what belongs to one dispatch
-on `ctx`, never on `self`.
+on `ctx` or keyed by `ctx.dispatch_id`, never in plain attributes of `self`.
+An in-process executor that `cancel(ctx)` must find again (a subprocess, a
+pool) goes into a lock-protected mapping on `self` keyed by
+`ctx.dispatch_id`, removed when `dispatch` returns; a remote one is found
+through `ctx.links`, which also survive a restart.
 
 | Phase | Calls | If you raise |
 |---|---|---|
@@ -248,10 +256,13 @@ work; stop processes or remote builds in `cancel`. The dispatch becomes
 `CANCELLED` when `dispatch` returns. A dispatch that only awaits results
 (your `dispatch` returned long ago) is cancelled at once: runcomposer calls
 `cancel` with a context rebuilt from the stored record — `ctx.links` is how
-you find the build — and closes the dispatch (`tests/test_dispatch.py::TestCancel`,
+you find the build; nothing you kept in memory survives into such a context —
+and closes the dispatch (`tests/test_dispatch.py::TestCancel`,
 `tests/test_jenkins.py::…awaits_results`). A cancel requested by another
-process (the CLI against a server) reaches the process that executes the
-dispatch within half a second. Declare the `cancel` capability when you
+process — `runcomposer cancel` against a server, or against a
+`runcomposer run` in another shell — reaches the process that executes the
+dispatch within half a second, and your `cancel(ctx)` is called there
+(`tests/test_dispatch.py::TestCancel::test_a_cancel_from_another_process_reaches_a_foreground_dispatch`). Declare the `cancel` capability when you
 honour it.
 
 `health()` answers "could you take a dispatch right now?" with a
@@ -296,7 +307,12 @@ template's runner reads its requests from it).
 ### `ResultParser` — native artifacts in, native names out
 
 `format_id` is a name (no `:` or `/` — a spec names a format, never an import
-path). `parse(path)` takes a file or a directory and returns
+path). **The format id a run asks for is looked up by name**: a `parsers:`
+entry with that key, else the `runcomposer.parsers` entry point of that name.
+A parser without options needs no `parsers:` entry. A `parsers:` entry may
+configure a class under a format id of your own (`shop-junit: {module:
+…JunitXmlParser, pattern: "shop*.xml"}`); the key is then the name, not the
+class's `format_id`. `parse(path)` takes a file or a directory and returns
 `ParsedVerdict(native_name, status, duration_ms=0, message="", attempt=1)`:
 the native name exactly as the artifact spells it — never reconstruct ids
 here. Bad input is a `ParseError` and nothing else. Read XML through
@@ -328,7 +344,10 @@ A `RunEvent` has `seq`, `run_id`, `at`, `kind`, `dispatch_id`, `data`.
 ## 5. Configuration
 
 One file, chosen with `--config`; relative paths in it resolve against its
-own directory.
+own directory. Left out, `store:` is a sqlite file `runcomposer.db` and
+`core.artifact_dir` is `artifacts/`, both next to the file; the taxonomy is
+the bundled demo one until you set `core.taxonomy_file` (`doctor` then
+reports its leaves against your catalog — see [docs/taxonomy.md](taxonomy.md)).
 
 ```yaml
 sources:                       # one or more → one catalog
@@ -397,8 +416,10 @@ items = check_source(MySource("catalog.yaml"), native_names={"Cart.Total": "shop
                      rebuild=lambda: MySource("catalog.yaml"))
 parsed = check_parser(MyParser(), "fixtures/good-bundle", expected={"Cart.Total": "PASS"},
                       bad_bundles=["fixtures/truncated.xml", xml_with_dtd(tmp_path / "dtd.xml")])
-ctx = check_runner(MyRunner(...), FakeDispatchContext(item_ids), expect="complete")
-check_runner(MyRunner(...), FakeDispatchContext(item_ids), cancel_after_declare=True, expect="cancelled")
+ctx = check_runner(MyRunner(...), FakeDispatchContext(items=source.items(), source=source),
+                   expect="complete")
+check_runner(MyRunner(...), FakeDispatchContext(items=source.items(), source=source),
+             cancel_after_declare=True, cancel_within=5, expect="cancelled")
 check_store(lambda: MyStore(tmp_path / f"{uuid4()}.db"))   # a fresh, empty store per call
 check_observer(MyObserver(...), seen=lambda: received)      # what your destination got so far
 ```
@@ -415,15 +436,19 @@ Each raises `AssertionError` whose message begins with the violated rule:
 |---|---|
 | `check_source` | contract members; `provider_id`; items are `Item`s with string tags, stable across calls; `duplicate_ids` lists exactly the duplicated ids; snapshot and fingerprint stable; every id resolves to itself; an unknown name resolves to `None`; the native names you give resolve; a rebuilt instance agrees |
 | `check_parser` | contract; `format_id` is a name; `parse` returns `ParsedVerdict`s with reportable statuses, non-negative durations, attempts ≥ 1; deterministic; non-empty; `expected` statuses; every bad bundle is a `ParseError` |
-| `check_runner` | contract; `describe` well-formed, parameter defaults validate; `health` well-formed; the dispatch keeps the hand-off order; declares at least one shard; delivers only declared shards and only planned items; ends as `expect`ed; outstanding shards only with `external_delivery`; with `cancel_after_declare`, returns within the timeout of being cancelled |
+| `check_runner` | contract; `describe` well-formed, parameter defaults validate; `health` well-formed; the dispatch keeps the hand-off order; declares at least one shard; delivers only declared shards and only planned items; a `complete` dispatch reports every planned item under names the catalog resolves (`allow_missing=True` for a runner that reports partially on purpose); ends as `expect`ed; outstanding shards only with `external_delivery`; with `cancel_after_declare`, returns within `cancel_within` seconds of the cancel and does not go on to deliver every shard |
 | `check_store` | contract; runs, documents, paging/filtering/search; dispatches incl. the exclusive claim; spec bytes; token hashes; the delivery idempotency contract; shard and attempt on read-back; live status; artifacts; the event cursor and `latest_events`; history queries; delete and prune; concurrent deliveries leave exactly one |
 | `check_observer` | contract; every event kind accepted, `None` returned; concurrent calls; with `seen`, every notification arrives exactly once |
 
 ### `FakeDispatchContext` — unit tests for a runner
 
-A recording, in-memory `DispatchContext`. Give it the planned items (ids,
-`Item`s with tags, or a whole spec), options, parameters, a source, history
-durations, parsers; run your runner; read what it did:
+A recording, in-memory `DispatchContext`. Give it the planned items (ids;
+`items=` with tags and `meta`; or a whole `spec=`), `source=` (a runner that
+reads `item.meta` from `ctx.source` needs the real one), options, parameters,
+history `durations=`, `parsers=` (format id → parser), `expect_format=`; run
+your runner; read what it did. Unless you say otherwise, the document expects
+the runner's own `result_format` once the fake sees the runner (`ctx.run`,
+`check_runner`), as a run composed for it would:
 
 ```python
 ctx = FakeDispatchContext(["shop.cart.add", "shop.checkout.page"], parameters={"environment": "qa"})
@@ -443,7 +468,7 @@ what a worker process writes shows up in `ctx.live_updates`.
 
 ```python
 with ConnectorHarness(
-    sources={"checks": {"plugin": "http-checks", "path": "example/checks.yaml"}},
+    sources={"checks": {"plugin": "http-checks", "path": str(CHECKS)}},   # an absolute path
     runners={"shop": {"plugin": "http-checks"}},
     connectors={"shop-checks": {"environments": {"local": "${env:SHOP_URL}"}}},
     env={"SHOP_URL": url},
@@ -453,8 +478,9 @@ with ConnectorHarness(
     assert result.event_kinds[-1] == "run.completed"
 ```
 
-It writes a config into a temporary directory (sqlite store, the demo corpus
-unless you give `items=` or `sources=`), builds a `Service` and validates it
+It writes a config into a temporary directory — so relative paths in the
+entries you pass resolve against *that* directory; give absolute ones —
+(sqlite store, the demo corpus unless you give `items=` or `sources=`), builds a `Service` and validates it
 as `serve` would, composes the run, dispatches it on the dispatch manager and
 waits — with a timeout, after which it cancels and fails — until the runner
 returned and the dispatch settled. The result is read from the store:

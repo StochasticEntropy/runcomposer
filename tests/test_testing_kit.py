@@ -562,6 +562,55 @@ class RunnerIgnoringCancel(_Runner):
         threading.Event().wait(5)
 
 
+class RunnerDeliveringDespiteCancel(_Runner):
+    """Declares cancel, never looks at ctx.cancelled, delivers everything."""
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="toy", capabilities=("cancel",))
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        threading.Event().wait(0.3)
+        ctx.deliver("1", verdicts=[Verdict(i, "PASS") for i in ctx.item_ids])
+
+
+class RunnerReportingHalf(_Runner):
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(ctx.item_ids[0], "PASS")])
+
+
+class RunnerWithUnresolvedNames(_Runner):
+    """Delivers a bundle whose names its catalog cannot resolve."""
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        bundle = ctx.workdir / "out"
+        bundle.mkdir(exist_ok=True)
+        (bundle / "results.json").write_text(json.dumps({"format": "runcomposer-verdicts", "verdicts": [
+            {"name": i.replace(".", "::"), "status": "PASS"} for i in ctx.item_ids]}), encoding="utf-8")
+        ctx.deliver("1", bundle=bundle)
+
+
+class LinesParser(ParserBase):
+    format_id = "shop-lines"
+
+    def parse(self, path: Any) -> list[ParsedVerdict]:
+        return [ParsedVerdict(*line.split()) for line in (Path(path) / "out.txt").read_text().splitlines()]
+
+
+class RunnerWithItsOwnFormat(_Runner):
+    """Delivers its native format without naming it: the run expects it."""
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="toy", result_format="shop-lines")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        (ctx.workdir / "out.txt").write_text("".join(f"{i} PASS\n" for i in ctx.item_ids), encoding="utf-8")
+        ctx.deliver("1", bundle=ctx.workdir)
+
+
 class RunnerWithBadHealth(_Runner):
     def health(self) -> Health:
         return Health(status="fine")
@@ -685,8 +734,15 @@ BROKEN = [
     pytest.param(lambda tmp: check_runner(RunnerForgettingToDeclare()), "[runner.declares]", id="runner-never-declares"),
     pytest.param(lambda tmp: check_runner(RunnerLeavingShardsOutstanding()), "[runner.external-delivery]",
                  id="runner-outstanding-without-capability"),
-    pytest.param(lambda tmp: check_runner(RunnerIgnoringCancel(), cancel_after_declare=True, timeout=0.5),
+    pytest.param(lambda tmp: check_runner(RunnerIgnoringCancel(), cancel_after_declare=True, cancel_within=0.5),
                  "[runner.cancel] dispatch() did not return", id="runner-ignores-cancel"),
+    pytest.param(lambda tmp: check_runner(RunnerDeliveringDespiteCancel(), cancel_after_declare=True),
+                 "[runner.cancel] every declared shard was delivered after the cancellation",
+                 id="runner-delivers-despite-cancel"),
+    pytest.param(lambda tmp: check_runner(RunnerReportingHalf()), "[runner.reports-every-item]",
+                 id="runner-leaves-items-unreported"),
+    pytest.param(lambda tmp: check_runner(RunnerWithUnresolvedNames()), "[runner.correlates]",
+                 id="runner-names-do-not-resolve"),
     pytest.param(lambda tmp: check_runner(RunnerWithBadHealth()), "[runner.health]", id="runner-bad-health"),
     pytest.param(lambda tmp: check_runner(RunnerWithoutCancel()), "[runner.contract]", id="runner-missing-cancel"),
     pytest.param(lambda tmp: check_runner(DemoRunner(), expect="refused"), "[runner.expected-outcome]",
@@ -828,3 +884,24 @@ class TestFakeRecords:
         ctx.declare(["1"])
         with pytest.raises(IngestError, match="not a results file"):
             ctx.deliver("1", bundle=tmp_path)
+
+
+def test_a_partial_runner_passes_when_partial_is_what_it_means():
+    ctx = check_runner(RunnerReportingHalf(), allow_missing=True, expect="complete")
+    assert ctx.summary() == {"PASS": 1}
+
+
+def test_the_fake_expects_the_runner_s_own_result_format_like_runcomposer_does():
+    """A run composed for a runner with a fixed result_format expects that
+    format; deliver(bundle=…) without format= then parses it — in the fake
+    as in runcomposer."""
+    ctx = FakeDispatchContext(CART, parsers={"shop-lines": LinesParser()})
+    assert ctx.run(RunnerWithItsOwnFormat()) == "complete"
+    assert ctx.summary() == {"PASS": 3}
+    assert ctx.spec["results"]["expect"] == [{"format": "shop-lines"}]
+    check_runner(RunnerWithItsOwnFormat(), FakeDispatchContext(CART, parsers={"shop-lines": LinesParser()}),
+                 expect="complete")
+    # An explicit expectation is the caller's and is kept.
+    explicit = FakeDispatchContext(CART, expect_format="runcomposer-verdicts")
+    explicit.adopt_result_format("shop-lines")
+    assert explicit.spec["results"]["expect"] == [{"format": "runcomposer-verdicts"}]

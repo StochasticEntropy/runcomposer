@@ -5,8 +5,9 @@ pieces it is made of.
 what the runner did with each one. The order of the calls — *refuse only
 before declare, declare exactly once, deliver only after declare* — and the
 shape of what is handed over are enforced by the same code the real context
-uses (``runcomposer.core.handoff``), so a runner that is correct against the
-fake is correct against runcomposer.
+uses (``runcomposer.core.handoff``), and the document expects the runner's
+own ``result_format`` as a run composed for it would — so what a runner
+meets here is what it meets in runcomposer.
 
 ```python
 from runcomposer.testing import FakeDispatchContext
@@ -123,6 +124,11 @@ class FakeDispatchContext:
     - ``parsers`` — ``{format id: parser}`` for ``parse`` / ``deliver(bundle=)``;
       a format not given is loaded from the ``runcomposer.parsers`` entry
       points, as runcomposer does.
+    - ``expect_format`` — the result format the document expects (what
+      ``deliver(bundle=…)`` parses without a ``format=``). Default: the
+      runner's ``RunnerInfo.result_format`` once :meth:`run` or
+      ``check_runner`` sees the runner, else ``runcomposer-verdicts`` — as a
+      run composed for that runner in runcomposer. Ignored with ``spec``.
     - ``workdir`` — default: a temporary directory removed by :meth:`close`.
     - ``tokens`` — ``False`` for a deployment with ingest tokens disabled.
 
@@ -148,9 +154,12 @@ class FakeDispatchContext:
         source: Any = None,
         durations: Mapping[str, float] | None = None,
         parsers: Mapping[str, Any] | None = None,
-        expect_format: str = "runcomposer-verdicts",
+        expect_format: str | None = None,
         tokens: bool = True,
     ):
+        #: Whether the expected format may still follow the runner's own.
+        self._format_adoptable = spec is None and expect_format is None
+        expect_format = expect_format or "runcomposer-verdicts"
         if items is None:
             if item_ids is None:
                 planned = (spec or {}).get("selection", {}).get("materialized", {}).get("item_ids")
@@ -448,6 +457,16 @@ class FakeDispatchContext:
     def warnings(self) -> list[str]:
         return [message for level, message in self.logs if level in ("warning", "error")]
 
+    def adopt_result_format(self, format_id: str) -> None:
+        """Expect ``format_id`` back, when neither a spec nor an explicit
+        ``expect_format`` said otherwise — what composing a run for a runner
+        with a fixed ``result_format`` does in runcomposer."""
+        if not self._format_adoptable or not format_id:
+            return
+        self._expect_format = format_id
+        results = self._document.setdefault("results", {})
+        results["expect"] = [{"format": format_id}]
+
     def run(self, runner: Any) -> str:
         """Call ``runner.dispatch(self)`` and say how it ended, the way the
         dispatch manager would: ``refused`` (it refused, or raised, before
@@ -456,6 +475,9 @@ class FakeDispatchContext:
         shard delivered) or ``awaiting`` (shards outstanding: results come by
         ingestion). An exception raised after the hand-off propagates — in
         runcomposer it is a FAILED dispatch."""
+        result_format = runner.describe().result_format
+        if result_format:
+            self.adopt_result_format(result_format)
         try:
             runner.dispatch(self)
         except DispatchRefused:

@@ -508,11 +508,14 @@ class DispatchManager:
             self._active[dispatch.dispatch_id] = active
         for warning in warnings:
             ctx.log(warning, level="warning")
+        # The monitor turns a cancel requested by another process (a flag in
+        # the store) into the runner's cancel(ctx) — in the foreground (the
+        # CLI's `run`) as much as on the pool.
+        self._ensure_monitor()
         if foreground:
             self._execute(active)
         else:
             active.future = self._pool.submit(self._execute, active)
-            self._ensure_monitor()
         return active.outcome
 
     def wait_handoff(self, outcome: Outcome, timeout: float) -> bool:

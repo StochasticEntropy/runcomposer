@@ -238,6 +238,9 @@ sqlite database opens as it is.
 - The Jenkins poll path could ingest another build's results, gave up as a
   "refusal" after the hand-off, and only worked for one result format.
 - Two processes could both dispatch one run (the check was per process).
+- A cancel requested from another process reached a dispatch executing in
+  the foreground (`runcomposer run`) only through `ctx.cancelled`: the
+  runner's `cancel(ctx)`, which stops its executor, was never called.
 - A cancelled `robot-pool` dispatch waited for a running `pre_run_hooks`
   command to time out.
 - `GET /runs/{id}` read the run's whole event stream to show the last 200.
