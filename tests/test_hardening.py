@@ -87,7 +87,7 @@ class LeakyRunner(RunnerBase):
         if self.fail == "refuse":
             ctx.refuse(f"stage rejected 'Authorization: Bearer {self.token}'")
         ctx.log(f"calling the stage with {self.token}")
-        ctx.declare(["1"], plan=f"one shard, token {self.token}", links={"stage": f"https://stage.shop.example/?t={self.token}"})
+        ctx.declare(["1"], plan=f"one shard, token {self.token}")
         raise RuntimeError(f"stage answered 403 to token {self.token!r}")
 
 

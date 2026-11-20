@@ -9,6 +9,10 @@
 #
 # The job is the one in ci/jenkins/ (a real Jenkins in docker); see
 # ci/jenkins/README.md, whose e2e.py drives both entries against it.
+#
+# `parameters` maps the job's build-parameter names to templates; the first
+# four are the runner's defaults, HOLD_SECONDS shows a per-run parameter
+# (`run_parameters`) travelling to the job: `--param hold_s=60`.
 core:
   artifact_dir: state/artifacts
   ingestion: { inbox: null }
@@ -26,6 +30,15 @@ runners:
     callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
     user: "${env:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
+    parameters: &job-parameters
+      SPEC_JSON: "{spec_json}"
+      DISPATCH_ID: "{dispatch_id}"
+      CALLBACK_URL: "{callback_url}"
+      INGEST_TOKEN: "{token}"
+      HOLD_SECONDS: "{params[hold_s]}"
+    run_parameters: &run-parameters
+      - { name: hold_s, kind: integer, default: 0, label: "Hold (s)",
+          help: "Seconds the build waits before executing" }
   jenkins-poll:
     plugin: jenkins
     base_url: "${env:JENKINS_URL:-http://localhost:8080}"
@@ -35,3 +48,5 @@ runners:
     poll_interval_s: 2
     user: "${env:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
+    parameters: *job-parameters
+    run_parameters: *run-parameters

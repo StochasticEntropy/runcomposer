@@ -1114,6 +1114,21 @@ class TestCancel:
         assert late.value.reason == "dispatch-cancelled"
         assert service.store.verdicts_for(run_id) == []
 
+    def test_cancel_works_when_the_base_url_comes_from_the_environment(
+        self, make_service, jenkins, monkeypatch
+    ):
+        """Regression (found against a real Jenkins): the links a runner
+        records are how a later cancel finds its build. They are kept as the
+        runner gave them — blanking an environment value out of the stored
+        queue link made the build unreachable."""
+        monkeypatch.setenv("SHOP_CI_URL", jenkins.url)
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        service = jenkins_service(make_service, jenkins, base_url="${env:SHOP_CI_URL}")
+        run_id, _ = dispatch(service)
+        assert service.require_run(run_id).state == "AWAITING_RESULTS"
+        assert service.cancel(run_id).state == "CANCELLED"
+        assert [s.path for s in jenkins.posts("/stop")] == [f"/job/{JOB}/1/stop"]
+
     def test_a_jenkins_that_is_gone_does_not_keep_the_run_from_being_cancelled(self, make_service, jenkins):
         jenkins.auto_start = False
         service = jenkins_service(make_service, jenkins, retries=0)

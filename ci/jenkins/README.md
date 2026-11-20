@@ -11,9 +11,27 @@ runner against an in-process, protocol-faithful HTTP stand-in
 (`tests/test_jenkins.py`): the crumb issuer and its session cookie,
 `buildWithParameters` → queue item → build, the build API, artifact download,
 stop and queue cancellation, Basic auth, retries, and both completion modes
-end to end. This docker setup is the **manual end-to-end check** against a
-real Jenkins — it is not run by CI, so run it when you change the runner or
-the consumer stage.
+end to end. Against a **real Jenkins**, [`e2e.py`](e2e.py) does the same with
+this docker setup — one command, repeatable, cleaning up after itself:
+
+```bash
+python ci/jenkins/e2e.py            # needs docker; ~1 minute after the first image build
+```
+
+It builds and starts the instance on a free local port, serves
+[`examples/jenkins/config.yaml`](../../examples/jenkins/config.yaml) with
+`runcomposer serve`, and checks, each step waiting on a condition rather than
+a timer: both runner entries report `ok` health from the real server; a
+`callback` run completes through the job's POST with its ingest token; a
+`poll` run started with `runcomposer run` completes through the downloaded
+`results/*`; and a running build is cancelled in each mode, the dispatch
+ending `CANCELLED` and Jenkins reporting the build `ABORTED`. It is not part
+of CI (it needs docker and a minute of Jenkins start-up); run it when you
+change the runner, the job or the image.
+
+**Pinned.** The base image is pinned by version and digest and every plugin
+by version ([`plugins.txt`](plugins.txt)), so a rebuild months from now is
+the same Jenkins. Moving on is a deliberate edit of both.
 
 > ## ⚠ This job runs no tests
 >
@@ -34,25 +52,19 @@ the consumer stage.
 ```bash
 # from the repo root
 docker build -f ci/jenkins/Dockerfile -t runcomposer-jenkins .
-docker run --rm -d -p 8080:8080 --name runcomposer-jenkins runcomposer-jenkins
+docker run --rm -d -p 127.0.0.1:8080:8080 --name runcomposer-jenkins runcomposer-jenkins
 # job is provisioned by JCasC + job-dsl; ready when this answers:
 curl -sf localhost:8080/job/runcomposer-consumer/api/json
 ```
 
-runcomposer side (`config.yaml`):
-
-```yaml
-runners:
-  jenkins:
-    base_url: http://localhost:8080
-    job: runcomposer-consumer
-    callback_base: http://host.docker.internal:8100   # how the container reaches your serve
-    completion: callback        # or "poll" for a Jenkins that cannot call out
-```
-
-That is the whole config for this job, because the job's parameters carry the
-runner's default names. They are configurable — `parameters` maps each
-build-parameter name of *your* job to a template — and the default is:
+runcomposer side: [`examples/jenkins/config.yaml`](../../examples/jenkins/config.yaml)
+configures the one plugin twice — `jenkins` with `completion: callback`
+(`callback_base` is how the container reaches your `runcomposer serve`;
+with docker on Linux start the container with
+`--add-host host.docker.internal:host-gateway`) and `jenkins-poll` with
+`completion: poll`, for a Jenkins that cannot call out. Its `parameters` map
+each build-parameter name of *your* job to a template; the runner's default
+mapping is:
 
 ```yaml
     parameters:
@@ -64,22 +76,22 @@ build-parameter name of *your* job to a template — and the default is:
 
 Other fields a template may use: `{run_id}`, `{item_ids}` (one per line),
 `{title}`, `{labels[key]}`, and `{params[name]}` for per-run parameters
-declared under `run_parameters`. The demo job ([`casc.yaml`](casc.yaml))
-declares `INGEST_TOKEN` as a plain string parameter, which keeps this
-throwaway instance simple and means the token is readable on the build's
-parameters page. On a real Jenkins bind `{token}` to a **password parameter**
-(or hand it over through a credentials binding) — the runner only fills the
-parameter you name, so nothing else changes. The spec document itself carries
-no credential. Against a secured Jenkins, add
-`user:` and `api_token: ${env:JENKINS_API_TOKEN}`; for a private CA,
-`ca_bundle:`.
+declared under `run_parameters` — the example config passes
+`{params[hold_s]}` as the job's `HOLD_SECONDS`, which is how `e2e.py` gets a
+build that is still running when it cancels it. The job
+([`casc.yaml`](casc.yaml)) declares `INGEST_TOKEN` as a Jenkins **password
+parameter**: masked on the build's parameters page, never a visible plain
+string. (Configuration-as-Code interpolates `${…}` in that file; the shell
+step writes `^${…}` where the shell must see it.) The spec document itself
+carries no credential. Against a secured Jenkins, add `user:` and
+`api_token: ${env:JENKINS_API_TOKEN}`; for a private CA, `ca_bundle:`.
 
-Then: `runcomposer serve --host 0.0.0.0 --config config.yaml` (so the
+Then: `runcomposer serve --host 0.0.0.0 --config examples/jenkins/config.yaml` (so the
 container can call back) and dispatch a run to the runner — from the UI, with
 `POST /api/v1/runs`, or from a second shell:
 
 ```bash
-runcomposer run Checkout --runner jenkins --config config.yaml
+runcomposer run Checkout --runner jenkins --config examples/jenkins/config.yaml
 ```
 
 The runner triggers the build and returns; the run waits in

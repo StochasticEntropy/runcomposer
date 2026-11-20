@@ -105,10 +105,10 @@ class Ledger:
         """The hand-off: shard set known, execution begins."""
         with self._lock:
             current = self._require(dispatch_id)
-            # A plan or a link may quote a configured option; what came from
-            # the environment is blanked out before it is recorded (§8).
+            # A plan may quote a configured option; what came from the
+            # environment is blanked out before it is recorded (§8). Links are
+            # kept as given: they are how `cancel` finds the executor again.
             plan = str(self._redact(plan))
-            links = dict(self._redact(dict(links)))
             dispatch: DispatchRecord = self._store.update_dispatch(
                 dispatch_id,
                 state=lifecycle.advance(current.state, "RUNNING"),
