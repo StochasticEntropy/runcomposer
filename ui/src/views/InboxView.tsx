@@ -11,9 +11,16 @@ import { useResource } from "../hooks/useResource.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
 import { runHref } from "../lib/router.ts";
-import type { QuarantineEntry } from "../lib/types.ts";
+import type { IngestReport, QuarantineEntry } from "../lib/types.ts";
 
 type Pending = { kind: "attach" | "promote" | "discard"; entry: QuarantineEntry } | null;
+
+interface Outcome {
+  text: string;
+  runId: string | null;
+  /** Something a person should look at: nothing was recorded, or the server warned. */
+  warning?: boolean;
+}
 
 export function InboxView() {
   const { api, meta, refreshInbox } = useApp();
@@ -22,7 +29,12 @@ export function InboxView() {
   const [pending, setPending] = useState<Pending>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
-  const [done, setDone] = useState<{ text: string; runId: string | null } | null>(null);
+  const [done, setDone] = useState<Outcome | null>(null);
+  // The runs a delivery can be attached to, by title — nobody knows a run by its id.
+  const recent = useResource(useCallback((signal: AbortSignal) => api.listRuns({ limit: 100 }, signal), [api]), "inbox-runs");
+  const runs = recent.data?.runs ?? [];
+  const titleOf = (id: string | null) => runs.find((run) => run.id === id)?.title ?? null;
+  const runListId = useId();
   const [runId, setRunId] = useState("");
   const [format, setFormat] = useState("");
   const acting = useRef(false);
@@ -46,7 +58,7 @@ export function InboxView() {
     setError(null);
   };
 
-  const act = async (action: () => Promise<{ text: string; runId: string | null }>) => {
+  const act = async (action: () => Promise<Outcome>) => {
     if (acting.current) return;
     acting.current = true;
     setBusy(true);
@@ -54,7 +66,7 @@ export function InboxView() {
     try {
       setDone(await action());
       close();
-      await list.reload();
+      await Promise.all([list.reload(), recent.reload()]);
       refreshInbox();
     } catch (caught) {
       setError(asApiError(caught));
@@ -62,6 +74,14 @@ export function InboxView() {
       acting.current = false;
       setBusy(false);
     }
+  };
+
+  // "Attached" is not the whole truth when nothing in the delivery matched an
+  // item of the run: say so, with whatever the server warned about.
+  const outcomeOf = (report: IngestReport, text: string): Outcome => {
+    const nothing = report.verdict_count === 0;
+    const parts = [nothing ? t("inbox.nothingRecorded") : text, ...report.warnings];
+    return { text: parts.join(" "), runId: report.run_id, warning: nothing || report.warnings.length > 0 };
   };
 
   const entries = list.data?.entries;
@@ -99,7 +119,7 @@ export function InboxView() {
       <p className="hint">{t("inbox.hint")}</p>
 
       {done && (
-        <Notice tone="ok" onDismiss={() => setDone(null)}>
+        <Notice tone={done.warning ? "warn" : "ok"} onDismiss={() => setDone(null)}>
           {done.text} {done.runId && <a href={runHref(done.runId)}>{t("inbox.openRun")}</a>}
         </Notice>
       )}
@@ -142,8 +162,14 @@ export function InboxView() {
                     {entry.detail && <span className="cell-sub">{entry.detail}</span>}
                   </td>
                   <td data-label={t("inbox.column.via")}>{tOr(`inbox.transport.${entry.transport}`, entry.transport)}</td>
-                  <td data-label={t("inbox.column.claimed")} className="mono">
-                    {entry.claimed_run_id ?? "–"}
+                  <td data-label={t("inbox.column.claimed")}>
+                    {entry.claimed_run_id === null ? (
+                      "–"
+                    ) : titleOf(entry.claimed_run_id) !== null ? (
+                      <a href={runHref(entry.claimed_run_id)}>{titleOf(entry.claimed_run_id)}</a>
+                    ) : (
+                      <span className="mono">{entry.claimed_run_id}</span>
+                    )}
                   </td>
                   <td data-label={t("inbox.column.format")}>{entry.format ?? "–"}</td>
                   <td className="col-actions">
@@ -203,7 +229,7 @@ export function InboxView() {
                 onClick={() =>
                   void act(async () => {
                     const report = await api.attach(pending.entry.entry_id, runId.trim(), format.trim() || undefined);
-                    return { text: t("inbox.attached", { count: report.verdict_count }), runId: report.run_id };
+                    return outcomeOf(report, t("inbox.attached", { count: report.verdict_count }));
                   })
                 }
               >
@@ -217,7 +243,27 @@ export function InboxView() {
             <label className="field-label" htmlFor={runFieldId}>
               {t("inbox.runId")}
             </label>
-            <input id={runFieldId} className="input mono" type="text" value={runId} data-autofocus onChange={(event) => setRunId(event.target.value)} />
+            <input
+              id={runFieldId}
+              className="input mono"
+              type="text"
+              list={runListId}
+              value={runId}
+              data-autofocus
+              autoComplete="off"
+              aria-describedby={`${runFieldId}-hint`}
+              onChange={(event) => setRunId(event.target.value)}
+            />
+            <datalist id={runListId}>
+              {runs.map((run) => (
+                <option key={run.id} value={run.id}>
+                  {run.title} · {tOr(`runState.${run.state}`, run.state)}
+                </option>
+              ))}
+            </datalist>
+            <p className="hint" id={`${runFieldId}-hint`}>
+              {titleOf(runId.trim()) ?? t("inbox.runIdHint")}
+            </p>
           </div>
           {formatField}
           {error && (
@@ -245,7 +291,7 @@ export function InboxView() {
                 onClick={() =>
                   void act(async () => {
                     const report = await api.promote(pending.entry.entry_id, format.trim() || undefined);
-                    return { text: t("inbox.promoted", { count: report.verdict_count }), runId: report.run_id };
+                    return outcomeOf(report, t("inbox.promoted", { count: report.verdict_count }));
                   })
                 }
               >

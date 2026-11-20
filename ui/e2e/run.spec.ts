@@ -25,6 +25,8 @@ test("the form is rendered from the runner's declared parameters, and its values
   // Required and ill-typed values are refused on their fields before anything is sent.
   await form.getByRole("textbox", { name: "Retry count" }).fill("two");
   await runButton(page, 3).click();
+  // The keyboard is taken to the first field that needs attention.
+  await expect(form.getByRole("combobox", { name: /^Target environment/ })).toBeFocused();
   await expect(form.locator('[data-param="environment"]').getByRole("alert")).toHaveText(msg("runner.problem.required"));
   await expect(form.locator('[data-param="build"]').getByRole("alert")).toHaveText(msg("runner.problem.required"));
   await expect(form.locator('[data-param="retries"]').getByRole("alert")).toHaveText(msg("runner.problem.integer"));
@@ -95,6 +97,7 @@ test("a refused dispatch is explained where the run was started and leaves no ru
   await runButton(page, 3).click();
   const alert = page.locator(".run-panel").getByRole("alert");
   await expect(alert).toContainText(msg("error.code.dispatch-refused"));
+  await expect(runButton(page, 3)).toBeFocused();
   await expect(alert).toContainText("pre_run_hook failed");
   await expect(page).toHaveURL(/#\/compose/);
   expect(await api.runs()).toHaveLength(0);
@@ -113,6 +116,7 @@ test("an unhealthy runner is listed with its state and the reason", async ({ pag
   const health = page.locator(".runner-health");
   await expect(health).toContainText(msg("health.degraded"));
   await expect(health).toContainText("suite root(s) not found");
+  await expect(page.locator(".runner-status")).toContainText(msg("runner.unhealthyHint"));
   // Asking again probes the runner now.
   const probe = page.waitForRequest((request) => request.url().endsWith("/api/v1/runners?refresh=true"));
   await page.getByRole("button", { name: msg("runner.recheck") }).click();
@@ -144,6 +148,19 @@ test("watch a run progress live, then cancel it", async ({ page, open, api }) =>
   await expect(confirm).toBeHidden();
   await expect(status(page)).toContainText(msg("runState.CANCELLED"));
   expect((await api.run(runId)).state).toBe("CANCELLED");
+  // The keyboard is not left on nothing: the button that opened the dialog is gone, the view has the focus.
+  await expect(page.locator("main")).toBeFocused();
+  // Cancelling is not an error of the runner, and nothing is counted twice:
+  // every item is one row — missing, with what it had reported live as a note.
+  await expect(page.getByText(msg("run.cancelledHint"))).toBeVisible();
+  await expect(page.getByText(msg("run.runnerError"))).toHaveCount(0);
+  await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}\\s+46$`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.missing")}\\s+46$`) })).toBeVisible();
+  await expect(page.locator(".verdict-table .live-dot")).toHaveCount(0);
+  await expect(progress).toHaveText(msg("progress.label", { done: 0, total: 46 }));
+  await expect(page.locator(".verdict-table .col-message").filter({ hasText: /last seen live/ }).first()).toBeVisible();
+  await expect(page.locator(".shard-card")).toContainText(msg("run.shardNothing"));
+  await expect(page.getByRole("button", { name: msg("run.rerunFailed", { count: 46 }) })).toBeVisible();
   // A cancelled run is over: it can be run again, and no longer cancelled.
   await expect(page.getByRole("button", { name: msg("run.cancel") })).toHaveCount(0);
   await expect(page.getByRole("button", { name: msg("run.rerunAll") })).toBeVisible();
@@ -187,7 +204,13 @@ test("results are failures first, filterable, and a message opens in full", asyn
   // Durations are shown in units a person reads.
   await expect(rows.first().locator(".col-duration")).toHaveText(/\d (ms|s)$/);
 
-  await rows.first().getByRole("button").click();
+  // Which results are shown is in the URL: a reload shows the same rows.
+  await expect(page).toHaveURL(/status=failed/);
+  await page.reload();
+  await expect(rows).toHaveCount(failed);
+  await expect(failedFilter).toHaveAttribute("aria-pressed", "true");
+
+  await rows.first().locator(".message-btn").click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.locator(".message-full")).toContainText("simulated failure");
   await page.keyboard.press("Escape");
@@ -220,10 +243,12 @@ test("re-run only the failures of THIS run, with other parameters", async ({ pag
   const rerun = await api.waitFor(rerunId, ["COMPLETE"]);
   expect(rerun.planned_count).toBe(failed);
   await expect(status(page)).toContainText(msg("runState.COMPLETE"));
-  await expect(page.locator(".run-facts").getByText(msg("origin.rerun"), { exact: true })).toBeVisible();
+  // The header says what this run is a re-run of, with a link.
+  await expect(page.locator(".run-facts")).toContainText(msg("origin.rerun"));
+  await expect(page.locator(".run-facts").getByRole("link", { name: "Nightly regression" })).toHaveAttribute("href", `#/runs/${nightly.id}`);
   // Where it came from is said, and linked.
   await page.getByRole("link", { name: msg("run.tab.selection") }).click();
-  await page.getByRole("link", { name: "Nightly regression" }).click();
+  await page.locator(".selection-tab").getByRole("link", { name: "Nightly regression" }).click();
   await expect(page).toHaveURL(new RegExp(`#/runs/${nightly.id}`));
 });
 
@@ -262,9 +287,18 @@ test("a run that was only composed is dispatched from its own page", async ({ pa
   expect((await api.run(composed.id)).state).toBe("COMPLETE");
 });
 
-test("load a run's selection back into the builder", async ({ page, open, api }) => {
+test("load a run's selection back into the builder — with its runner, options and labels", async ({ page, open, api }) => {
   const ast = { op: "AND", items: ["Payments", { not: "prefix:Quarantine-" }] };
-  const plain = await api.finishedRun(ast, "a", { title: "Zahlungen ohne Quarantäne" });
+  const composed = await api.compose({
+    selection: { tag_filter: ast },
+    title: "Zahlungen ohne Quarantäne",
+    labels: { suite: "nightly", env: "staging" },
+    dispatch: { runner: "scripted", parameters: { environment: "preview", build: "2026.11", retries: 3, headless: false, browsers: ["firefox"] } },
+  });
+  const plain = await api.waitFor(composed.id, ["COMPLETE"]);
+  // Something else is in the builder from earlier work.
+  await open("#/compose?f=Smoke");
+  await page.getByRole("textbox", { name: msg("compose.title") }).fill("Etwas ganz anderes");
   await open(`#/runs/${plain.id}`);
   await page.getByRole("link", { name: msg("run.tab.selection") }).click();
   await expect(page.getByTestId("run-filter")).toHaveText("Payments AND NOT prefix:Quarantine-");
@@ -274,6 +308,18 @@ test("load a run's selection back into the builder", async ({ page, open, api })
   await expectPreview(page, plain.planned_count, 60);
   await expect(page.getByRole("button", { name: msg("filter.negateRule", { pattern: "prefix:Quarantine-" }) })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByTestId("pinned")).toHaveCount(0);
+  // How it was run comes along; the title of the other draft does not.
+  await expect(page.getByText(msg("compose.loadedFrom", { title: "Zahlungen ohne Quarantäne" }))).toBeVisible();
+  await expect(page.getByRole("combobox", { name: msg("runner.label") })).toHaveValue("scripted");
+  const form = page.getByRole("group", { name: msg("runner.parameters") });
+  await expect(form.getByRole("combobox", { name: /^Target environment/ })).toHaveValue("preview");
+  await expect(form.getByRole("textbox", { name: "Retry count" })).toHaveValue("3");
+  await expect(form.getByRole("checkbox", { name: "Run headless" })).not.toBeChecked();
+  await expect(form.getByRole("checkbox", { name: "firefox" })).toBeChecked();
+  await expect(form.getByRole("checkbox", { name: "chromium" })).not.toBeChecked();
+  await expect(page.getByRole("button", { name: msg("labels.remove", { label: "env=staging" }) })).toBeVisible();
+  await expect(page.getByRole("button", { name: msg("labels.remove", { label: "suite=nightly" }) })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: msg("compose.title") })).toHaveValue("");
 });
 
 test("a run that named its items is loaded back as that list — and the list can be dropped", async ({ page, open, api }) => {

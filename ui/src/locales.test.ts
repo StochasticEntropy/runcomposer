@@ -122,7 +122,7 @@ describe("values the server sends", () => {
     ["health", ["ok", "degraded", "down", "unknown"]],
     ["outcome", ["new", "duplicate", "replaced"]],
     ["runner.problem", ["required", "integer", "choice"]],
-    ["filter.parse", ["empty", "unexpected-end", "unexpected-operator", "missing-operator", "unbalanced-open", "unbalanced-close", "unterminated-quote"]],
+    ["filter.parse", ["empty", "unexpected-end", "unexpected-operator", "missing-operator", "unbalanced-open", "unbalanced-close", "unterminated-quote", "needs-quotes"]],
   ];
 
   it("were found in the Python sources", () => {

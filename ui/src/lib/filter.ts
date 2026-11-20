@@ -52,7 +52,8 @@ export type ParseProblem =
   | "missing-operator"
   | "unbalanced-open"
   | "unbalanced-close"
-  | "unterminated-quote";
+  | "unterminated-quote"
+  | "needs-quotes";
 
 export class FilterParseError extends Error {
   readonly problem: ParseProblem;
@@ -109,6 +110,10 @@ function tokenize(text: string): Token[] {
       const start = index;
       while (index < text.length && !/[\s()"]/.test(text[index]!)) index += 1;
       const word = text.slice(start, index);
+      // `regex:(a|b)` typed bare: the pattern runs into a parenthesis or a quote.
+      if (/^(regex|prefix):/.test(word) && index < text.length && /[("]/.test(text[index]!)) {
+        throw new FilterParseError("needs-quotes", start, word);
+      }
       if (OPERATORS.has(word)) tokens.push({ type: "op", value: word as "AND" | "OR" | "NOT", at: start });
       else tokens.push({ type: "pattern", value: word, at: start });
     }
@@ -161,7 +166,7 @@ export function parseFilter(text: string): FilterAst | null {
   const rest = peek();
   if (rest) {
     if (rest.type === "close") throw new FilterParseError("unbalanced-close", rest.at);
-    throw new FilterParseError("missing-operator", rest.at, rest.type === "pattern" ? rest.value : "");
+    throw new FilterParseError("missing-operator", rest.at, rest.type === "pattern" || rest.type === "op" ? rest.value : "(");
   }
   return ast;
 }

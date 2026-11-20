@@ -184,7 +184,7 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
           <option value="OR">{t("filter.opLong.OR")}</option>
         </select>
         <span className="expr-group-tools">
-          <NotToggle on={node.negated} label={t("filter.negateGroup")} onToggle={() => actions.toggleNot(node.id)} />
+          <NotToggle on={node.negated} label={t(isRoot ? "filter.negateAll" : "filter.negateGroup")} onToggle={() => actions.toggleNot(node.id)} />
           {!isRoot && (
             <>
               {!node.negated && (
@@ -243,10 +243,10 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
         <button type="submit" className="btn btn-small" disabled={!draft.trim()}>
           {t("filter.add")}
         </button>
-        <button type="button" className="btn btn-small" onClick={() => actions.pick(node.id)}>
+        <button type="button" className="btn btn-small" onClick={() => actions.pick(node.id)} aria-label={isRoot ? undefined : t("filter.pickForGroup")}>
           {t("filter.pick")}
         </button>
-        <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.addGroup(node.id)}>
+        <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.addGroup(node.id)} aria-label={isRoot ? undefined : t("filter.addGroupInGroup")}>
           {t("filter.addGroup")}
         </button>
       </form>

@@ -216,6 +216,9 @@ describe("previewRows", () => {
       "item:Shop.Auth.SSO.T001",
     ]);
     expect(rows[0]!.members).toHaveLength(2);
+    const sorted = previewRows(items, { ...options, grouped: true, sort: "name" });
+    expect(sorted.filter((row) => row.kind === "group").map((row) => row.label)).toEqual(["Shop › Auth › SSO", "Shop › Cart › Core"]);
+    expect(sorted.filter((row) => row.kind === "item").map((row) => row.item!.name)).toEqual(["SSO login", "Add item", "Remove item"]);
   });
 });
 

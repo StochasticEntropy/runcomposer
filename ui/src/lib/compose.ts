@@ -216,7 +216,9 @@ export function previewRows(
     else groups.set(key, [item]);
   }
   const rows: PreviewRow[] = [];
-  for (const [label, members] of groups) {
+  // A sort applies to the suites as well as to the items inside them.
+  const ordered = options.sort === "catalog" ? [...groups] : [...groups].sort((a, b) => options.compare(a[0], b[0]));
+  for (const [label, members] of ordered) {
     rows.push({ kind: "group", label, members });
     for (const item of members) rows.push({ kind: "item", label: item.id, item });
   }

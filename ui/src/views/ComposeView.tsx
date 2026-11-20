@@ -13,7 +13,7 @@ import { ExpressionEditor } from "../components/ExpressionEditor.tsx";
 import { PreviewTable } from "../components/PreviewTable.tsx";
 import { LabelsInput, ParameterForm, RunnerSelect, runnerUsable } from "../components/RunnerFields.tsx";
 import { TagPicker } from "../components/TagPicker.tsx";
-import { Dialog, ErrorState, ErrorText, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
+import { CopyButton, Dialog, ErrorState, ErrorText, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { useResource } from "../hooks/useResource.ts";
 import { navigate } from "../hooks/useRoute.ts";
@@ -33,7 +33,7 @@ import type { GroupNode } from "../lib/editor.ts";
 import { MATCH_ALL, errorPath, formatFilter, parseFilter } from "../lib/filter.ts";
 import { setFlash } from "../lib/flash.ts";
 import { parseLabel } from "../lib/format.ts";
-import { mergeValues, toPayload, validateValues } from "../lib/params.ts";
+import { fromPayload, mergeValues, toPayload, validateValues } from "../lib/params.ts";
 import type { ParamValues } from "../lib/params.ts";
 import { readSession, writeSession } from "../lib/prefs.ts";
 import { asApiError } from "../lib/request.ts";
@@ -66,13 +66,16 @@ function rootFromText(text: string): { root: GroupNode; unreadable: boolean } {
 function initialDraft(query: Record<string, string>): { draft: StoredDraft; root: GroupNode; unreadable: boolean } {
   const stored = readSession<StoredDraft>(DRAFT_KEY);
   const link = linkFromQuery(query);
+  // A link to another selection than the one in the draft: the title typed
+  // for the old selection does not belong to this one.
+  const otherSelection = link !== null && (link.filter !== (stored?.filter ?? "") || link.from !== (stored?.from ?? null));
   const draft: StoredDraft = {
     filter: link?.filter ?? stored?.filter ?? "",
     excluded: link ? link.excluded : (stored?.excluded ?? []),
     from: link ? link.from : (stored?.from ?? null),
     runner: stored?.runner ?? null,
     params: stored?.params ?? {},
-    title: stored?.title ?? "",
+    title: otherSelection ? "" : (stored?.title ?? ""),
     labels: stored?.labels ?? {},
   };
   return { draft, ...rootFromText(draft.filter) };
@@ -121,6 +124,7 @@ export function ComposeView({ route }: { route: Route }) {
   const [labelProblem, setLabelProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const submitting = useRef(false);
+  const formRef = useRef<HTMLFormElement | null>(null);
   const tagListId = useId();
   const titleId = useId();
 
@@ -203,14 +207,24 @@ export function ComposeView({ route }: { route: Route }) {
     linkKeyRef.current = linkKey;
   });
 
+  // An edit of the filter is a step in the browser's history — Back takes it
+  // back. Ticking items is not (that would be one step per item), and neither
+  // is writing the URL for a state that came FROM the URL.
+  const written = useRef<{ filter: string; from: string | null } | null>(null);
+  const adopted = useRef(false);
   useEffect(() => {
-    navigate(composeHref(linkQuery(link)), { replace: true });
+    const previous = written.current;
+    const edited = previous !== null && (previous.filter !== link.filter || previous.from !== link.from);
+    written.current = { filter: link.filter, from: link.from };
+    navigate(composeHref(linkQuery(link)), { replace: !edited || adopted.current });
+    adopted.current = false;
   }, [link]);
 
   // Somebody else changed the URL — Back, a pasted link, "load into Compose".
   useEffect(() => {
     const incoming = linkFromQuery(route.query);
     if (!incoming || JSON.stringify(linkQuery(incoming)) === linkKeyRef.current) return;
+    adopted.current = true;
     const parsed = rootFromText(incoming.filter);
     setRoot(parsed.root);
     setUnreadableLink(parsed.unreadable);
@@ -243,6 +257,30 @@ export function ComposeView({ route }: { route: Route }) {
     setParamErrors({});
   };
 
+  // Arriving from "Load into Compose": besides the selection (already in the
+  // link), take over how that run was run — runner, its options, labels.
+  const [like] = useState(() => route.query.like ?? null);
+  useEffect(() => {
+    if (!like) return;
+    const controller = new AbortController();
+    api
+      .run(like, null, controller.signal)
+      .then((source) => {
+        const latest = source.dispatches[source.dispatches.length - 1];
+        const sameRunner = runners.find((candidate) => candidate.id === latest?.mode);
+        if (latest && runnerUsable(sameRunner)) {
+          setRunnerId(sameRunner.id);
+          setParamsByRunner((current) => ({ ...current, [sameRunner.id]: fromPayload(sameRunner.parameters ?? [], latest.parameters) }));
+        }
+        setLabels(source.labels);
+        setTitle("");
+        setNotice(t("compose.loadedFrom", { title: source.title }));
+      })
+      .catch(() => undefined); // the selection is loaded either way; this was a convenience
+    return () => controller.abort();
+    // Once, for the link this view was opened with.
+  }, [like]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const changeRoot = (next: GroupNode) => {
     setRoot(next);
     setUnreadableLink(false);
@@ -273,7 +311,7 @@ export function ComposeView({ route }: { route: Route }) {
   };
 
   // -- composing ------------------------------------------------------------------------------
-  const defaultTitle = filterText ? filterText.slice(0, 80) : pinned ? t("compose.titleFromRun", { title: pinned.title }) : "";
+  const defaultTitle = filterError ? "" : filterText ? filterText.slice(0, 80) : pinned ? t("compose.titleFromRun", { title: pinned.title }) : "";
 
   /** Everything a run or an export is composed from, or null when the form says no. */
   const collect = (): { selection: NonNullable<ReturnType<typeof dispatchSelection>>; title?: string; labels: Record<string, string> } | null => {
@@ -300,6 +338,9 @@ export function ComposeView({ route }: { route: Route }) {
     const problems = validateValues(specs, values);
     if (Object.keys(problems).length > 0) {
       setParamErrors(Object.fromEntries(Object.entries(problems).map(([name, problem]) => [name, t(`runner.problem.${problem}`)])));
+      // Take the keyboard to the first field that needs attention.
+      const first = specs.find((spec) => spec.name in problems)?.name;
+      formRef.current?.querySelector<HTMLElement>(`[data-param="${first}"] input, [data-param="${first}"] select`)?.focus();
       return;
     }
     const body = collect();
@@ -319,6 +360,7 @@ export function ComposeView({ route }: { route: Route }) {
             : `${started} ${t("compose.countChanged", { expected: selectedCount, count: response.run.planned_count })}`,
       });
       announce(started);
+      setTitle(""); // the title went with that run
       navigate(runHref(response.run.id));
     } catch (caught) {
       const error = asApiError(caught);
@@ -466,7 +508,7 @@ export function ComposeView({ route }: { route: Route }) {
         )}
 
         <p className="share">
-          <CopyLink />
+          <CopyButton text={() => window.location.href} label={t("compose.copyLink")} quiet />
           {tooManyExclusions && <span className="hint">{t("compose.linkWithoutExclusions", { max: MAX_LINKED_EXCLUSIONS })}</span>}
         </p>
       </section>
@@ -485,6 +527,7 @@ export function ComposeView({ route }: { route: Route }) {
           <h2 id={`${titleId}-run`}>{t("compose.runTitle")}</h2>
         </header>
         <form
+          ref={formRef}
           onSubmit={(event) => {
             event.preventDefault();
             void run();
@@ -530,7 +573,7 @@ export function ComposeView({ route }: { route: Route }) {
           )}
 
           <div className="run-actions">
-            <button type="submit" className="btn btn-primary btn-large" disabled={busy || runBlocked} aria-describedby={`${summaryId} ${blockedId}`}>
+            <button type="submit" className="btn btn-primary btn-large" disabled={runBlocked} aria-disabled={busy || undefined} aria-describedby={`${summaryId} ${blockedId}`}>
               {busy ? t("compose.starting") : t("compose.run", { count: selectedCount })}
             </button>
             <button type="button" className="btn" disabled={busy || blocked !== null} onClick={() => setExporting(true)}>
@@ -563,7 +606,8 @@ export function ComposeView({ route }: { route: Route }) {
 
       {exporting && (
         <ExportDialog
-          intro={t("export.introCompose", { count: selectedCount })}
+          intro={`${t("export.introCompose", { count: selectedCount })} ${t("export.runTitle", { title: title.trim() || defaultTitle || t("compose.titlePlaceholder") })}`}
+          onExported={() => setTitle("")}
           perform={async (format) => {
             const body = collect();
             if (!body) throw new Error(t("compose.blocked.updating"));
@@ -578,27 +622,6 @@ export function ComposeView({ route }: { route: Route }) {
         />
       )}
     </div>
-  );
-}
-
-function CopyLink() {
-  const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      className="btn btn-small btn-quiet"
-      onClick={() => {
-        void navigator.clipboard?.writeText(window.location.href).then(() => setCopied(true));
-      }}
-    >
-      {copied ? t("action.copied") : t("compose.copyLink")}
-    </button>
   );
 }
 

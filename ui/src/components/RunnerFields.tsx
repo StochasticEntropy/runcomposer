@@ -45,7 +45,7 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
               : "";
           return (
             <option key={runner.id} value={runner.id} disabled={Boolean(runner.error)}>
-              {runner.title && runner.title !== runner.id ? `${runner.title} (${runner.id})` : runner.id}
+              {runner.title && runner.title !== runner.id ? `${runner.id} — ${runner.title}` : runner.id}
               {suffix}
             </option>
           );
@@ -71,6 +71,11 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
               </button>
             </p>
           </>
+        )}
+        {selected?.health && ["down", "degraded"].includes(selected.health.status) && (
+          <p className="field-error" role="status">
+            {t("runner.unhealthyHint")}
+          </p>
         )}
         {broken.length > 0 && (
           <ul className="runner-problems">
@@ -114,10 +119,13 @@ export function ParameterForm({ specs, values, onChange, problems }: FormProps) 
           <>
             {spec.label}
             {spec.required && (
-              <span className="required" title={t("runner.required")}>
-                {" "}
-                *<span className="sr-only"> ({t("runner.required")})</span>
-              </span>
+              <>
+                <span className="required" aria-hidden="true" title={t("runner.required")}>
+                  {" "}
+                  *
+                </span>
+                <span className="sr-only"> ({t("runner.required")})</span>
+              </>
             )}
           </>
         );

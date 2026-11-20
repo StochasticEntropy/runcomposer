@@ -6,11 +6,12 @@
 // (a request is under way, or the last one failed) they are marked stale:
 // dimmed, not editable, and said to be so.
 
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { useI18n } from "../hooks/context.tsx";
 import { useMediaQuery } from "../hooks/usePage.ts";
+import { usePersisted } from "../hooks/usePersisted.ts";
 import { useVirtual } from "../hooks/useVirtual.ts";
 import { isFresh, previewRows, tristate } from "../lib/compose.ts";
 import type { PreviewSort, PreviewState } from "../lib/compose.ts";
@@ -32,8 +33,9 @@ interface Props {
 export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landing, filterError }: Props) {
   const { t } = useI18n();
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<PreviewSort>("catalog");
-  const [grouped, setGrouped] = useState(false);
+  const [sort, setSort] = usePersisted<PreviewSort>("runcomposer.preview.sort", "catalog");
+  const [grouped, setGrouped] = usePersisted<boolean>("runcomposer.preview.grouped", false);
+  const idPrefix = useId();
   const narrow = useMediaQuery("(max-width: 700px)");
   const rowHeight = narrow ? 56 : 36;
 
@@ -48,6 +50,44 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
 
   const excludedHere = useMemo(() => items.filter((item) => excluded.has(item.id)).length, [items, excluded]);
   const excludedElsewhere = excluded.size - excludedHere;
+
+  // The rows are one stop for the Tab key, not one each: arrow keys move
+  // between them, Space ticks. Otherwise a keyboard user would have to tab
+  // through every matched item to get past the preview.
+  const [activeRow, setActiveRow] = useState(0);
+  const current = Math.min(activeRow, Math.max(0, rows.length - 1));
+  const pendingFocus = useRef<number | null>(null);
+  useEffect(() => {
+    if (pendingFocus.current === null) return;
+    const box = virtual.containerRef.current?.querySelector<HTMLInputElement>(`[data-row="${pendingFocus.current}"] input`);
+    if (box) {
+      box.focus({ preventScroll: true });
+      pendingFocus.current = null;
+    }
+  });
+  const onRowKey = (event: React.KeyboardEvent, index: number) => {
+    const page = 10;
+    const target =
+      event.key === "ArrowDown" ? index + 1
+      : event.key === "ArrowUp" ? index - 1
+      : event.key === "PageDown" ? index + page
+      : event.key === "PageUp" ? index - page
+      : event.key === "Home" ? 0
+      : event.key === "End" ? rows.length - 1
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    const next = Math.max(0, Math.min(rows.length - 1, target));
+    setActiveRow(next);
+    pendingFocus.current = next;
+    virtual.scrollToIndex(next);
+  };
+  const rowBox = (index: number) => ({
+    id: `${idPrefix}-${index}`,
+    tabIndex: index === current ? 0 : -1,
+    onFocus: () => setActiveRow(index),
+    onKeyDown: (event: React.KeyboardEvent) => onRowKey(event, index),
+  });
 
   const setMany = (targets: CatalogItem[], selected: boolean) => {
     const next = new Set(excluded);
@@ -158,10 +198,13 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
           className={`table-scroll preview-scroll${fresh ? "" : " is-stale"}`}
           ref={virtual.containerRef}
           onScroll={virtual.onScroll}
-          tabIndex={0}
           role="group"
           aria-label={t("preview.tableLabel")}
+          aria-describedby={`${idPrefix}-keys`}
         >
+          <p className="sr-only" id={`${idPrefix}-keys`}>
+            {t("preview.keys")}
+          </p>
           <table className="table preview-table" aria-rowcount={rows.length + 1}>
             <thead>
               <tr aria-rowindex={1}>
@@ -193,13 +236,14 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
                 if (row.kind === "group") {
                   const members = row.members!;
                   return (
-                    <tr key={`g:${row.label}`} className="group-row" style={{ height: rowHeight }} aria-rowindex={index + 2}>
+                    <tr key={`g:${row.label}`} className="group-row" style={{ height: rowHeight }} aria-rowindex={index + 2} data-row={index}>
                       <td className="col-check">
                         <TriCheckbox
                           state={tristate(members, excluded)}
                           onChange={(checked) => setMany(members, checked)}
                           label={t("preview.selectGroup", { group: row.label })}
                           disabled={!fresh}
+                          {...rowBox(index)}
                         />
                       </td>
                       <th scope="rowgroup" colSpan={3}>
@@ -217,6 +261,7 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
                     style={{ height: rowHeight }}
                     aria-rowindex={index + 2}
                     data-item-id={item.id}
+                    data-row={index}
                   >
                     <td className="col-check">
                       <input
@@ -225,11 +270,15 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
                         disabled={!fresh}
                         aria-label={t("preview.selectItem", { item: item.name || item.id })}
                         onChange={(event) => setMany([item], event.target.checked)}
+                        {...rowBox(index)}
                       />
                     </td>
                     <td className="col-name">
-                      <span className="cell-main">{item.name || item.id}</span>
-                      <span className="cell-sub mono">{item.id}</span>
+                      {/* The name is the checkbox's label: a tap on the text ticks it. */}
+                      <label htmlFor={`${idPrefix}-${index}`}>
+                        <span className="cell-main">{item.name || item.id}</span>
+                        <span className="cell-sub mono">{item.id}</span>
+                      </label>
                     </td>
                     <td className="col-id mono">{item.id}</td>
                     <td className="col-tags">

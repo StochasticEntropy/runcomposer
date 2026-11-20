@@ -108,7 +108,10 @@ test("YAML export, and a new token replaces the one shown once", async ({ page, 
   const runId = await currentRunId(page);
 
   await page.getByRole("link", { name: msg("run.tab.activity") }).click();
-  await page.getByRole("button", { name: msg("run.activity.newToken") }).click();
+  // The handed-out document and a new token are offered where the run says it is waiting…
+  await expect(page.locator(".notice").getByRole("link", { name: msg("run.downloadDocument") })).toBeVisible();
+  // …and per dispatch in the activity.
+  await page.getByTestId("rotate-token").click();
   const confirm = page.getByRole("dialog", { name: msg("run.rotateTitle") });
   await expect(confirm).toContainText(msg("run.rotateExplain"));
   await confirm.getByRole("button", { name: msg("run.rotateConfirm") }).click();

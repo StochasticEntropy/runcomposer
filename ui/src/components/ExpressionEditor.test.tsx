@@ -72,7 +72,9 @@ describe("the expression editor", () => {
       fireEvent.submit(field.closest("form")!);
     }
     expect(text()).toBe("Payments AND (Smoke OR Regression)");
-    fireEvent.click(within(group).getByRole("button", { name: /Negate this whole group/ }));
+    fireEvent.click(within(group).getByRole("button", { name: "Negate this group" }));
+    expect(screen.getByRole("button", { name: "Negate the whole filter" })).toBeTruthy();
+    expect(within(group).getByRole("button", { name: "Pick tags for this group…" })).toBeTruthy();
     expect(text()).toBe("Payments AND NOT (Smoke OR Regression)");
   });
 

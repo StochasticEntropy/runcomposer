@@ -78,6 +78,10 @@ describe("parseFilter", () => {
     expect(problemOf("Payments)")).toBe("unbalanced-close");
     expect(problemOf('"Payments')).toBe("unterminated-quote");
     expect(problemOf('Payments AND ""')).toBe("empty");
+    expect(problemOf("Payments AND regex:(")).toBe("needs-quotes");
+    expect(problemOf("regex:^Cart(V2)?$")).toBe("needs-quotes");
+    expect(problemOf("Payments (Smoke)")).toBe("missing-operator");
+    expect(parseFilter("(regex:^Cart)")).toBe("regex:^Cart");
     try {
       parseFilter("Payments Smoke");
     } catch (error) {

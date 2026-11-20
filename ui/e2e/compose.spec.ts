@@ -123,6 +123,10 @@ test("the expression can be typed as text, and a mistake is explained in place",
   await area.fill("Auth AND (Smoke OR");
   await area.press("Enter");
   await expect(page.getByRole("alert")).toContainText(msg("filter.parse.unexpected-end"));
+  // A pattern with parentheses typed bare: the message says what to do about it.
+  await area.fill("Auth AND regex:(Smoke|Regression)");
+  await area.press("Enter");
+  await expect(page.getByRole("alert")).toContainText(msg("filter.parse.needs-quotes", { position: 10, token: "regex:" }));
   await area.fill("Auth AND (Smoke OR Sprint-14) AND NOT Auth-SSO");
   await area.press("Enter");
   await expect(page.getByTestId("filter-text")).toHaveText("Auth AND (Smoke OR Sprint-14) AND NOT Auth-SSO");
@@ -297,6 +301,38 @@ test("title and labels survive a trip to another view and a reload", async ({ pa
   await page.getByRole("button", { name: msg("compose.reset") }).click();
   await expect(page.getByText(msg("compose.landing.title"))).toBeVisible();
   await expect(page.getByRole("textbox", { name: msg("compose.title") })).toHaveValue("");
+});
+
+test("Back takes back the last edit of the filter, Forward restores it", async ({ page, open }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  await addRule(page, "Smoke");
+  await expectPreview(page, 4, 60);
+  await addRule(page, "Sprint-12");
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke AND Sprint-12");
+  // Unticking an item is not a step of its own.
+  await page.locator(".preview tbody tr[data-item-id]").first().getByRole("checkbox").uncheck();
+
+  await page.goBack();
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke");
+  await expectPreview(page, 4, 60);
+  await page.goBack();
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Payments" }) })).toBeVisible();
+  await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Smoke" }) })).toHaveCount(0);
+  await expectPreview(page, 17, 60);
+  await page.goForward();
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke");
+  await expect(page).toHaveURL(/#\/compose/);
+});
+
+test("the link to a selection can be copied, and says that it was", async ({ page, open, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  const copy = page.getByRole("button", { name: msg("compose.copyLink") });
+  await copy.click();
+  await expect(page.getByRole("button", { name: msg("action.copied") })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(page.url());
 });
 
 test("a link whose filter cannot be read says so instead of guessing", async ({ page, open }) => {

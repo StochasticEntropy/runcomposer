@@ -32,7 +32,8 @@ import { dispatchSpecUrl, resultsExportUrl, specUrl } from "../lib/api.ts";
 import { formatFilter } from "../lib/filter.ts";
 import { useFlash } from "../hooks/useFlash.ts";
 import { setFlash } from "../lib/flash.ts";
-import { absoluteTime, formatDuration } from "../lib/format.ts";
+import { absoluteTime, elapsedMs, formatDuration } from "../lib/format.ts";
+import type { Translator } from "../lib/i18n.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
 import { composeHref, runHref, runsHref } from "../lib/router.ts";
@@ -53,6 +54,12 @@ type Pending =
   | { kind: "export" }
   | null;
 
+/** How long the latest dispatch took, in ms. Times are known to the second. */
+export function runDuration(run: Pick<RunDetail, "dispatches">): number | null {
+  const latest = run.dispatches[run.dispatches.length - 1];
+  return latest ? elapsedMs(latest.created_at, latest.completed_at) : null;
+}
+
 /** The link that loads this run's selection into the builder. */
 export function loadHref(run: RunDetail): string {
   const { tag_filter: filter, item_ids: ids, derived_from: derived } = run.selection;
@@ -60,7 +67,9 @@ export function loadHref(run: RunDetail): string {
   // A filter alone is the whole selection. Anything else — fixed ids, a
   // history query — is pinned as the list of items the run actually had.
   const needsItems = filter == null || ids.length > 0 || derived.length > 0;
-  return composeHref({ f: filterText || null, from: needsItems ? run.id : null });
+  // `like` asks the builder to also take over how this run was run: its
+  // runner, the runner's options, its labels.
+  return composeHref({ f: filterText || null, from: needsItems ? run.id : null, like: run.id });
 }
 
 const FAILING = ["FAIL", "ERROR", "MISSING"];
@@ -167,6 +176,8 @@ export function RunView({ route }: { route: Route }) {
   }
 
   const latest = run.dispatches[run.dispatches.length - 1] ?? null;
+  const source = run.selection.derived_from[0];
+  const handedOut = latest !== null && latest.spec_sha256 !== null && isActive(latest.state) ? latest : null;
   const shown = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id) ?? null;
   const active = isActive(run.state);
   const failures = failedItems(run);
@@ -200,10 +211,10 @@ export function RunView({ route }: { route: Route }) {
               <TimeAgo iso={run.created_at} />
             </dd>
           </div>
-          {run.duration_s !== null && (
+          {runDuration(run) !== null && (
             <div>
               <dt>{t("run.duration")}</dt>
-              <dd>{formatDuration(run.duration_s * 1000, locale)}</dd>
+              <dd>{formatDuration(runDuration(run), locale, { coarse: true })}</dd>
             </div>
           )}
           <div>
@@ -218,7 +229,15 @@ export function RunView({ route }: { route: Route }) {
           </div>
           <div>
             <dt>{t("run.origin")}</dt>
-            <dd>{tOr(`origin.${run.origin}`, run.origin)}</dd>
+            <dd>
+              {tOr(`origin.${run.origin}`, run.origin)}
+              {source?.resolved_run_id && (
+                <>
+                  {" "}
+                  {t("run.originOf")} <a href={runHref(source.resolved_run_id)}>{source.resolved_run_title || source.resolved_run_id}</a>
+                </>
+              )}
+            </dd>
           </div>
           {Object.keys(run.labels).length > 0 && (
             <div>
@@ -280,14 +299,30 @@ export function RunView({ route }: { route: Route }) {
           {t("run.refreshFailed")} <ErrorText error={follow.error} />
         </Notice>
       )}
-      {latest?.error && (
+      {/* A cancel somebody asked for is not an error of the runner. */}
+      {latest?.error && run.state !== "CANCELLED" && (
         <Notice tone="error">
           <strong>{t("run.runnerError")}</strong> <span className="pre-line">{latest.error}</span>
         </Notice>
       )}
+      {run.state === "CANCELLED" && <Notice tone="info">{t("run.cancelledHint")}</Notice>}
       {latest?.cancel_requested && active && <Notice tone="warn">{t("run.cancelRequested")}</Notice>}
       {run.state === "STALE" && <Notice tone="warn">{t("run.staleHint")}</Notice>}
-      {run.state === "AWAITING_RESULTS" && <Notice tone="info">{t("run.awaitingHint")}</Notice>}
+      {run.state === "AWAITING_RESULTS" && (
+        <Notice tone="info">
+          <p>{t("run.awaitingHint")}</p>
+          {handedOut && (
+            <p className="row awaiting-tools">
+              <a className="btn btn-small" href={dispatchSpecUrl(run.id, handedOut.dispatch_id)} download>
+                {t("run.downloadDocument")}
+              </a>
+              <button type="button" className="btn btn-small" onClick={() => setPending({ kind: "rotate", dispatch: handedOut })}>
+                {t("run.activity.newToken")}
+              </button>
+            </p>
+          )}
+        </Notice>
+      )}
       {run.state === "COMPOSED" && <Notice tone="info">{t("run.composedHint")}</Notice>}
 
       {progress && latest && (
@@ -332,7 +367,13 @@ export function RunView({ route }: { route: Route }) {
         ))}
       </nav>
 
-      {tab === "results" && <RunResults run={run} />}
+      {tab === "results" && (
+        <RunResults
+          run={run}
+          query={{ status: route.query.status, shard: route.query.shard, q: route.query.q }}
+          onQuery={(changes) => navigate(runHref(run.id, { d: dispatchParam, ...route.query, tab: null, ...changes }), { replace: true })}
+        />
+      )}
       {tab === "selection" && <SelectionTab run={run} shown={shown} />}
       {tab === "activity" && <ActivityTab run={run} onRotate={(dispatch) => setPending({ kind: "rotate", dispatch })} />}
 
@@ -340,6 +381,7 @@ export function RunView({ route }: { route: Route }) {
         <ConfirmDialog
           title={t("run.cancelTitle")}
           confirmLabel={t("run.cancelConfirm")}
+          cancelLabel={t("run.cancelKeep")}
           danger
           busy={busy}
           error={actionError}
@@ -461,6 +503,10 @@ export function RunView({ route }: { route: Route }) {
 
 function SelectionTab({ run, shown }: { run: RunDetail; shown: Dispatch | null }) {
   const { t, tOr, locale } = useI18n();
+  const { runners } = useApp();
+  // A parameter is shown under the label its runner declares, when that runner is still configured.
+  const declared = runners.find((runner) => runner.id === shown?.mode)?.parameters ?? [];
+  const labelOf = (name: string) => declared.find((spec) => spec.name === name)?.label ?? name;
   const { tag_filter: filter, item_ids: ids, derived_from: derived } = run.selection;
   const parameters = Object.entries(shown?.parameters ?? {});
   return (
@@ -483,12 +529,13 @@ function SelectionTab({ run, shown }: { run: RunDetail; shown: Dispatch | null }
           )}
           {derived.map((provenance, index) => (
             <FragmentRow key={index} term={t("run.selection.derived")}>
-              {t("run.selection.derivedFrom", {
-                verdicts: (provenance.query?.verdicts ?? []).map((status) => tOr(`verdict.${status}`, status)).join(", "),
-              })}{" "}
               {provenance.resolved_run_id ? (
                 <a href={runHref(provenance.resolved_run_id)}>{provenance.resolved_run_title || provenance.resolved_run_id}</a>
-              ) : null}
+              ) : null}{" "}
+              —{" "}
+              {t("run.selection.derivedFrom", {
+                verdicts: (provenance.query?.verdicts ?? []).map((status) => tOr(`verdict.${status}`, status)).join(", "),
+              })}
               {provenance.resolved_run_completed_at && (
                 <span className="muted"> ({absoluteTime(provenance.resolved_run_completed_at, locale)})</span>
               )}
@@ -517,7 +564,7 @@ function SelectionTab({ run, shown }: { run: RunDetail; shown: Dispatch | null }
               <ModeName mode={shown.mode} />
             </dd>
             {parameters.map(([name, value]) => (
-              <FragmentRow key={name} term={name}>
+              <FragmentRow key={name} term={labelOf(name)}>
                 <code>{Array.isArray(value) ? value.join(", ") : String(value)}</code>
               </FragmentRow>
             ))}
@@ -571,21 +618,25 @@ function FragmentRow({ term, children }: { term: string; children: React.ReactNo
   );
 }
 
-/** What an event says, in a line: the fields people look for, not the whole payload. */
-function eventSummary(event: RunEvent, tOr: (key: string, fallback: string) => string): string {
+/** What an event says, in a line: the fields people look for, each with its name. */
+function eventSummary(event: RunEvent, i18n: { t: Translator["t"]; tOr: Translator["tOr"] }): string {
+  const { t, tOr } = i18n;
   const data = event.data;
   const parts: string[] = [];
   const text = (value: unknown) => (typeof value === "string" || typeof value === "number" ? String(value) : "");
-  if (text(data.shard)) parts.push(text(data.shard));
-  if (text(data.completion)) parts.push(tOr(`completion.${text(data.completion)}`, text(data.completion)));
+  if (text(data.shard)) parts.push(`${t("run.shard")} ${text(data.shard)}`);
+  if (typeof data.verdicts === "number") parts.push(t("run.resultCount", { count: data.verdicts }));
   if (text(data.outcome)) parts.push(tOr(`outcome.${text(data.outcome)}`, text(data.outcome)));
-  if (typeof data.verdicts === "number") parts.push(String(data.verdicts));
-  for (const field of ["reason", "message", "error", "mode"] as const) if (text(data[field])) parts.push(text(data[field]));
+  if (text(data.completion)) parts.push(tOr(`completion.${text(data.completion)}`, text(data.completion)));
+  if (typeof data.planned === "number") parts.push(t("picker.items", { count: data.planned }));
+  if (text(data.mode)) parts.push(text(data.mode) === "export" ? t("mode.export") : text(data.mode) === "ingest" ? t("mode.ingest") : text(data.mode));
+  for (const field of ["reason", "message", "error"] as const) if (text(data[field])) parts.push(text(data[field]));
   return parts.join(" · ");
 }
 
 function ActivityTab({ run, onRotate }: { run: RunDetail; onRotate: (dispatch: Dispatch) => void }) {
-  const { t, tOr, locale } = useI18n();
+  const i18n = useI18n();
+  const { t, tOr, locale } = i18n;
   const events = [...run.events].reverse();
   return (
     <div className="activity-tab">
@@ -628,11 +679,17 @@ function ActivityTab({ run, onRotate }: { run: RunDetail; onRotate: (dispatch: D
                     <td data-label={t("run.activity.document")}>
                       {dispatch.spec_sha256 ? (
                         <span className="row">
-                          <a className="btn btn-small" href={dispatchSpecUrl(run.id, dispatch.dispatch_id)} download data-testid="dispatch-spec">
+                          <a
+                            className="btn btn-small"
+                            href={dispatchSpecUrl(run.id, dispatch.dispatch_id)}
+                            download
+                            data-testid="dispatch-spec"
+                            aria-label={t("run.downloadDocument")}
+                          >
                             {t("run.activity.download")}
                           </a>
                           {isActive(dispatch.state) && (
-                            <button type="button" className="btn btn-small" onClick={() => onRotate(dispatch)}>
+                            <button type="button" className="btn btn-small" onClick={() => onRotate(dispatch)} data-testid="rotate-token">
                               {t("run.activity.newToken")}
                             </button>
                           )}
@@ -658,7 +715,7 @@ function ActivityTab({ run, onRotate }: { run: RunDetail; onRotate: (dispatch: D
             <li key={event.seq} data-kind={event.kind}>
               <time dateTime={event.at}>{absoluteTime(event.at, locale)}</time>
               <strong>{tOr(`event.${event.kind}`, event.kind)}</strong>
-              <span className="event-data">{eventSummary(event, tOr)}</span>
+              <span className="event-data">{eventSummary(event, i18n)}</span>
             </li>
           ))}
         </ol>

@@ -12,7 +12,7 @@ import { useResource } from "../hooks/useResource.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import { runListPath } from "../lib/api.ts";
 import { useFlash } from "../hooks/useFlash.ts";
-import { formatDuration, parseLabel } from "../lib/format.ts";
+import { elapsedMs, formatDuration, parseLabel } from "../lib/format.ts";
 import { composeHref, runHref, runsHref } from "../lib/router.ts";
 import type { Route } from "../lib/router.ts";
 import { isActive } from "../lib/types.ts";
@@ -31,9 +31,10 @@ export function ModeName({ mode }: { mode: string | null }) {
   return <>{mode}</>;
 }
 
+const latestOf = (run: RunRow) => run.dispatches[run.dispatches.length - 1];
+
 export function plannedVerdicts(run: RunRow): number {
-  const latest = run.dispatches[run.dispatches.length - 1];
-  return latest?.planned_verdicts ?? run.planned_count;
+  return latestOf(run)?.planned_verdicts ?? run.planned_count;
 }
 
 export function RunsView({ route }: { route: Route }) {
@@ -72,6 +73,13 @@ export function RunsView({ route }: { route: Route }) {
     const timer = window.setTimeout(() => go({ q: search, offset: null }, true), 250);
     return () => window.clearTimeout(timer);
   }, [search, q, go]);
+  // The label filter follows typing too — as soon as what is typed is a label, or nothing.
+  useEffect(() => {
+    const typed = labelDraft.trim();
+    if (typed === label || (typed !== "" && parseLabel(typed) === null)) return;
+    const timer = window.setTimeout(() => go({ label: typed, offset: null }, true), 400);
+    return () => window.clearTimeout(timer);
+  }, [labelDraft, label, go]);
 
   // Live rows: ask again while something is in flight, slowly otherwise, and
   // not at all while the tab is hidden. One request at a time, by construction.
@@ -254,7 +262,7 @@ export function RunsView({ route }: { route: Route }) {
                       {run.planned_count}
                     </td>
                     <td data-label={t("runs.column.duration")} className="num">
-                      {run.duration_s === null ? "–" : formatDuration(run.duration_s * 1000, locale)}
+                      {formatDuration(elapsedMs(latestOf(run)?.created_at, latestOf(run)?.completed_at), locale, { coarse: true })}
                     </td>
                     <td data-label={t("runs.column.runner")}>
                       <ModeName mode={run.mode} />

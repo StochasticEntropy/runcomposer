@@ -1,7 +1,7 @@
 // The small pieces every view is built from: dialogs, the three states a
 // view can be in besides "showing data", badges, and how an error is said.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { useI18n } from "../hooks/context.tsx";
@@ -84,6 +84,25 @@ export function Notice({ tone = "info", children, onDismiss }: { tone?: NoticeTo
 
 // -- dialogs ----------------------------------------------------------------------
 
+/** Put the keyboard at the start of the current view. */
+export function focusMain(): void {
+  document.getElementById("main")?.focus({ preventScroll: true });
+}
+
+// Focus goes back to what opened the dialog. If that is gone — the dialog's
+// action removed it, or is about to — the view itself takes the focus, so
+// the keyboard is never left on nothing.
+function restoreFocus(opener: HTMLElement | null): void {
+  const usable = (element: HTMLElement | null): element is HTMLElement =>
+    element !== null && element.isConnected && !(element as HTMLButtonElement).disabled && element !== document.body;
+  if (usable(opener)) opener.focus({ preventScroll: true });
+  else focusMain();
+  // The opener may be removed by the re-render the action causes.
+  window.setTimeout(() => {
+    if (document.activeElement === document.body && !document.querySelector("dialog[open]")) focusMain();
+  }, 250);
+}
+
 interface DialogProps {
   title: string;
   onClose: () => void;
@@ -107,9 +126,12 @@ export function Dialog({ title, onClose, children, footer, size = "medium", clas
     closeRef.current = onClose;
   });
 
-  useEffect(() => {
+  // A layout effect, so that closing happens while the dialog is still in
+  // the document — only then does the focus have somewhere to go back to.
+  useLayoutEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!dialog.open) dialog.showModal();
     // Where the keyboard starts: the element the dialog marks for it, else
     // its first field — never the Close button, which is merely first in
@@ -128,6 +150,7 @@ export function Dialog({ title, onClose, children, footer, size = "medium", clas
     return () => {
       dialog.removeEventListener("cancel", onCancel);
       if (dialog.open) dialog.close();
+      restoreFocus(opener);
     };
   }, []);
 
@@ -149,6 +172,8 @@ interface ConfirmProps {
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** What the other button says — when plain "Cancel" would be ambiguous. */
+  cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
   error?: ApiError | null;
@@ -156,7 +181,7 @@ interface ConfirmProps {
   onClose: () => void;
 }
 
-export function ConfirmDialog({ title, children, confirmLabel, danger, busy, error, onConfirm, onClose }: ConfirmProps) {
+export function ConfirmDialog({ title, children, confirmLabel, cancelLabel, danger, busy, error, onConfirm, onClose }: ConfirmProps) {
   const { t } = useI18n();
   return (
     <Dialog
@@ -166,7 +191,7 @@ export function ConfirmDialog({ title, children, confirmLabel, danger, busy, err
       footer={
         <>
           <button type="button" className="btn" onClick={onClose} data-autofocus>
-            {t("action.cancel")}
+            {cancelLabel ?? t("action.cancel")}
           </button>
           <button
             type="button"
@@ -298,7 +323,7 @@ export function LabelChips({ labels }: { labels: Record<string, string> }) {
 /** "3 minutes ago", with the exact local time one hover or focus away. */
 export function TimeAgo({ iso }: { iso: string | null | undefined }) {
   const { locale } = useI18n();
-  const now = useNow();
+  const now = useNow(15_000);
   if (!iso) return <>–</>;
   return (
     <time dateTime={iso} title={absoluteTime(iso, locale)}>
@@ -307,33 +332,40 @@ export function TimeAgo({ iso }: { iso: string | null | undefined }) {
   );
 }
 
-export function CopyButton({ text, label }: { text: string; label: string }) {
+/** Copy text to the clipboard — also where the clipboard API is not allowed. */
+export async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // No clipboard access (an insecure origin, a missing permission): the selection API still works.
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    (document.querySelector("dialog[open]") ?? document.body).appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+export function CopyButton({ text, label, quiet = false }: { text: string | (() => string); label: string; quiet?: boolean }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(false), 2000);
     return () => window.clearTimeout(timer);
   }, [copied]);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // No clipboard access (an insecure origin): fall back to the selection API.
-      const area = document.createElement("textarea");
-      area.value = text;
-      area.setAttribute("readonly", "");
-      area.style.position = "fixed";
-      area.style.opacity = "0";
-      document.body.appendChild(area);
-      area.select();
-      document.execCommand("copy");
-      area.remove();
-    }
+    await copyText(typeof text === "function" ? text() : text);
+    ref.current?.focus();
     setCopied(true);
   };
   return (
-    <button type="button" className="btn btn-small" onClick={() => void copy()}>
+    <button ref={ref} type="button" className={`btn btn-small${quiet ? " btn-quiet" : ""}`} onClick={() => void copy()}>
       {copied ? t("action.copied") : label}
       <span className="sr-only" role="status">
         {copied ? t("action.copied") : ""}
@@ -348,12 +380,13 @@ export function TriCheckbox({
   onChange,
   label,
   disabled,
+  ...rest
 }: {
   state: "all" | "some" | "none";
   onChange: (checked: boolean) => void;
   label: string;
   disabled?: boolean;
-}) {
+} & Pick<React.InputHTMLAttributes<HTMLInputElement>, "id" | "tabIndex" | "onFocus" | "onKeyDown">) {
   const ref = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = state === "some";
@@ -367,6 +400,7 @@ export function TriCheckbox({
       aria-label={label}
       disabled={disabled}
       onChange={(event) => onChange(event.target.checked)}
+      {...rest}
     />
   );
 }

@@ -139,7 +139,7 @@ export function ExportDialog({ intro, perform, onClose, onExported, linkToRun = 
             <p className="hint">{t("export.pushHint")}</p>
             <div className="secret">
               <code>{command}</code>
-              <CopyButton text={command} label={t("action.copy")} />
+              <CopyButton text={command} label={t("export.copyCommand")} />
             </div>
           </li>
         </ol>

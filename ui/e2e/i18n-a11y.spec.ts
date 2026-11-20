@@ -146,6 +146,14 @@ test("keyboard only: compose a filter, pick tags in the tree, start a run, read 
   await dialog.getByRole("button", { name: msg("picker.apply") }).focus();
   await keys.press("Enter");
   await expect(dialog).toBeHidden();
+  // Focus goes back to where the dialog was opened from — also after Escape.
+  const pick = page.getByRole("button", { name: msg("filter.pick"), exact: true });
+  await expect(pick).toBeFocused();
+  await keys.press("Enter");
+  await expect(dialog.getByRole("searchbox")).toBeFocused();
+  await keys.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(pick).toBeFocused();
   await expect(page.getByTestId("filter-text")).toHaveText("Auth AND Smoke");
   const expected = await api.post<{ count: number }>("/selection/compile", { tag_filter: { op: "AND", items: ["Auth", "Smoke"] }, limit: 0 });
   await expectPreview(page, expected.count, 60);
@@ -162,11 +170,21 @@ test("keyboard only: compose a filter, pick tags in the tree, start a run, read 
   await expect(field).toBeFocused();
   await expectPreview(page, 12, 60);
 
-  // Untick an item in the preview.
-  const firstItem = page.locator(".preview tbody tr[data-item-id]").first().getByRole("checkbox");
-  await firstItem.focus();
+  // The preview's rows are ONE stop for Tab: arrow keys move between them, Space ticks.
+  const boxes = page.locator(".preview tbody tr[data-item-id]").getByRole("checkbox");
+  await page.getByRole("checkbox", { name: msg("preview.selectAll") }).focus();
+  await keys.press("Tab");
+  await expect(boxes.nth(0)).toBeFocused();
+  await keys.press("ArrowDown");
+  await keys.press("ArrowDown");
+  await expect(boxes.nth(2)).toBeFocused();
+  await keys.press("ArrowUp");
+  await expect(boxes.nth(1)).toBeFocused();
   await keys.press(" ");
-  await expect(firstItem).not.toBeChecked();
+  await expect(boxes.nth(1)).not.toBeChecked();
+  // The next Tab leaves the list — it does not go to the next of twelve rows.
+  await keys.press("Tab");
+  await expect(page.getByRole("combobox", { name: msg("runner.label") })).toBeFocused();
 
   // Choose the runner and start.
   const runner = page.getByRole("combobox", { name: msg("runner.label") });
@@ -244,6 +262,13 @@ test.describe("on a phone (375 px)", () => {
     await expect(row.locator(".cell-main")).toBeVisible();
     await expect(row.locator(".cell-sub")).toBeVisible();
     await row.getByRole("checkbox").uncheck();
+    // A tap on an item's name ticks it too — the checkbox alone is a small target.
+    const second = page.locator(".preview tbody tr[data-item-id]").nth(1);
+    await second.locator(".cell-main").click();
+    await expect(second.getByRole("checkbox")).not.toBeChecked();
+    await second.locator(".cell-main").click();
+    await expect(second.getByRole("checkbox")).toBeChecked();
+    expect((await second.getByRole("checkbox").boundingBox())!.width).toBeGreaterThanOrEqual(22);
 
     await page.getByRole("combobox", { name: msg("runner.label") }).selectOption("demo");
     await page.getByRole("group", { name: msg("runner.parameters") }).getByRole("textbox", { name: "Seed" }).fill("b");
@@ -266,6 +291,9 @@ test.describe("on a phone (375 px)", () => {
       const cellBox = (await verdict.locator(cell).boundingBox())!;
       expect(cellBox.x + cellBox.width, cell).toBeLessThanOrEqual(375);
     }
+    // …and with room: the item's id is readable, not squeezed into a sliver.
+    expect((await verdict.locator(".col-item").boundingBox())!.width).toBeGreaterThan(200);
+    expect((await verdict.boundingBox())!.width).toBeGreaterThan(320);
     // The actions wrap instead of running off the side.
     await expect(page.getByRole("button", { name: msg("run.rerunFailed", { count: failed }) })).toBeVisible();
     for (const tab of ["selection", "activity"] as const) {

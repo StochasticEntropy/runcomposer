@@ -1404,12 +1404,19 @@ main {
 }
 
 .preview-table .col-id {
-  width: 34%;
+  width: 30%;
 }
 
 .preview-table .col-tags {
-  width: 30%;
+  width: 26%;
   color: var(--muted);
+}
+
+.preview-table .col-name label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
 }
 
 .preview-table .cell-sub {
@@ -1813,6 +1820,42 @@ main {
   background: var(--running-solid);
 }
 
+.item-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.item-btn:hover {
+  color: var(--accent);
+}
+
+.awaiting-tools {
+  margin-top: 8px;
+}
+
+.dialog-body form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dialog-body form .field + .field,
+.dialog-body form .params + .field,
+.dialog-body form .field + .params {
+  margin-top: 0;
+}
+
+.dialog-body form .params {
+  margin-top: 0;
+}
+
 .message-btn {
   display: block;
   width: 100%;
@@ -1889,6 +1932,14 @@ main {
 /* -- narrow screens -------------------------------------------------------------- */
 
 @media (max-width: 1000px) {
+  .preview-table .col-tags {
+    display: none;
+  }
+
+  .preview-table .col-id {
+    width: 40%;
+  }
+
   .compose {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
@@ -1903,7 +1954,18 @@ main {
   }
 
   .preview-scroll {
-    max-height: 60dvh;
+    max-height: 50dvh;
+  }
+}
+
+/* No hover, no keyboard: the hint about arrow keys is for those who have one. */
+@media (hover: none) {
+  .picker .hint {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 }
 
@@ -1995,7 +2057,23 @@ main {
     font-weight: 500;
   }
 
+  .preview-table input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+  }
+
   /* verdicts: each row becomes a three-line card of fixed height */
+  .verdict-table,
+  .verdict-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  .verdict-table tbody tr.spacer,
+  .verdict-table tbody tr.spacer td {
+    display: block;
+  }
+
   .verdict-table thead {
     position: absolute;
     width: 1px;
@@ -2078,7 +2156,8 @@ main {
     border-bottom: 0;
   }
 
-  .cards-on-narrow td {
+  .cards-on-narrow td,
+  .cards-on-narrow td.num {
     padding: 3px 0;
     border: 0;
     text-align: left;

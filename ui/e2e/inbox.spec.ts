@@ -64,8 +64,11 @@ test("the nav shows how many deliveries wait; attach one to its run, discard the
   // Attach: the run the delivery names is offered; a wrong id is refused in the dialog.
   await row(page, "sha-mismatch").getByRole("button", { name: msg("inbox.attach") }).click();
   const attach = page.getByRole("dialog", { name: msg("inbox.attachTitle") });
-  const runField = attach.getByRole("textbox", { name: msg("inbox.runId") });
+  const runField = attach.getByRole("combobox", { name: msg("inbox.runId") });
   await expect(runField).toHaveValue(runId);
+  // The run is named by its title, not only by its id.
+  await expect(attach).toContainText("Anmeldung extern");
+  await expect(row(page, "sha-mismatch").getByRole("link", { name: "Anmeldung extern" })).toHaveAttribute("href", `#/runs/${runId}`);
   await runField.fill("01NOSUCHRUN000000000000000");
   await attach.getByRole("button", { name: msg("inbox.attach") }).click();
   await expect(attach.getByRole("alert")).toContainText(msg("error.code.unknown-run"));
@@ -82,6 +85,26 @@ test("the nav shows how many deliveries wait; attach one to its run, discard the
   await expect(page.getByTestId("run-status")).toContainText(msg("completion.PASS"));
   await page.getByRole("link", { name: msg("run.tab.activity") }).click();
   await expect(page.locator(".events")).toContainText(msg("event.delivery.attached"));
+});
+
+test("attaching a delivery that matches nothing in the run is not reported as a success", async ({ page, open, api, server }) => {
+  const run = await api.compose({ selection: { tag_filter: "Auth-SSO" }, title: "Anmeldung extern" });
+  const exported = await api.post<{ ingest_token: string }>(`/runs/${run.id}/dispatch`, { mode: "export" });
+  // Results for an item the run does not have, with a marker from another document.
+  const stray = await push(server, run.id, exported.ingest_token, {
+    "results.json": JSON.stringify({ format: "runcomposer-verdicts", verdicts: [{ name: "Shop.Cart.Core.T999", status: "PASS", duration_ms: 20 }] }),
+    "runcomposer_run.json": JSON.stringify({ run_id: run.id, spec_sha256: "0".repeat(64) }),
+  });
+  expect(stray.status).toBe(409);
+  await open("#/inbox");
+  await row(page, "sha-mismatch").getByRole("button", { name: msg("inbox.attach") }).click();
+  const attach = page.getByRole("dialog", { name: msg("inbox.attachTitle") });
+  await attach.getByRole("button", { name: msg("inbox.attach") }).click();
+  const outcome = page.locator(".notice-warn");
+  await expect(outcome).toContainText(msg("inbox.nothingRecorded"));
+  await expect(page.locator(".notice-ok")).toHaveCount(0);
+  await outcome.getByRole("link", { name: msg("inbox.openRun") }).click();
+  await expect(page).toHaveURL(new RegExp(`#/runs/${run.id}`));
 });
 
 test("a delivery can become a run of its own", async ({ page, open, api, server }) => {

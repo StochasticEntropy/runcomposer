@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { absoluteTime, formatDuration, naturalCompare, parseLabel, relativeTime, sumCounts } from "./format.ts";
+import { absoluteTime, elapsedMs, formatDuration, naturalCompare, parseLabel, relativeTime, sumCounts } from "./format.ts";
 import { createTranslator } from "./i18n.ts";
 import { composeHref, formatHash, parseHash, runHref, runsHref } from "./router.ts";
 
@@ -39,6 +39,10 @@ describe("format", () => {
     expect(formatDuration(120_000)).toBe("2 min");
     expect(formatDuration(3_780_000)).toBe("1 h 3 min");
     expect(formatDuration(null)).toBe("–");
+    expect(formatDuration(0, "en", { coarse: true })).toBe("< 1 s");
+    expect(formatDuration(7000, "en", { coarse: true })).toBe("7.0 s");
+    expect(elapsedMs("2026-03-01T12:00:00Z", "2026-03-01T12:00:22Z")).toBe(22_000);
+    expect(elapsedMs("2026-03-01T12:00:00Z", null)).toBeNull();
   });
 
   it("writes relative times in the viewer's language", () => {
@@ -47,6 +51,8 @@ describe("format", () => {
     expect(relativeTime("2026-03-01T11:57:00Z", now, "de")).toBe("vor 3 Minuten");
     expect(relativeTime("2026-02-28T12:00:00Z", now, "en")).toBe("yesterday");
     expect(relativeTime("2026-03-01T12:00:00Z", now, "en")).toBe("now");
+    expect(relativeTime("2026-03-01T11:59:20Z", now, "en")).toBe("now");
+    expect(relativeTime("2026-03-01T11:59:20Z", now, "de")).toBe("jetzt");
     expect(relativeTime(null, now)).toBe("–");
     expect(relativeTime("not a time", now)).toBe("not a time");
     expect(absoluteTime("not a time")).toBe("not a time");

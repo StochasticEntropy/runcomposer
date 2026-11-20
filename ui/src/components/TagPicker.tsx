@@ -188,7 +188,7 @@ export function TagPicker({ taxonomy, root, groupId, pinned, currentCount, onApp
         outcome.removed.length > 0 ? t("picker.removes", { count: outcome.removed.length }) : "",
       ]
         .filter(Boolean)
-        .join(" · ");
+        .join(", ");
 
   return (
     <Dialog

@@ -27,7 +27,6 @@
   "action": {
     "cancel": "Abbrechen",
     "close": "Schließen",
-    "copy": "Kopieren",
     "copied": "Kopiert",
     "dismiss": "Ausblenden",
     "done": "Fertig",
@@ -43,7 +42,7 @@
     "networkDetail": "Der Server hat nicht geantwortet. Prüfen, ob er läuft und erreichbar ist, dann erneut versuchen.",
     "boundaryTitle": "In dieser Ansicht ist ein Fehler aufgetreten.",
     "boundaryHint": "Auf dem Server ist nichts verloren gegangen. Seite neu laden oder eine andere Ansicht öffnen.",
-    "notFoundTitle": "Unter dieser Adresse gibt es nichts.",
+    "notFoundTitle": "Unter dieser Adresse gibt es nichts",
     "notFoundBack": "Zum Zusammenstellen",
     "code": {
       "network": "Der Server ist nicht erreichbar.",
@@ -59,7 +58,7 @@
       "conflict": "Das ist im aktuellen Zustand nicht möglich.",
       "run-active": "Der Lauf ist noch unterwegs.",
       "invalid-transition": "Der Lauf kann nicht in diesen Zustand wechseln.",
-      "spec-conflict": "Es gibt bereits einen anderen Lauf mit dieser Id.",
+      "spec-conflict": "Es gibt bereits einen anderen Lauf mit dieser ID.",
       "dispatch-refused": "Der Runner hat den Start abgelehnt.",
       "dispatch-cancelled": "Die Ausführung wurde abgebrochen.",
       "token-required": "Ein Ingest-Token ist erforderlich.",
@@ -120,7 +119,7 @@
     "api": "hier zusammengestellt",
     "cli": "Kommandozeile",
     "demo": "Demo",
-    "rerun": "Wiederholung der Fehlschläge",
+    "rerun": "Wiederholung des nicht Bestandenen",
     "ingested": "aus gelieferten Ergebnissen"
   },
   "outcome": {
@@ -151,7 +150,7 @@
     "warning": "Warnung"
   },
   "progress": {
-    "label": "{done} von {total} Ergebnissen da",
+    "label": "{done} von {total} Ergebnissen eingegangen",
     "none": "Noch keine Ergebnisse"
   },
   "filter": {
@@ -165,10 +164,10 @@
     },
     "opLong": {
       "AND": "alle davon (AND)",
-      "OR": "eine davon (OR)"
+      "OR": "mindestens eine davon (OR)"
     },
     "combine": "Wie die Regeln dieser Gruppe verknüpft sind",
-    "negateGroup": "Diese ganze Gruppe verneinen",
+    "negateGroup": "Diese Gruppe verneinen",
     "negateRule": "{pattern} verneinen",
     "removeRule": "{pattern} entfernen",
     "editPattern": "{pattern} bearbeiten",
@@ -198,8 +197,12 @@
       "missing-operator": "Position {position}: Vor „{token}“ fehlt ein Operator.",
       "unbalanced-open": "Position {position}: Diese Klammer wird nie geschlossen.",
       "unbalanced-close": "Position {position}: Zu dieser schließenden Klammer fehlt die öffnende.",
-      "unterminated-quote": "Position {position}: Dieses Anführungszeichen wird nie geschlossen."
-    }
+      "unterminated-quote": "Position {position}: Dieses Anführungszeichen wird nie geschlossen.",
+      "needs-quotes": "Position {position}: Ein Muster mit Klammern oder Anführungszeichen in Anführungszeichen setzen — \"{token}…\"."
+    },
+    "negateAll": "Den ganzen Filter verneinen",
+    "pickForGroup": "Tags für diese Gruppe auswählen…",
+    "addGroupInGroup": "Gruppe in dieser Gruppe hinzufügen"
   },
   "picker": {
     "title": "Tags auswählen",
@@ -270,7 +273,7 @@
     "sort": "Sortierung",
     "sortBy": {
       "catalog": "Reihenfolge im Katalog",
-      "id": "Id",
+      "id": "ID",
       "name": "Name"
     },
     "group": "Nach Suite gruppieren",
@@ -286,9 +289,10 @@
     },
     "column": {
       "name": "Name",
-      "id": "Id",
+      "id": "ID",
       "tags": "Tags"
-    }
+    },
+    "keys": "Pfeiltasten wechseln zwischen den Einträgen, die Leertaste setzt den Haken."
   },
   "compose": {
     "runTitle": "Lauf",
@@ -336,7 +340,8 @@
       "loaded": "Eingelesen",
       "starts": "Einen Filter bauen oder mit einem davon beginnen:",
       "all": "Alle {count} Einträge auswählen"
-    }
+    },
+    "loadedFrom": "Aus „{title}“ geladen: Auswahl, Runner, Optionen und Labels."
   },
   "runner": {
     "label": "Runner",
@@ -352,7 +357,8 @@
       "required": "Diese Angabe ist erforderlich.",
       "integer": "Eine ganze Zahl eingeben.",
       "choice": "Einen der aufgeführten Werte wählen."
-    }
+    },
+    "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen."
   },
   "labels": {
     "label": "Labels",
@@ -389,7 +395,9 @@
     "pushHint": "Die Ergebnisdateien an den Lauf senden, zum Beispiel:",
     "preview": "Dokument vorher anzeigen",
     "previewHint": "So würde das Dokument jetzt zusammengestellt. Angelegt wurde noch nichts.",
-    "openRun": "Lauf öffnen"
+    "openRun": "Lauf öffnen",
+    "runTitle": "Der Lauf erhält den Titel „{title}“.",
+    "copyCommand": "Befehl kopieren"
   },
   "runs": {
     "title": "Läufe",
@@ -420,9 +428,9 @@
   },
   "run": {
     "title": "Lauf",
-    "notFound": "Diesen Lauf gibt es nicht (mehr).",
+    "notFound": "Diesen Lauf gibt es nicht (mehr)",
     "backToRuns": "Zurück zu den Läufen",
-    "id": "Id",
+    "id": "ID",
     "started": "Angelegt",
     "duration": "Dauer",
     "runner": "Runner",
@@ -438,10 +446,10 @@
     "rerunAll": "Erneut ausführen",
     "dispatch": "Ausführen…",
     "rerunFailed": {
-      "one": "{count} Fehlschlag wiederholen",
-      "other": "{count} Fehlschläge wiederholen"
+      "one": "{count} nicht bestandenen Eintrag wiederholen",
+      "other": "{count} nicht bestandene Einträge wiederholen"
     },
-    "rerunFailedAny": "Fehlschläge wiederholen",
+    "rerunFailedAny": "Nicht Bestandenes wiederholen",
     "load": "In die Zusammenstellung laden",
     "finalize": "So abschließen",
     "finalizeTitle": "Diesen Lauf so abschließen?",
@@ -523,7 +531,7 @@
         "other": "{count} Einträge per Id benannt"
       },
       "derived": "Abgeleitet aus",
-      "derivedFrom": "was {verdicts} war in",
+      "derivedFrom": "was dort {verdicts} war",
       "source": "Katalog",
       "expect": "Ergebnisformat",
       "dispatch": "So wurde ausgeführt",
@@ -547,34 +555,45 @@
     "rotateTitle": "Neues Ingest-Token erzeugen?",
     "rotateExplain": "Das bisherige Token gilt sofort nicht mehr. Wer die Ergebnisse schickt, braucht das neue.",
     "rotateConfirm": "Neues Token erzeugen",
-    "rotateDone": "Neues Ingest-Token"
+    "rotateDone": "Neues Ingest-Token",
+    "originOf": "aus",
+    "shardNothing": "keine Ergebnisse",
+    "showDetails": "Details zu {item}",
+    "seenLive": "zuletzt live gemeldet: {status}",
+    "cancelledHint": "Dieser Lauf wurde abgebrochen. Shards, die noch nicht geliefert hatten, zählen als fehlend — unabhängig davon, was sie live gemeldet haben.",
+    "downloadDocument": "Herausgegebenes Dokument herunterladen",
+    "cancelKeep": "Weiterlaufen lassen",
+    "resultCount": {
+      "one": "{count} Ergebnis",
+      "other": "{count} Ergebnisse"
+    }
   },
   "rerun": {
     "titleAll": "Erneut ausführen",
     "titleFirst": "Ausführen",
-    "titleFailed": "Fehlschläge wiederholen",
+    "titleFailed": "Nicht Bestandenes wiederholen",
     "explainAll": {
       "one": "Führt den {count} Eintrag von „{title}“ erneut aus, als neue Ausführung desselben Laufs.",
       "other": "Führt alle {count} Einträge von „{title}“ erneut aus, als neue Ausführung desselben Laufs."
     },
     "explainFailed": {
-      "one": "Stellt einen neuen Lauf aus dem {count} Eintrag zusammen, der in „{title}“ nicht bestanden hat.",
-      "other": "Stellt einen neuen Lauf aus den {count} Einträgen zusammen, die in „{title}“ nicht bestanden haben."
+      "one": "Stellt einen neuen Lauf aus dem {count} Eintrag zusammen, der in „{title}“ fehlgeschlagen ist oder kein Ergebnis hat.",
+      "other": "Stellt einen neuen Lauf aus den {count} Einträgen zusammen, die in „{title}“ fehlgeschlagen sind oder kein Ergebnis haben."
     },
     "started": "Erneut gestartet.",
     "startedNew": {
-      "one": "{count} Fehlschlag von „{title}“ wird wiederholt.",
-      "other": "{count} Fehlschläge von „{title}“ werden wiederholt."
+      "one": "{count} Eintrag von „{title}“ wird wiederholt.",
+      "other": "{count} Einträge von „{title}“ werden wiederholt."
     }
   },
   "inbox": {
     "title": "Eingang",
     "hint": "Hier warten Ergebnisse, die angekommen sind und keinem Lauf zugeordnet werden konnten. Nichts wird automatisch zugeordnet.",
-    "empty": "Der Eingang ist leer — jede Lieferung hat ihren Lauf gefunden.",
+    "empty": "Der Eingang ist leer.",
     "attach": "Einem Lauf zuordnen",
     "attachTitle": "Einem Lauf zuordnen",
     "attachExplain": "Die gelieferten Ergebnisse werden für den genannten Lauf aufgezeichnet.",
-    "runId": "Id des Laufs",
+    "runId": "Lauf",
     "promote": "Zum Lauf machen",
     "promoteTitle": "Aus dieser Lieferung einen Lauf machen",
     "promoteExplain": "Aus den gelieferten Ergebnissen wird ein neuer Lauf angelegt.",
@@ -611,10 +630,12 @@
     "column": {
       "received": "Eingegangen",
       "reason": "Warum es hier liegt",
-      "via": "Gekommen per",
-      "claimed": "Nennt Lauf",
+      "via": "Eingang über",
+      "claimed": "Genannter Lauf",
       "format": "Format",
       "actions": "Aktionen"
-    }
+    },
+    "nothingRecorded": "Es wurde nichts aufgezeichnet: Kein Ergebnis der Lieferung passt zu einem Eintrag des Laufs. Den Lauf prüfen, bevor man sich darauf verlässt.",
+    "runIdHint": "Einen Lauf aus der Liste wählen oder seine ID einfügen."
   }
 }

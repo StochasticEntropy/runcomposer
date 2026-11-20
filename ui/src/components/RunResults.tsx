@@ -9,6 +9,7 @@ import { useI18n } from "../hooks/context.tsx";
 import { useMediaQuery } from "../hooks/usePage.ts";
 import { useVirtual } from "../hooks/useVirtual.ts";
 import { formatDuration, naturalCompare, sumCounts } from "../lib/format.ts";
+import { isActive } from "../lib/types.ts";
 import type { Artifact, RunDetail, ShardSummary, VerdictRow } from "../lib/types.ts";
 import { Dialog, ResultBadge, VerdictBadge, VerdictBar, VerdictCounts } from "./ui.tsx";
 
@@ -30,10 +31,36 @@ export interface ResultRow extends VerdictRow {
   key: string;
   /** A later attempt of the same item on the same shard exists. */
   superseded: boolean;
+  /** On a row without a delivered result: what the item reported live before the dispatch ended. */
+  seenLive: string | null;
 }
 
-/** Failures first, then by item — and every row with a key of its own. */
-export function resultRows(verdicts: VerdictRow[]): ResultRow[] {
+// Once a dispatch is over, an item whose shard never delivered counts as
+// MISSING — even if it was seen passing live: live status is not a result.
+// The API then serves both the MISSING verdict and the live observation. They
+// are ONE row here: the verdict that counts, with what was seen as a note.
+function foldLive(verdicts: VerdictRow[]): (VerdictRow & { seenLive: string | null })[] {
+  const live = new Map<string, string>();
+  for (const row of verdicts) if (row.live) live.set(`${row.shard}\u0000${row.item_id}`, row.status);
+  const settled = new Set<string>();
+  for (const row of verdicts) if (!row.live) settled.add(row.item_id);
+  const folded: (VerdictRow & { seenLive: string | null })[] = [];
+  for (const row of verdicts) {
+    if (row.live) {
+      if (!settled.has(row.item_id)) folded.push({ ...row, seenLive: null });
+      continue;
+    }
+    const seen = row.status === "MISSING" ? (live.get(`${row.shard}\u0000${row.item_id}`) ?? (row.shard === "" ? [...live].find(([slot]) => slot.endsWith(`\u0000${row.item_id}`))?.[1] : undefined)) : undefined;
+    folded.push({ ...row, seenLive: seen ?? null });
+  }
+  return folded;
+}
+
+/** Failures first, then by item — and every row with a key of its own.
+ * `over` says the dispatch has ended: live observations are folded into the
+ * verdicts that replaced them. */
+export function resultRows(all: VerdictRow[], over = false): ResultRow[] {
+  const verdicts = over ? foldLive(all) : all.map((row) => ({ ...row, seenLive: null }));
   const latest = new Map<string, number>();
   for (const row of verdicts) {
     const slot = `${row.shard}\u0000${row.item_id}`;
@@ -88,16 +115,20 @@ function ShardCard({
   artifacts,
   live,
   running,
+  over,
 }: {
   shard: ShardSummary;
   artifacts: Artifact[];
   /** Counts by status of what the shard has reported live so far. */
   live: Record<string, number>;
   running: boolean;
+  /** The dispatch has ended: a shard that did not deliver never will. */
+  over: boolean;
 }) {
   const { t } = useI18n();
-  const counts = shard.delivered ? shard.summary : live;
-  const reported = shard.delivered ? shard.count : sumCounts(live);
+  // Live status counts while the shard is still expected to deliver, not after.
+  const counts = shard.delivered ? shard.summary : over ? {} : live;
+  const reported = shard.delivered ? shard.count : sumCounts(counts);
   return (
     <li className="shard-card" data-shard={shard.shard}>
       <div className="shard-head">
@@ -105,7 +136,9 @@ function ShardCard({
         {shard.delivered ? (
           <ResultBadge result={shard.completion} />
         ) : (
-          <span className={`badge badge-${running ? "running" : "neutral"}`}>{running ? t("run.shardRunning") : t("run.shardWaiting")}</span>
+          <span className={`badge badge-${running ? "running" : over ? "warn" : "neutral"}`}>
+            {running ? t("run.shardRunning") : over ? t("run.shardNothing") : t("run.shardWaiting")}
+          </span>
         )}
       </div>
       <VerdictBar counts={counts} planned={shard.planned ?? reported} active={!shard.delivered && running} />
@@ -121,22 +154,44 @@ function ShardCard({
   );
 }
 
-export function RunResults({ run }: { run: RunDetail }) {
+export interface ResultsQuery {
+  status?: string;
+  shard?: string;
+  q?: string;
+}
+
+interface Props {
+  run: RunDetail;
+  /** Which results are shown — kept by the caller in the URL, so a reload or a shared link shows the same rows. */
+  query: ResultsQuery;
+  onQuery: (changes: ResultsQuery) => void;
+}
+
+export function RunResults({ run, query, onQuery }: Props) {
   const { t, tOr, locale } = useI18n();
-  const [filter, setFilter] = useState<StatusFilter>("all");
-  const [shard, setShard] = useState("");
-  const [search, setSearch] = useState("");
+  const filter: StatusFilter = query.status && query.status in FILTERS ? (query.status as StatusFilter) : "all";
+  const shard = query.shard ?? "";
+  const search = query.q ?? "";
+  const setFilter = (status: StatusFilter) => onQuery({ status: status === "all" ? "" : status });
+  const setShard = (name: string) => onQuery({ shard: name });
+  const setSearch = (q: string) => onQuery({ q });
   const [opened, setOpened] = useState<ResultRow | null>(null);
   const narrow = useMediaQuery("(max-width: 700px)");
   const rowHeight = narrow ? 84 : 44;
 
   const dispatch = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id) ?? null;
-  const all = useMemo(() => resultRows(run.verdicts), [run.verdicts]);
+  const over = dispatch !== null && !isActive(dispatch.state);
+  const all = useMemo(() => resultRows(run.verdicts, over), [run.verdicts, over]);
   const artifacts = useMemo(
     () => run.artifacts.filter((artifact) => artifact.dispatch_id === null || artifact.dispatch_id === run.dispatch_id),
     [run.artifacts, run.dispatch_id],
   );
-  const shardNames = run.shards.map((entry) => entry.shard);
+  // Items nobody reported, of a dispatch whose shards never said what they
+  // would run, come back under no shard at all. That is not a shard to show.
+  const shards = run.shards.filter(
+    (entry) => entry.declared || entry.shard !== "" || Object.keys(entry.summary).some((status) => status !== "MISSING"),
+  );
+  const shardNames = shards.map((entry) => entry.shard);
   const multiShard = shardNames.length > 1;
 
   const counts = useMemo(() => {
@@ -171,21 +226,29 @@ export function RunResults({ run }: { run: RunDetail }) {
   const runLevel = artifacts.filter((artifact) => !artifact.shard || !shardNames.includes(artifact.shard));
   const links = Object.entries(dispatch?.links ?? {});
 
+  /** A row's message in the viewer's words where the server sent a code for it. */
+  const messageOf = (row: ResultRow): string => {
+    const text = row.status === "MISSING" ? tOr(`run.reason.${row.message}`, row.message) : row.message;
+    if (!row.seenLive) return text;
+    return `${text} — ${t("run.seenLive", { status: tOr(`verdict.${row.seenLive}`, row.seenLive) })}`;
+  };
+
   if (!dispatch) return <p className="state state-empty">{t("run.neverDispatched")}</p>;
 
   return (
     <div className="results">
-      {run.shards.length > 0 && (
+      {shards.length > 0 && (
         <section aria-labelledby="shards-title">
-          <h2 id="shards-title">{t("run.shards", { count: run.shards.length })}</h2>
+          <h2 id="shards-title">{t("run.shards", { count: shards.length })}</h2>
           <ul className="shard-grid">
-            {run.shards.map((entry) => (
+            {shards.map((entry) => (
               <ShardCard
                 key={entry.shard}
                 shard={entry}
                 artifacts={artifacts.filter((artifact) => artifact.shard === entry.shard)}
                 live={liveByShard.get(entry.shard) ?? {}}
                 running={running}
+                over={over}
               />
             ))}
           </ul>
@@ -310,8 +373,10 @@ export function RunResults({ run }: { run: RunDetail }) {
                           <VerdictBadge status={row.status} live={row.live} />
                           {row.live && <span className="live-dot" aria-hidden="true" title={t("run.live")} />}
                         </td>
-                        <td className="col-item mono" title={row.item_id}>
-                          <span className="clamp">{row.item_id}</span>
+                        <td className="col-item mono">
+                          <button type="button" className="item-btn" onClick={() => setOpened(row)} title={t("run.showDetails", { item: row.item_id })}>
+                            <span className="clamp">{row.item_id}</span>
+                          </button>
                         </td>
                         <td className="col-shard" data-label={t("run.column.shard")}>
                           {row.shard || "–"}
@@ -324,9 +389,9 @@ export function RunResults({ run }: { run: RunDetail }) {
                           {row.status === "MISSING" ? "–" : formatDuration(row.duration_ms, locale)}
                         </td>
                         <td className="col-message">
-                          {row.message ? (
+                          {row.message || row.seenLive ? (
                             <button type="button" className="message-btn" onClick={() => setOpened(row)} title={t("run.showMessage")}>
-                              {row.status === "MISSING" ? tOr(`run.reason.${row.message}`, row.message) : row.message}
+                              {messageOf(row)}
                             </button>
                           ) : null}
                         </td>
@@ -359,7 +424,7 @@ export function RunResults({ run }: { run: RunDetail }) {
             <dt>{t("run.column.duration")}</dt>
             <dd>{formatDuration(opened.duration_ms, locale)}</dd>
           </dl>
-          <pre className="message-full">{opened.message}</pre>
+          {(opened.message || opened.seenLive) && <pre className="message-full">{messageOf(opened)}</pre>}
           <ArtifactLinks artifacts={artifacts.filter((artifact) => artifact.shard === opened.shard)} />
         </Dialog>
       )}
@@ -367,16 +432,23 @@ export function RunResults({ run }: { run: RunDetail }) {
   );
 }
 
-/** The headline progress of a dispatch: what is in so far against what is owed. */
+/** The headline progress of a dispatch: what is in so far against what is owed.
+ * While it runs, a shard that has not delivered counts with what it reported
+ * live. Once it is over, only what was delivered counts — the rest is missing. */
 export function runProgress(run: RunDetail): { counts: Record<string, number>; done: number; planned: number } {
   const dispatch = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id);
-  const delivered = new Set(run.shards.filter((entry) => entry.delivered).map((entry) => entry.shard));
   const counts: Record<string, number> = {};
+  if (dispatch && !isActive(dispatch.state)) {
+    Object.assign(counts, dispatch.summary);
+    const total = sumCounts(counts);
+    const planned = Math.max(dispatch.planned_verdicts ?? run.planned_count, total);
+    return { counts, done: total - (counts.MISSING ?? 0), planned };
+  }
+  const delivered = new Set(run.shards.filter((entry) => entry.delivered).map((entry) => entry.shard));
   for (const entry of run.shards) {
     if (!entry.delivered) continue;
     for (const [status, value] of Object.entries(entry.summary)) counts[status] = (counts[status] ?? 0) + value;
   }
-  // A shard that has not delivered counts with what it reported live so far.
   for (const row of run.verdicts) {
     if (row.live && !delivered.has(row.shard)) counts[row.status] = (counts[row.status] ?? 0) + 1;
   }

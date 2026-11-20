@@ -76,9 +76,16 @@ test("run on two partitions: live progress, per-shard results, logs and reports"
   await log.waitForLoadState();
   expect(log.url()).toContain(`/artifacts/${runId}/`);
   expect(log.url()).toContain("/firefox-1/log.html");
+  // It renders: the framework's log is an application of its own, and it runs.
+  await expect(log).toHaveTitle(/Log$/);
+  await expect(log.locator("#s1")).toBeVisible();
+  await expect(log.getByRole("heading", { name: /Log$/ }).first()).toBeVisible();
   const response = await page.request.get(log.url());
   expect(response.status()).toBe(200);
   expect(await response.text()).toContain("Slow Warehouse Sync Finishes");
+  // …inside a sandbox that is not this server's origin.
+  expect(response.headers()["content-security-policy"]).toContain("sandbox allow-scripts");
+  expect(response.headers()["content-security-policy"]).not.toContain("allow-same-origin");
   await log.close();
 });
 

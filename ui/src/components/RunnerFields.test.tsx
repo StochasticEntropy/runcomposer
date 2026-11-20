@@ -92,8 +92,8 @@ describe("the runner select", () => {
     renderWithI18n(<RunnerSelect value="demo" onChange={() => undefined} />, app);
     const options = screen.getAllByRole("option") as HTMLOptionElement[];
     expect(options.map((option) => option.textContent)).toEqual([
-      "Demo (simulated) (demo)",
-      "Local pool (pool) — down",
+      "demo — Demo (simulated)",
+      "pool — Local pool — down",
       "ghost — unavailable",
     ]);
     expect(options.map((option) => option.disabled)).toEqual([false, false, true]);
@@ -104,6 +104,7 @@ describe("the runner select", () => {
   it("shows the health and its reason for an unhealthy runner, and can probe again", () => {
     renderWithI18n(<RunnerSelect value="pool" onChange={() => undefined} />, app);
     expect(screen.getByText("the framework is not installed")).toBeTruthy();
+    expect(screen.getByText(/reports a problem/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     expect(app.refreshRunners).toHaveBeenCalledWith(true);
   });

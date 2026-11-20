@@ -27,7 +27,6 @@
   "action": {
     "cancel": "Cancel",
     "close": "Close",
-    "copy": "Copy",
     "copied": "Copied",
     "dismiss": "Dismiss",
     "done": "Done",
@@ -43,7 +42,7 @@
     "networkDetail": "The server did not answer. Check that it is running and reachable, then try again.",
     "boundaryTitle": "This view ran into an error.",
     "boundaryHint": "Nothing was lost on the server. Reload the page, or go to another view.",
-    "notFoundTitle": "There is nothing at this address.",
+    "notFoundTitle": "There is nothing at this address",
     "notFoundBack": "Go to Compose",
     "code": {
       "network": "The server cannot be reached.",
@@ -120,7 +119,7 @@
     "api": "composed here",
     "cli": "command line",
     "demo": "demo",
-    "rerun": "rerun of failures",
+    "rerun": "re-run of what did not pass",
     "ingested": "from delivered results"
   },
   "outcome": {
@@ -151,7 +150,7 @@
     "warning": "Warning"
   },
   "progress": {
-    "label": "{done} of {total} results in",
+    "label": "{done} of {total} results received",
     "none": "No results yet"
   },
   "filter": {
@@ -168,7 +167,7 @@
       "OR": "any of these (OR)"
     },
     "combine": "How the rules of this group combine",
-    "negateGroup": "Negate this whole group",
+    "negateGroup": "Negate this group",
     "negateRule": "Negate {pattern}",
     "removeRule": "Remove {pattern}",
     "editPattern": "Edit {pattern}",
@@ -195,11 +194,15 @@
       "empty": "Position {position}: a pattern is empty.",
       "unexpected-end": "The expression ends where a tag or pattern is expected.",
       "unexpected-operator": "Position {position}: {token} needs a tag or pattern before it.",
-      "missing-operator": "Position {position}: put an operator before “{token}”.",
+      "missing-operator": "Position {position}: an operator is missing before “{token}”.",
       "unbalanced-open": "Position {position}: this parenthesis is never closed.",
       "unbalanced-close": "Position {position}: this closing parenthesis has no opening one.",
-      "unterminated-quote": "Position {position}: this quote is never closed."
-    }
+      "unterminated-quote": "Position {position}: this quote is never closed.",
+      "needs-quotes": "Position {position}: put a pattern that contains parentheses or quotes in quotes — \"{token}…\"."
+    },
+    "negateAll": "Negate the whole filter",
+    "pickForGroup": "Pick tags for this group…",
+    "addGroupInGroup": "Add a group inside this group"
   },
   "picker": {
     "title": "Pick tags",
@@ -270,7 +273,7 @@
     "sort": "Sort",
     "sortBy": {
       "catalog": "Catalog order",
-      "id": "Id",
+      "id": "ID",
       "name": "Name"
     },
     "group": "Group by suite",
@@ -286,9 +289,10 @@
     },
     "column": {
       "name": "Name",
-      "id": "Id",
+      "id": "ID",
       "tags": "Tags"
-    }
+    },
+    "keys": "Arrow keys move between the items, space ticks."
   },
   "compose": {
     "runTitle": "Run",
@@ -336,7 +340,8 @@
       "loaded": "Read",
       "starts": "Build a filter, or start from one of these:",
       "all": "Select all {count} items"
-    }
+    },
+    "loadedFrom": "Loaded from “{title}”: its selection, runner, options and labels."
   },
   "runner": {
     "label": "Runner",
@@ -352,14 +357,15 @@
       "required": "This is required.",
       "integer": "Enter a whole number.",
       "choice": "Choose one of the listed values."
-    }
+    },
+    "unhealthyHint": "This runner reports a problem. A run started on it may fail."
   },
   "labels": {
     "label": "Labels",
     "placeholder": "key=value",
     "add": "Add label",
     "remove": "Remove label {label}",
-    "hint": "Labels group runs — suite=nightly — and can be filtered by in the runs list.",
+    "hint": "Labels group runs, for example suite=nightly. The runs list can be filtered by them.",
     "invalid": "A label is written key=value."
   },
   "export": {
@@ -389,7 +395,9 @@
     "pushHint": "Post the result files to the run, for example:",
     "preview": "Show the document first",
     "previewHint": "This is the document as it would be composed now. Nothing has been created yet.",
-    "openRun": "Open the run"
+    "openRun": "Open the run",
+    "runTitle": "The run will be titled “{title}”.",
+    "copyCommand": "Copy command"
   },
   "runs": {
     "title": "Runs",
@@ -420,9 +428,9 @@
   },
   "run": {
     "title": "Run",
-    "notFound": "This run does not exist (any more).",
+    "notFound": "This run does not exist (any more)",
     "backToRuns": "Back to the runs",
-    "id": "Id",
+    "id": "ID",
     "started": "Created",
     "duration": "Duration",
     "runner": "Runner",
@@ -438,10 +446,10 @@
     "rerunAll": "Run again",
     "dispatch": "Run…",
     "rerunFailed": {
-      "one": "Re-run {count} failure",
-      "other": "Re-run {count} failures"
+      "one": "Re-run {count} item that did not pass",
+      "other": "Re-run {count} items that did not pass"
     },
-    "rerunFailedAny": "Re-run the failures",
+    "rerunFailedAny": "Re-run what did not pass",
     "load": "Load into Compose",
     "finalize": "Close as it stands",
     "finalizeTitle": "Close this run as it stands?",
@@ -523,7 +531,7 @@
         "other": "{count} items named by id"
       },
       "derived": "Derived from",
-      "derivedFrom": "what was {verdicts} in",
+      "derivedFrom": "what was {verdicts} there",
       "source": "Catalog",
       "expect": "Result format",
       "dispatch": "How it was run",
@@ -547,34 +555,45 @@
     "rotateTitle": "Create a new ingest token?",
     "rotateExplain": "The current token stops working at once. Whoever sends the results needs the new one.",
     "rotateConfirm": "Create new token",
-    "rotateDone": "New ingest token"
+    "rotateDone": "New ingest token",
+    "originOf": "in",
+    "shardNothing": "no results",
+    "showDetails": "Details of {item}",
+    "seenLive": "last seen live: {status}",
+    "cancelledHint": "This run was cancelled. Shards that had not delivered count as missing, whatever they reported live.",
+    "downloadDocument": "Download the handed-out document",
+    "cancelKeep": "Keep it running",
+    "resultCount": {
+      "one": "{count} result",
+      "other": "{count} results"
+    }
   },
   "rerun": {
     "titleAll": "Run again",
     "titleFirst": "Run",
-    "titleFailed": "Re-run the failures",
+    "titleFailed": "Re-run what did not pass",
     "explainAll": {
       "one": "Runs the {count} item of “{title}” again, as a new dispatch of the same run.",
       "other": "Runs all {count} items of “{title}” again, as a new dispatch of the same run."
     },
     "explainFailed": {
-      "one": "Composes a new run from the {count} item that did not pass in “{title}”.",
-      "other": "Composes a new run from the {count} items that did not pass in “{title}”."
+      "one": "Composes a new run from the {count} item that failed or has no result in “{title}”.",
+      "other": "Composes a new run from the {count} items that failed or have no result in “{title}”."
     },
     "started": "Started again.",
     "startedNew": {
-      "one": "Re-running {count} failure of “{title}”.",
-      "other": "Re-running {count} failures of “{title}”."
+      "one": "Re-running {count} item of “{title}”.",
+      "other": "Re-running {count} items of “{title}”."
     }
   },
   "inbox": {
     "title": "Inbox",
     "hint": "Results that arrived and could not be matched to a run wait here. Nothing is attached automatically.",
-    "empty": "The inbox is empty — every delivery found its run.",
+    "empty": "The inbox is empty.",
     "attach": "Attach to a run",
     "attachTitle": "Attach to a run",
     "attachExplain": "The delivered results are recorded for the run you name.",
-    "runId": "Run id",
+    "runId": "Run",
     "promote": "Make it a run",
     "promoteTitle": "Make a run of this delivery",
     "promoteExplain": "A new run is created from the delivered results.",
@@ -612,9 +631,11 @@
       "received": "Received",
       "reason": "Why it is here",
       "via": "Arrived by",
-      "claimed": "Names run",
+      "claimed": "Run it names",
       "format": "Format",
       "actions": "Actions"
-    }
+    },
+    "nothingRecorded": "Nothing was recorded: no result in the delivery matched an item of the run. Look at the run before relying on it.",
+    "runIdHint": "Choose a run from the list, or paste its ID."
   }
 }
