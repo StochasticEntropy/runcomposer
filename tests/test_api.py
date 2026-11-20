@@ -219,12 +219,14 @@ class TestErrorBody:
                 "dispatch": {"runner": "demo", "parameters": {"sed": "a"}},
             },
         )
-        assert_error(response, 400, "invalid-parameter", detail="unknown parameter 'sed'")
+        unknown = assert_error(response, 400, "invalid-parameter", detail="unknown parameter 'sed'")
+        assert unknown["parameter"] == "sed", "the body names the parameter; no client parses the text"
         ill_typed = client.post(
             f"{API}/runs",
             json={"selection": {"tag_filter": "Auth"}, "dispatch": {"runner": "demo", "parameters": {"seed": 7}}},
         )
-        assert_error(ill_typed, 400, "invalid-parameter", detail="parameter 'seed' must be a string")
+        refused = assert_error(ill_typed, 400, "invalid-parameter", detail="parameter 'seed' must be a string")
+        assert refused["parameter"] == "seed"
         assert client.get(f"{API}/runs").json()["total"] == 0
 
     def test_three_failed_dispatch_requests_leave_no_orphans(self, client):
@@ -316,8 +318,14 @@ class TestComposeAndDispatch:
         in_flight = client.get(f"{API}/runs/{run_id}").json()
         assert in_flight["state"] == "RUNNING" and in_flight["verdicts"] == []
         assert in_flight["shards"] == [
-            {"shard": "1", "declared": True, "delivered": False, "count": 0, "summary": {}, "completion": None}
+            {
+                "shard": "1", "declared": True, "delivered": False, "count": 0, "planned": None,
+                "summary": {}, "completion": None,
+            }
         ]
+        # This runner declared shard names only, so nothing says how many
+        # verdicts are owed: no denominator is invented.
+        assert in_flight["dispatches"][0]["planned_verdicts"] is None
 
         release.set()
         events = follow(client, run_id, until="run.completed")
@@ -616,7 +624,10 @@ class TestRunDetail:
         assert len(failing) == 2 and failing[0]["duration_ms"] > 0 and failing[0]["message"]
         assert {row["shard"] for row in body["verdicts"]} == {"1"}
         assert body["shards"] == [
-            {"shard": "1", "declared": True, "delivered": True, "count": 3, "summary": {"FAIL": 2, "PASS": 1}, "completion": "FAIL"}
+            {
+                "shard": "1", "declared": True, "delivered": True, "count": 3, "planned": 3,
+                "summary": {"FAIL": 2, "PASS": 1}, "completion": "FAIL",
+            }
         ]
         assert body["artifacts"] == [
             {
@@ -646,9 +657,10 @@ class TestRunDetail:
         assert set(dispatch) >= {
             "dispatch_id", "mode", "state", "created_at", "shards", "declared_shards", "completion",
             "completed_at", "summary", "error", "plan", "links", "parameters", "spec_sha256",
-            "cancel_requested", "executing",
+            "cancel_requested", "executing", "planned_verdicts",
         }
         assert dispatch["shards"] == ["1"] and "simulating 3 item(s)" in dispatch["plan"]
+        assert dispatch["planned_verdicts"] == 3, "what a progress display divides by"
 
     def test_fan_out_reads_green_here_red_there(self, make_client):
         client, service = make_client()
@@ -666,6 +678,7 @@ class TestRunDetail:
         assert body["completion"] == "FAIL" and len(body["verdicts"]) == 6
         by_shard = {entry["shard"]: entry for entry in body["shards"]}
         assert (by_shard["env1"]["completion"], by_shard["env2"]["completion"]) == ("PASS", "FAIL")
+        assert (by_shard["env1"]["planned"], by_shard["env1"]["count"]) == (None, 3)
         assert by_shard["env2"]["summary"] == {"PASS": 2, "FAIL": 1}
 
         only = client.get(f"{API}/runs/{run_id}/verdicts", params={"shard": "env2", "status": "FAIL"}).json()

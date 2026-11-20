@@ -857,7 +857,7 @@ class TestLiveStatus:
         assert mid["state"] == "RUNNING"
         assert mid["shards"] == [
             {"shard": "default", "declared": True, "delivered": False, "count": 0,
-             "summary": {}, "completion": None}
+             "planned": 2, "summary": {}, "completion": None}
         ]
         assert [(v["item_id"], v["live"]) for v in mid["verdicts"]] == [(QUICK, True)]
         assert service.store.verdicts_for(run_id) == []  # live status is not a result
