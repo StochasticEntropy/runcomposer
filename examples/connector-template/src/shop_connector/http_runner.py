@@ -3,12 +3,15 @@ shop, in this process, with a small pool of threads.
 
 The whole runner contract in one file (``runcomposer.sdk.Runner``):
 
-- ``describe()`` — who it is, what it can do (``live_status``, ``cancel``),
-  and the per-run parameter it accepts: which environment to check.
+- ``describe()`` — who it is, what it can do (``live_status``, ``cancel``,
+  ``plan``), and the per-run parameter it accepts: which environment to check.
 - ``health()`` — can it take a dispatch right now? It asks the shop.
+- ``plan(ctx)`` — what a dispatch would do, without doing it: the same
+  planning function ``dispatch`` starts with, and nothing after it.
 - ``dispatch(ctx)`` — *prepare* (drift check, readiness probe — either may
   ``ctx.refuse``), then ``ctx.declare`` the shard set exactly once, execute,
-  stream ``ctx.live`` status, record an artifact, ``ctx.deliver`` the shard.
+  stream ``ctx.live`` status (``RUNNING`` when a check starts, its verdict
+  when it ends), record an artifact, ``ctx.deliver`` the shard.
 - ``cancel(ctx)`` — not overridden: every thread looks at ``ctx.cancelled``
   before it starts a check, so the ``RunnerBase`` default (nothing more to
   stop) is the truth. A request already in flight finishes within
@@ -16,7 +19,9 @@ The whole runner contract in one file (``runcomposer.sdk.Runner``):
 
 Its settings shared with the rest of the package — the environments and a
 user agent — come from ``connectors.shop-checks`` in the config file
-(``CONNECTOR`` below); its own options from its ``runners:`` entry.
+(``CONNECTOR`` below); its own options from its ``runners:`` entry. What the
+person starting a run chose is in ``ctx.parameters`` — never in
+``ctx.options``, which holds the runner's config entry and nothing else.
 """
 
 from __future__ import annotations
@@ -34,6 +39,8 @@ from runcomposer.sdk import (
     Health,
     Item,
     Parameter,
+    PlanContext,
+    PlanPreview,
     RunnerBase,
     RunnerInfo,
     Verdict,
@@ -84,7 +91,7 @@ class HttpCheckRunner(RunnerBase):
             id="http-checks",
             title="Shop HTTP checks",
             description="Requests each planned check's URL and compares status and body.",
-            capabilities=("live_status", "cancel"),
+            capabilities=("live_status", "cancel", "plan"),
             parameters=(
                 Parameter(
                     "environment",
@@ -109,14 +116,14 @@ class HttpCheckRunner(RunnerBase):
             data={"environment": self.environment},
         )
 
-    # -- one dispatch ---------------------------------------------------------------------
+    # -- planning: shared by the preview and the dispatch ---------------------------------
 
-    def dispatch(self, ctx: DispatchContext) -> None:
-        environment = str(ctx.options.get("environment") or self.environment)
+    def _prepare(self, ctx: PlanContext) -> tuple[str, str, dict[str, Item]]:
+        """Everything decided before anything runs — ``(environment, base URL,
+        the planned items)``. It reads and refuses, and touches nothing, so
+        ``plan`` can call it as safely as ``dispatch`` does."""
+        environment = str(ctx.parameters.get("environment") or self.environment)
         base = self.environments[environment]
-
-        # 1. Prepare. Everything up to declare() may refuse; a refusal leaves
-        #    no dispatch behind and its reason is the answer the person sees.
         planned_snapshot = (ctx.spec.get("source") or {}).get("snapshot")
         if planned_snapshot and planned_snapshot != ctx.source.snapshot():
             ctx.refuse(
@@ -126,6 +133,26 @@ class HttpCheckRunner(RunnerBase):
         unknown = [item_id for item_id in ctx.item_ids if item_id not in catalog]
         if unknown:
             ctx.refuse(f"{len(unknown)} planned check(s) are not in the catalog: {unknown[:3]}")
+        return environment, base, catalog
+
+    def _plan_text(self, ctx: PlanContext, base: str) -> str:
+        return f"{len(ctx.item_ids)} HTTP check(s) against {base}, {self.workers} at a time"
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        environment, base, _catalog = self._prepare(ctx)
+        return PlanPreview(
+            text=self._plan_text(ctx, base),
+            shards={environment: list(ctx.item_ids)},
+            notes=("the shop is probed when the run is dispatched — a preview does not contact it",),
+            data={"base_url": base, "workers": self.workers},
+        )
+
+    # -- one dispatch ---------------------------------------------------------------------
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        # 1. Prepare. Everything up to declare() may refuse; a refusal leaves
+        #    no dispatch behind and its reason is the answer the person sees.
+        environment, base, catalog = self._prepare(ctx)
         try:
             self._request("GET", base + "/")
         except OSError as exc:
@@ -135,7 +162,7 @@ class HttpCheckRunner(RunnerBase):
         #    every planned item.
         ctx.declare(
             {environment: list(ctx.item_ids)},
-            plan=f"{len(ctx.item_ids)} HTTP check(s) against {base}, {self.workers} at a time",
+            plan=self._plan_text(ctx, base),
             links={"shop": base},
         )
 
@@ -144,6 +171,7 @@ class HttpCheckRunner(RunnerBase):
         def run_one(item_id: str) -> Verdict | None:
             if ctx.cancelled:
                 return None
+            ctx.live(environment, item_id, "RUNNING")
             verdict = self._check(base, catalog[item_id])
             ctx.live(environment, item_id, verdict.status, duration_ms=verdict.duration_ms,
                      message=verdict.message)

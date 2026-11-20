@@ -8,7 +8,9 @@ requests and their verdicts are what this server answered.
 
 Endpoints: ``/`` and ``/health``; ``/catalog`` (JSON); ``POST /cart/add``;
 ``/checkout``; ``/account`` (401 without a session). Start it with
-``--broken checkout`` to make one endpoint answer 500.
+``--broken checkout`` to make one endpoint answer 500. Tests may also hold
+an endpoint — its requests wait until a ``threading.Event`` is set — to meet
+a check while it is still running.
 """
 
 from __future__ import annotations
@@ -25,7 +27,13 @@ PRODUCTS = [
 ]
 
 
-def make_server(port: int = 0, *, broken: tuple[str, ...] = ()) -> ThreadingHTTPServer:
+def make_server(
+    port: int = 0,
+    *,
+    broken: tuple[str, ...] = (),
+    held: tuple[str, ...] = (),
+    release: threading.Event | None = None,
+) -> ThreadingHTTPServer:
     class Shop(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:
             return None
@@ -42,6 +50,8 @@ def make_server(port: int = 0, *, broken: tuple[str, ...] = ()) -> ThreadingHTTP
         def _route(self) -> None:
             path = urlsplit(self.path).path
             name = path.strip("/").split("/")[0] or "home"
+            if name in held and release is not None:
+                release.wait(30)  # held until the test lets it go (bounded)
             if name in broken:
                 return self._answer(500, "internal error")
             if self.command in ("GET", "HEAD") and path in ("/", "/health"):
@@ -63,9 +73,16 @@ def make_server(port: int = 0, *, broken: tuple[str, ...] = ()) -> ThreadingHTTP
     return server
 
 
-def start_in_background(port: int = 0, *, broken: tuple[str, ...] = ()) -> tuple[ThreadingHTTPServer, str]:
-    """For tests: serve on a free port in a daemon thread; ``(server, base URL)``."""
-    server = make_server(port, broken=broken)
+def start_in_background(
+    port: int = 0,
+    *,
+    broken: tuple[str, ...] = (),
+    held: tuple[str, ...] = (),
+    release: threading.Event | None = None,
+) -> tuple[ThreadingHTTPServer, str]:
+    """For tests: serve on a free port in a daemon thread; ``(server, base URL)``.
+    Requests to a ``held`` endpoint wait until ``release`` is set."""
+    server = make_server(port, broken=broken, held=held, release=release)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 

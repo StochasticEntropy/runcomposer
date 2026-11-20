@@ -16,13 +16,13 @@ only says what is where.
 |---|---|
 | `pyproject.toml` | the package: depends on `runcomposer`, registers its plugins under the `runcomposer.sources` / `.runners` / `.observers` entry-point groups |
 | `src/shop_connector/checks_source.py` | the `http-checks` **source** — items, snapshot, `resolve`, `fingerprint` |
-| `src/shop_connector/http_runner.py` | the `http-checks` **runner** — `describe`, `health`, `dispatch` (refuse → declare → execute → deliver), a per-run parameter, live status, cancellation |
+| `src/shop_connector/http_runner.py` | the `http-checks` **runner** — `describe`, `health`, `plan` (a preview built by the same function `dispatch` starts with), `dispatch` (refuse → declare → execute → deliver), a per-run parameter read from `ctx.parameters`, live status (`RUNNING`, then the verdict), cancellation |
 | `src/shop_connector/summary_observer.py` | the `run-summary` **observer** |
-| `tests/test_connector.py` | tests written with `runcomposer.testing`: the contract checks, unit tests against `FakeDispatchContext`, a real deployment through `ConnectorHarness` |
+| `tests/test_connector.py` | tests written with `runcomposer.testing`: the contract checks (the plan rules included), unit tests against `FakeDispatchContext` (its `preview`, the whole live stream in `live_updates`), a real deployment through `ConnectorHarness` — a run to the end, and one met while a check is running (`harness.start(…).wait_until(…)`) and cancelled |
 | `tests/test_guard.py` | the import rule: `runcomposer.sdk` and `runcomposer.testing`, nothing else |
 | `example/config.yaml` | a deployment that names the plugins by entry-point id, with the package's shared settings under `connectors:` |
 | `example/checks.yaml` | the example catalog |
-| `example/shop_server.py` | a tiny local web shop to point the checks at — a stand-in *target*, not part of the connector |
+| `example/shop_server.py` | a tiny local web shop to point the checks at — a stand-in *target*, not part of the connector (tests can hold one endpoint to meet a check in flight) |
 
 The runner is deliberately unlike runcomposer's bundled ones: it executes in
 this process on a thread pool, needs no test framework and no result parser,
@@ -38,6 +38,7 @@ pytest -q                        # the kit's checks, unit tests, an end-to-end r
 
 python example/shop_server.py --port 18765 &      # something to check
 runcomposer doctor --config example/config.yaml   # plugins, distribution, health
+runcomposer plan Smoke --runner shop --config example/config.yaml   # what would run; nothing happens
 runcomposer run Smoke --runner shop --config example/config.yaml
 cat example/state/summary.txt                     # what the observer wrote
 kill %1
@@ -66,4 +67,8 @@ kill %1
 
 Constructors must be free of side effects: runcomposer builds every
 configured plugin once at startup to validate the configuration. Check and
-store options there; connect to things in `dispatch` and `health`.
+store options there; connect to things in `dispatch` and `health` — not in
+`plan`, which previews a dispatch and must not act on anything.
+
+Read what the person starting a run chose from `ctx.parameters`;
+`ctx.options` is the runner's config entry as written and nothing else.
