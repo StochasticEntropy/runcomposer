@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 import secrets
 import threading
 from collections.abc import Mapping, Sequence
@@ -83,6 +84,22 @@ class QuarantineReport:
     entry_id: str | None
     reason: str
     detail: str
+
+
+def _without_location(text: str, bundle: Path, name: str) -> str:
+    """``text`` with the bundle's location on this machine taken out: a path
+    inside the bundle becomes its path relative to the bundle, the bundle's
+    own path becomes ``name``. Both spellings of the location are covered —
+    as given and fully resolved (a temporary directory is often reached
+    through a symlink) — the longer first, so neither is cut in half."""
+    spellings = {str(bundle), os.path.abspath(bundle)}
+    try:
+        spellings.add(str(bundle.resolve()))
+    except (OSError, ValueError):
+        pass
+    for location in sorted(spellings, key=len, reverse=True):
+        text = text.replace(location + os.sep, "").replace(location, name)
+    return text
 
 
 def expected_format(spec: Mapping[str, Any] | None) -> str:
@@ -267,14 +284,24 @@ class Ingestion:
                 f"{len(unplanned)} reported item(s) were not planned for this run "
                 f"(first: {unplanned[0]!r})"
             )
-        outcome: str = service.store.record_delivery(
-            dispatch.run_id,
-            dispatch_id=dispatch.dispatch_id,
-            shard=shard,
-            content_hash=content_hash or verdicts_hash(verdicts),
-            format=format_id,
-            verdicts=verdicts,
-        )
+        with service.store.atomic():
+            # Read again in the unit that writes: a cancel another process
+            # recorded since `dispatch` was read is seen here, not missed.
+            current = service.store.get_dispatch(dispatch.dispatch_id)
+            if current is not None and current.state == "CANCELLED":
+                raise IngestError(
+                    f"dispatch {dispatch.dispatch_id} was cancelled — results for it are not "
+                    "taken in",
+                    reason="dispatch-cancelled",
+                )
+            outcome: str = service.store.record_delivery(
+                dispatch.run_id,
+                dispatch_id=dispatch.dispatch_id,
+                shard=shard,
+                content_hash=content_hash or verdicts_hash(verdicts),
+                format=format_id,
+                verdicts=verdicts,
+            )
         for note in notes:
             service.bus.emit(
                 dispatch.run_id,
@@ -306,10 +333,17 @@ class Ingestion:
         dispatch_id: str | None = None,
         shard: str | None = None,
         format: str | None = None,
+        name: str | None = None,
     ) -> IngestReport | QuarantineReport:
         """The transport entry point (file-drop, push): a bundle that cannot
         be taken in is never dropped on the floor and never raises — it lands
-        in the quarantine with the reason."""
+        in the quarantine with the reason.
+
+        The reason is answered over HTTP and kept in the quarantine entry, so
+        it never says where the bundle lay on this machine (a push's
+        temporary directory, the inbox): a file in the bundle is named by its
+        path inside the bundle, the bundle itself by ``name`` — a push's
+        upload names — or else by its directory's name."""
         bundle = Path(bundle_path)
         try:
             return self.ingest(
@@ -325,12 +359,13 @@ class Ingestion:
                     claimed = (read_marker(bundle) or {}).get("run_id")
                 except IngestError:
                     claimed = None
+            detail = _without_location(str(exc), bundle, name or bundle.name)
             entry = self._quarantine(
                 bundle, reason=reason, transport=transport, claimed_run_id=claimed,
-                format=format, detail=str(exc),
+                format=format, detail=detail,
             )
             return QuarantineReport(
-                entry_id=entry.entry_id if entry else None, reason=reason, detail=str(exc)
+                entry_id=entry.entry_id if entry else None, reason=reason, detail=detail
             )
 
     def _quarantine(

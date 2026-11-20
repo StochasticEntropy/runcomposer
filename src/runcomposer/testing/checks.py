@@ -654,7 +654,8 @@ def check_store(make_store: Callable[[], Any], *, threads: int = 8) -> None:
     a new temporary directory). The checks cover the history queries, the
     dispatch records, the §5 idempotency contract — including concurrent
     deliveries to one shard from ``threads`` threads — the exclusive
-    dispatch claim, live status, artifacts and the event stream."""
+    dispatch claim, live status, artifacts, the event stream and ``atomic()``
+    (``store.atomic``)."""
     store = make_store()
     try:
         _members(store, RunStore, "store.contract")
@@ -671,6 +672,7 @@ def check_store(make_store: Callable[[], Any], *, threads: int = 8) -> None:
     store = make_store()
     try:
         _check_concurrent_delivery(store, threads)
+        _check_atomic(store)
     finally:
         store.close()
 
@@ -942,3 +944,59 @@ def _check_concurrent_delivery(store: Any, threads: int) -> None:
     _require(len(verdicts) == len(DEFAULT_ITEM_IDS) and len({v.message for v in verdicts}) == 1,
              "store.atomic-delivery", "exactly one delivery's verdicts survive, never a mixture")
     _require(len(store.get_run(run.id).deliveries) == 1, "store.atomic-delivery", "exactly one delivery is recorded")
+
+
+class _Undo(Exception):
+    pass
+
+
+def _check_atomic(store: Any) -> None:
+    """``atomic()``: a block's writes are read back inside it, undone by an
+    exception (nested blocks included), and no other writer lands between
+    its reads and its writes — what the ledger's decisions rely on."""
+    rule = "store.atomic"
+    run = store.create_run(_spec("01KITRUNM00000000000000000"), origin="kit")
+    store.add_dispatch(run.id, dispatch_id="01KITM1", mode="demo", state="RUNNING")
+    try:
+        with store.atomic():
+            store.update_dispatch("01KITM1", error="inside")
+            _require(store.get_dispatch("01KITM1").error == "inside", rule,
+                     "a write inside atomic() is not read back inside the block")
+            with store.atomic():
+                store.update_dispatch("01KITM1", plan="nested")
+            raise _Undo
+    except _Undo:
+        pass
+    undone = store.get_dispatch("01KITM1")
+    _require((undone.error, undone.plan) == ("", ""), rule,
+             f"an exception inside atomic() must undo what the block wrote, nested blocks included: "
+             f"error={undone.error!r}, plan={undone.plan!r}")
+    entered, finished = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+
+    def other_writer() -> None:
+        try:
+            if entered.wait(30):
+                store.update_dispatch("01KITM1", error="other")
+                finished.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    writer = threading.Thread(target=other_writer)
+    writer.start()
+    try:
+        with store.atomic():
+            seen = store.get_dispatch("01KITM1").error
+            entered.set()
+            # The other writer must wait for this block: it cannot have
+            # finished while the block is open, however long it is given.
+            interleaved = finished.wait(0.5)
+            store.update_dispatch("01KITM1", error=f"{seen}+mine")
+    finally:
+        entered.set()
+        writer.join(60)
+    _require(not errors, rule, f"a write made while another thread was inside atomic() raised: {errors[:1]}")
+    _require(not interleaved, rule,
+             "another thread's write landed between the reads and the writes of an atomic() block")
+    _require(store.get_dispatch("01KITM1").error == "other", rule,
+             "the write that waited for an atomic() block must land after it")

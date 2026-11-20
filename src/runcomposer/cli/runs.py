@@ -30,6 +30,7 @@ from .common import (
 if TYPE_CHECKING:
     from runcomposer.app.dispatching import Outcome
     from runcomposer.app.service import Service
+    from runcomposer.core.model import DispatchRecord, RunRecord
 
 
 def register(sub: Any) -> dict[str, Any]:
@@ -247,10 +248,60 @@ def _print_shards(detail: dict[str, Any]) -> None:
     if running and detail["state"] == "RUNNING":
         print(f"  running now: {running} item(s)")
     live = sum(1 for verdict in detail["verdicts"] if verdict["live"])
+    # Once the dispatch is over, an item last seen RUNNING is no live row any
+    # more — what was seen is its MISSING row's `last_live`; both count.
+    seen = {(verdict["shard"], verdict["item_id"]) for verdict in detail["verdicts"] if verdict["live"]}
+    seen |= {
+        (verdict["last_live"]["shard"], verdict["item_id"])
+        for verdict in detail["verdicts"]
+        if verdict.get("last_live")
+    }
     if live and detail["state"] == "RUNNING":
         print(f"  live: {live} item(s) reported so far by shards still executing")
-    elif live:
-        print(f"  last live status of shards that never delivered: {live} item(s)")
+    elif seen:
+        print(f"  last live status of shards that never delivered: {len(seen)} item(s)")
+
+
+def _owner_gone(service: Service, dispatch: DispatchRecord | None) -> bool:
+    """A dispatch a runner was executing (``DISPATCHED``/``RUNNING``) whose
+    owning process is gone — by the rule restart recovery applies
+    (``owner_alive``: its pid is dead, it is an earlier life of this pid, or
+    it ran on another host). Only read: marking it ``STALE`` is recovery's
+    job (``serve``, ``doctor``, the dispatching commands), never a reader's,
+    so a reader cannot race the process that owns the state."""
+    from runcomposer.app.dispatching import owner_alive
+
+    return (
+        dispatch is not None
+        and dispatch.state in ("DISPATCHED", "RUNNING")
+        and bool(dispatch.owner)
+        and not owner_alive(dispatch.owner or "", service.dispatcher.owner)
+    )
+
+
+def _state_text(state: str, gone: bool) -> str:
+    return f"{state} (owner gone)" if gone else state
+
+
+def _owner_gone_hint(run_id: str, dispatch: DispatchRecord) -> str:
+    return (
+        f"# {run_id}: the process executing dispatch {dispatch.dispatch_id} "
+        f"({dispatch.owner}) is gone — nothing will finish it. `runcomposer doctor` (or "
+        f"starting `serve`) marks it STALE; `runcomposer cancel --force {run_id}` closes it"
+    )
+
+
+def _mark_owner_gone(service: Service, run: RunRecord, row: dict[str, Any]) -> list[DispatchRecord]:
+    """Add ``owner_gone`` to a run row or detail (and to each of its
+    dispatches) — additive fields of the CLI's JSON; returns the flagged
+    dispatches."""
+    flagged = []
+    for record, entry in zip(run.dispatches, row.get("dispatches") or (), strict=False):
+        entry["owner_gone"] = gone = _owner_gone(service, record)
+        if gone:
+            flagged.append(record)
+    row["owner_gone"] = _owner_gone(service, run.latest_dispatch)
+    return flagged
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -414,6 +465,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         import time
 
         deadline = None if args.timeout is None else time.monotonic() + args.timeout
+        warned: set[str] = set()
         while True:
             events = service.store.events(args.run_id, after=cursor)
             for event in events:
@@ -424,6 +476,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     print(_event_line(event))
             sys.stdout.flush()
             run = service.require_run(args.run_id)
+            latest = run.latest_dispatch
+            if latest is not None and latest.dispatch_id not in warned and _owner_gone(service, latest):
+                # Said once, on stderr; following goes on — recovery in a
+                # server or `doctor` ends the dispatch, and this watch with it.
+                warned.add(latest.dispatch_id)
+                print(f"warning: {_owner_gone_hint(run.id, latest)[2:]}", file=sys.stderr)
             over = run.state in lifecycle.TERMINAL_STATES or run.state == "COMPOSED"
             if args.no_follow or (over and not events):
                 return EXIT_OK if args.no_follow else run_exit_code(run)
@@ -438,22 +496,28 @@ def cmd_show(args: argparse.Namespace) -> int:
     from runcomposer.app.views import run_detail
 
     with service_for(args) as service:
-        detail = run_detail(service, service.require_run(args.run_id), server_paths=True)
+        run = service.require_run(args.run_id)
+        detail = run_detail(service, run, server_paths=True)
+        flagged = _mark_owner_gone(service, run, detail)
     if args.as_json:
         emit_json(detail)
         return EXIT_OK
     completion = f" ({detail['completion']})" if detail["completion"] else ""
     print(f"run {detail['id']}  {detail['title']}")
-    print(f"state: {detail['state']}{completion} — {counts_text(detail['verdict_summary'])}")
+    print(f"state: {_state_text(detail['state'], detail['owner_gone'])}{completion} — "
+          f"{counts_text(detail['verdict_summary'])}")
     print(f"planned: {detail['planned_count']} item(s); created {detail['created_at']}; "
           f"origin {detail['origin']}; labels {detail['labels'] or '{}'}")
     for dispatch in detail["dispatches"]:
         done = f" ({dispatch['completion']})" if dispatch["completion"] else ""
-        print(f"dispatch {dispatch['dispatch_id']}  {dispatch['mode']}  {dispatch['state']}{done}  "
+        print(f"dispatch {dispatch['dispatch_id']}  {dispatch['mode']}  "
+              f"{_state_text(dispatch['state'], dispatch['owner_gone'])}{done}  "
               f"{counts_text(dispatch['summary'])}")
         if dispatch["error"]:
             print(f"  error: {dispatch['error']}")
     _print_shards(detail)
+    for record in flagged:
+        print(_owner_gone_hint(run.id, record))
     for artifact in detail["artifacts"]:
         print(f"  artifact {artifact['name']}: {artifact['href'] or artifact['url_or_path']}")
     return EXIT_OK
@@ -485,24 +549,28 @@ def cmd_runs(args: argparse.Namespace) -> int:
             state=args.state, labels=labels or None, since=args.since, until=args.until,
             q=args.query, limit=args.limit, offset=args.offset,
         )
+        rows = [run_row(run) for run in page.runs]
+        flagged = [_mark_owner_gone(service, run, row) for run, row in zip(page.runs, rows, strict=True)]
     if args.as_json:
-        emit_json(
-            {"runs": [run_row(run) for run in page.runs], "total": page.total,
-             "limit": args.limit, "offset": args.offset}
-        )
+        emit_json({"runs": rows, "total": page.total, "limit": args.limit, "offset": args.offset})
         return EXIT_OK
     if not page.runs:
         print("no runs stored" + (f" in state {args.state}" if args.state else ""))
         return EXIT_OK
-    print(f"{'RUN ID':<26}  {'STATE':<16}  {'RESULT':<10}  {'MODE':<12}  {'CREATED':<20}  TITLE")
-    for run in page.runs:
+    states = [_state_text(run.state, row["owner_gone"]) for run, row in zip(page.runs, rows, strict=True)]
+    width = max(16, *(len(state) for state in states))
+    print(f"{'RUN ID':<26}  {'STATE':<{width}}  {'RESULT':<10}  {'MODE':<12}  {'CREATED':<20}  TITLE")
+    for run, state in zip(page.runs, states, strict=True):
         mode = run.latest_dispatch.mode if run.latest_dispatch else "-"
         print(
-            f"{run.id:<26}  {run.state:<16}  {run.completion or '-':<10}  {mode:<12}  "
+            f"{run.id:<26}  {state:<{width}}  {run.completion or '-':<10}  {mode:<12}  "
             f"{run.created_at:<20}  {run.title}"
         )
     if page.total > len(page.runs):
         print(f"# {len(page.runs)} of {page.total} run(s) — page with --limit / --offset")
+    for run, records in zip(page.runs, flagged, strict=True):
+        for record in records:
+            print(_owner_gone_hint(run.id, record))
     return EXIT_OK
 
 

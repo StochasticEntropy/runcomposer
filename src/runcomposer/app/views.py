@@ -192,8 +192,12 @@ def verdict_rows(service: Service, dispatch: DispatchRecord | None, run_id: str)
             if seen is not None
             else None
         )
+    # A dispatch that is over (STALE, FAILED, CANCELLED, COMPLETE) executes
+    # nothing: an item last seen RUNNING is not listed as running. What was
+    # seen stays readable as its MISSING row's `last_live`.
+    over = dispatch.state in lifecycle.TERMINAL_STATES
     for status in streamed:
-        if status.shard not in delivered:
+        if status.shard not in delivered and not (over and status.status == "RUNNING"):
             rows.append(verdict_json(status, live=True))
     return rows
 

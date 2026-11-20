@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, NoReturn, Protocol
@@ -785,17 +786,35 @@ class RunStore(Protocol):
         read, whatever the length of the stream."""
         ...
 
+    # -- atomicity ------------------------------------------------------------------
+
+    def atomic(self) -> AbstractContextManager[None]:
+        """A block in which every call this thread makes to the store is one
+        atomic unit: no other writer — another thread, or another process
+        sharing the store — writes between its reads and its writes, and an
+        exception undoes what the block wrote. Nested blocks join the
+        outermost. The ledger decides every lifecycle change inside one, so
+        that a decision is never taken on facts another process has since
+        changed. (The default in :class:`StoreBase` guarantees nothing: a
+        store shared between processes provides its own.)"""
+        ...
+
     def close(self) -> None:
         """Release what the store holds (default in :class:`StoreBase`)."""
         ...
 
 
 class StoreBase(PluginBase):
-    """Base class for a :class:`RunStore`: configuration defaults and a
-    ``close`` that has nothing to release. Every other member is the
-    store's own."""
+    """Base class for a :class:`RunStore`: configuration defaults, an
+    ``atomic`` that guarantees nothing beyond what each call does, and a
+    ``close`` that has nothing to release. Every other member is the store's
+    own."""
 
     store_id: str = ""
+
+    def atomic(self) -> AbstractContextManager[None]:
+        """No unit of its own: each call is as atomic as the store makes it."""
+        return nullcontext()
 
     def close(self) -> None:
         """Nothing to release."""

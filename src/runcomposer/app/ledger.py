@@ -5,13 +5,21 @@ here*. Every method reads the facts from the store, asks ``core.lifecycle``
 what they mean, writes the dispatch, re-derives the run's headline from its
 latest dispatch, and emits the event. Nothing else calls
 ``store.update_dispatch(state=…)`` or ``store.set_run_headline``.
+
+Each of those read-evaluate-write steps is one decision taken inside the
+store's ``atomic()`` unit: several processes share one store (two servers, a
+server and a CLI), and a decision taken on facts that another process changed
+between the reading and the writing — a shard it delivered, a cancel it
+recorded — would contradict what is stored. The events of a decision are
+emitted once it is committed.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from runcomposer.core import events as kinds
@@ -27,6 +35,18 @@ __all__ = ["Ledger"]
 
 log = logging.getLogger("runcomposer.lifecycle")
 
+#: An event decided inside a unit, emitted after it: (run, kind, dispatch, data).
+_Pending = tuple[str, str, "str | None", dict[str, Any]]
+
+#: The states recovery may mark STALE: a runner was executing them.
+_EXECUTING = ("DISPATCHED", "RUNNING")
+
+
+class _Decisions(threading.local):
+    """Per thread: the events of the decision being taken, if one is."""
+
+    pending: list[_Pending] | None = None
+
 
 class Ledger:
     def __init__(
@@ -36,6 +56,7 @@ class Ledger:
         self._bus = bus
         self._redact = redact or (lambda value: value)
         self._lock = threading.RLock()
+        self._local = _Decisions()
 
     # -- reading ----------------------------------------------------------------
 
@@ -55,6 +76,9 @@ class Ledger:
         plus — once nothing more is expected — a derived ``MISSING`` verdict
         for every planned item that never reported."""
         verdicts: list[Verdict] = self._store.verdicts_for(dispatch.run_id, dispatch.dispatch_id)
+        return self._scored(dispatch, verdicts)
+
+    def _scored(self, dispatch: DispatchRecord, verdicts: list[Verdict]) -> list[Verdict]:
         if dispatch.state in lifecycle.TERMINAL_STATES:
             verdicts = verdicts + lifecycle.missing_verdicts(
                 self.planned_ids(dispatch.run_id), verdicts, dispatch.shard_items
@@ -78,7 +102,7 @@ class Ledger:
         """Record a new dispatch and make it the run's headline. With
         ``exclusive`` the store refuses (``RunActive``) when the run already
         has a dispatch in flight — atomically, across processes."""
-        with self._lock:
+        with self._decision() as pending:
             dispatch: DispatchRecord = self._store.add_dispatch(
                 run_id,
                 dispatch_id=dispatch_id or new_ulid(),
@@ -90,7 +114,7 @@ class Ledger:
             )
             if shards:
                 dispatch = self._store.update_dispatch(dispatch.dispatch_id, shards=list(shards))
-            self._publish(dispatch)
+            self._publish(pending, dispatch)
             return dispatch
 
     def declare(
@@ -104,7 +128,7 @@ class Ledger:
         groups: Mapping[str, str] | None = None,
     ) -> DispatchRecord:
         """The hand-off: shard set known, execution begins."""
-        with self._lock:
+        with self._decision() as pending:
             current = self._require(dispatch_id)
             # A plan may quote a configured option; what came from the
             # environment is blanked out before it is recorded (§8). Links are
@@ -122,7 +146,7 @@ class Ledger:
             extra: dict[str, Any] = {"shards": list(shards), "plan": plan}
             if groups:
                 extra["groups"] = dict(groups)
-            self._publish(dispatch, extra=extra)
+            self._publish(pending, dispatch, extra=extra)
             return dispatch
 
     def move(
@@ -130,48 +154,59 @@ class Ledger:
     ) -> DispatchRecord:
         """Move a dispatch to ``target`` (validated by the state machine).
         Terminal targets settle the outcome from what was delivered."""
-        with self._lock:
+        with self._decision() as pending:
+            return self._move(pending, self._require(dispatch_id), target, error=error, extra=extra)
+
+    def mark_stale(
+        self, dispatch_id: str, *, owner: str, error: str, extra: Mapping[str, Any] | None = None
+    ) -> DispatchRecord | None:
+        """Restart recovery's move: ``STALE`` — if the dispatch is, when the
+        decision is taken, still executing under ``owner``. Otherwise
+        (another process recovered it first, or it moved on) nothing is
+        written and the answer is ``None``."""
+        with self._decision() as pending:
             current = self._require(dispatch_id)
-            changes: dict[str, Any] = {"state": lifecycle.advance(current.state, target)}
-            if error:
-                changes["error"] = self._redact(error)
-            if target in lifecycle.TERMINAL_STATES:
-                changes["owner"] = None
-            dispatch: DispatchRecord = self._store.update_dispatch(dispatch_id, **changes)
-            if target in lifecycle.TERMINAL_STATES:
-                dispatch = self._store.update_dispatch(
-                    dispatch_id, summary=lifecycle.summarize(self.scored_verdicts(dispatch))
-                )
-            self._publish(dispatch, extra=extra)
-            return dispatch
+            if current.state not in _EXECUTING or current.owner != owner:
+                return None
+            return self._move(pending, current, "STALE", error=error, extra=extra)
 
     def discard(self, dispatch_id: str, reason: str, *, crashed: bool = False) -> None:
         """A dispatch that never handed anything off is not a dispatch: the
         record is removed, the run's headline falls back to what it was, and
         the reason stays in the event stream."""
-        with self._lock:
+        with self._decision() as pending:
             current = self._require(dispatch_id)
             self._store.delete_dispatch(dispatch_id)
             self._sync_headline(current.run_id)
-            self._bus.emit(
-                current.run_id,
-                kinds.DISPATCH_REFUSED,
-                dispatch_id=dispatch_id,
-                data={"reason": reason, "mode": current.mode, "crashed": crashed},
+            pending.append(
+                (
+                    current.run_id,
+                    kinds.DISPATCH_REFUSED,
+                    dispatch_id,
+                    {"reason": reason, "mode": current.mode, "crashed": crashed},
+                )
             )
 
     def recompute(self, dispatch_id: str, *, finalize: bool = False) -> DispatchRecord:
         """Re-evaluate a dispatch after a delivery (or an explicit finalize):
-        all declared shards in → ``COMPLETE`` with a computed completion."""
-        with self._lock:
+        all declared shards in → ``COMPLETE`` with a computed completion.
+
+        The shards delivered, the verdicts and the completion written are read
+        and written in one decision: a delivery another process makes for
+        another shard lands before it (and is counted) or after it (and
+        recomputes again) — never in between."""
+        with self._decision() as pending:
             current = self._require(dispatch_id)
             delivered = self._store.delivered_shards(current.run_id, dispatch_id)
             outstanding = lifecycle.outstanding_shards(current.shards, delivered)
             verdicts: list[Verdict] = self._store.verdicts_for(current.run_id, dispatch_id)
             settle = finalize or (bool(current.shards) and not outstanding)
             if not settle or current.state == "CANCELLED":
+                # Nothing to settle: the summary follows what was delivered —
+                # with the derived MISSING verdicts for a dispatch that is
+                # already over, as when it was settled.
                 return self._store.update_dispatch(  # type: ignore[no-any-return, unused-ignore]
-                    dispatch_id, summary=lifecycle.summarize(verdicts)
+                    dispatch_id, summary=lifecycle.summarize(self._scored(current, verdicts))
                 )
             scored = verdicts + lifecycle.missing_verdicts(
                 self.planned_ids(current.run_id), verdicts, current.shard_items
@@ -190,18 +225,67 @@ class Ledger:
                 extra: dict[str, Any] = {}
                 if finalize and outstanding:
                     extra = {"finalized": True, "outstanding_shards": outstanding}
-                self._publish(dispatch, extra=extra)
+                self._publish(pending, dispatch, extra=extra)
             else:
                 self._sync_headline(dispatch.run_id)
             return dispatch
 
-    def release(self, dispatch_id: str) -> None:
-        """Nothing in this process is working on the dispatch any more."""
-        with self._lock:
-            if self._store.get_dispatch(dispatch_id) is not None:
+    def release(self, dispatch_id: str, *, owner: str | None = None) -> None:
+        """Nothing in this process is working on the dispatch any more. With
+        ``owner``, only a dispatch that still names that owner is released."""
+        with self._decision():
+            current = self._store.get_dispatch(dispatch_id)
+            if current is None or current.owner is None:
+                return
+            if owner is None or current.owner == owner:
                 self._store.update_dispatch(dispatch_id, owner=None)
 
     # -- internals ------------------------------------------------------------------
+
+    @contextmanager
+    def _decision(self) -> Iterator[list[_Pending]]:
+        """One lifecycle decision: the store's atomic unit around reading the
+        facts, evaluating them and writing the result, then the events the
+        decision produced — after the commit, so that a reader woken by an
+        event finds the state it announces. A decision taken inside another
+        joins it, and its events wait for the outer one."""
+        outer = self._local.pending
+        if outer is not None:
+            yield outer
+            return
+        pending: list[_Pending] = []
+        with self._lock:
+            self._local.pending = pending
+            try:
+                with self._store.atomic():
+                    yield pending
+            finally:
+                self._local.pending = None
+            for run_id, kind, dispatch_id, data in pending:
+                self._bus.emit(run_id, kind, dispatch_id=dispatch_id, data=data)
+
+    def _move(
+        self,
+        pending: list[_Pending],
+        current: DispatchRecord,
+        target: str,
+        *,
+        error: str,
+        extra: Mapping[str, Any] | None,
+    ) -> DispatchRecord:
+        dispatch_id = current.dispatch_id
+        changes: dict[str, Any] = {"state": lifecycle.advance(current.state, target)}
+        if error:
+            changes["error"] = self._redact(error)
+        if target in lifecycle.TERMINAL_STATES:
+            changes["owner"] = None
+        dispatch: DispatchRecord = self._store.update_dispatch(dispatch_id, **changes)
+        if target in lifecycle.TERMINAL_STATES:
+            dispatch = self._store.update_dispatch(
+                dispatch_id, summary=lifecycle.summarize(self.scored_verdicts(dispatch))
+            )
+        self._publish(pending, dispatch, extra=extra)
+        return dispatch
 
     def _require(self, dispatch_id: str) -> DispatchRecord:
         dispatch: DispatchRecord | None = self._store.get_dispatch(dispatch_id)
@@ -218,9 +302,13 @@ class Ledger:
             )
         return run
 
-    def _publish(self, dispatch: DispatchRecord, extra: Mapping[str, Any] | None = None) -> None:
-        """Headline first, then the event — a reader woken by the event finds
-        the state it announces."""
+    def _publish(
+        self,
+        pending: list[_Pending],
+        dispatch: DispatchRecord,
+        extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Headline now, inside the decision; the event once it is committed."""
         run = self._sync_headline(dispatch.run_id)
         data: dict[str, Any] = {
             "state": dispatch.state,
@@ -238,9 +326,4 @@ class Ledger:
         if dispatch.links:
             data["links"] = dict(dispatch.links)
         data.update(extra or {})
-        self._bus.emit(
-            dispatch.run_id,
-            kinds.STATE_EVENTS[dispatch.state],
-            dispatch_id=dispatch.dispatch_id,
-            data=data,
-        )
+        pending.append((dispatch.run_id, kinds.STATE_EVENTS[dispatch.state], dispatch.dispatch_id, data))

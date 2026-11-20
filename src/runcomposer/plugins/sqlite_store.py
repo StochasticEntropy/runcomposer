@@ -8,8 +8,23 @@ server, a CLI invocation, an inbox watcher) on one database file.
 - one connection per thread, never shared;
 - every write is one short ``BEGIN IMMEDIATE`` transaction, so a
   check-then-write (``record_delivery``) cannot interleave with another;
+- ``atomic()`` widens that to a caller's read-evaluate-write: every store
+  call the thread makes inside it is one ``BEGIN IMMEDIATE`` transaction,
+  so the ledger's lifecycle decisions hold across processes;
 - the schema is versioned in ``PRAGMA user_version`` and migrated in place —
-  a database written by 0.1.x opens as it is.
+  a database written by 0.1.x opens as it is;
+- the SQLite library must be :data:`MIN_SQLITE_VERSION` or newer, with JSON
+  functions available; an older one is refused when the store opens.
+
+What the minimum is made of (the SQLite release that introduced each
+feature used here): the upsert ``INSERT … ON CONFLICT … DO UPDATE`` 3.24.0 —
+the newest feature, hence the minimum; the table-valued ``json_each`` (the
+JSON extension) 3.9.0, compiled in by default only from 3.38.0, so its
+presence is checked rather than assumed; ``instr`` 3.7.15;
+the write-ahead log 3.7.0; ``SAVEPOINT`` 3.6.8; deterministic user functions 3.8.3.
+Nothing newer is used — no ``RETURNING`` (3.35), ``STRICT`` tables (3.37),
+``->>`` (3.38), window functions (3.25), generated columns (3.31) or
+``unixepoch`` (3.38).
 
 ``path: ":memory:"`` is supported for tests and throwaway use: one private
 in-memory database for the lifetime of the store object, serialised through a
@@ -48,10 +63,31 @@ from runcomposer.sdk import (
     utc_now,
 )
 
-__all__ = ["SCHEMA_VERSION", "SqliteRunStore"]
+__all__ = ["MIN_SQLITE_VERSION", "SCHEMA_VERSION", "SqliteRunStore", "sqlite_shortfall"]
 
 #: Bumped with every schema change; see ``_migrate``.
 SCHEMA_VERSION = 3
+
+#: The oldest SQLite library the store runs on (the upsert; see the module doc).
+MIN_SQLITE_VERSION = (3, 24, 0)
+
+
+def sqlite_shortfall(version: Sequence[int], *, json: bool) -> str | None:
+    """What the SQLite library ``version`` (with JSON functions available or
+    not) lacks for this store, as a sentence — or ``None`` when it has it all."""
+    found = ".".join(str(part) for part in version)
+    required = ".".join(str(part) for part in MIN_SQLITE_VERSION)
+    if tuple(version) < MIN_SQLITE_VERSION:
+        return (
+            f"the sqlite store needs SQLite {required} or newer; this Python links "
+            f"SQLite {found}"
+        )
+    if not json:
+        return (
+            f"the sqlite store needs SQLite's JSON functions (json_each); the "
+            f"SQLite {found} this Python links was built without them"
+        )
+    return None
 
 _BUSY_TIMEOUT_MS = 30_000
 
@@ -176,6 +212,15 @@ def _fold(value: Any) -> str:
     return value.casefold() if isinstance(value, str) else ""
 
 
+def _has_json(conn: sqlite3.Connection) -> bool:
+    """Is the JSON extension compiled into this SQLite (default from 3.38)?"""
+    try:
+        conn.execute("SELECT COUNT(*) FROM json_each('{}')").fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return True
+
+
 class _NoLock:
     def __enter__(self) -> None:
         return None
@@ -189,6 +234,11 @@ _NO_LOCK = _NoLock()
 
 class SqliteRunStore(StoreBase):
     store_id = "sqlite"
+
+    #: The version of the SQLite library the store runs on, as checked when a
+    #: connection opens — a class attribute, so that a subclass can stand in
+    #: for an older library.
+    sqlite_version: tuple[int, ...] = sqlite3.sqlite_version_info
 
     @staticmethod
     def resolve_config_paths(options: dict[str, Any], resolve: Any) -> dict[str, Any]:
@@ -237,6 +287,10 @@ class SqliteRunStore(StoreBase):
             )
         except sqlite3.Error as exc:
             raise StoreError(f"cannot open the sqlite store at {self._path!r}: {exc}") from None
+        shortfall = sqlite_shortfall(self.sqlite_version, json=_has_json(conn))
+        if shortfall is not None:
+            conn.close()
+            raise StoreError(f"cannot open the sqlite store at {self._path!r}: {shortfall}")
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
@@ -264,12 +318,45 @@ class SqliteRunStore(StoreBase):
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
         """One short write transaction. ``BEGIN IMMEDIATE`` takes the write
-        lock up front, so what is read inside is still true when written."""
+        lock up front, so what is read inside is still true when written.
+        Inside :meth:`atomic` it is a savepoint of the enclosing transaction
+        instead: all or nothing on its own, committed with the whole."""
         with self._lock if self._memory else _NO_LOCK:
             conn = self._connection()
+            if conn.in_transaction:
+                conn.execute("SAVEPOINT rc_write")
+                try:
+                    yield conn
+                except BaseException:
+                    conn.execute("ROLLBACK TO rc_write")
+                    conn.execute("RELEASE rc_write")
+                    raise
+                conn.execute("RELEASE rc_write")
+                return
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield conn
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Every store call this thread makes inside is one ``BEGIN
+        IMMEDIATE`` transaction: the write lock is taken on entry, so another
+        writer — a thread of this process or another process on the same
+        file — waits until the block is over, what is read inside is still
+        true when written, and an exception rolls the whole block back.
+        Nested blocks join the outermost one."""
+        with self._lock if self._memory else _NO_LOCK:
+            conn = self._connection()
+            if conn.in_transaction:
+                yield
+                return
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
@@ -380,8 +467,14 @@ class SqliteRunStore(StoreBase):
             conditions.append("instr(rc_fold(title), ?) > 0")
             params.append(q.casefold())
         for key, value in (labels or {}).items():
-            conditions.append("json_extract(labels, ?) = ?")
-            params.extend(['$."' + key.replace("\\", "\\\\").replace('"', '\\"') + '"', value])
+            # Matched as data, not through a JSON path: a key is compared
+            # literally whatever characters it holds, on every SQLite the store
+            # runs on (an escaped quote inside a path is not read alike by all).
+            conditions.append(
+                "EXISTS (SELECT 1 FROM json_each(runs.labels) AS label"
+                " WHERE label.key = ? AND label.value = ?)"
+            )
+            params.extend([key, value])
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         with self._read() as conn:
             total = conn.execute(f"SELECT COUNT(*) FROM runs{where}", params).fetchone()[0]

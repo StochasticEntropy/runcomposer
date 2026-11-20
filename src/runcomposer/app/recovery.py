@@ -40,22 +40,25 @@ def recover(service: Service) -> list[DispatchRecord]:
     for dispatch in service.store.owned_dispatches():
         if dispatch.owner and owner_alive(dispatch.owner, mine):
             continue
+        owner = dispatch.owner or ""
         if dispatch.state in ("DISPATCHED", "RUNNING"):
-            log.warning(
-                "dispatch %s of run %s was %s under owner %s, which is gone — marking STALE",
-                dispatch.dispatch_id, dispatch.run_id, dispatch.state, dispatch.owner,
+            # Decided again inside the ledger's unit: another process
+            # recovering the same store at the same moment marks it once.
+            marked = service.ledger.mark_stale(
+                dispatch.dispatch_id,
+                owner=owner,
+                error=(
+                    f"interrupted while {dispatch.state}: the process that was executing "
+                    f"this dispatch ({dispatch.owner}) is gone"
+                ),
+                extra={"was": dispatch.state, "owner": dispatch.owner},
             )
-            stale.append(
-                service.ledger.move(
-                    dispatch.dispatch_id,
-                    "STALE",
-                    error=(
-                        f"interrupted while {dispatch.state}: the process that was executing "
-                        f"this dispatch ({dispatch.owner}) is gone"
-                    ),
-                    extra={"was": dispatch.state, "owner": dispatch.owner},
+            if marked is not None:
+                log.warning(
+                    "dispatch %s of run %s was %s under owner %s, which is gone — marked STALE",
+                    dispatch.dispatch_id, dispatch.run_id, dispatch.state, dispatch.owner,
                 )
-            )
+                stale.append(marked)
         else:
-            service.ledger.release(dispatch.dispatch_id)
+            service.ledger.release(dispatch.dispatch_id, owner=owner)
     return stale
