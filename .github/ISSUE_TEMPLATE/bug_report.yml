@@ -59,7 +59,7 @@ body:
         - HTTP API / ingestion
         - Run spec / validate / schema
         - Test source (manifest / robotframework)
-        - Runner (robot-pool / ci-trigger / demo)
+        - Runner (robot-pool / jenkins / command / demo)
         - Result parser (robot-output-xml / junit-xml)
         - Store, history, or gc
         - runcomposer-exec (the vendored single file)

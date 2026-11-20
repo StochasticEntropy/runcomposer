@@ -18,14 +18,15 @@ adopters stop in the first half.
 | Your situation | What you build |
 |---|---|
 | Robot Framework tests, executed on the runcomposer host | **Nothing.** Config: `robotframework` source + `robot-pool` runner. |
-| Any framework, tests executed on the runcomposer host | A `--command` wrapper script. Config: `manifest` source + the export loop. |
+| Any framework, tests executed on the runcomposer host | A wrapper script, if that. Config: `manifest` source + the `command` runner (your command line per shard, results read by a configured parser). |
 | Tests executed on machines runcomposer cannot reach | **A shell script.** Copy `runcomposer_exec.py` there; return the bundle. See [§6](#6-when-your-tests-run-somewhere-runcomposer-cannot-reach). |
-| Tests executed by an existing CI job | Config: `ci-trigger` + a job stage that runs `runcomposer-exec`. |
+| Tests executed by an existing Jenkins job | Config: the `jenkins` runner (your job's own parameter names, mapped in config) + a job stage that runs `runcomposer-exec`. |
 | The taxonomy tree should show *your* structure, not the demo's | **A YAML file, no code.** `core.taxonomy_file`; format and a worked example in [docs/taxonomy.md](docs/taxonomy.md). |
 | Your test ids don't match the names in your result files | A `TestSource` — or, often, just `aliases` in a manifest. See [§3](#3-the-rule-that-matters-most-the-id-space). |
 | A result format nobody has written a parser for | A `ResultParser`. ~60 lines. |
+| Somebody should be told when a run finishes | Config: an observer — `webhook`, `jsonl` or `command`. |
 | Something genuinely exotic in how runs are dispatched | A `Runner`. |
-| Postgres, or an existing results database | A `RunStore`. The largest of the four, and rarely needed. |
+| Postgres, or an existing results database | A `RunStore`. The largest of the ports, and rarely needed. |
 
 If you find yourself writing a lot of code, that is a signal something is
 wrong with the fit — please open an issue describing what you had to do.
@@ -37,9 +38,10 @@ wrong with the fit — please open an issue describing what you had to do.
 The point of adopting rather than rebuilding is that these already exist and
 are not your problem: the tag filter language and its compiler, the selection
 model, the run spec document and its schema, run lifecycle and completion
-accounting, dispatch and delivery records, idempotent ingestion, the
-quarantine inbox, retention and `gc`, the HTTP API, and the web UI in English
-and German.
+accounting, dispatching off the request path with cancellation and restart
+recovery, dispatch and delivery records, idempotent ingestion, the quarantine
+inbox, the event stream, retention and `gc`, the HTTP API, and the web UI in
+English and German.
 
 You are connecting *edges*: where tests come from, where they run, and what
 their results look like.
@@ -58,7 +60,7 @@ core:
   taxonomy_file: taxonomy.yaml  # the curated tree in the UI's tag picker
   artifact_dir: artifacts/
   ingestion:
-    tokens: required          # the per-run ingest token; "disabled" on closed networks
+    tokens: required          # HTTP pushes need the ingest token of their dispatch; "disabled" on closed networks
     inbox: results_inbox/     # watched directory for returned bundles
     quarantine_dir: quarantine/
 store:
@@ -80,10 +82,30 @@ runners:
     history_selector: { labels: { suite: nightly } }
 ```
 
-The core validates only the `core` section. Everything under `sources`,
-`runners`, and `store` is owned and validated by the plugin named by the key —
-and an unknown plugin id **fails startup loudly** rather than surfacing later
-as a broken request.
+The sections are `core`, `store`, `sources`, `runners`, `parsers`,
+`observers`, `ui` and `connectors`; anything else is refused. The rules for
+the plugin sections are the same everywhere:
+
+- **The key of an entry is its id** — for a runner, the id you dispatch to.
+  The plugin behind it is the entry point of that name, unless the entry says
+  otherwise with `plugin: <entry-point name>` or `module: "pkg.mod:Class"`. So
+  one plugin can be configured several times under different keys
+  (`staging-pool: { plugin: robot-pool, … }`).
+- **Every other key is an option** handed to the plugin's constructor, and is
+  **checked at startup**: an unknown or missing option fails `serve` (and
+  `runcomposer doctor`) with a message naming what the plugin accepts —
+  it does not surface later as a broken request.
+- **`sources:` may hold several entries**; they form one catalog.
+  `store:` holds exactly one. **Only runners listed under `runners:` can be
+  dispatched to.**
+- **`parsers:`** configures result parsers by format id, **`observers:`**
+  names who is told about run events (`webhook`, `jsonl`, `command` ship).
+- **Secrets stay out of the file**: a string option written `${env:NAME}` (or
+  `${env:NAME:-default}`) is taken from the environment when the plugin is
+  built; a missing variable fails startup naming it.
+- **`connectors:`** is yours: `connectors.<name>` is a free-form mapping the
+  core never interprets, for your connector package's own settings
+  (`config.connector_settings("<name>")`).
 
 **Every relative path above is relative to this file's directory** — the
 `core:` keys and the plugin sections alike. So a config directory is a
@@ -117,8 +139,8 @@ drift and `--tree` prints the resolved tree.
 **One rule before you write any pattern**, in a taxonomy leaf or a filter: a
 bare literal is matched case-**insensitively**, but `regex:` is compiled
 without flags and `prefix:X` is exactly `regex:^X` — so both of those are
-case-**sensitive**. Rules carried over from a case-insensitive tool match
-nothing, silently, until you write `regex:(?i)…`.
+case-**sensitive**. A pattern written in the wrong case is valid and selects
+nothing; `regex:(?i)…` makes one case-insensitive.
 
 ---
 
@@ -165,16 +187,25 @@ def test_id_space_invariant():
 ```
 
 Unresolvable names are not silently dropped into the void — ingestion warns
-and skips them — but a run where half the verdicts vanished is a bad day.
+and skips them, the planned items that consequently never reported count as
+`MISSING`, and the run is `INCOMPLETE` rather than green — but a run where
+half the verdicts vanished is still a bad day.
 
 ---
 
-## 4. The four ports
+## 4. The ports
 
-All four are `typing.Protocol`s in
-[`runcomposer.core.ports`](src/runcomposer/core/ports.py). You do not subclass
-anything; you write a class with the right methods. Read that file — it is
-short, and it is the contract.
+(This guide is being reworked for 0.2; DESIGN.md §6 is authoritative.)
+
+There are five — `TestSource`, `Runner`, `ResultParser`, `RunStore` and
+`RunObserver` — all `typing.Protocol`s: you do not have to subclass anything,
+you write a class with the right methods. **Import everything from
+`runcomposer.sdk`** and from nowhere else in the package; that module is the
+connector surface, and the reference plugins themselves import nothing else.
+The protocols are defined in
+[`runcomposer.core.ports`](src/runcomposer/core/ports.py) — read that file, it
+is the contract. 0.2 is a breaking revision of these ports: a plugin written
+against 0.1 has to be ported.
 
 ### `TestSource` — where tests come from
 
@@ -189,67 +220,97 @@ def resolve(self, native_name) -> str | None
 and compared before execution. Hash the things that would change the meaning
 of a run — the ids and their tags — not file mtimes.
 
+Optional, and worth having: `fingerprint() -> str`, a *cheap* token (file
+sizes and modification times, say) that changes when the corpus on disk may
+have changed. With it the catalog is reloaded only when needed; without it,
+before every dispatch and on request (`POST /api/v1/catalog/reload`).
+
 Ships: `manifest` (JSON/YAML, only `id` + `tags` required), `robotframework`
 (walks `.robot` files, ids are longnames).
 
 ### `Runner` — how a spec gets executed
 
 ```python
-def describe(self) -> RunnerInfo                    # id + capability flags
-def dispatch(self, spec: Mapping) -> DispatchHandle # takes the DOCUMENT only
+def describe(self) -> RunnerInfo                  # id, title, capabilities, per-run parameters
+def dispatch(self, ctx: DispatchContext) -> None  # prepare → declare → deliver
+# optional (defaults in RunnerBase):
+def cancel(self, ctx: DispatchContext) -> None
+def health(self) -> Health
 ```
 
-`dispatch` receives the run spec, nothing else. Those two methods are the
-whole required contract; everything below is optional, looked up on your
-runner object by name and skipped when it is not there.
+`dispatch` receives a `DispatchContext` — everything runcomposer gives a
+runner for one dispatch, and everything the runner may do. There are no hooks
+looked up by attribute and nothing to bind. A complete runner:
 
-- **`bind(*, store, source, artifact_root)`** — called before `dispatch` if
-  you want the store and the live catalog: live status, duration history, the
-  drift check of [§7](#7-the-executor-contract). The source you are handed is
-  a *fresh* one, so a drift check compares against the corpus as it is now,
-  not as it was at compose time.
-- **`deliveries`** — a list the service drains *after* `dispatch` returns.
-  Each entry is a mapping `{"shard": "1", "verdicts": [Verdict, …]}` — `shard`
-  defaults to `"1"`, `verdicts` holds `runcomposer.core.model.Verdict` objects
-  — and each becomes one delivery under the dispatch, in the
-  `runcomposer-verdicts` format. It is the short path for a runner that
-  already holds its verdicts in memory; a runner that records deliveries into
-  the store itself does not need it. Your runner is built fresh for every
-  dispatch, so the list starts empty each time.
-- **`last_plan`** — a string, read after `dispatch`. `runcomposer dispatch`
-  prints it verbatim, so put in it whatever a human should see about the
-  hand-off: `robot-pool` writes its chunk plan there (including the
-  round-robin cold-start note), `ci-trigger` the job URL it triggered.
-- **`bind_dispatch(reservation)`** — called before `dispatch` with a
-  `DispatchReservation`: use its `dispatch_id` as your dispatch id, and call
-  its `record(...)` at the moment you hand the work to your executor. Worth
-  implementing when `dispatch` blocks while the work runs — without it the
-  dispatch is recorded from the handle you return, so the hand-off is
-  invisible for exactly as long as the run lasts. The contract, as always, is
-  in [`core/ports.py`](src/runcomposer/core/ports.py).
+```python
+from runcomposer.sdk import DispatchContext, Parameter, RunnerBase, RunnerInfo, Verdict
 
-Return a `DispatchHandle` with the number of shards you will deliver. Setting
-`spec_sha256` to the hash of the exact bytes you handed out enables marker
-verification when the results come back. Refuse a dispatch by raising
-`DispatchRefused` with a message that says what to do about it.
 
-**`dispatch` is called synchronously, and everything waits for it.** The
-service calls it inline, so `POST /api/v1/runs` with `dispatch: {runner: …}`
-returns only when your `dispatch` does — and `robot-pool` runs the entire
-suite in there, which means the HTTP request stays open for the whole
-execution: two seconds for a two-second suite, forty minutes for a forty-minute
-nightly. Plan for that. If your executor is long-running, return the handle as
-soon as the work has *started* and let the results come back through
-ingestion, the way `ci-trigger` does with `completion: callback` — that is
-also what makes a run observable in `AWAITING_RESULTS` at all, since a runner
-that delivers inline is already `COMPLETE` by the time it returns.
-Live progress during a blocking dispatch is still possible, but only for other
-readers: take `bind`, stream verdicts into the store, and a concurrent
-`GET /runs/{id}` shows `RUNNING` while the dispatching call is still open.
+class MyRunner(RunnerBase):
+    def __init__(self, endpoint: str, token: str | None = None):
+        self.endpoint, self.token = endpoint, token      # options from the config entry
 
-Ships: `robot-pool` (in-process pool, partitions, duration-balanced chunking,
-live verdicts), `ci-trigger` (parameterized CI job, webhook or polling
-completion), `demo`.
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(
+            id="my-runner",
+            title="My runner",
+            parameters=(Parameter("stage", kind="choice", choices=("test", "staging"), default="test"),),
+        )
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        if ctx.source.snapshot() != ctx.spec["source"]["snapshot"]:
+            ctx.refuse("the corpus changed since this run was composed — compose it again")
+        ctx.declare(["1"], plan=f"my-runner: {len(ctx.item_ids)} item(s) on {ctx.options['stage']}")
+        verdicts = [Verdict(item_id, "PASS", duration_ms=120) for item_id in ctx.item_ids]
+        ctx.deliver("1", verdicts=verdicts)
+```
+
+The shape is always the same:
+
+- **Prepare, and refuse if you must** — `ctx.refuse(reason)` (it raises
+  `DispatchRefused`). A refusal before the hand-off leaves no dispatch behind;
+  say in the message what to do about it.
+- **`ctx.declare(shards, plan=…, links=…)` — the hand-off, exactly once.** It
+  names the shards you will deliver (or maps each shard to the item ids it
+  will report) and moves the run to `RUNNING`. Completion is computed against
+  that shard set and against the planned items: an item nobody reports is
+  `MISSING`, and its run is not `PASS`.
+- **`ctx.deliver(shard, verdicts=…)`** for verdicts you hold, or
+  **`ctx.deliver(shard, bundle=path, format=…)`** for native result files —
+  those are parsed with the configured `ResultParser` and correlated through
+  the catalog for you. Whatever you raise after the hand-off is a `FAILED`
+  dispatch whose delivered shards are kept.
+- **Return with shards outstanding** when the results come home by ingestion
+  (a CI job that posts back): the run then waits in `AWAITING_RESULTS`.
+  `ctx.export_spec()` gives you the exact document bytes to hand to that
+  executor and `ctx.ingest_token()` the token it needs to push.
+
+Also on the context: `ctx.item_ids`, `ctx.spec` (read-only), `ctx.options`
+(your configured options overlaid by the validated per-run parameters),
+`ctx.workdir` (a directory for this dispatch, served as artifacts),
+`ctx.source` (the live catalog), `ctx.history.durations(...)`,
+`ctx.live(...)` and the picklable `ctx.live_channel()` for per-item status
+from worker processes, `ctx.add_artifact(...)`, `ctx.log(...)`,
+`ctx.cancelled` / `ctx.raise_if_cancelled()`.
+
+**`dispatch` may block for as long as the execution takes.** runcomposer calls
+it off the request path: `POST /api/v1/runs` with a dispatch answers at once,
+and the run is followed through its state and event stream. (The CLI's `run`
+and `dispatch` execute the same code in the foreground.) One runner instance
+is built per configured id and may be asked to dispatch several runs at once,
+so keep everything that belongs to one dispatch on its context, not on `self`.
+
+**A run spec cannot reconfigure your runner.** Only what you declare in
+`RunnerInfo.parameters` can be set per run; the accepted values are written
+into `runner.<id>` of the document, and any other key found there is ignored
+with a warning.
+
+Ships: `robot-pool` (Robot Framework in worker processes: partitions,
+duration-balanced chunking, exact id selection, readable `log.html`, reruns of
+failures, live verdicts, cancellation), `jenkins` (a parameterized Jenkins job
+with configurable parameter names and artifact paths; callback or polling
+completion), `command` (a configured command line per shard — the connector
+for any framework that has one), and `demo` (simulated).
 
 ### `ResultParser` — what results look like
 
@@ -262,9 +323,17 @@ Emit the native name **exactly as the artifact spells it**. Do not try to
 reconstruct catalog ids here — that is the source's job (see §3), and doing it
 here is the one design mistake that reliably makes a corpus unmaintainable.
 
-`status` is one of `PASS`, `FAIL`, `SKIP`, `ERROR`. If your format is XML,
-parse defensively: refuse documents carrying DOCTYPE or ENTITY declarations
-(both shipped XML parsers do this, and there are tests that prove it).
+`status` is one of `PASS`, `FAIL`, `SKIP`, `ERROR`. Raise `ParseError` (from
+`runcomposer.sdk`) for input you cannot read, and nothing else — that is what
+lets every transport quarantine a bad bundle the same way. If your format is
+XML, read it through `parse_xml(path)` (or call `forbid_dtd(path)` before your
+own reader): a document carrying a DTD or an entity declaration is then
+refused by the parser itself, wherever the declaration sits and whatever the
+encoding. Both shipped XML parsers do this, and there are tests that prove it.
+
+A parser that takes options is configured under `parsers:`, keyed by its
+format id (`parsers: { my-format: { module: "mypkg.parsers:MyParser", … } }`).
+A spec names a format id only — never an import path.
 
 Ships: `runcomposer-verdicts` (a trivial JSON format any executor can emit),
 `robot-output-xml`, `junit-xml`.
@@ -272,22 +341,23 @@ Ships: `runcomposer-verdicts` (a trivial JSON format any executor can emit),
 ### `RunStore` — where runs live
 
 The widest protocol, and the one you almost certainly do not need. `sqlite`
-ships and is zero-setup. Implement your own only if you must live in an
-existing database. The persisted schema is normative — runs, specs,
-dispatches, deliveries, verdicts, artifact_refs — and deliberately contains no
-runner-lifecycle fields: pool state and runner health are ephemeral runner
-memory, never storage.
+ships and is zero-setup (safe for several threads and processes on one file,
+with a versioned schema that migrates a 0.1 database in place). Implement your
+own only if you must live in an existing database.
 
-The idempotency contract lives here and is not optional: a byte-identical
-bundle is a no-op, a new bundle for the same `(run, dispatch, shard)` replaces
-that shard's verdicts, and there is no monotonic merge — a correction must be
-able to turn a `FAIL` back into a `PASS`.
+What it holds: runs and their spec documents, dispatches (each with its own
+lifecycle state, declared shards, plan, links, the exact document bytes handed
+out, and the hash of its ingest token), deliveries, delivered verdicts, live
+status (kept apart from delivered verdicts), artifact references, and the
+per-run event stream. **The store records; it decides nothing** — lifecycle
+state is computed by the core and written through `update_dispatch` and
+`set_run_headline`. Every method must be safe to call from several threads.
 
-`add_dispatch` is a *declaration*, not an append: called again with a
-`dispatch_id` you already hold, it updates that same row and keeps its
-original `created_at`. A dispatch is recorded when the hand-off happens — when
-the shard count may still be provisional — and refined from the handle the
-runner returns.
+The idempotency contract lives here and is not optional: `record_delivery` is
+keyed on `(run, dispatch, shard)` and must be atomic — the same content hash
+again is a no-op, different content for a shard that already delivered
+replaces that shard's verdicts, and there is no monotonic merge: a correction
+must be able to turn a `FAIL` back into a `PASS`.
 
 **Read paths are as much of the contract as write paths.** Three members exist
 because the write half alone leaves a question nobody can answer:
@@ -304,23 +374,32 @@ def latest_completed_run(self, *, completed_before=None, labels=None) -> RunReco
   indistinguishable rows per item. `attempt` likewise round-trips.
 - `artifact_refs` reads back what `add_artifact_ref` wrote. Without it a
   failed shard's log file is recorded and unreachable.
-- `latest_completed_run` takes a **label scope**. Unscoped, "latest" is the
-  latest completed run of anything in your store — on a shared instance that
-  is somebody else's selection, and a `failed@latest` rerun then executes the
-  wrong set while looking entirely healthy.
+- `latest_completed_run` takes a **label scope**. Unscoped, "latest" ranges
+  over every completed run in your store, so where several streams of runs
+  share one instance a `failed@latest` rerun can follow the wrong one — and
+  still be a valid run.
 
-**This port grows by addition only.** New members are added; existing
-signatures gain keyword-only parameters with defaults, never a changed shape.
-If you implemented `RunStore` before 0.2.0, adding `artifact_refs`, the
-`shard=` keyword, the `labels=` keyword, and the `shard` field on returned
-verdicts is the whole upgrade — nothing you already had needs rewriting.
+**0.2 is a breaking revision of this port.** A store written against 0.1 has
+to be ported: `add_dispatch` no longer re-declares (dispatches are changed
+with `update_dispatch`), `set_run_state` is gone, `list_runs` pages and
+returns a total, and the event stream, live verdicts, dispatch spec bytes,
+ingest-token hashes, `delete_run`, `owned_dispatches` and `close` are new
+required members. The full list, with what each member must guarantee, is the
+`RunStore` protocol in [`core/ports.py`](src/runcomposer/core/ports.py).
 
-Until you do, a 0.1.0-era store keeps running, and what it cannot do is
-visible rather than faked: no `artifact_refs` means an empty `artifacts` list
-in the run detail (not a 500); verdicts without a `shard` all group under one
-unnamed bucket; an *unscoped* `failed@latest` still resolves, because the core
-passes `labels=` only when there is a scope — while a *scoped* one fails
-loudly, since a store that cannot honour the scope must not appear to.
+### `RunObserver` — who is told
+
+```python
+def notify(self, event: RunEvent) -> None
+```
+
+Called for every lifecycle event of every run (composed, dispatched, running,
+completed, failed, cancelled, stale, a delivery recorded, a dispatch refused),
+on a thread of its own. An observer that raises is recorded as a warning on
+the run and affects nothing else. Configure which kinds an observer hears with
+`events:` on its entry. Most adopters need no code here: `webhook` (JSON POST,
+optionally HMAC-signed), `jsonl` (append to a file) and `command` (run a
+command with the event in its environment) ship.
 
 ---
 
@@ -339,7 +418,8 @@ my-runner = "mypkg.runners:MyRunner"
 ```
 
 Groups: `runcomposer.sources`, `runcomposer.runners`, `runcomposer.parsers`,
-`runcomposer.stores`.
+`runcomposer.stores`, `runcomposer.observers`. `runcomposer doctor` lists what
+is installed, with the distribution and version each plugin comes from.
 
 **Or an import path in the config**, which needs no packaging at all — the
 hack-it-in-an-afternoon path:
@@ -348,35 +428,49 @@ hack-it-in-an-afternoon path:
 sources:
   my-source:
     module: "mypkg.sources:MySource"
-    root: /some/where          # every other key is passed to your __init__
+    root: some/where           # every other key is an option of your __init__
+runners:
+  my-runner:
+    module: "mypkg.runners:MyRunner"
+    endpoint: https://executor.shop.example
+    token: ${env:MY_RUNNER_TOKEN}     # taken from the environment at startup
 ```
+
+Options are checked against your constructor's parameters at startup — a
+misspelled key is refused, naming the ones you accept. (A constructor that
+takes `**kwargs` opts out of that check; a class attribute `OPTIONS = (…)`
+states the accepted names explicitly.) Construction should have no side
+effects: every configured plugin is built once when the server starts.
 
 ### Paths in your plugin's options
 
-Your options reach your `__init__` exactly as written, and a relative path
-among them means "relative to the process's working directory" — which makes
-your plugin behave differently depending on where the operator stood when they
+Your options reach your `__init__` as written, and a relative path among them
+would mean "relative to the process's working directory" — which makes your
+plugin behave differently depending on where the operator stood when they
 typed the command. To get the same rule the rest of the config follows
 ("relative to the config file"), say which of your options are paths:
 
 ```python
 class MySource:
+    PATH_OPTIONS = ("root",)          # a string, or a list of strings
+```
+
+The core resolves exactly those before constructing you: absolute paths, empty
+strings and non-strings are left untouched, anything else is joined onto the
+config file's directory. It deliberately does not guess — plenty of plugin
+options look path-shaped and are not (a listener spec, a shell hook, a URL).
+When the rule has exceptions, decide yourself instead:
+
+```python
+class MyStore:
     @staticmethod
     def resolve_config_paths(options: dict, resolve) -> dict:
-        if "root" in options:
-            options["root"] = resolve(options["root"])
+        if "path" in options and options["path"] != ":memory:":
+            options["path"] = resolve(options["path"])
         return options
 ```
 
-`resolve` returns absolute paths, empty strings, and non-strings untouched,
-and joins anything else onto the config file's directory. You decide which
-keys go through it — the core deliberately does not guess, because plenty of
-plugin options look path-shaped and are not (a listener spec, a shell hook, a
-URL, sqlite's `:memory:`).
-
-**This is opt-in, and nothing breaks without it.** A plugin with no
-`resolve_config_paths` — which is every plugin written against 0.1.0 — is
-constructed with its options verbatim, exactly as before.
+A plugin that declares neither is constructed with its options verbatim.
 
 ---
 
@@ -403,15 +497,20 @@ runcomposer ingest results
 
 `runcomposer_exec.py` is published as its own release asset precisely so you
 can vendor it. It expands `{ids_file}` (one item id per line), `{run_id}` and
-`{out_dir}` into your command, and writes `runcomposer_run.json` beside the
-output — the marker carrying the run id and the spec hash that lets ingestion
-correlate the bundle and detect tampering.
+`{out_dir}` into your command — those three placeholders and nothing else, so
+the rest of your command line is passed through untouched — and, when the
+command succeeded (`--ok-exit-codes` says which exit codes count), writes
+`runcomposer_run.json` beside the output: the marker carrying the run id and
+the spec hash that lets ingestion correlate the bundle and detect tampering,
+and whose presence tells a file-drop inbox that the bundle is complete.
 
 **The transport is your business.** Commit the bundle to a results branch,
 `rsync` it, drop it on a share, attach it to a build artifact. Point
 `core.ingestion.inbox` at wherever bundles land and the server picks them up
-on its own; or push them to `POST /api/v1/runs/{id}/results` with the run's
-ingest token; or run `runcomposer ingest` from cron on your side.
+on its own; or push them to `POST /api/v1/runs/{id}/results` with the ingest
+token that the export printed (it is shown once, belongs to that export
+dispatch, and is never part of the spec document); or run `runcomposer ingest`
+from cron on your side.
 
 A worked, runnable version of this whole loop ships in
 [`examples/remote-agent/`](examples/remote-agent). Start from there.

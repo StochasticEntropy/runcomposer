@@ -72,11 +72,22 @@ spec file it read and writes both facts into the bundle:
 
 Ingestion matches on `run_id` **and** verifies `spec_sha256` against the
 dispatch. A bundle that executed a different spec than the one this run
-exported is refused (`sha-mismatch`) and quarantined rather than folded into
-a watched run — on a shared return directory, "this bundle is somebody else's
-run" is routine, not exotic. Re-delivering byte-identical bytes is a no-op; a
-*new* bundle for the same `(run, dispatch, shard)` replaces that shard's
-verdicts, so a corrected re-run can flip FAIL→PASS (§5).
+exported is refused (`sha-mismatch`) — and, when it arrived through the
+file-drop inbox, quarantined — rather than folded into a watched run: on a
+shared return directory, "this bundle is somebody else's run" is routine, not
+exotic. Re-delivering the same bundle is a no-op; a *new* bundle for the same
+`(run, dispatch, shard)` replaces that shard's verdicts, so a corrected re-run
+can flip FAIL→PASS (§5).
+
+The marker is also the bundle's **completion signal**: `runcomposer-exec`
+writes it last, and only when the execution succeeded. The inbox watcher takes
+a bundle in the moment it sees the marker, so a bundle still being copied — or
+one whose execution was refused — is never mistaken for a result.
+
+No ingest token is involved in this loop: `runcomposer ingest` and the file
+drop are local paths on the composing side. `spec --export` prints a token
+only when `core.ingestion.tokens` is `required`, for executors that push over
+HTTP instead; this kit's config disables it.
 
 ## Drift
 
@@ -86,16 +97,19 @@ a copy of it on every executing machine is exactly the coupling this pattern
 avoids. It checks the property that actually governs *this* run instead:
 every requested item id must exist in the live suite.
 
-- **Default: refuse.** `robot_command.py` exits non-zero, writes `drift.json`
-  naming the missing ids, and `sync.sh` stops there. Nothing travels back and
-  the run stays `AWAITING_RESULTS` — visibly unfinished, which is the point.
-- **`RC_ALLOW_DRIFT=1`:** the intersection is executed, `drift.json` rides
-  home in the bundle, and the run completes with fewer verdicts than
-  `materialized.count`. §3.3's *"report the difference as SKIP verdicts with
-  reason drift"* rendering is what the in-process `robot-pool` runner does,
-  because it writes to the store directly; an `output.xml` cannot express a
-  verdict for a test that does not exist, so a returning agent names the
-  difference in the bundle instead of inventing it.
+- **Default: refuse.** `robot_command.py` exits non-zero and writes
+  `drift.json` naming the missing ids; `runcomposer-exec` therefore writes
+  **no marker**, and `sync.sh` stops there. Nothing travels back and the run
+  stays `AWAITING_RESULTS` — visibly unfinished, which is the point.
+- **`RC_ALLOW_DRIFT=1`:** the intersection is executed and `drift.json` rides
+  home in the bundle. The run completes with fewer verdicts than
+  `materialized.count`, and runcomposer says so itself: every planned item
+  that did not report is `MISSING`, so such a run is `INCOMPLETE` at best —
+  never `PASS`. §3.3's *"report the difference as SKIP verdicts with reason
+  drift"* rendering is what the in-process `robot-pool` runner does, because
+  it delivers verdicts directly; an `output.xml` cannot express a verdict for
+  a test that does not exist, so a returning agent names the difference in
+  the bundle instead of inventing it.
 
 One id-space trap worth knowing before it bites: a Robot longname begins at
 the **suite root's directory name**, so a checkout that presents a different

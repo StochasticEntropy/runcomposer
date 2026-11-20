@@ -1,6 +1,6 @@
 # Contributing to runcomposer
 
-Thanks for looking. Some honest framing first: this is a young project — 0.1.0,
+Thanks for looking. Some honest framing first: this is a young project — 0.2.0,
 one maintainer, no company behind it. Issues and pull requests are genuinely
 welcome, but replies come in evenings and weekends, and a large PR that arrives
 unannounced may sit for a while or be declined on scope grounds. **Open an issue
@@ -13,11 +13,15 @@ git clone https://github.com/StochasticEntropy/runcomposer
 cd runcomposer
 
 pip install -e ".[dev]"          # Python 3.10 – 3.13
-pytest                           # ~290 tests, should be green in under a minute
+pytest                           # ~1200 tests, green in about a minute
+ruff check src tests             # lint
+mypy                             # type check (strict, configured in pyproject.toml)
 
 pip install -e ".[dev,robot]"    # adds Robot Framework: the robot plugin tests
                                  # skip cleanly without it, so run both
 ```
+
+All three — tests, `ruff`, `mypy` — are expected to be clean on every change.
 
 To *use* runcomposer rather than work on it, `pip install runcomposer` is
 enough — the clone above is for development.
@@ -55,7 +59,15 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
 4. **Every capability claim ships with a runnable example or a test.** Not an
    assertion in a README. If the docs say it works, something in `tests/` or
    `examples/` proves it.
-5. **A `[planned]` clause in DESIGN.md has no implementation.** If you implement
+5. **Plugins import only `runcomposer.sdk`.** The reference connectors under
+   `src/runcomposer/plugins/` use exactly the surface a connector outside this
+   repository has; a guard test fails the build when one reaches past it. If a
+   plugin needs something the SDK lacks, the SDK grows — deliberately, with its
+   frozen name list in `tests/test_sdk.py` updated in the same change.
+6. **Tests wait on conditions, never on the clock.** No `time.sleep` in a test:
+   use `wait_until`, `Service.wait`, an event. A sleep is a failure waiting for
+   a slow machine.
+7. **A `[planned]` clause in DESIGN.md has no implementation.** If you implement
    one, delete its marker in the same change. If you add an unbuilt idea, mark it.
 
 ## Pull requests

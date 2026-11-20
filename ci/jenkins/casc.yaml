@@ -17,9 +17,9 @@ jobs:
         description('The thin CI-side consumer stage (runcomposer DESIGN.md §6.2b): runs runcomposer-exec on the passed spec, then POSTs the results bundle back.')
         parameters {
           textParam('SPEC_JSON', '', 'the rendered runspec document (JSON)')
-          stringParam('DISPATCH_ID', '', 'dispatch id minted by the ci-trigger runner')
+          stringParam('DISPATCH_ID', '', 'dispatch id minted by runcomposer for this hand-off')
           stringParam('CALLBACK_URL', '', 'results push endpoint; empty disables the webhook-out POST (polling fallback)')
-          stringParam('INGEST_TOKEN', '', 'per-run ingest token from results.token')
+          stringParam('INGEST_TOKEN', '', 'ingest token of this dispatch (demo only: use a password parameter on a real Jenkins)')
         }
         steps {
           shell('''#!/bin/bash -e

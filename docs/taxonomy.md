@@ -95,8 +95,8 @@ hierarchy:
 | `regex:^Cart(V2)?$` | a tag matching the expression (`re.search`, so anchor it yourself) | **sensitive** |
 
 That asymmetry is the one thing to remember: literals ignore case, `regex:`
-and `prefix:` do not. A tree ported from a case-insensitive tool goes quietly
-empty — every leaf clicks, and nothing matches. The opt-out is inline:
+and `prefix:` do not. A pattern written in the wrong case is still a valid
+pattern: its leaf can be clicked and selects nothing. The opt-out is inline:
 `regex:(?i)^checkout-`.
 
 ---
@@ -131,9 +131,7 @@ into the builder, not a second selection language.
 
 One pattern per leaf keeps the file writable, and it is also what makes a leaf
 opaque: `regex:^Cart(V2)?$` renders as **one** row, and the tags it stands for
-— `Cart`, `CartV2` — have no row of their own, so neither can be picked. Over
-a real corpus that is most of the tag space hidden behind a handful of
-patterns.
+— `Cart`, `CartV2` — have no row of their own, so neither can be picked.
 
 So the tree is served twice. `GET /api/v1/taxonomy` returns the file, exactly
 as before. `GET /api/v1/taxonomy?resolve=true` returns it **resolved against
@@ -199,8 +197,8 @@ already *is* that tag's node; a single identical child would be noise.
 
 **A tag some other tag differs from only in case gets an escaped regex, not a
 literal.** Literals match case-insensitively ([above](#the-pattern-in-a-leaf)),
-so a corpus carrying both `Adapter` and `ADAPTER` would otherwise get two
-nodes that both select both. Each gets `regex:^Adapter$` / `regex:^ADAPTER$`
+so a corpus carrying both `Cart` and `CART` would otherwise get two
+nodes that both select both. Each gets `regex:^Cart$` / `regex:^CART$`
 instead, and means itself. (The same escaping covers a tag literally spelled
 `regex:…` or `prefix:…`.)
 
@@ -221,9 +219,9 @@ the tags it was covering will appear under the synthetic node instead, where
 The tree is not a panel any more — it is a **picker dialog**, opened from
 `Pick tags…` in the filter panel. That changed in 0.1.6 for a reason worth
 stating: resolving the tree against the catalog (0.1.4) made it complete and,
-in the same move, unusable. A real corpus goes from ~150 written nodes to 2452
-rendered ones over 1609 tags, and an always-visible column of that many rows
-with no search is not something anyone navigates. There is no sidebar now.
+in the same move, unusable. The resolved tree has a node for every catalog
+tag, and an always-visible column that grows with the catalog, with no
+search, is not something anyone navigates. There is no sidebar now.
 
 Inside the dialog:
 

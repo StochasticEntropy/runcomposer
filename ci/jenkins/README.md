@@ -1,10 +1,19 @@
 # Jenkins demo instance — the §6.2b consumer stage
 
 A reproducible local Jenkins that carries the **thin CI-side consumer**
-runcomposer's `ci-trigger` runner drives (DESIGN.md §6.2b): a parameterized
-job whose build step runs the vendored single-file `runcomposer-exec` on the
-passed spec, and whose post step POSTs the results bundle (marker + per-run
-ingest token) back to `/api/v1/runs/{id}/results`.
+runcomposer's `jenkins` runner drives (DESIGN.md §6.2b): a parameterized job
+whose build step runs the vendored single-file `runcomposer-exec` on the
+passed spec, and whose post step POSTs the results bundle (marker + the
+dispatch's ingest token) back to `/api/v1/runs/{id}/results`.
+
+**What is tested where.** The automated test suite exercises the `jenkins`
+runner against an in-process, protocol-faithful HTTP stand-in
+(`tests/test_jenkins.py`): the crumb issuer and its session cookie,
+`buildWithParameters` → queue item → build, the build API, artifact download,
+stop and queue cancellation, Basic auth, retries, and both completion modes
+end to end. This docker setup is the **manual end-to-end check** against a
+real Jenkins — it is not run by CI, so run it when you change the runner or
+the consumer stage.
 
 > ## ⚠ This job runs no tests
 >
@@ -34,17 +43,53 @@ runcomposer side (`config.yaml`):
 
 ```yaml
 runners:
-  ci-trigger:
+  jenkins:
     base_url: http://localhost:8080
     job: runcomposer-consumer
     callback_base: http://host.docker.internal:8100   # how the container reaches your serve
-    completion: callback        # or "poll" for CI systems that can't call out
+    completion: callback        # or "poll" for a Jenkins that cannot call out
 ```
 
-Then: `runcomposer serve --host 0.0.0.0` (so the container can call back),
-compose a spec, and `runcomposer dispatch --runner ci-trigger spec.json`.
-Completion arrives via the job's webhook-out POST; with `completion: poll`
-runcomposer instead polls the build API and ingests the archived artifacts.
+That is the whole config for this job, because the job's parameters carry the
+runner's default names. They are configurable — `parameters` maps each
+build-parameter name of *your* job to a template — and the default is:
+
+```yaml
+    parameters:
+      SPEC_JSON: "{spec_json}"         # the exact document bytes; their hash is recorded
+      DISPATCH_ID: "{dispatch_id}"
+      CALLBACK_URL: "{callback_url}"   # empty with completion: poll
+      INGEST_TOKEN: "{token}"          # the ingest token of this dispatch
+```
+
+Other fields a template may use: `{run_id}`, `{item_ids}` (one per line),
+`{title}`, `{labels[key]}`, and `{params[name]}` for per-run parameters
+declared under `run_parameters`. The demo job ([`casc.yaml`](casc.yaml))
+declares `INGEST_TOKEN` as a plain string parameter, which keeps this
+throwaway instance simple and means the token is readable on the build's
+parameters page. On a real Jenkins bind `{token}` to a **password parameter**
+(or hand it over through a credentials binding) — the runner only fills the
+parameter you name, so nothing else changes. The spec document itself carries
+no credential. Against a secured Jenkins, add
+`user:` and `api_token: ${env:JENKINS_API_TOKEN}`; for a private CA,
+`ca_bundle:`.
+
+Then: `runcomposer serve --host 0.0.0.0 --config config.yaml` (so the
+container can call back) and dispatch a run to the runner — from the UI, with
+`POST /api/v1/runs`, or from a second shell:
+
+```bash
+runcomposer run Checkout --runner jenkins --config config.yaml
+```
+
+The runner triggers the build and returns; the run waits in
+`AWAITING_RESULTS` until the job's POST arrives at the server, and the command
+waits with it (`--no-wait` returns right after the trigger). With
+`completion: poll` runcomposer instead follows the queue item to the build,
+waits for it, downloads the archived files matching `artifact_paths` (default
+`results/*`) and delivers them itself. Either way the build is identified
+through the queue item the trigger returned — never by "the latest build of
+the job" — and `runcomposer cancel <run-id>` stops it.
 
 The instance is **unsecured by design** (local demo). Never expose it.
 
@@ -91,20 +136,23 @@ runcomposer-exec: running: python examples/pytest-shop/run_pytest.py results/ite
 ....F                                                                    [100%]
 =================================== FAILURES ===================================
 __________________________ test_total_never_negative ___________________________
+
     def test_total_never_negative():
         # Deliberately red: the example corpus ships one failing test.
         total = 10 - 25
 >       assert total >= 0, "simulated defect: negative cart total"
 E       AssertionError: simulated defect: negative cart total
 …
-1 failed, 4 passed in 0.02s
+1 failed, 4 passed in 0.01s
 runcomposer-exec: bundle ready at results (marker: runcomposer_run.json)
 
 $ ls results
-item_ids.txt  junit.xml  runcomposer_run.json
+item_ids.txt
+junit.xml
+runcomposer_run.json
 
 $ runcomposer ingest results
-01M151XCGNSBVQN52Z83J4QPEY shard 1: delivery recorded (5 verdict(s))
+01M7WTA0TM18WY9NT8ZWXRQFNY shard 1: delivery recorded (5 verdict(s))
 run state: COMPLETE (FAIL)
 ```
 
@@ -115,12 +163,17 @@ Two things to get right on the runcomposer side when you switch:
 
 - **Name the format you will return.** `--simulate` writes the reference
   `runcomposer-verdicts` JSON, which is the default. A real command writes its
-  framework's artifacts instead, so compose with
-  `runcomposer spec … --expect-format junit-xml` (or `robot-output-xml`) and
-  adjust the `-F "files=@results/…"` lines in the POST to match the files your
-  command actually produced.
-- **The exit code is yours.** `runcomposer-exec` returns whatever your command
-  returned, so the Jenkins build goes red when the tests did — which
-  `--simulate` never does.
+  framework's artifacts instead, so say so on the runner entry —
+  `format: junit-xml` (or `robot-output-xml`) — and adjust the
+  `-F "files=@results/…"` lines in the POST to match the files your command
+  actually produced. Runs composed for the runner then expect that format.
+- **Say which exit codes still mean "the results are valid".** The marker is
+  the bundle's completion signal, so `runcomposer-exec` writes it only when
+  your command exited with an accepted code — `0` by default — and otherwise
+  fails the stage without one. A framework that exits non-zero when *tests*
+  fail needs `--ok-exit-codes` (for example `0-249`), or an adapter that maps
+  "tests failed" to `0` the way `run_pytest.py` does. With the marker written
+  the stage is green and the verdict is in runcomposer, where it belongs; a
+  red stage means the execution itself broke and nothing was delivered.
 
 The full flag reference for both executables is in [docs/cli.md](../../docs/cli.md).
