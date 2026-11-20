@@ -1,6 +1,6 @@
 item,duration_ms,measured
-Shop.Checkout.Cart.T001,4200,2026-10-30
-Shop.Checkout.Cart.T002,3900,2026-10-30
+Shop.Checkout.Express.T001,4200,2026-10-30
+Shop.Checkout.Standard.T001,3900,2026-10-30
 Shop.Payments.Cards.T001,6100,2026-10-30
 Shop.Payments.Cards.T002,5800,2026-10-30
 Shop.Payments.Cards.T003,7400,2026-10-30

@@ -322,8 +322,7 @@ def check_runner(
     _require(isinstance(health.detail, str), "runner.health", "health().detail must be a string")
 
     ctx = ctx if ctx is not None else FakeDispatchContext(DEFAULT_ITEM_IDS)
-    if info.result_format:
-        ctx.adopt_result_format(info.result_format)
+    ctx.adopt(info)
     preview = _check_plan(runner, ctx) if "plan" in info.capabilities else None
     outcome: dict[str, Any] = {}
     delivered_before_cancel = 0

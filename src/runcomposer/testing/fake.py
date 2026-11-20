@@ -48,6 +48,7 @@ from runcomposer.core.ids import new_ulid
 from runcomposer.core.lifecycle import effective_verdicts, summarize
 from runcomposer.core.marker import read_marker
 from runcomposer.core.model import LIVE_STATUSES, ArtifactRef, Item, LiveStatus, Verdict
+from runcomposer.core.parameters import validate_parameters
 from runcomposer.core.ports import PlanPreview, SourceBase
 from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
@@ -208,7 +209,8 @@ class FakeDispatchContext:
                 item_ids = list(planned or [])
             items = [Item(id=str(item_id)) for item_id in item_ids]
         self.source: Any = source if source is not None else ListSource(items)
-        self.parameters: Mapping[str, Any] = MappingProxyType(dict(parameters or {}))
+        self._parameter_values: dict[str, Any] = dict(parameters or {})
+        self.parameters: Mapping[str, Any] = MappingProxyType(self._parameter_values)
         self.options: Mapping[str, Any] = MappingProxyType(dict(options or {}))
         self.runner_id = runner_id
         if spec is None:
@@ -582,14 +584,30 @@ class FakeDispatchContext:
         results = self._document.setdefault("results", {})
         results["expect"] = [{"format": format_id}]
 
+    def adopt(self, info: Any) -> None:
+        """Become the context of a dispatch *to this runner* (its
+        ``RunnerInfo``), as composing and dispatching a run for it does in
+        runcomposer: the document expects the runner's ``result_format``
+        (:meth:`adopt_result_format`), and the per-run parameters are
+        validated against its declaration with the declared defaults applied
+        — so ``ctx.parameters`` holds here what it holds there. A value the
+        runner does not accept raises ``InvalidParameter``, as the request
+        would be refused. :meth:`run`, :meth:`preview` and ``check_runner``
+        call this."""
+        if info.result_format:
+            self.adopt_result_format(info.result_format)
+        accepted = validate_parameters(info.parameters, self._parameter_values)
+        self._parameter_values.clear()
+        self._parameter_values.update(accepted)
+        if accepted and self._format_adoptable:
+            self._document.setdefault("runner", {})[self.runner_id] = dict(accepted)
+
     def preview(self, runner: Any) -> PlanPreview | None:
         """Call ``runner.plan`` the way runcomposer does — with a context
         that has the members of ``PlanContext`` only — and return its
         preview; ``None`` when the plan refuses (the reason is then in
         ``refusal``). Nothing of the fake is touched by a preview."""
-        result_format = runner.describe().result_format
-        if result_format:
-            self.adopt_result_format(result_format)
+        self.adopt(runner.describe())
         try:
             answer = runner.plan(_PlanView(self))
         except DispatchRefused as exc:
@@ -601,15 +619,14 @@ class FakeDispatchContext:
 
     def run(self, runner: Any) -> str:
         """Call ``runner.dispatch(self)`` and say how it ended, the way the
-        dispatch manager would: ``refused`` (it refused, or raised, before
-        declaring), ``undeclared`` (returned without declaring — runcomposer
-        records that as a refusal), ``cancelled``, ``complete`` (every declared
-        shard delivered) or ``awaiting`` (shards outstanding: results come by
-        ingestion). An exception raised after the hand-off propagates — in
-        runcomposer it is a FAILED dispatch."""
-        result_format = runner.describe().result_format
-        if result_format:
-            self.adopt_result_format(result_format)
+        dispatch manager would: ``refused`` (``ctx.refuse`` before declaring),
+        ``undeclared`` (returned without declaring — runcomposer records that
+        as a refusal), ``cancelled``, ``complete`` (every declared shard
+        delivered) or ``awaiting`` (shards outstanding: results come by
+        ingestion). Any other exception propagates, so a test sees it: in
+        runcomposer one raised before the hand-off is recorded as a refusal
+        (and logged as a crash), one raised after it is a FAILED dispatch."""
+        self.adopt(runner.describe())
         try:
             runner.dispatch(self)
         except DispatchRefused:

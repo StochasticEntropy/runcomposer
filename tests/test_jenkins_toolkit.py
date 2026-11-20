@@ -453,7 +453,7 @@ class TestTheDocumentAsABuildParameter:
 
     def test_spec_url_is_where_the_job_downloads_the_exact_bytes(self, make_client, jenkins):
         client, service = make_client(
-            runners={RUNNER: {"base_url": jenkins.url, "job": JOB, "callback_base": "http://testserver",
+            runners={RUNNER: {"base_url": jenkins.url, "job": JOB, "callback_base": "http://runcomposer.shop.example:8100",
                               "parameters": {"SPEC_URL": "{spec_url}", "DISPATCH": "{dispatch_id}"}}}
         )
         run_id = compose(service, "Payments-Cards", runner_id=RUNNER)
@@ -461,9 +461,10 @@ class TestTheDocumentAsABuildParameter:
         (trigger,) = jenkins.triggers()
         record = service.require_run(run_id).latest_dispatch
         assert trigger.form["SPEC_URL"] == (
-            f"http://testserver/api/v1/runs/{run_id}/dispatches/{record.dispatch_id}/spec"
+            f"http://runcomposer.shop.example:8100/api/v1/runs/{run_id}/dispatches/{record.dispatch_id}/spec"
         )
-        downloaded = client.get(trigger.form["SPEC_URL"])
+        # What the job downloads there (asked of the app directly, by path).
+        downloaded = client.get(trigger.form["SPEC_URL"].removeprefix("http://runcomposer.shop.example:8100"))
         assert downloaded.status_code == 200 and sha256_hex(downloaded.content) == record.spec_sha256
 
     def test_spec_url_needs_a_callback_base(self, make_service, jenkins):
@@ -575,9 +576,12 @@ class NightlyRunner(RunnerBase):
         queue_url = self.client.trigger(
             self.job, {"SPEC_B64": encode_spec(ctx.export_spec()), "REGIONS": ",".join(regions)}
         )
+        # The trigger was accepted: from here on a build exists, so this is
+        # the hand-off — whatever goes wrong now is a failed dispatch that
+        # names the job, never a refusal that forgets it.
+        ctx.declare(regions, plan=self.plan(ctx).text, links={"queue": queue_url or "", "job": self.client.job_url(self.job)})
         if queue_url is None:
-            ctx.refuse("the server did not say where it queued the build")
-        ctx.declare(regions, plan=self.plan(ctx).text, links={"queue": queue_url})
+            raise RuntimeError("the server did not say where it queued the build")
         check = ctx.raise_if_cancelled
         build_url = self.client.wait_for_build(
             self.job, queue_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s, check=check)
@@ -613,7 +617,11 @@ class TestAComposedRunner:
         jenkins.add_job(JOB, regional_job())
         ctx = check_runner(NightlyRunner(**self.options(jenkins)), FakeDispatchContext(CARDS), expect="complete")
         assert ctx.declared == ("eu", "us") and ctx.summary() == {"PASS": 6}
-        assert dict(ctx.links) == {"queue": f"{jenkins.url}/queue/item/1/", "build": f"{jenkins.url}/job/{JOB}/1"}
+        assert dict(ctx.links) == {
+            "job": f"{jenkins.url}/job/{JOB}",
+            "queue": f"{jenkins.url}/queue/item/1/",
+            "build": f"{jenkins.url}/job/{JOB}/1",
+        }
         assert (ctx.private_dir / "console.txt").is_file()
         assert [a.name for a in ctx.artifacts] == ["results (eu)", "results (us)"]
 

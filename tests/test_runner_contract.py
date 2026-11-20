@@ -205,6 +205,9 @@ class TestOptionsAndParameters:
         service.dispatch(run_id, "staged", foreground=True)
         assert seen["parameters"] == {"retries": 2, "variables": {"LOCALE": "de"}}
         assert "retries" not in seen["options"] and "variables" not in seen["options"]
+        # Options are the entry as it is written: what the entry leaves to
+        # the constructor's default (`stages`, here) is not among them.
+        assert set(seen["options"]) == {"script", "parameters"}
 
 
 # -- plan previews ---------------------------------------------------------------------

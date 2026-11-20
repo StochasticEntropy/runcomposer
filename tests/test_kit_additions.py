@@ -20,6 +20,7 @@ from runcomposer.plugins.sqlite_store import SqliteRunStore
 from runcomposer.sdk import (
     DispatchContext,
     Item,
+    Parameter,
     PlanContext,
     PlanPreview,
     RunnerBase,
@@ -246,6 +247,35 @@ class TestTheFake:
         assert dict(ctx.parameters) == {"stages": ["eu"]}
         assert ctx.spec["runner"]["runner"] == {"stages": ["eu"]}
 
+    def test_parameters_are_validated_and_defaulted_for_the_runner(self):
+        """``ctx.parameters`` holds in the fake what it holds in runcomposer:
+        the declared defaults applied, and nothing the runner does not accept."""
+        from runcomposer.sdk import InvalidParameter
+
+        seen: list[dict[str, Any]] = []
+
+        class Regional(RunnerBase):
+            def describe(self) -> RunnerInfo:
+                return RunnerInfo(id="regional", capabilities=("plan",), parameters=(
+                    Parameter("region", kind="choice", choices=("eu", "us"), default="eu"),
+                    Parameter("retries", kind="integer", default=1),
+                ))
+
+            def plan(self, ctx: PlanContext) -> PlanPreview:
+                return PlanPreview(shards={ctx.parameters["region"]: list(ctx.item_ids)})
+
+            def dispatch(self, ctx: DispatchContext) -> None:
+                seen.append(dict(ctx.parameters))
+                ctx.declare([ctx.parameters["region"]])
+                ctx.deliver(ctx.parameters["region"], verdicts=[Verdict(i, "PASS") for i in ctx.item_ids])
+
+        ctx = FakeDispatchContext(CART, parameters={"retries": 3})
+        assert ctx.preview(Regional()).shards == {"eu": CART} and ctx.run(Regional()) == "complete"
+        assert seen == [{"region": "eu", "retries": 3}] and ctx.spec["runner"]["runner"] == seen[0]
+        check_runner(Regional(), expect="complete")
+        with pytest.raises(InvalidParameter, match="unknown parameter 'speed'"):
+            FakeDispatchContext(CART, parameters={"speed": "fast"}).run(Regional())
+
     def test_groups_links_and_the_private_directory(self):
         ctx = FakeDispatchContext(CART)
         ctx.set_link("ticket", "https://desk.shop.example/t/1")
@@ -314,7 +344,11 @@ class GatedRunner(RunnerBase):
         self.gate, self.callback_base = gate, callback_base
 
     def describe(self) -> RunnerInfo:
-        return RunnerInfo(id="gated", capabilities=("cancel", "live_status", "plan"))
+        return RunnerInfo(
+            id="gated",
+            capabilities=("cancel", "live_status", "plan"),
+            parameters=(Parameter("refuse", kind="boolean", default=False),),
+        )
 
     def plan(self, ctx: PlanContext) -> PlanPreview:
         return PlanPreview(text="one shard", shards={"1": list(ctx.item_ids)})
@@ -364,7 +398,14 @@ class TestTheHarnessInTheBackground:
             handle.cancel()
             handle.wait(timeout=30)
 
-    def test_a_refusal_ends_the_wait_at_once_and_a_stored_run_can_be_started(self):
+    def test_a_refusal_ends_the_wait_at_once(self):
+        with ConnectorHarness(runners=gated("refused")) as harness:
+            handle = harness.start("Cart", runner="gated", parameters={"refuse": True})
+            result = handle.wait(timeout=30)
+            assert handle.done and handle.refusal == "not today" and result.refusal == "not today"
+            assert result.state == "COMPOSED" and result.dispatch is None
+
+    def test_a_stored_run_can_be_started_and_planned(self):
         with ConnectorHarness(runners=gated("refuse")) as harness:
             run_id = harness.compose("Cart", runner="gated")
             handle = harness.start(runner="gated", run_id=run_id, parameters=None)

@@ -222,7 +222,7 @@ class TestTheWorker:
 
 MIXED = {
     "checkout.robot": "*** Test Cases ***\nPay By Card\n    [Tags]    Checkout\n    Log    paying\n",
-    "housekeeping.robot": "*** Tasks ***\nPurge Abandoned Carts\n    [Tags]    Maintenance\n    Log    purging\n",
+    "housekeeping.robot": "*** Tasks ***\nPurge Abandoned Carts\n    [Tags]    Catalog\n    Log    purging\n",
 }
 MIXED_IDS = ["Shop.Checkout.Pay By Card", "Shop.Housekeeping.Purge Abandoned Carts"]
 
@@ -263,13 +263,13 @@ class TestExecutionMode:
     def test_robot_pool_takes_the_mode_as_an_option(self, make_service, tmp_path):
         root = mixed_root(tmp_path)
         strict = pool_service(make_service, root, max_workers=1)
-        refused = execute(strict, {"tag_filter": {"op": "OR", "items": ["Checkout", "Maintenance"]}})
+        refused = execute(strict, {"tag_filter": {"op": "OR", "items": ["Checkout", "Catalog"]}})
         assert refused.state == "FAILED" and "Conflicting execution modes" in refused.latest_dispatch.error
         assert "rpa" in refused.latest_dispatch.error
 
     def test_robot_pool_with_rpa_false_executes_a_task_and_a_test_together(self, make_service, tmp_path):
         service = pool_service(make_service, mixed_root(tmp_path), max_workers=1, rpa=False)
-        run = execute(service, {"tag_filter": {"op": "OR", "items": ["Checkout", "Maintenance"]}})
+        run = execute(service, {"tag_filter": {"op": "OR", "items": ["Checkout", "Catalog"]}})
         assert (run.state, run.completion, dict(run.latest_dispatch.summary)) == ("COMPLETE", "PASS", {"PASS": 2})
 
 
