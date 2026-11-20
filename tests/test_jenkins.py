@@ -64,6 +64,10 @@ class Build:
     building: bool = True
     result: str | None = None
     artifacts: dict[str, bytes] = field(default_factory=dict)
+    #: What the build serves below its own URL without archiving it — a
+    #: publisher's report, the console text: ``{relative path: content}``.
+    pages: dict[str, bytes] = field(default_factory=dict)
+    queue_id: int = 0
     stop: threading.Event = field(default_factory=threading.Event)
 
 
@@ -159,6 +163,7 @@ class FakeJenkins:
                 number=max(numbers, default=0) + 1,
                 params=item.params,
                 url=f"{self.job_url(item.job)}/{max(numbers, default=0) + 1}/",
+                queue_id=number,
             )
             self.builds[(build.job, build.number)] = build
             item.build = build
@@ -166,6 +171,12 @@ class FakeJenkins:
         self._threads.append(thread)
         thread.start()
         return build
+
+    def expire(self, number: int) -> None:
+        """Forget a queue item, as Jenkins does a few minutes after the item
+        left the queue: its URL answers 404 from then on."""
+        with self._lock:
+            del self.queue[number]
 
     def _run(self, build: Build) -> None:
         job = self.jobs.get(build.job)
@@ -232,7 +243,19 @@ class FakeJenkins:
         if job is None or job not in self.jobs:
             return self._send(request, 404, b"no such job")
         if rest == ["api", "json"]:
-            return self._json(request, {"name": job.rsplit("/", 1)[-1]})
+            newest_first = sorted(
+                (b for (name, _n), b in self.builds.items() if name == job),
+                key=lambda b: b.number, reverse=True,
+            )
+            return self._json(
+                request,
+                {
+                    "name": job.rsplit("/", 1)[-1],
+                    "builds": [
+                        {"number": b.number, "url": b.url, "queueId": b.queue_id} for b in newest_first
+                    ],
+                },
+            )
         if rest == ["buildWithParameters"] and method == "POST":
             return self._trigger(request, job, form)
         if rest and rest[0].isdigit():
@@ -290,6 +313,9 @@ class FakeJenkins:
             return self._send(request, 200, content)
         if not rest:
             return self._send(request, 200, b"<html>build page</html>")
+        page = build.pages.get("/".join(urllib.parse.unquote(part) for part in rest))
+        if page is not None:
+            return self._send(request, 200, page)
         return self._send(request, 404, b"not found")
 
     def _json(self, request: BaseHTTPRequestHandler, body: dict, headers: dict | None = None) -> None:

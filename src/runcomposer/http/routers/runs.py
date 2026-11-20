@@ -11,7 +11,12 @@ from runcomposer.app.dispatching import Outcome
 from runcomposer.app.service import Service
 from runcomposer.app.views import dispatch_json, event_json, run_detail, run_row, verdict_rows
 from runcomposer.core.errors import DispatchRefused, InvalidRequest, NotFound, RunComposerError
-from runcomposer.core.model import REPORTABLE_STATUSES, VERDICT_STATUSES, DispatchRecord
+from runcomposer.core.model import (
+    LIVE_STATUSES,
+    REPORTABLE_STATUSES,
+    VERDICT_STATUSES,
+    DispatchRecord,
+)
 
 from ..models import ComposeRequest, DispatchRequest, RerunRequest
 from . import service_of
@@ -221,13 +226,14 @@ def run_verdicts(
 ) -> dict[str, Any]:
     """Verdicts of one dispatch, filtered and paged. Includes the derived
     ``MISSING`` rows once the dispatch is over, and live rows (``live``) for
-    shards that have not delivered yet."""
+    shards that have not delivered yet — ``status=RUNNING`` selects what is
+    executing now."""
     run = service.require_run(run_id)
     for value in status:
-        if value not in VERDICT_STATUSES:
+        if value not in VERDICT_STATUSES and value not in LIVE_STATUSES:
             raise InvalidRequest(
                 f"unknown verdict status {value!r} (one of {list(VERDICT_STATUSES)}; an "
-                f"executor reports {list(REPORTABLE_STATUSES)})"
+                f"executor reports {list(REPORTABLE_STATUSES)}; a live row may be RUNNING)"
             )
     record = run.latest_dispatch
     if dispatch is not None:

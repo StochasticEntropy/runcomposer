@@ -36,6 +36,7 @@ The id space is the Robot plugin family's: an item id is a test's longname.
 from __future__ import annotations
 
 import html
+import io
 import json
 import multiprocessing
 import os
@@ -405,10 +406,12 @@ def run_shard(payload: ShardPayload) -> None:
     out_dir = Path(payload.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[ShardOutput] = []
+    problems: list[str] = []
     error: str | None = None
     stopped = False
     try:
-        _execute_shard(payload, out_dir, outputs)
+        _execute_shard(payload, out_dir, outputs, problems)
+        error = "; ".join(problems) or None
     except _Stopped:
         stopped = True
         error = "the shard was asked to stop"
@@ -425,7 +428,9 @@ def run_shard(payload: ShardPayload) -> None:
         (out_dir / RESULT_FILE).write_text(json.dumps(document), encoding="utf-8")
 
 
-def _execute_shard(payload: ShardPayload, out_dir: Path, outputs: list[ShardOutput]) -> None:
+def _execute_shard(
+    payload: ShardPayload, out_dir: Path, outputs: list[ShardOutput], problems: list[str]
+) -> None:
     for entry in payload.pythonpath:
         if entry not in sys.path:
             sys.path.insert(0, entry)
@@ -482,18 +487,28 @@ def _execute_shard(payload: ShardPayload, out_dir: Path, outputs: list[ShardOutp
         )
         if payload.rpa is not None:
             options["rpa"] = payload.rpa
+        complaints = io.StringIO()
         with open(os.devnull, "w", encoding="utf-8") as devnull:
-            rc = robot_api.run(execution.root, stdout=devnull, stderr=devnull, **options)
+            rc = robot_api.run(execution.root, stdout=devnull, stderr=complaints, **options)
         if rc == _STOPPED_BY_SIGNAL or (out_dir / STOP_FILE).exists():
             # Robot ended the execution in flight; do not go on to the next.
             raise _Stopped
         output = target / "output.xml"
         if not output.is_file():
-            say(
+            # Robot refused to execute at all (a data error): what it said is
+            # the only explanation there will be.
+            said = " ".join(complaints.getvalue().split())[:600]
+            problem = (
                 f"Robot produced no output for {len(execution.item_ids)} test(s) of "
-                f"{execution.root} (return code {rc})",
-                "warning",
+                f"{execution.root} (return code {rc})" + (f": {said}" if said else "")
             )
+            if "Conflicting execution modes" in said:
+                problem += (
+                    " — this root mixes tests and tasks: set the execution mode explicitly "
+                    "(rpa=False runs everything as tests, rpa=True as tasks)"
+                )
+            problems.append(problem)
+            say(problem, "error")
             return None
         return ShardOutput(
             path=str(output),
