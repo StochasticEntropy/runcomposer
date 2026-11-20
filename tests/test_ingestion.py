@@ -18,6 +18,7 @@ from runcomposer.sdk import (
     Forbidden,
     IngestError,
     ParsedVerdict,
+    ParserBase,
     Service,
     SpecConflict,
     UnknownRun,
@@ -74,7 +75,7 @@ def execute(spec_file: Path, out: Path, *extra: str, seed: str = "a") -> Path:
     return out
 
 
-class ExplodingParser:
+class ExplodingParser(ParserBase):
     """A parser with a bug: it raises something that is not a ParseError."""
 
     format_id = "shop-exploding"
@@ -83,7 +84,7 @@ class ExplodingParser:
         raise ZeroDivisionError("the parser divided the till by zero")
 
 
-class OverclaimingParser:
+class OverclaimingParser(ParserBase):
     """A parser that claims a status no executor can report."""
 
     format_id = "shop-overclaiming"

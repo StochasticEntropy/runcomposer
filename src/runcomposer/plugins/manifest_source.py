@@ -20,14 +20,15 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import yaml
 
-from runcomposer.sdk import ConfigError, Item, canonical_json, sha256_hex
+from runcomposer.sdk import ConfigError, Item, SourceBase, canonical_json, sha256_hex
 
-__all__ = ["ManifestError", "ManifestSource"]
+__all__ = ["DemoCorpusSource", "ManifestError", "ManifestSource"]
 
 
 class ManifestError(ConfigError):
@@ -36,9 +37,9 @@ class ManifestError(ConfigError):
     code = "manifest-invalid"
 
 
-class ManifestSource:
+class ManifestSource(SourceBase):
     provider_id = "manifest"
-    PATH_OPTIONS: tuple[str, ...] = ("path",)
+    PATH_OPTIONS: ClassVar[tuple[str, ...]] = ("path",)
 
     def __init__(self, path: Any):
         """``path``: a filesystem path, or any object with ``read_text()``
@@ -146,3 +147,25 @@ class ManifestSource:
         if native_name in self._ids:
             return native_name
         return self._aliases.get(native_name)
+
+
+class DemoCorpusSource(ManifestSource):
+    """`demo-corpus` — the bundled fictional web-shop catalog (DESIGN.md
+    §12), as a source of its own.
+
+    It is the manifest source reading a file that ships inside the package.
+    Being a separate, named plugin is what lets "no `sources:` configured" be
+    ordinary configuration (`sources: {demo-corpus: {}}`) instead of a special
+    case inside the manifest source or the config loader. It lives in this
+    module because it *is* this source: a plugin module imports nothing of
+    runcomposer but the SDK, sibling modules included.
+    """
+
+    provider_id = "manifest"
+    PATH_OPTIONS: ClassVar[tuple[str, ...]] = ()
+
+    def __init__(self) -> None:
+        super().__init__(resources.files("runcomposer.demo") / "corpus.json")
+
+    def fingerprint(self) -> str:
+        return "bundled"

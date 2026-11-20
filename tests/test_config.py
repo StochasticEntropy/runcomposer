@@ -23,6 +23,7 @@ from runcomposer.sdk import (
     RunnerBase,
     RunnerInfo,
     Service,
+    StoreBase,
     UnknownRunner,
     Verdict,
 )
@@ -35,7 +36,7 @@ HERE = "tests.test_config"
 # -- the small plugins these tests configure (module: "tests.test_config:Name") --------
 
 
-class LegacyStore:
+class LegacyStore(StoreBase):
     """A store that declares no path options: it gets its options verbatim."""
 
     def __init__(self, path: str = "legacy.db"):
@@ -942,7 +943,7 @@ class TestOnePathBase:
         )
         monkeypatch.chdir(tmp_path)
         config = load_config(str(config_file))
-        assert config.build(config.store_spec()).path == "legacy.db"
+        assert config.store_spec().options["path"] == "legacy.db"
 
     def test_resolve_path_is_total_and_conservative(self, tmp_path):
         config = load_config(str(self._config(tmp_path, {})))

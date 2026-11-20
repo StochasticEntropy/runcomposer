@@ -16,12 +16,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from runcomposer.sdk import REPORTABLE_STATUSES, ParsedVerdict, ParseError
+from runcomposer.sdk import REPORTABLE_STATUSES, ParsedVerdict, ParseError, ParserBase
 
 __all__ = ["VerdictsParser"]
 
 
-class VerdictsParser:
+class VerdictsParser(ParserBase):
     format_id = "runcomposer-verdicts"
 
     def parse(self, path: Any) -> list[ParsedVerdict]:

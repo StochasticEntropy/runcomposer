@@ -10,10 +10,11 @@ hooks discovered by attribute.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import inspect
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import Any, ClassVar, NoReturn, Protocol
 
 from .model import (
     ArtifactRef,
@@ -27,18 +28,26 @@ from .model import (
 from .parameters import Parameter
 
 __all__ = [
+    "Configurable",
     "DispatchContext",
     "Health",
     "History",
     "LiveChannel",
+    "ObserverBase",
     "ParsedVerdict",
+    "ParserBase",
+    "PluginBase",
     "ResultParser",
     "RunObserver",
     "RunStore",
     "Runner",
     "RunnerBase",
     "RunnerInfo",
+    "SourceBase",
+    "StoreBase",
     "TestSource",
+    "contract_members",
+    "missing_members",
 ]
 
 
@@ -238,6 +247,51 @@ class DispatchContext(Protocol):
         ...
 
 
+# -- how a plugin class describes its options ---------------------------------------
+
+
+class Configurable(Protocol):
+    """What every plugin *class* tells the config loader (DESIGN.md §8).
+
+    - ``OPTIONS`` — the option names an entry may carry: ``None`` (the
+      default) means "the constructor's keyword parameters", a tuple means
+      exactly these. Either way an unknown key is a ``ConfigError`` at
+      startup naming the accepted ones.
+    - ``resolve_config_paths(options, resolve)`` — anchor the options that
+      are file paths to the config file's directory; ``resolve`` does it for
+      one value (or a list). The default (:class:`PluginBase`) resolves the
+      names listed in ``PATH_OPTIONS``; override it when the rule has
+      exceptions (a store whose ``:memory:`` names no file).
+
+    :class:`PluginBase` supplies both; every base class below derives from it.
+    """
+
+    OPTIONS: ClassVar[tuple[str, ...] | None]
+
+    @classmethod
+    def resolve_config_paths(
+        cls, options: dict[str, Any], resolve: Callable[[Any], Any]
+    ) -> dict[str, Any]: ...
+
+
+class PluginBase:
+    """Defaults for :class:`Configurable`: options are the constructor's
+    keyword parameters, and the names in ``PATH_OPTIONS`` (single values or
+    lists) are paths relative to the config file."""
+
+    OPTIONS: ClassVar[tuple[str, ...] | None] = None
+    PATH_OPTIONS: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def resolve_config_paths(
+        cls, options: dict[str, Any], resolve: Callable[[Any], Any]
+    ) -> dict[str, Any]:
+        for name in cls.PATH_OPTIONS:
+            if name in options:
+                options[name] = resolve(options[name])
+        return options
+
+
 # -- the five roles ---------------------------------------------------------------
 
 
@@ -245,16 +299,15 @@ class TestSource(Protocol):
     """Enumerates Items, produces a content-hashed catalog snapshot, and owns
     native-name→id resolution (DESIGN.md §6.1).
 
-    Optional members, each a real capability when present:
-
-    - ``fingerprint() -> str`` — a cheap token that changes when the corpus on
-      disk may have changed (file sizes and modification times, say). With it
-      the catalog is reloaded only when needed; without it, on request.
-    - ``duplicate_ids`` — ids that more than one item carries.
+    ``fingerprint`` and ``duplicate_ids`` have defaults in
+    :class:`SourceBase`; a source that does not derive from it must provide
+    them itself.
     """
 
     __test__: bool = False  # a protocol, not a test class
     provider_id: str
+    #: Ids that more than one item carries (reported, never raised).
+    duplicate_ids: Sequence[str]
 
     def items(self) -> list[Item]: ...
 
@@ -262,13 +315,42 @@ class TestSource(Protocol):
 
     def resolve(self, native_name: str) -> str | None: ...
 
+    def fingerprint(self) -> str | None:
+        """A cheap token that changes when the corpus on disk may have
+        changed (file sizes and modification times, say) — no parsing. With
+        one, the catalog is reloaded exactly when it changes; ``None`` means
+        "cannot tell": the source is rebuilt on request and before every
+        dispatch."""
+        ...
+
+
+class SourceBase(PluginBase):
+    """Defaults for the optional half of :class:`TestSource`."""
+
+    provider_id: str = ""
+    duplicate_ids: Sequence[str] = ()
+
+    def items(self) -> list[Item]:
+        raise NotImplementedError
+
+    def snapshot(self) -> str:
+        raise NotImplementedError
+
+    def resolve(self, native_name: str) -> str | None:
+        raise NotImplementedError
+
+    def fingerprint(self) -> str | None:
+        """No cheap probe: rebuilt on request and before every dispatch."""
+        return None
+
 
 class Runner(Protocol):
     """Fulfills a run spec (DESIGN.md §6.2).
 
     One instance is built per configured runner id and may be asked to
     dispatch several runs at once: everything that belongs to one dispatch
-    lives on its context, never on the runner.
+    lives on its context, never on the runner. ``cancel`` and ``health``
+    have defaults in :class:`RunnerBase`.
     """
 
     def describe(self) -> RunnerInfo: ...
@@ -290,9 +372,8 @@ class Runner(Protocol):
     def health(self) -> Health: ...
 
 
-class RunnerBase:
-    """Defaults for the optional half of :class:`Runner`. Subclassing is a
-    convenience, not a requirement."""
+class RunnerBase(PluginBase):
+    """Defaults for the optional half of :class:`Runner`."""
 
     def describe(self) -> RunnerInfo:
         raise NotImplementedError
@@ -317,11 +398,27 @@ class ResultParser(Protocol):
     def parse(self, path: Any) -> list[ParsedVerdict]: ...
 
 
+class ParserBase(PluginBase):
+    """Base class for a :class:`ResultParser` (configuration defaults)."""
+
+    format_id: str = ""
+
+    def parse(self, path: Any) -> list[ParsedVerdict]:
+        raise NotImplementedError
+
+
 class RunObserver(Protocol):
     """Told about every lifecycle event of every run (DESIGN.md §6.5). An
     exception raised here is recorded as a warning and affects nothing."""
 
     def notify(self, event: RunEvent) -> None: ...
+
+
+class ObserverBase(PluginBase):
+    """Base class for a :class:`RunObserver` (configuration defaults)."""
+
+    def notify(self, event: RunEvent) -> None:
+        raise NotImplementedError
 
 
 class RunStore(Protocol):
@@ -399,7 +496,13 @@ class RunStore(Protocol):
         state: str,
         owner: str | None = None,
         parameters: Mapping[str, Any] | None = None,
-    ) -> DispatchRecord: ...
+        exclusive: bool = False,
+    ) -> DispatchRecord:
+        """Record a new dispatch. With ``exclusive``, refuse with
+        ``RunActive`` when the run's latest dispatch is in one of
+        ``ACTIVE_STATES`` — checked in the same transaction as the insert, so
+        two processes cannot both open a dispatch for one idle run."""
+        ...
 
     def update_dispatch(self, dispatch_id: str, **changes: Any) -> DispatchRecord:
         """Set any of: ``state``, ``shards``, ``shard_items``, ``spec_sha256``,
@@ -507,4 +610,56 @@ class RunStore(Protocol):
         """Events with ``seq > after``, oldest first."""
         ...
 
-    def close(self) -> None: ...
+    def latest_events(self, run_id: str, *, limit: int = 200) -> list[RunEvent]:
+        """The last ``limit`` events of the run, oldest first — a bounded
+        read, whatever the length of the stream."""
+        ...
+
+    def close(self) -> None:
+        """Release what the store holds (default in :class:`StoreBase`)."""
+        ...
+
+
+class StoreBase(PluginBase):
+    """Base class for a :class:`RunStore`: configuration defaults and a
+    ``close`` that has nothing to release. Every other member is the
+    store's own."""
+
+    store_id: str = ""
+
+    def close(self) -> None:
+        """Nothing to release."""
+
+
+# -- the contract, as data ---------------------------------------------------------
+
+
+def contract_members(protocol: type) -> tuple[str, ...]:
+    """The members a protocol declares — methods, properties and annotated
+    attributes, in declaration order, dunders excluded. This is the list the
+    config loader checks a plugin against at startup and the conformance
+    kit checks a connector against; there is no other definition."""
+    names: list[str] = []
+    for name, member in vars(protocol).items():
+        if name.startswith("_"):
+            continue
+        if inspect.isfunction(member) or isinstance(member, (property, classmethod, staticmethod)):
+            names.append(name)
+    for name in inspect.get_annotations(protocol):
+        if not name.startswith("_") and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def missing_members(plugin: Any, protocol: type) -> list[str]:
+    """The members of ``protocol`` that ``plugin`` (an instance, or a class
+    for :class:`Configurable`) does not provide. Presence only — whether a
+    member *behaves* is what the conformance kit's checks are for."""
+    missing = []
+    for name in contract_members(protocol):
+        try:
+            inspect.getattr_static(plugin, name)
+        except AttributeError:
+            missing.append(name)
+    return missing
+

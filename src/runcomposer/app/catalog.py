@@ -5,9 +5,9 @@ Two jobs the individual sources should not each solve:
 - **Merging.** Several ``sources:`` entries form one id space. An id that
   more than one item carries — within a source or across sources — is
   reported in ``duplicate_ids``; ``resolve`` asks each source in turn.
-- **Staying current.** A source is loaded once and kept. A source that offers
-  ``fingerprint()`` is reloaded when that token changes (checked cheaply, at
-  most once per ``check_interval_s``); one that does not is reloaded on
+- **Staying current.** A source is loaded once and kept. A source whose
+  ``fingerprint()`` returns a token is reloaded when that token changes (checked cheaply, at
+  most once per ``check_interval_s``); one that returns ``None`` is reloaded on
   request (``refresh(force=True)``) and before every dispatch, where the
   drift check needs the corpus as it is *now*. Editing the corpus therefore
   never requires a restart.
@@ -44,11 +44,9 @@ class _Loaded:
 
 
 def _fingerprint(source: Any) -> str | None:
-    probe = getattr(source, "fingerprint", None)
-    if probe is None:
-        return None
     try:
-        return str(probe())
+        token = source.fingerprint()
+        return None if token is None else str(token)
     except Exception:  # a broken probe means "cannot tell" — reload on request
         log.warning("source fingerprint failed", exc_info=True)
         return None
@@ -140,7 +138,7 @@ class Catalog:
                 duplicates: set[str] = set()
                 for loaded in sources:
                     items.extend(loaded.source.items())
-                    duplicates.update(getattr(loaded.source, "duplicate_ids", ()) or ())
+                    duplicates.update(loaded.source.duplicate_ids or ())
                 counts = Counter(item.id for item in items)
                 duplicates.update(item_id for item_id, n in counts.items() if n > 1)
                 if len(sources) == 1:

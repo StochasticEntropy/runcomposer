@@ -27,12 +27,15 @@ from pathlib import Path
 from typing import Any
 
 from runcomposer.sdk import (
+    ACTIVE_STATES,
     ArtifactRef,
     DeliveryRecord,
     DispatchRecord,
+    RunActive,
     RunEvent,
     RunPage,
     RunRecord,
+    StoreBase,
     StoreError,
     Verdict,
     completion_of,
@@ -174,7 +177,7 @@ class _NoLock:
 _NO_LOCK = _NoLock()
 
 
-class SqliteRunStore:
+class SqliteRunStore(StoreBase):
     store_id = "sqlite"
 
     @staticmethod
@@ -465,6 +468,7 @@ class SqliteRunStore:
         state: str,
         owner: str | None = None,
         parameters: Mapping[str, Any] | None = None,
+        exclusive: bool = False,
     ) -> DispatchRecord:
         with self._write() as conn:
             _require_run(conn, run_id)
@@ -472,6 +476,21 @@ class SqliteRunStore:
                 "SELECT 1 FROM dispatches WHERE dispatch_id = ?", (dispatch_id,)
             ).fetchone():
                 raise StoreError(f"dispatch id {dispatch_id!r} already exists")
+            if exclusive:
+                # Checked inside the BEGIN IMMEDIATE transaction that inserts:
+                # another process holding the write lock has either committed
+                # its dispatch (seen here) or not started (and will see ours).
+                latest = conn.execute(
+                    "SELECT dispatch_id, state FROM dispatches WHERE run_id = ?"
+                    " ORDER BY rowid DESC LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+                if latest is not None and latest["state"] in ACTIVE_STATES:
+                    raise RunActive(
+                        f"run {run_id} already has a dispatch in flight "
+                        f"({latest['dispatch_id']}, {latest['state']}) — cancel it or wait for "
+                        "it before dispatching again"
+                    )
             conn.execute(
                 "INSERT INTO dispatches (dispatch_id, run_id, mode, state, owner, parameters,"
                 " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -794,17 +813,30 @@ class SqliteRunStore:
                 "SELECT * FROM events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?",
                 (run_id, int(after), max(0, int(limit))),
             ).fetchall()
-        return [
-            RunEvent(
-                seq=row["seq"],
-                run_id=row["run_id"],
-                at=row["at"],
-                kind=row["kind"],
-                dispatch_id=row["dispatch_id"],
-                data=json.loads(row["data"]),
-            )
-            for row in rows
-        ]
+        return _events(rows)
+
+    def latest_events(self, run_id: str, *, limit: int = 200) -> list[RunEvent]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM (SELECT * FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT ?)"
+                " ORDER BY seq",
+                (run_id, max(0, int(limit))),
+            ).fetchall()
+        return _events(rows)
+
+
+def _events(rows: list[Any]) -> list[RunEvent]:
+    return [
+        RunEvent(
+            seq=row["seq"],
+            run_id=row["run_id"],
+            at=row["at"],
+            kind=row["kind"],
+            dispatch_id=row["dispatch_id"],
+            data=json.loads(row["data"]),
+        )
+        for row in rows
+    ]
 
 
 # -- helpers -------------------------------------------------------------------------

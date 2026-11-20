@@ -19,12 +19,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from runcomposer.sdk import ParsedVerdict, ParseError, parse_xml
+from runcomposer.sdk import ParsedVerdict, ParseError, ParserBase, parse_xml
 
 __all__ = ["JunitXmlParser"]
 
 
-class JunitXmlParser:
+class JunitXmlParser(ParserBase):
     format_id = "junit-xml"
 
     def __init__(self, pattern: str = "junit*.xml"):

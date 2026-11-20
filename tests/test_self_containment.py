@@ -166,27 +166,47 @@ def test_the_layers_above_do_not_import_plugins():
 def test_there_are_plugins_to_check():
     names = {path.name for path in plugin_files()}
     assert {
-        "sqlite_store.py", "manifest_source.py", "robot_source.py", "demo_source.py",
+        "sqlite_store.py", "manifest_source.py", "robot_source.py",
         "demo_runner.py", "robot_pool.py", "robot_listener.py", "jenkins.py",
         "command_runner.py", "observers.py", "verdicts_parser.py", "junit_parser.py",
         "robot_output_parser.py",
     } <= names
 
 
+#: The one sibling import among the reference plugins, and why it is one:
+#: the live-status listener is the worker-side half of ``robot-pool``. Robot
+#: Framework loads a listener by import path inside the worker process, so it
+#: is a module of its own — but it is that connector's code, not another
+#: plugin's. Every other plugin module imports nothing of runcomposer but the
+#: SDK (the demo corpus source lives in ``manifest_source`` for that reason).
+SIBLING_IMPORTS = {"robot_pool.py": {"runcomposer.plugins.robot_listener"}}
+
+
 def test_plugins_import_only_the_sdk_from_runcomposer():
-    """Sibling imports inside ``runcomposer.plugins`` are a connector
-    package's own business; everything else of runcomposer must come through
+    """Everything of runcomposer a plugin uses comes through
     ``runcomposer.sdk`` — including imports made inside a function, which is
-    where a worker process would hide one."""
-    offending = {
-        path.name: found
-        for path in plugin_files()
-        if (found := outside_the_sdk(imported_modules(path), ("runcomposer.plugins",)))
-    }
+    where a worker process would hide one — and plugins do not import each
+    other, except for the one justified case above."""
+    offending = {}
+    for path in plugin_files():
+        imports = [
+            (name, line)
+            for name, line in imported_modules(path)
+            if name not in SIBLING_IMPORTS.get(path.name, set())
+        ]
+        if found := outside_the_sdk(imports, ()):
+            offending[path.name] = found
     assert not offending, (
-        "reference plugins must import only runcomposer.sdk from the runcomposer package: "
-        f"{offending}"
+        "reference plugins must import only runcomposer.sdk from the runcomposer package "
+        f"(sibling exceptions: SIBLING_IMPORTS): {offending}"
     )
+
+
+def test_the_sibling_exception_is_still_needed():
+    """An exception that no longer matches an import is stale — remove it."""
+    for filename, allowed in SIBLING_IMPORTS.items():
+        names = {name for name, _line in imported_modules(PLUGINS_DIR / filename)}
+        assert allowed <= names, f"SIBLING_IMPORTS[{filename!r}] lists {allowed - names}, not imported"
 
 
 def test_plugins_do_not_name_the_layers_they_may_not_import():

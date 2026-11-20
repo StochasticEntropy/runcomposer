@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from runcomposer.sdk import ConfigError, Item, canonical_json, sha256_hex
+from runcomposer.sdk import ConfigError, Item, SourceBase, canonical_json, sha256_hex
 
 __all__ = ["RobotFrameworkSource"]
 
@@ -32,7 +32,7 @@ def _require_robot() -> Any:
     return TestSuiteBuilder
 
 
-class RobotFrameworkSource:
+class RobotFrameworkSource(SourceBase):
     provider_id = "robotframework"
     PATH_OPTIONS = ("root", "roots")
 

@@ -11,9 +11,17 @@ is a breaking change and is listed as one in CHANGELOG.md.
 
 What is here, by role:
 
-- **Protocols** — ``TestSource``, ``Runner`` (+ ``RunnerBase``),
-  ``ResultParser``, ``RunStore``, ``RunObserver``, and what runcomposer hands
-  to a runner: ``DispatchContext``, ``LiveChannel``, ``History``.
+- **Protocols** — ``TestSource``, ``Runner``, ``ResultParser``,
+  ``RunStore``, ``RunObserver``; ``Configurable`` (what every plugin class
+  tells the config loader); and what runcomposer hands to a runner:
+  ``DispatchContext``, ``LiveChannel``, ``History``. ``contract_members``
+  lists a protocol's members — the list startup checks a plugin against.
+- **Base classes** — ``SourceBase``, ``RunnerBase``, ``ParserBase``,
+  ``StoreBase``, ``ObserverBase`` (all derived from ``PluginBase``): the
+  defaults for every optional member, and ``OPTIONS`` / ``PATH_OPTIONS`` /
+  ``resolve_config_paths`` for configuration. A plugin need not derive from
+  them, but must then provide every member itself — startup refuses one
+  that does not, naming what is missing.
 - **Records** — ``Item``, ``Verdict``, ``ParsedVerdict``, ``RunRecord``,
   ``DispatchRecord``, ``DeliveryRecord``, ``ArtifactRef``, ``RunEvent``,
   ``RunPage``, ``RunnerInfo``, ``Parameter``, ``Health``.
@@ -81,18 +89,25 @@ from runcomposer.core.model import (
 from runcomposer.core.parameters import Parameter, parameters_from_config, validate_parameters
 from runcomposer.core.planning import ChunkPlan, plan_chunks, split_max
 from runcomposer.core.ports import (
+    Configurable,
     DispatchContext,
     Health,
     History,
     LiveChannel,
+    ObserverBase,
     ParsedVerdict,
+    ParserBase,
+    PluginBase,
     ResultParser,
     Runner,
     RunnerBase,
     RunnerInfo,
     RunObserver,
     RunStore,
+    SourceBase,
+    StoreBase,
     TestSource,
+    contract_members,
 )
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
@@ -118,6 +133,7 @@ __all__ = [
     "ChunkPlan",
     "Config",
     "ConfigError",
+    "Configurable",
     "Conflict",
     "DeliveryRecord",
     "DispatchCancelled",
@@ -135,10 +151,13 @@ __all__ = [
     "Item",
     "LiveChannel",
     "NotFound",
+    "ObserverBase",
     "Parameter",
     "ParseError",
     "ParsedVerdict",
+    "ParserBase",
     "PayloadTooLarge",
+    "PluginBase",
     "PluginError",
     "ResultParser",
     "RunActive",
@@ -154,7 +173,9 @@ __all__ = [
     "Selection",
     "SelectionError",
     "Service",
+    "SourceBase",
     "SpecConflict",
+    "StoreBase",
     "StoreError",
     "TestSource",
     "UnknownRun",
@@ -163,6 +184,7 @@ __all__ = [
     "bundle_hash",
     "canonical_json",
     "completion_of",
+    "contract_members",
     "effective_verdicts",
     "epoch_ms",
     "forbid_dtd",

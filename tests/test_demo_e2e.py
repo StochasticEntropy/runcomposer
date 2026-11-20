@@ -314,7 +314,7 @@ class TestExampleSpecHonesty:
 
     @pytest.fixture()
     def source(self):
-        from runcomposer.plugins.demo_source import DemoCorpusSource
+        from runcomposer.plugins.manifest_source import DemoCorpusSource
 
         return DemoCorpusSource()
 

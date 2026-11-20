@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from runcomposer.sdk import ParsedVerdict, ParseError, forbid_dtd
+from runcomposer.sdk import ParsedVerdict, ParseError, ParserBase, forbid_dtd
 
 __all__ = ["RobotOutputXmlParser"]
 
@@ -29,7 +29,7 @@ def _require_robot() -> tuple[Any, Any]:
     return ExecutionResult, ResultVisitor
 
 
-class RobotOutputXmlParser:
+class RobotOutputXmlParser(ParserBase):
     format_id = "robot-output-xml"
 
     def __init__(self, pattern: str = "output*.xml"):

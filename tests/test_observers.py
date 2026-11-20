@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.sdk import ConfigError, Service
+from runcomposer.sdk import ConfigError, ObserverBase, Service
 
 from .conftest import compose
 
@@ -103,7 +103,7 @@ def closed_port() -> int:
 SEEN: dict[str, list[Any]] = {}
 
 
-class RecordingObserver:
+class RecordingObserver(ObserverBase):
     def __init__(self, name: str):
         self.name = name
         SEEN[name] = []
@@ -112,7 +112,7 @@ class RecordingObserver:
         SEEN[self.name].append(event)
 
 
-class FaultyObserver:
+class FaultyObserver(ObserverBase):
     def notify(self, event: Any) -> None:
         raise RuntimeError(f"cannot cope with {event.kind}")
 

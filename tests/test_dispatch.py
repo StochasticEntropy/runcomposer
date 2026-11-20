@@ -32,13 +32,18 @@ from runcomposer.sdk import (
     InvalidParameter,
     InvalidRequest,
     NotFound,
+    ObserverBase,
     ParsedVerdict,
+    ParserBase,
     RunActive,
     RunnerBase,
     RunnerInfo,
+    RunStore,
     Service,
+    StoreBase,
     UnknownRunner,
     Verdict,
+    contract_members,
     load_config,
     parameters_from_config,
     sha256_hex,
@@ -82,7 +87,7 @@ class ScriptedRunner(RunnerBase):
         CANCELS.get(self.script, lambda _ctx: None)(ctx)
 
 
-class DelegatingStore:
+class DelegatingStore(StoreBase):
     """A RunStore that is not the sqlite class and exposes nothing of it:
     every call goes to an inner store through ``__getattr__``. There is no
     ``_path`` here for anyone to reach for."""
@@ -99,7 +104,22 @@ class DelegatingStore:
         return getattr(self.__inner, name)
 
 
-class ShoutingParser:
+def _forward(name: str) -> Any:
+    def forwarded(self: DelegatingStore, *args: Any, **kwargs: Any) -> Any:
+        return getattr(self._DelegatingStore__inner, name)(*args, **kwargs)  # type: ignore[attr-defined]
+
+    forwarded.__name__ = name
+    return forwarded
+
+
+# The RunStore contract is checked at startup by member presence, so every
+# member is forwarded explicitly rather than only through __getattr__.
+for _member in contract_members(RunStore):
+    if _member != "store_id":
+        setattr(DelegatingStore, _member, _forward(_member))
+
+
+class ShoutingParser(ParserBase):
     """A parser configured under ``parsers:`` with an option of its own."""
 
     format_id = "shop-lines"
@@ -628,6 +648,36 @@ class TestPreconditions:
         release.set()
         assert service.wait(run_id, timeout=30).state == "COMPLETE"
         assert len(service.require_run(run_id).dispatches) == 1
+
+    def test_two_processes_cannot_both_dispatch_one_run(self, scripted, tmp_path):
+        """Regression: the in-process check runs under the dispatch manager's
+        lock, which another process does not share. Two Services on one store
+        file stand for two processes; the second is put exactly into the race
+        window (its own check passed before the first recorded anything) —
+        and the store's exclusive insert still refuses it."""
+        started, release = threading.Event(), threading.Event()
+
+        def script(ctx: DispatchContext) -> None:
+            ctx.declare(["1"])
+            started.set()
+            assert release.wait(30)
+            ctx.deliver("1", verdicts=[Verdict(i, "PASS") for i in ctx.item_ids])
+
+        first = scripted(script)
+        second = Service(load_config(str(tmp_path / "config.yaml")))
+        try:
+            run_id = compose(first, "Auth-SSO")
+            first.dispatch(run_id, "fake")
+            assert started.wait(30)
+            second.dispatcher._refuse_if_in_flight = lambda _run_id: None  # the race window
+            with pytest.raises(RunActive, match="already has a dispatch in flight"):
+                second.dispatch(run_id, "fake")
+            release.set()
+            assert first.wait(run_id, timeout=30).state == "COMPLETE"
+            assert len(first.require_run(run_id).dispatches) == 1
+        finally:
+            release.set()
+            second.close()
 
     def test_an_empty_selection_is_not_dispatched(self, scripted):
         service = scripted(all_pass)
@@ -1274,7 +1324,7 @@ class TestContextServices:
 NOTIFIED: list[tuple[str, str]] = []
 
 
-class RecordingObserver:
+class RecordingObserver(ObserverBase):
     def __init__(self, name: str = "recorder"):
         self.name = name
 
@@ -1458,3 +1508,22 @@ def test_write_config_helper_is_what_these_tests_think_it_is(tmp_path):
     config = load_config(str(path))
     assert config.dispatch["max_concurrent"] == 3
     assert config.inbox_dir is None and config.runner_ids() == ["demo"]
+
+
+def test_run_detail_reads_a_bounded_tail_of_the_event_stream(scripted, monkeypatch):
+    """Regression: the run detail shows the last 200 events — and reads only
+    those (``RunStore.latest_events``), never the whole stream."""
+    service = scripted(all_pass)
+    run_id = compose(service, "Auth-SSO")
+    for n in range(260):
+        service.store.append_event(run_id, kind="log", at="2026-07-07T10:00:00Z", data={"n": n})
+    every = service.store.events(run_id, limit=10_000)
+
+    def whole_stream(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the run detail read the event stream unbounded")
+
+    monkeypatch.setattr(service.store, "events", whole_stream)
+    detail = run_detail(service, service.require_run(run_id))
+    assert len(detail["events"]) == 200
+    assert [e["seq"] for e in detail["events"]] == [e.seq for e in every[-200:]]
+    assert detail["last_event_seq"] == every[-1].seq

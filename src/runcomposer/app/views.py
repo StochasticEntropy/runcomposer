@@ -204,7 +204,7 @@ def run_detail(
     delivered = (
         service.store.delivered_shards(run.id, dispatch.dispatch_id) if dispatch else set()
     )
-    events = service.store.events(run.id, after=0, limit=100_000)
+    events = service.store.latest_events(run.id, limit=events_limit)
     data.update(
         {
             "deliveries": [delivery_json(delivery) for delivery in run.deliveries],
@@ -212,7 +212,7 @@ def run_detail(
             "verdicts": rows,
             "shards": shard_summaries(dispatch, rows, delivered),
             "artifacts": service.artifacts.list(run.id),
-            "events": [event_json(event) for event in events[-events_limit:]],
+            "events": [event_json(event) for event in events],
             "last_event_seq": events[-1].seq if events else 0,
             "selection": {
                 "tag_filter": selection.get("tag_filter"),

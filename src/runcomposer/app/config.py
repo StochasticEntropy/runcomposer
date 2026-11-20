@@ -28,6 +28,14 @@ directory. The core does that for its own keys; a plugin declares which of
 its options are paths (``PATH_OPTIONS``), or resolves them itself
 (``resolve_config_paths``) when the rule has exceptions.
 
+**The contract is checked, not guessed.** Every plugin class must provide the
+members of ``Configurable`` (``OPTIONS``, ``resolve_config_paths``) and every
+built plugin the members of its role's protocol — ``TestSource``, ``Runner``,
+``ResultParser``, ``RunStore``, ``RunObserver``. The base classes in
+``runcomposer.sdk`` supply the optional ones. A missing member is a
+:class:`ConfigError` at startup naming it; afterwards the members are called
+directly, never looked up by attribute convention.
+
 **Secrets.** A string option of the form ``${env:NAME}`` or
 ``${env:NAME:-default}`` is replaced from the environment when the plugin is
 built. A missing variable is a :class:`ConfigError` naming it. Configured
@@ -52,6 +60,15 @@ from typing import Any
 import yaml
 
 from runcomposer.core.errors import ConfigError, PluginError
+from runcomposer.core.ports import (
+    Configurable,
+    ResultParser,
+    Runner,
+    RunObserver,
+    RunStore,
+    TestSource,
+    missing_members,
+)
 from runcomposer.core.registry import (
     OBSERVER_GROUP,
     PARSER_GROUP,
@@ -89,6 +106,15 @@ _PLUGIN_SECTIONS = {
     "runners": RUNNER_GROUP,
     "parsers": PARSER_GROUP,
     "observers": OBSERVER_GROUP,
+}
+#: The protocol a built plugin of each section is checked against, and the
+#: SDK base class that supplies the optional members of that role.
+_ROLES: dict[str, tuple[type, str]] = {
+    "store": (RunStore, "StoreBase"),
+    "sources": (TestSource, "SourceBase"),
+    "runners": (Runner, "RunnerBase"),
+    "parsers": (ResultParser, "ParserBase"),
+    "observers": (RunObserver, "ObserverBase"),
 }
 #: Keys of a plugin entry that select the plugin rather than configure it.
 _SELECTOR_KEYS = ("module", "plugin")
@@ -267,6 +293,7 @@ class Config:
                     cls = load_entry_point(group, str(plugin_ref or key))
             except PluginError as exc:
                 raise ConfigError(f"{section}.{key}: {exc}") from exc
+            _require_members(cls, Configurable, f"{section}.{key}", section)
             specs.append(
                 PluginSpec(
                     section=section, key=str(key), cls=cls, options=self._anchor(cls, options)
@@ -282,19 +309,13 @@ class Config:
 
     def _anchor(self, cls: Any, options: dict[str, Any]) -> dict[str, Any]:
         """Resolve the options a plugin declares as paths (§8)."""
-        hook = getattr(cls, "resolve_config_paths", None)
-        if hook is not None:
-            resolved = hook(dict(options), self.resolve_path)
-            if not isinstance(resolved, dict):
-                raise ConfigError(
-                    f"{getattr(cls, '__name__', cls)}.resolve_config_paths must return a dict "
-                    f"of options, got {type(resolved).__name__}"
-                )
-            return resolved
-        for name in getattr(cls, "PATH_OPTIONS", ()):
-            if name in options:
-                options[name] = self.resolve_path(options[name])
-        return options
+        resolved = cls.resolve_config_paths(dict(options), self.resolve_path)
+        if not isinstance(resolved, dict):
+            raise ConfigError(
+                f"{_name(cls)}.resolve_config_paths must return a dict "
+                f"of options, got {type(resolved).__name__}"
+            )
+        return resolved
 
     def build(self, spec: PluginSpec) -> Any:
         """Construct a configured plugin: options checked against the
@@ -310,7 +331,7 @@ class Config:
             return str(redact(str(message), secrets))
 
         try:
-            return spec.cls(**options)
+            plugin = spec.cls(**options)
         except ConfigError as exc:
             # The plugin's own refusal, kept as it is (type and message) —
             # with the entry it came from in front, since one plugin may be
@@ -324,6 +345,8 @@ class Config:
             raise ConfigError(
                 f"{spec.where}: {type(exc).__name__}: {redacted(exc)}"
             ) from None
+        _require_members(plugin, _ROLES[spec.section][0], spec.where, spec.section)
+        return plugin
 
     # -- the single-entry sections --------------------------------------------
 
@@ -364,14 +387,31 @@ class Config:
                 check_options(spec)
 
 
-# -- option checking ------------------------------------------------------------
+# -- the contract and option checking ---------------------------------------------
+
+
+def _name(cls: Any) -> str:
+    return str(cls.__name__) if isinstance(cls, type) else repr(cls)
+
+
+def _require_members(plugin: Any, protocol: type, where: str, section: str) -> None:
+    """Refuse a plugin that does not provide every member of ``protocol``."""
+    missing = missing_members(plugin, protocol)
+    if missing:
+        owner = plugin if isinstance(plugin, type) else type(plugin)
+        base = _ROLES[section][1]
+        raise ConfigError(
+            f"{where}: {_name(owner)} does not provide {missing} of the "
+            f"{protocol.__name__} contract — derive it from runcomposer.sdk.{base}, which "
+            "supplies the optional members, or define them"
+        )
 
 
 def accepted_options(cls: Any) -> tuple[list[str], list[str], bool]:
     """``(accepted, required, open)`` for a plugin class: an explicit
     ``OPTIONS`` declaration, else the constructor's keyword parameters.
     ``open`` is true when the constructor takes ``**kwargs``."""
-    declared = getattr(cls, "OPTIONS", None)
+    declared = cls.OPTIONS
     if declared is not None:
         return list(declared), [], False
     try:
@@ -401,13 +441,13 @@ def check_options(spec: PluginSpec) -> None:
     if unknown and not is_open:
         raise ConfigError(
             f"{spec.where}: unknown option(s) {unknown} — "
-            f"{getattr(spec.cls, '__name__', spec.cls)} accepts: {sorted(accepted) or 'none'}"
+            f"{_name(spec.cls)} accepts: {sorted(accepted) or 'none'}"
         )
     missing = sorted(set(required) - set(spec.options))
     if missing:
         raise ConfigError(
             f"{spec.where}: missing required option(s) {missing} — "
-            f"{getattr(spec.cls, '__name__', spec.cls)} accepts: {sorted(accepted)}"
+            f"{_name(spec.cls)} accepts: {sorted(accepted)}"
         )
 
 

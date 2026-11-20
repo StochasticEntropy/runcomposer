@@ -131,7 +131,7 @@ def cmd_catalog(args: argparse.Namespace) -> int:
 
     items = source.items()
     tags = Counter(tag for item in items for tag in item.tags)
-    duplicates = list(getattr(source, "duplicate_ids", ()) or ())
+    duplicates = list(source.duplicate_ids or ())
     if args.as_json:
         emit_json(
             {

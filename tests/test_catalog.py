@@ -13,15 +13,15 @@ import pytest
 
 from runcomposer.app.catalog import Catalog
 from runcomposer.app.config import load_config
-from runcomposer.sdk import ConfigError, Item, canonical_json, sha256_hex
+from runcomposer.sdk import ConfigError, Item, SourceBase, canonical_json, sha256_hex
 
 from .conftest import compose, write_config
 
 HERE = "tests.test_catalog"
 
 
-class CountingSource:
-    """A source with no ``fingerprint``: it cannot say whether it changed.
+class CountingSource(SourceBase):
+    """A source whose ``fingerprint`` is the default ``None``: it cannot say whether it changed.
     It reads a JSON list of ids on construction and counts its constructions."""
 
     provider_id = "counting"

@@ -645,6 +645,68 @@ class TestConcurrentDelivery:
         assert len(store.verdicts_for(run_id)) == 2 * writers
 
 
+class TestExclusiveDispatch:
+    """Regression: one dispatch in flight per run, held by the store itself —
+    so two processes (each with its own dispatch manager and its own lock)
+    cannot both open a dispatch for one idle run."""
+
+    def test_an_exclusive_dispatch_is_refused_while_one_is_in_flight(self, store):
+        from runcomposer.sdk import RunActive
+
+        run = store.create_run(make_spec(), origin="test")
+        store.add_dispatch(run.id, dispatch_id="D1", mode="demo", state="RUNNING", exclusive=True)
+        with pytest.raises(RunActive, match="D1, RUNNING"):
+            store.add_dispatch(run.id, dispatch_id="D2", mode="demo", state="DISPATCHED", exclusive=True)
+        assert [d.dispatch_id for d in store.get_run(run.id).dispatches] == ["D1"]
+        # Without `exclusive` the store records what it is told (ingest, export).
+        store.add_dispatch(run.id, dispatch_id="D3", mode="ingest", state="AWAITING_RESULTS")
+
+    def test_a_finished_dispatch_does_not_block_the_next(self, store):
+        run = store.create_run(make_spec(), origin="test")
+        store.add_dispatch(run.id, dispatch_id="D1", mode="demo", state="RUNNING", exclusive=True)
+        store.update_dispatch("D1", state="COMPLETE")
+        store.add_dispatch(run.id, dispatch_id="D2", mode="demo", state="DISPATCHED", exclusive=True)
+
+    def test_several_processes_racing_for_one_run_open_exactly_one_dispatch(self, store, tmp_path):
+        run = store.create_run(make_spec(), origin="test")
+        racers = 4
+        mp = multiprocessing.get_context("spawn")
+        barrier = mp.Barrier(racers)
+        results = mp.Queue()
+        processes = [
+            mp.Process(
+                target=_claim_from_process,
+                args=(str(tmp_path / "test.db"), run.id, n, barrier, results),
+            )
+            for n in range(racers)
+        ]
+        for process in processes:
+            process.start()
+        outcomes = sorted(results.get(timeout=60) for _ in processes)
+        for process in processes:
+            process.join(timeout=30)
+        assert outcomes == ["claimed"] + ["refused"] * (racers - 1), outcomes
+        assert len(store.get_run(run.id).dispatches) == 1
+
+
+def _claim_from_process(path: str, run_id: str, n: int, barrier, results) -> None:
+    from runcomposer.sdk import RunActive
+
+    try:
+        store = SqliteRunStore(path=path)
+        barrier.wait(timeout=30)
+        try:
+            store.add_dispatch(
+                run_id, dispatch_id=f"D{n}", mode="demo", state="DISPATCHED", exclusive=True
+            )
+            results.put("claimed")
+        except RunActive:
+            results.put("refused")
+    except BaseException as exc:
+        results.put(f"error: {type(exc).__name__}: {exc}")
+        raise
+
+
 def _deliver_distinct(store, run_id: str, n: int) -> str:
     """Writer ``n``'s own content for shard "1": three verdicts tagged with
     its hash, so a mixture of two writers would be visible."""
@@ -815,6 +877,13 @@ class TestEvents:
     def test_no_data_is_an_empty_mapping(self, store, run_id):
         assert store.append_event(run_id, kind="log", at=utc_now()).data == {}
         assert store.events(run_id)[0].data == {}
+
+    def test_latest_events_is_a_bounded_read_of_the_tail(self, store, run_id):
+        events = [store.append_event(run_id, kind=f"log.{n}", at=utc_now()) for n in range(7)]
+        assert store.latest_events(run_id, limit=3) == events[-3:]  # oldest first
+        assert store.latest_events(run_id, limit=100) == events
+        assert store.latest_events(run_id, limit=0) == []
+        assert store.latest_events("01NOSUCHRUN000000000000000", limit=5) == []
 
     def test_events_survive_a_reopen(self, tmp_path):
         path = str(tmp_path / "events.db")

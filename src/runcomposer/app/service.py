@@ -203,9 +203,7 @@ class Service:
         if "bus" in parts:
             self.bus.close()
         if "store" in parts:
-            closer = getattr(self.store, "close", None)
-            if closer is not None:
-                closer()
+            self.store.close()
 
     # -- runners ----------------------------------------------------------------------
 
@@ -235,8 +233,7 @@ class Service:
         if cached and not refresh and time.monotonic() - cached[0] < _HEALTH_TTL_S:
             return cached[1]
         try:
-            probe = getattr(self.runner(runner_id), "health", None)
-            health = probe() if probe is not None else Health()
+            health = self.runner(runner_id).health()
             if not isinstance(health, Health):
                 health = Health(status="unknown", detail=str(health))
         except Exception as exc:
@@ -301,8 +298,8 @@ class Service:
         plugins = []
         for section in ("store", "sources", "runners", "parsers", "observers"):
             for spec in self.config.plugin_specs(section):
-                module = getattr(spec.cls, "__module__", "") or ""
-                target = f"{module}:{getattr(spec.cls, '__qualname__', spec.cls)}"
+                module = str(spec.cls.__module__ or "")
+                target = f"{module}:{spec.cls.__qualname__}"
                 # An entry-point plugin names its distribution itself; for an
                 # import path, the distribution that provides the package.
                 registered = by_target.get(target)

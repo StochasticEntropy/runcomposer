@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from runcomposer.sdk import ConfigError, RunEvent
+from runcomposer.sdk import ConfigError, ObserverBase, RunEvent
 
 __all__ = ["CommandObserver", "JsonlObserver", "WebhookObserver", "event_payload"]
 
@@ -45,7 +45,7 @@ def event_payload(event: RunEvent) -> dict[str, Any]:
     }
 
 
-class WebhookObserver:
+class WebhookObserver(ObserverBase):
     """POST each event as JSON to ``url``.
 
     With a ``secret`` the body is signed: the request carries
@@ -101,7 +101,7 @@ class WebhookObserver:
             raise RuntimeError(f"webhook unreachable: {exc.reason}") from None
 
 
-class JsonlObserver:
+class JsonlObserver(ObserverBase):
     """Append each event as one JSON line to ``path`` (created on first
     use; relative to the config file)."""
 
@@ -119,7 +119,7 @@ class JsonlObserver:
                 handle.write(line)
 
 
-class CommandObserver:
+class CommandObserver(ObserverBase):
     """Run ``command`` for each event, with the event in the environment:
 
     ``RUNCOMPOSER_EVENT`` (the kind), ``RUNCOMPOSER_RUN_ID``,

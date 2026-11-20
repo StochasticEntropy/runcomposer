@@ -73,8 +73,11 @@ class Ledger:
         parameters: Mapping[str, Any] | None = None,
         shards: Sequence[str] = (),
         dispatch_id: str | None = None,
+        exclusive: bool = False,
     ) -> DispatchRecord:
-        """Record a new dispatch and make it the run's headline."""
+        """Record a new dispatch and make it the run's headline. With
+        ``exclusive`` the store refuses (``RunActive``) when the run already
+        has a dispatch in flight — atomically, across processes."""
         with self._lock:
             dispatch: DispatchRecord = self._store.add_dispatch(
                 run_id,
@@ -83,6 +86,7 @@ class Ledger:
                 state=state,
                 owner=owner,
                 parameters=parameters,
+                exclusive=exclusive,
             )
             if shards:
                 dispatch = self._store.update_dispatch(dispatch.dispatch_id, shards=list(shards))

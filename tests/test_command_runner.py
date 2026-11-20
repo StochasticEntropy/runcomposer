@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.sdk import ConfigError, InvalidParameter, Service
+from runcomposer.sdk import ConfigError, InvalidParameter, ParserBase, Service
 
 from .conftest import REPO, compose, run_to_end, wait_until
 
@@ -433,7 +433,7 @@ class TestCancel:
 # -- formats and parsers ----------------------------------------------------------------
 
 
-class ShoutingJunitParser:
+class ShoutingJunitParser(ParserBase):
     """A deployment's own reading of JUnit reports, configured under
     `parsers:` — it upper-cases messages so a test can tell it was used."""
 

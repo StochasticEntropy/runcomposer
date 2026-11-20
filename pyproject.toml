@@ -53,7 +53,7 @@ runcomposer-exec = "runcomposer_exec:main"
 [project.entry-points."runcomposer.sources"]
 manifest = "runcomposer.plugins.manifest_source:ManifestSource"
 robotframework = "runcomposer.plugins.robot_source:RobotFrameworkSource"
-demo-corpus = "runcomposer.plugins.demo_source:DemoCorpusSource"
+demo-corpus = "runcomposer.plugins.manifest_source:DemoCorpusSource"
 
 [project.entry-points."runcomposer.runners"]
 demo = "runcomposer.plugins.demo_runner:DemoRunner"

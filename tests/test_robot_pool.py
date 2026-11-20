@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.sdk import ConfigError, InvalidParameter, Service
+from runcomposer.sdk import ConfigError, InvalidParameter, ParserBase, Service
 
 from .conftest import REPO, ROBOT_SHOP, compose, needs_robot, run_to_end, wait_until
 
@@ -1147,7 +1147,7 @@ class TestHooksAndListeners:
 # -- the configured parser is honoured ------------------------------------------------
 
 
-class TaggingParser:
+class TaggingParser(ParserBase):
     """A deployment's own parser for Robot output: the stock one, with every
     message marked — so a test can see WHICH parser produced a verdict."""
 

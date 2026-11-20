@@ -26,8 +26,10 @@ from .conftest import write_config
 #: this list and in CHANGELOG.md, deliberately.
 PUBLIC_NAMES = {
     # protocols, and what runcomposer hands to a runner
-    "TestSource", "Runner", "RunnerBase", "ResultParser", "RunStore", "RunObserver",
-    "DispatchContext", "LiveChannel", "History",
+    "TestSource", "Runner", "ResultParser", "RunStore", "RunObserver", "Configurable",
+    "DispatchContext", "LiveChannel", "History", "contract_members",
+    # base classes: the defaults for every optional member
+    "PluginBase", "SourceBase", "RunnerBase", "ParserBase", "StoreBase", "ObserverBase",
     # records
     "Item", "Verdict", "ParsedVerdict", "RunRecord", "DispatchRecord", "DeliveryRecord",
     "ArtifactRef", "RunEvent", "RunPage", "RunnerInfo", "Parameter", "Health", "ChunkPlan",

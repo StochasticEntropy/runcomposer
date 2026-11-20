@@ -494,18 +494,20 @@ class DispatchManager:
             if self._closed:
                 raise Conflict("the dispatch manager is shut down")
             # Checked again under the lock that records the dispatch: two
-            # requests for one run must not both find it idle.
+            # requests for one run must not both find it idle. Another
+            # process has its own lock — the store's exclusive insert below
+            # is what holds across processes.
             self._refuse_if_in_flight(run_id)
+            dispatch = service.ledger.open(
+                run_id, runner_id, owner=self.owner, parameters=accepted, exclusive=True
+            )
             if parameters is not None or document is not None:
                 # Accepted per-run values are part of the document (§3:
-                # runner.*) — written only for the request that is accepted,
-                # and only after its values were validated.
+                # runner.*) — written only for the request that is accepted
+                # (its dispatch is recorded), after its values were validated.
                 spec = dict(spec)
                 spec["runner"] = {**(spec.get("runner") or {}), runner_id: dict(accepted)}
                 service.store.set_spec_document(run_id, spec)
-            dispatch = service.ledger.open(
-                run_id, runner_id, owner=self.owner, parameters=accepted
-            )
             ctx = _Context(
                 service,
                 dispatch,
@@ -703,11 +705,8 @@ class DispatchManager:
         service.ledger.move(dispatch.dispatch_id, "CANCELLED", error="cancelled on request")
 
     def _call_runner_cancel(self, runner: Any, ctx: _Context) -> None:
-        cancel = getattr(runner, "cancel", None)
-        if cancel is None:
-            return
         try:
-            cancel(ctx)
+            runner.cancel(ctx)
         except Exception as exc:
             ctx.log(f"runner cancel failed: {type(exc).__name__}: {exc}", level="warning")
 
