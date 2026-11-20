@@ -1,0 +1,27 @@
+# Way 1 of 4 — in-process pool: Robot Framework executed on THIS machine by the
+# `robot-pool` runner, in worker processes, one per shard.
+#
+#   pip install "runcomposer[robot]"
+#   runcomposer run Smoke --runner robot-pool --config examples/robot-pool/config.yaml
+#
+# Relative paths resolve against this file's directory: the corpus is the
+# example suite next door, and everything the runs write lands in state/.
+core:
+  artifact_dir: state/artifacts
+  ingestion: { inbox: null }
+store:
+  sqlite: { path: state/runcomposer.db }
+sources:
+  robot-shop: { plugin: robotframework, root: ../robot-shop/tests }
+runners:
+  robot-pool:
+    suite_root: ../robot-shop/tests
+    max_workers: 4
+    # Each partition runs the selection once, with the partition's name in the
+    # Robot variable ${PARTITION}; a run may choose a subset (--param partitions=[eu]).
+    partitions: [eu, us]
+    partition_variables:
+      eu: { CURRENCY: EUR }
+      us: { CURRENCY: USD }
+    executed_tag: "Executed_{partition}"
+    rerun_failed: 1

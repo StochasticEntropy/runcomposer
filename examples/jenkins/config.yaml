@@ -1,0 +1,37 @@
+# Way 2 of 4 — remote CI trigger: the `jenkins` runner triggers a
+# parameterized Jenkins job, and the job's results come back.
+#
+# Two runner entries for the one plugin, one per completion mode:
+#   - `jenkins` (callback): the job POSTs its bundle to runcomposer's API with
+#     the dispatch's ingest token; runcomposer must be reachable from Jenkins.
+#   - `jenkins-poll` (poll): runcomposer follows the queue item to the build,
+#     waits for it, downloads the archived results and delivers them itself.
+#
+# The job is the one in ci/jenkins/ (a real Jenkins in docker); see
+# ci/jenkins/README.md, whose e2e.py drives both entries against it.
+core:
+  artifact_dir: state/artifacts
+  ingestion: { inbox: null }
+store:
+  sqlite: { path: state/runcomposer.db }
+sources:
+  demo-corpus: {}
+runners:
+  jenkins:
+    plugin: jenkins
+    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    job: runcomposer-consumer
+    completion: callback
+    # How the Jenkins container reaches `runcomposer serve` on this machine.
+    callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
+    user: "${env:JENKINS_USER:-admin}"
+    api_token: "${env:JENKINS_API_TOKEN:-}"
+  jenkins-poll:
+    plugin: jenkins
+    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    job: runcomposer-consumer
+    completion: poll
+    artifact_paths: ["results/*"]
+    poll_interval_s: 2
+    user: "${env:JENKINS_USER:-admin}"
+    api_token: "${env:JENKINS_API_TOKEN:-}"

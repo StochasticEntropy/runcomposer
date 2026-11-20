@@ -24,7 +24,11 @@ runcomposer-demo/
 # (DESIGN.md §6.2c); everything that kit writes goes under its state/ dir.
 !examples/remote-agent/config.yaml
 examples/remote-agent/state/
-# The connector template's example deployment, likewise.
+# The executor examples' and the connector template's deployments, likewise.
+!examples/robot-pool/config.yaml
+!examples/pytest-shop/config.yaml
+!examples/jenkins/config.yaml
+examples/*/state/
 !examples/connector-template/example/config.yaml
 examples/connector-template/example/state/
 .vscode/

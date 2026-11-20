@@ -1,0 +1,26 @@
+# Way 3 of 4 — local command template: the `command` runner runs a command
+# per shard on this machine and delivers what it wrote through the configured
+# parser. Here the command is the example pytest suite's adapter, which runs
+# exactly the planned nodeids and writes junit.xml.
+#
+#   runcomposer run Cart --runner pytest --config examples/pytest-shop/config.yaml
+#
+core:
+  artifact_dir: state/artifacts
+  ingestion: { inbox: null }
+store:
+  sqlite: { path: state/runcomposer.db }
+sources:
+  pytest-shop: { plugin: manifest, path: manifest.json }
+runners:
+  pytest:
+    plugin: command
+    # An argv list: no shell, nothing to quote. {ids_file} / {out_dir} are
+    # replaced literally; the working directory is this file's directory.
+    command: [python, run_pytest.py, "{ids_file}", "{out_dir}"]
+    cwd: .
+    format: junit-xml
+    shards: 2
+    max_parallel: 2
+parsers:
+  junit-xml: { pattern: "junit*.xml" }
