@@ -526,9 +526,9 @@ provider_id: str
 def items() -> list[Item]
 def snapshot() -> str                            # content hash
 def resolve(native_name: str) -> str | None      # parser-name -> id (None = unknown)
-# optional:
-def fingerprint() -> str                         # cheap "did the corpus change" token
-duplicate_ids: list[str]                         # ids more than one item carries
+# defaults in the SourceBase helper class:
+def fingerprint() -> str | None                  # cheap "did the corpus change" token; None = cannot tell
+duplicate_ids: Sequence[str]                     # ids more than one item carries
 ```
 
 Reference impls:
@@ -563,8 +563,8 @@ A selection plans such an id once, with a warning.
 **Staying current.** A source is loaded once and kept. One that offers
 `fingerprint()` — the bundled ones do: file sizes and modification times, no
 parsing — is reloaded when the token changes, checked at most once a second.
-One that does not is reloaded on request (`POST /api/v1/catalog/reload`) and
-before every dispatch, where the drift check needs the corpus as it is *now*.
+One whose `fingerprint()` returns `None` is reloaded on request
+(`POST /api/v1/catalog/reload`) and before every dispatch, where the drift check needs the corpus as it is *now*.
 Composing a run also refreshes first. Editing the corpus never requires a
 restart, and a corpus that did not change is never parsed twice in one
 process. (Each CLI invocation is its own process and parses once; a
@@ -663,8 +663,9 @@ processes (started with the `spawn` method, one per shard, at most
   `SKIP` / `drift`), a failing or overrunning `pre_run_hooks` command
   (`hook_timeout_s`), a missing suite root.
 - *Stopping.* Cancellation, and `shard_timeout_s`, stop worker processes;
-  outstanding shards are not started. Delivered shards are kept. (A hook
-  already running is ended by its timeout, not by cancellation.)
+  outstanding shards are not started. Delivered shards are kept. A
+  `pre_run_hooks` command still running is stopped by a cancellation too
+  (with what it started), and the dispatch ends `CANCELLED`.
 - *Live status* comes from a listener streaming through the live channel
   (`live_status`, default on).
 
@@ -755,7 +756,14 @@ The history-query surface is explicit because §7 depends on it:
   a query per row. Times are compared as stored, so a run's `created_at` is
   stored normalized to UTC whatever spelling its document uses;
 - `duration_aggregates(labels, last_n)`;
-- `events(run_id, after, limit)`.
+- `events(run_id, after, limit)`, and `latest_events(run_id, limit)` — a
+  bounded read of the tail, which is what a run detail shows.
+
+`add_dispatch(..., exclusive=True)` refuses (`RunActive`) when the run's
+latest dispatch is in flight, checked inside the transaction that inserts:
+that is what keeps two processes — a server and a CLI, two CLIs — from both
+dispatching one run; the dispatch manager's own lock only covers its
+process.
 
 Reference impl: `sqlite` (default, zero-setup), safe to share between the
 threads of a server and between processes on one file: WAL journal and a busy
@@ -845,17 +853,44 @@ as JSON on stdin; never on the command line).
 
 ### 6.6 The SDK
 
-`runcomposer.sdk` is the connector surface: the protocols, the records, the
-error taxonomy, and the helpers a connector needs — the chunk planner,
-content hashes, the marker reader, the defused XML reader, lifecycle
-functions, parameter validation — plus `load_config` and `Service` for
-driving runcomposer from Python (compose → dispatch → wait → read, in one
-process). Its names keep their meaning within a minor line; a removal is a
-breaking change listed in the changelog. A frozen list of the names in the
-test suite makes every change to it deliberate.
+`runcomposer.sdk` is the connector surface: the protocols, their base classes
+(`SourceBase`, `RunnerBase`, `ParserBase`, `StoreBase`, `ObserverBase`, all
+derived from `PluginBase`), the records, the error taxonomy, and the helpers
+a connector needs — the chunk planner, content hashes, the marker reader, the
+defused XML reader, lifecycle functions, parameter validation — plus
+`load_config` and `Service` for driving runcomposer from Python (compose →
+dispatch → wait → read, in one process). Its names keep their meaning within
+a minor line; a removal is a breaking change listed in the changelog. A
+frozen list of the names in the test suite makes every change to it
+deliberate.
 
-A conformance kit for connector authors (`runcomposer.testing`) and a
-copy-to-start connector package under `examples/` are `[planned]`.
+**The contract is checked, not discovered.** Every member the application
+calls on a plugin is a member of its protocol; the optional ones have
+defaults in the base classes. When a configured plugin is built, its class
+is checked for the `Configurable` members (`OPTIONS`, `CONNECTOR`,
+`resolve_config_paths`) and the built object for every member of its role's
+protocol (`contract_members(protocol)` is that list); a missing one is a
+`ConfigError` naming it. Afterwards members are called directly — a guard
+test keeps `getattr`/`hasattr` off plugin objects in the layers above the
+plugins.
+
+**The hand-off order** — refuse only before `declare`, `declare` exactly
+once, `deliver` only after it — and the shape checks on what is declared
+and delivered are one piece of core code (`core.handoff`) used by the real
+`DispatchContext` and by the kit's fake one, so the two refuse the same
+misuse with the same message.
+
+**The conformance kit** — `runcomposer.testing`, a sibling surface to the
+SDK (plugins import the SDK at run time, tests import the kit), stable on
+the same terms: `check_source`, `check_runner`, `check_parser`,
+`check_store`, `check_observer` run a port's invariants against a caller's
+instance and fail naming the violated rule; `FakeDispatchContext` records
+what a runner does; `ConnectorHarness` builds a real `Service` in a
+temporary directory and drives compose → dispatch → settled with a timeout.
+Every reference plugin is tested with it — the evidence that it suffices.
+`examples/connector-template/` is an installable connector package for the
+example world, tested with the kit; [docs/connectors.md](docs/connectors.md)
+is the author's guide.
 
 ---
 
@@ -984,7 +1019,8 @@ Rules:
 - **Options are validated at startup.** Each entry's keys are checked against
   the plugin's constructor (or an explicit `OPTIONS` declaration): an unknown
   or missing option is a `ConfigError` naming the entry and the accepted
-  keys. Then every configured plugin is constructed once — construction must
+  keys. The plugin is checked against its role's contract (§6.6) the same
+  way. Then every configured plugin is constructed once — construction must
   be free of side effects — and the taxonomy is read, so `serve` and `doctor`
   refuse a deployment that could not have worked. Unknown plugin ids fail the
   same way.
@@ -996,12 +1032,18 @@ Rules:
   either — and where a plugin quotes one of its options anyway (a startup
   refusal, a runner's refusal reason or error, its health, a log line), the
   values that came from the environment are blanked out before anything is
-  answered, recorded or logged. (Values shorter than four characters are
-  not: blanking those would mangle ordinary text. Do not use them as
-  secrets.) Plugin *selection* is never read from the environment, and the file
+  answered, recorded or logged — a dispatch's plan text included. (Values
+  shorter than four characters are not: blanking those would mangle ordinary
+  text — do not use them as secrets. A `:-default` is written in the file, so
+  it is no secret. The links a runner records are stored as given, because a
+  later `cancel` finds its executor through them — a runner must not put a
+  secret into a link.) Plugin *selection* is never read from the environment, and the file
   itself is chosen with `--config` only.
 - **`connectors:`** is a free-form mapping the core never interprets — the
-  place for a connector package's own settings, read with
+  place for a connector package's own settings. A plugin class that declares
+  `CONNECTOR = "<name>"` is built with `connectors.<name>` as the keyword
+  argument `connector_settings` (`${env:…}` resolved, its secrets redacted
+  like any option's); embedding code reads it with
   `config.connector_settings("<name>")`. Any other unknown top-level key is an
   error that says so and names `connectors:`.
 - **`parsers:`** configures result parsers by format id, with the same
@@ -1023,8 +1065,9 @@ The core must not decide what a plugin's options *mean*, and "which of these
 strings are paths" is exactly that kind of decision — a listener spec, a
 shell command and a URL are not paths. So the plugin says so: a class
 attribute `PATH_OPTIONS = ("suite_root", …)` names the options (single values
-or lists) that are anchored to the config file, and a plugin whose rule has
-exceptions implements `resolve_config_paths(options, resolve)` instead and
+or lists) that are anchored to the config file — the default
+`PluginBase.resolve_config_paths` resolves exactly those — and a plugin whose
+rule has exceptions overrides `resolve_config_paths(options, resolve)` and
 resolves them itself — the sqlite store does, because `:memory:` names no
 file at all. The scope is the *config file*: a path inside a **run spec** is
 the document's own value and is never rewritten.
@@ -1091,9 +1134,12 @@ the hand-off wait is the error of that request (`409`, `dispatch-refused`)
 — and when it was composed by the same request, the run is removed again
 unless the request said `keep_run`; the error body says which (`run_kept`).
 Everything checkable up front — the runner id, its parameters — is checked
-before a run exists. A refusal that arrives *after* the answer leaves the run
-`COMPOSED` with a `dispatch.refused` event: by then the run is the record of
-the refusal.
+before a run exists. The answer to an accepted dispatch says `handoff: done`
+(declared, or already over) or `handoff: pending` (still preparing). The rule
+is one rule: **a run an answer has named is never removed implicitly** — so a
+refusal that arrives after a `pending` answer leaves the run `COMPOSED` with a
+`dispatch.refused` event, whatever `keep_run` said: by then the run is the
+record of the refusal.
 
 **A run row is complete for a list** — verdict counts by status, planned
 count, duration, the latest dispatch's mode, labels, origin — and `total` is
@@ -1126,7 +1172,10 @@ file must keep getting the file. Static files are served with
 `Cache-Control: no-cache` for `/` and the locale files, and as immutable for
 the hashed `/assets/`.
 
-Runner-specific admin actions (e.g. a pool reload) are `[planned]`.
+Runner-specific admin actions (e.g. a pool reload) are declined: a runner
+offers `dispatch`, `cancel`, `health` and declared per-run parameters, and an
+endpoint whose meaning only one runner knows would be an unchecked surface of
+the API.
 
 **CLI** — the flag-level reference is [docs/cli.md](docs/cli.md):
 

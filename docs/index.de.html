@@ -661,7 +661,7 @@
 
   <header class="masthead">
     <div class="stamp">
-      <span>v0.1.0</span><span>MIT</span><span>Python 3.10+</span><span>selbst gehostet</span>
+      <span>v0.2.0</span><span>MIT</span><span>Python 3.10+</span><span>selbst gehostet</span>
     </div>
     <h1>runcomposer<span class="dot">.</span></h1>
     <p class="thesis">Die Schnittstelle ist ein Dokument, kein Protokoll.</p>
@@ -906,12 +906,12 @@ pipx run --spec . runcomposer demo</code></pre>
         <div class="drop"></div>
         <div class="lanes">
           <div class="lane">
-            <div class="lane-name">Im eigenen Prozess</div>
-            <div class="lane-id">robot-pool</div>
+            <div class="lane-name">Auf dieser Maschine</div>
+            <div class="lane-id">robot-pool · command</div>
             <p>
-              runcomposer führt die Tests selbst auf einem Process Pool aus: Fan-out über
-              Partitionen, laufzeitbalanciertes Chunking, und die Verdicts treffen schon ein,
-              während der Lauf noch läuft.
+              runcomposer führt die Tests selbst aus: Robot Framework auf einem Process Pool —
+              Fan-out über Partitionen, laufzeitbalanciertes Chunking, Verdicts schon während des
+              Laufs — oder jedes Framework über einen konfigurierten Befehl je Shard.
             </p>
             <div class="lane-where">läuft auf: dem runcomposer-Host</div>
           </div>
@@ -930,13 +930,13 @@ pipx run --spec . runcomposer demo</code></pre>
           </div>
           <div class="lane">
             <div class="lane-name">Ein CI-Job</div>
-            <div class="lane-id">ci-trigger</div>
+            <div class="lane-id">jenkins</div>
             <p>
-              Stößt einen vorhandenen parametrisierten Job an und übergibt die Spec als
+              Stößt einen vorhandenen parametrisierten Jenkins-Job an und übergibt die Spec als
               Build-Parameter. Dessen eigene Stage führt genau dieselbe Datei aus und schickt
-              das Bundle zurück — für Jenkins gibt es ein
+              das Bundle zurück — oder runcomposer pollt den Build und holt es ab. Es gibt ein
               <a href="https://github.com/StochasticEntropy/runcomposer/tree/main/ci/jenkins">reproduzierbares
-              Setup in Docker</a>, das du selbst laufen lassen kannst.
+              Setup in Docker</a> und ein Skript, das es von vorn bis hinten durchfährt.
             </p>
             <div class="lane-where">läuft auf: deiner vorhandenen CI</div>
           </div>
@@ -1110,11 +1110,23 @@ runcomposer runs
                 eigenen Listener.</td>
             </tr>
             <tr>
-              <td>ci-trigger<span class="role">runner</span></td>
+              <td>jenkins<span class="role">runner</span></td>
               <td>Runner</td>
-              <td>Steuert einen vorhandenen parametrisierten CI-Job. Der Abschluss kommt per
-                Webhook — oder wird über die Build-API gepollt, wenn ein System nicht nach außen
-                rufen kann.</td>
+              <td>Steuert einen vorhandenen parametrisierten Jenkins-Job. Der Abschluss kommt per
+                Callback — oder der Build wird gepollt, wenn Jenkins nicht nach außen rufen kann;
+                Abbrechen stoppt den Build.</td>
+            </tr>
+            <tr>
+              <td>command<span class="role">runner</span></td>
+              <td>Runner</td>
+              <td>Führt je Shard einen konfigurierten Befehl aus und liest dessen Ausgabe mit dem
+                konfigurierten Parser — der Connector für jedes Framework an einem Nachmittag.</td>
+            </tr>
+            <tr>
+              <td>webhook · jsonl · command<span class="role">observer</span></td>
+              <td>Observer</td>
+              <td>Erfährt, wenn ein Lauf gestartet, abgeschlossen, fehlgeschlagen oder abgebrochen
+                ist; ein scheiternder Observer beeinflusst den Lauf nie.</td>
             </tr>
             <tr>
               <td>robot-output-xml<span class="role">parser</span></td>
@@ -1174,20 +1186,21 @@ docker build -t runcomposer . &amp;&amp; docker run -p 8100:8100 runcomposer
 pip install <span class="v">".[robot]"</span></code></pre>
       </div>
       <p class="note">
-        <b>Ein veröffentlichtes Paket gibt es noch nicht.</b> runcomposer 0.1.0 wird aus einem
-        Clone installiert — davon geht jeder Befehl auf dieser Seite aus. Auf PyPI oder npm liegt
-        nichts, <code>pip install runcomposer</code> findet es also nicht; wann sich das ändert,
-        siehst du bei den <a href="https://github.com/StochasticEntropy/runcomposer/releases">Releases</a>.
+        Veröffentlichte Versionen liegen auf PyPI (<code>pip install runcomposer</code>); jeder
+        Befehl auf dieser Seite funktioniert auch aus einem Clone, und davon geht sie aus. Jedes
+        <a href="https://github.com/StochasticEntropy/runcomposer/releases">Release</a> enthält
+        Wheel, sdist und die einzelne Datei zum Mitkopieren.
       </p>
       <p>
-        Die CLI ist das ganze Produkt ohne Browser. Alle elf Befehle:
-        <code>demo</code> startet die Beispielwelt, <code>catalog</code> listet den Korpus und
-        seinen Snapshot, <code>compile</code> zeigt eine Auswahl vorab, <code>spec</code> stellt
-        eine zusammen, <code>validate</code> prüft ein Dokument gegen das Schema,
-        <code>dispatch</code> führt es aus, <code>ingest</code> nimmt Ergebnisse zurück,
-        <code>runs</code> blättert darin, <code>export</code> reicht Ergebnisse an ein anderes
-        Werkzeug weiter, <code>gc</code> hält alles in Grenzen, und <code>serve</code> liefert
-        Web-UI und API.
+        Die CLI ist das ganze Produkt ohne Browser: <code>demo</code> startet die Beispielwelt,
+        <code>catalog</code> und <code>compile</code> zeigen, <code>spec</code> stellt zusammen,
+        <code>run</code> stellt zusammen, startet und wartet in einem Zug, <code>dispatch</code>,
+        <code>rerun</code>, <code>cancel</code> und <code>watch</code> steuern Läufe,
+        <code>ingest</code> nimmt Ergebnisse zurück, <code>runs</code> und <code>show</code>
+        blättern darin, <code>export</code> reicht Ergebnisse weiter, <code>doctor</code> prüft
+        eine Installation, <code>gc</code> hält alles in Grenzen, und <code>serve</code> liefert
+        Web-UI und API. Die vollständige Referenz ist
+        <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/docs/cli.md">docs/cli.md</a>.
       </p>
       <p>
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md">ADOPTING.md</a>
@@ -1213,7 +1226,8 @@ pip install <span class="v">".[robot]"</span></code></pre>
           <div class="lane-name"><a href="https://github.com/StochasticEntropy/runcomposer/blob/main/ADOPTING.md">Übernehmen</a></div>
           <p>
             <code>ADOPTING.md</code> — an deinen eigenen Korpus, deinen eigenen Runner und deine
-            eigenen Maschinen anschließen, eine Entscheidung nach der anderen.
+            eigenen Maschinen anschließen, eine Entscheidung nach der anderen;
+            <code>docs/connectors.md</code> und eine Connector-Vorlage, wenn du Plugins schreibst.
           </p>
         </div>
         <div class="lane lane-exit">
@@ -1261,8 +1275,9 @@ pip install <span class="v">".[robot]"</span></code></pre>
       <p>
         runcomposer ist Open Source unter der
         <a href="https://github.com/StochasticEntropy/runcomposer/blob/main/LICENSE">MIT-Lizenz</a>.
-        Version 0.1.0 deckt Zusammenstellen, Exportieren, Ausführen und Einlesen ab — die
-        vollständige Schleife, die diese Seite beschreibt.
+        Version 0.2.0 deckt Zusammenstellen, Exportieren, Ausführen und Einlesen ab — die
+        vollständige Schleife, die diese Seite beschreibt — hinter einem Runner-Vertrag, den
+        jeder Connector umsetzt.
       </p>
       <p>
         Der Screenshot und beide Tafeln oben stammen aus der Robot-Suite mit 58 Tests in

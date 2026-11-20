@@ -3,10 +3,14 @@
 How to connect runcomposer to *your* test corpus, *your* machines, and *your*
 result formats — and how little you should have to build to do it.
 
-This guide is written for the person building the connector. It assumes you
+This guide is written for the person adopting runcomposer. It assumes you
 have read the [README](README.md) and skimmed [DESIGN.md](DESIGN.md); it does
 not repeat them. Everything here is about the seam between the public tool and
-your environment.
+your environment. When you do write plugins, the
+[connector guide](docs/connectors.md) is the reference — the ports, the runner
+contract, the conformance kit, packaging — and
+[`examples/connector-template/`](examples/connector-template) the package to
+copy.
 
 ---
 
@@ -104,8 +108,9 @@ the plugin sections are the same everywhere:
   `${env:NAME:-default}`) is taken from the environment when the plugin is
   built; a missing variable fails startup naming it.
 - **`connectors:`** is yours: `connectors.<name>` is a free-form mapping the
-  core never interprets, for your connector package's own settings
-  (`config.connector_settings("<name>")`).
+  core never interprets, for your connector package's own settings. A plugin
+  class that declares `CONNECTOR = "<name>"` receives it as the keyword
+  argument `connector_settings` (embedding code: `config.connector_settings("<name>")`).
 
 **Every relative path above is relative to this file's directory** — the
 `core:` keys and the plugin sections alike. So a config directory is a
@@ -195,17 +200,19 @@ half the verdicts vanished is still a bad day.
 
 ## 4. The ports
 
-(This guide is being reworked for 0.2; DESIGN.md §6 is authoritative.)
+An overview; the [connector guide](docs/connectors.md) is the full
+reference, and `runcomposer.testing` checks an implementation against it.
 
 There are five — `TestSource`, `Runner`, `ResultParser`, `RunStore` and
-`RunObserver` — all `typing.Protocol`s: you do not have to subclass anything,
-you write a class with the right methods. **Import everything from
-`runcomposer.sdk`** and from nowhere else in the package; that module is the
-connector surface, and the reference plugins themselves import nothing else.
-The protocols are defined in
-[`runcomposer.core.ports`](src/runcomposer/core/ports.py) — read that file, it
-is the contract. 0.2 is a breaking revision of these ports: a plugin written
-against 0.1 has to be ported.
+`RunObserver` — all `typing.Protocol`s in `runcomposer.sdk`, each with a base
+class there (`SourceBase`, `RunnerBase`, `ParserBase`, `StoreBase`,
+`ObserverBase`) that supplies its optional members. Derive from the base
+class, or define every member yourself: runcomposer checks each configured
+plugin against its protocol at startup and refuses one that lacks a member,
+naming it. **Import everything from `runcomposer.sdk`** and from nowhere else
+in the package; that module is the connector surface, and the reference
+plugins themselves import nothing else. 0.2 is a breaking revision of these
+ports: a plugin written against 0.1 has to be ported.
 
 ### `TestSource` — where tests come from
 
@@ -220,10 +227,11 @@ def resolve(self, native_name) -> str | None
 and compared before execution. Hash the things that would change the meaning
 of a run — the ids and their tags — not file mtimes.
 
-Optional, and worth having: `fingerprint() -> str`, a *cheap* token (file
-sizes and modification times, say) that changes when the corpus on disk may
-have changed. With it the catalog is reloaded only when needed; without it,
-before every dispatch and on request (`POST /api/v1/catalog/reload`).
+Worth overriding: `fingerprint() -> str | None`, a *cheap* token (file sizes
+and modification times, say) that changes when the corpus on disk may have
+changed. With a token the catalog is reloaded only when needed; with the
+`SourceBase` default (`None`), before every dispatch and on request
+(`POST /api/v1/catalog/reload`).
 
 Ships: `manifest` (JSON/YAML, only `id` + `tags` required), `robotframework`
 (walks `.robot` files, ids are longnames).
@@ -439,7 +447,7 @@ runners:
 Options are checked against your constructor's parameters at startup — a
 misspelled key is refused, naming the ones you accept. (A constructor that
 takes `**kwargs` opts out of that check; a class attribute `OPTIONS = (…)`
-states the accepted names explicitly.) Construction should have no side
+states the accepted names explicitly.) Construction must have no side
 effects: every configured plugin is built once when the server starts.
 
 ### Paths in your plugin's options
@@ -451,7 +459,7 @@ typed the command. To get the same rule the rest of the config follows
 ("relative to the config file"), say which of your options are paths:
 
 ```python
-class MySource:
+class MySource(SourceBase):
     PATH_OPTIONS = ("root",)          # a string, or a list of strings
 ```
 
@@ -462,15 +470,16 @@ options look path-shaped and are not (a listener spec, a shell hook, a URL).
 When the rule has exceptions, decide yourself instead:
 
 ```python
-class MyStore:
-    @staticmethod
-    def resolve_config_paths(options: dict, resolve) -> dict:
+class MyStore(StoreBase):
+    @classmethod
+    def resolve_config_paths(cls, options: dict, resolve) -> dict:
         if "path" in options and options["path"] != ":memory:":
             options["path"] = resolve(options["path"])
         return options
 ```
 
-A plugin that declares neither is constructed with its options verbatim.
+A plugin that declares no path options is constructed with its options
+verbatim.
 
 ---
 
@@ -567,7 +576,8 @@ environment should ever need to appear in this project to make your adoption
 work. If you hit a case where it does, that is a bug in runcomposer's
 extension surface, and worth reporting as one.
 
-A typical connector is small:
+A typical connector is small — and
+[`examples/connector-template/`](examples/connector-template) is one to copy:
 
 ```
 my-connector/

@@ -40,6 +40,28 @@ sqlite database opens as it is.
 - **`Verdict.artifacts`, `DispatchHandle`, `DispatchReservation`,
   `Selection.to_data`, `registry.available_entry_points`** are removed.
   `DeliveryRecord.dispatch_id` is never `None`.
+- **Every plugin must provide its whole contract.** Each configured plugin
+  is checked at startup against its role's protocol and against
+  `Configurable`; a missing member is a `ConfigError` naming it. Derive from
+  the new base classes — `SourceBase`, `RunnerBase`, `ParserBase`,
+  `StoreBase`, `ObserverBase` (all `PluginBase`) — for the optional members
+  (`fingerprint`, `duplicate_ids`, `cancel`, `health`, `close`, `OPTIONS`,
+  `PATH_OPTIONS`, `CONNECTOR`, `resolve_config_paths`), or define them. A
+  plain class with only the required methods no longer loads; nothing is
+  discovered by `getattr` any more. `TestSource.fingerprint()` may return
+  `None` ("cannot tell"), and `resolve_config_paths` is a classmethod.
+- **`RunStore` gained `latest_events(run_id, limit)`** (a bounded read of the
+  tail) and **`add_dispatch(..., exclusive=False)`** (refuse with `RunActive`
+  when the run's latest dispatch is in flight, atomically).
+- **`ctx.refuse()` is only legal before `ctx.declare()`**; called after it,
+  it raises `RuntimeError` and the dispatch fails with the reason in its
+  error.
+- **The `demo-corpus` source moved** to
+  `runcomposer.plugins.manifest_source:DemoCorpusSource` (the entry point is
+  unchanged); `runcomposer.plugins.demo_source` is gone.
+- **The `runcomposer-verdicts` parser refuses a file named directly** that is
+  not its format (`ParseError`) instead of returning no verdicts; in a bundle
+  directory foreign JSON files are still skipped.
 - **`ServiceError` is gone**, replaced by a typed taxonomy
   (`InvalidRequest`, `NotFound` / `UnknownRun`, `Conflict` / `RunActive` /
   `DispatchRefused` / `SpecConflict`, `IngestError`, `ConfigError`, …), each
@@ -68,7 +90,10 @@ sqlite database opens as it is.
 
 - **`POST /api/v1/runs` with a dispatch returns before the run finishes** —
   `DISPATCHED` or `RUNNING`, never `COMPLETE`. Follow the run, its events, or
-  `?wait=` on the events.
+  `?wait=` on the events. The answer (and those of `/dispatch` and `/rerun`)
+  says `handoff: done | pending`; a refusal after a `pending` answer leaves
+  the run `COMPOSED` with a `dispatch.refused` event — a run an answer has
+  named is never removed implicitly.
 - **Error bodies are `{"detail": <string>, "code": <id>}` everywhere**, and
   request validation answers `400` (not `422`) in that shape, with `fields`.
   Status codes changed where 0.1 was wrong: a refused dispatch is `409`, an
@@ -114,6 +139,28 @@ sqlite database opens as it is.
 
 ### Added
 
+- **`runcomposer.testing`, the conformance kit**: `check_source`,
+  `check_runner`, `check_parser`, `check_store`, `check_observer` (each fails
+  naming the violated rule), `FakeDispatchContext` (a recording in-memory
+  context enforcing the hand-off order with the same code as runcomposer),
+  and `ConnectorHarness` (a real `Service` in a temporary directory, driven
+  synchronously with a timeout). Every reference plugin is tested with it.
+- **`examples/connector-template/`**: an installable connector package for
+  the example world — a source, an in-process HTTP-check runner and an
+  observer, registered by entry point, tested with the kit, run end to end
+  through `runcomposer run` in CI.
+- **`docs/connectors.md`**, the connector author's guide, and an example
+  config with an end-to-end test for each of four ways to execute
+  (`examples/robot-pool`, `examples/jenkins`, `examples/pytest-shop`,
+  `examples/remote-agent`).
+- **`CONNECTOR = "<name>"`** on a plugin class: built with
+  `connectors.<name>` as `connector_settings` (`${env:…}` resolved,
+  redacted).
+- **`ci/jenkins/e2e.py`**: the `jenkins` runner against a real Jenkins in
+  docker — health, callback, poll, cancel in both modes; the image pins
+  Jenkins and every plugin, and passes the ingest token as a password
+  parameter.
+
 - **Asynchronous dispatch** through a dispatch manager with a bounded pool
   (`core.dispatch.max_concurrent`), the same code in the foreground for the
   CLI.
@@ -153,6 +200,10 @@ sqlite database opens as it is.
 - **A versioned sqlite schema with in-place migration** from 0.1; WAL, a busy
   timeout, one connection per thread, atomic deliveries.
 - **Logging** through the `logging` module (`runcomposer.*`).
+- **CI** on Linux (3.10–3.13), macOS and (not yet blocking) Windows, plus
+  jobs for the robot extra, the connector template, the export round trip,
+  the wheel, the docker image and a real Jenkins; **releases** publish the
+  very files the release workflow built, installed and tested.
 - **`ruff` and `mypy`** configured and clean; the version single-sourced in
   `runcomposer/__init__.py`.
 
@@ -186,38 +237,34 @@ sqlite database opens as it is.
   `suite_root`.
 - The Jenkins poll path could ingest another build's results, gave up as a
   "refusal" after the hand-off, and only worked for one result format.
+- Two processes could both dispatch one run (the check was per process).
+- A cancelled `robot-pool` dispatch waited for a running `pre_run_hooks`
+  command to time out.
+- `GET /runs/{id}` read the run's whole event stream to show the last 200.
+- A `${env:NAME:-default}` default was treated as a secret; a runner's plan
+  text was not redacted.
+- On Windows, a live process another user owns read as gone (now treated
+  like `EPERM` on POSIX); tests that need a POSIX shell skip there.
+- The project image ran as root.
+
+### Web UI
+
+<!-- PLACEHOLDER: the web UI rework's changes are filled in at merge. -->
 
 ### Known limits
 
-- **A refusal that arrives after the HTTP answer** (a readiness hook that
-  fails later than `core.dispatch.handoff_wait_s`) leaves the run `COMPOSED`
-  with a `dispatch.refused` event, even without `keep_run`: the caller has
-  the run id by then.
-- **Restart recovery cannot tell a reused process id** from the process that
+Each written down with its reason in [docs/connectors.md](docs/connectors.md#9-known-limits):
+
+- Declined: a taxonomy leaf holding a full filter expression; a per-runner
+  custom "actions" endpoint; a catalog cache shared across CLI invocations;
+  a `source.root` the executor would read from the run spec.
+- Values shorter than four characters taken from the environment are not
+  redacted; links a runner records are stored as given.
+- Restart recovery cannot tell a reused process id from the process that
   owned a dispatch; `cancel --force` closes such a dispatch.
-- **"One dispatch in flight per run" is guaranteed within a process**, not
-  across processes: two `runcomposer dispatch --run` commands started at the
-  same moment for the same run can both be accepted. Runcomposer does not
-  coordinate instances (`DESIGN.md` §13).
-- **The Jenkins runner is tested against an in-process stand-in** that speaks
-  the endpoints it uses (over TLS too); `ci/jenkins/` is the manual check
-  against a real Jenkins and was not re-run for this release. Its image tag
-  and plugins are still unpinned, and the project `Dockerfile` still runs as
-  root — both left as they were: neither image was rebuilt and run as part
-  of this release, and changing an image without running it would be an
-  unverified change. To be settled with the CI work.
-- **CI** still runs on Linux only, and the release workflow still does not
-  run the test suite or publish the artifacts it built for the GitHub
-  release.
-
-### Not in this release
-
-- The bundled UI still speaks the 0.1 API and is being reworked: with this
-  backend its "Export spec" and its handling of the new states are not
-  reliable. The API and the CLI are the supported surfaces of 0.2.0 until it
-  lands.
-- A conformance kit for connector authors and a connector template are
-  planned (`DESIGN.md` §6.6).
+- One instance owns a store: dispatching one run twice is refused across
+  processes, but instances are not coordinated (`DESIGN.md` §13).
+- The Windows CI job has not been seen green yet and does not block.
 
 ## 0.1.7 — 2026-09-03
 

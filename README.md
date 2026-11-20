@@ -24,23 +24,32 @@ how it works, in one page.
   the document itself, the three ways to execute it, results returning from any
   transport, and rerunning what failed.
 
-Version 0.2.0. Read [ADOPTING.md](ADOPTING.md) to connect it to your own corpus
-and machines, [DESIGN.md](DESIGN.md) for the architecture and the reasoning
-behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
+Version 0.2.0 — a reworked backbone: asynchronous dispatch with an observable
+lifecycle, one runner contract every executor implements, a conformance kit
+and a copy-to-start package for writing your own connector
+([CHANGELOG](CHANGELOG.md)). Read [ADOPTING.md](ADOPTING.md) to connect it to
+your own corpus and machines, the [connector guide](docs/connectors.md) when
+you write plugins, [DESIGN.md](DESIGN.md) for the architecture and the
+reasoning behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
 
 ## Quickstart
 
 ```bash
-pip install runcomposer
+pip install runcomposer          # from a clone: pip install .
 
-runcomposer demo     # boot the neutral web-shop demo end-to-end
-runcomposer serve    # web UI (EN/DE) + API at http://127.0.0.1:8100
-# or: docker build -t runcomposer . && docker run -p 8100:8100 runcomposer
+runcomposer demo                 # seed the neutral web-shop demo end to end
+runcomposer run Checkout --runner demo --config runcomposer-demo/config.yaml
+runcomposer runs --config runcomposer-demo/config.yaml --failed-in latest --label suite=nightly
+runcomposer serve --config runcomposer-demo/config.yaml   # API (+ web UI) at http://127.0.0.1:8100
+# or: docker build -t runcomposer . && docker run --rm -p 8100:8100 runcomposer
 ```
 
 `demo` seeds a real store — five completed runs with per-item verdicts — into
 `./runcomposer-demo/`, and prints the commands that read it back, including
-"rerun what failed". Everything it writes is in that one directory, so
+"rerun what failed". The `demo` runner is **simulated** (it says so): verdicts
+come from a seed, so the loop can be shown without a test framework. `run`
+composes, dispatches, waits and prints the outcome; it exits `0` only when the
+run is `PASS`. Everything the demo writes is in that one directory, so
 `rm -rf runcomposer-demo` undoes it.
 
 ## What it does
@@ -63,14 +72,28 @@ detectable. Core sections are generic and closed; exactly one section,
 `runner`, is open, and the core never looks inside it. `runcomposer validate`
 checks a document against the published JSON Schema.
 
-**Execute — three ways, one document.** On this machine with a configured
-runner — `robot-pool` for Robot Framework (partition fan-out,
-duration-balanced chunking, live verdicts, readable logs, drift refusal) or
-`command` for any framework with a command line; on *your own agent anywhere*
-via `runcomposer-exec`; or by triggering an existing parameterized Jenkins job
-with `jenkins`. A dispatch runs off the request path: the API answers at once,
-and the run is followed through its state and event stream, can be cancelled,
-and tells an observer (`webhook`, `jsonl`, `command`) when it is over.
+**Execute — four ways, one contract.** In worker processes on this machine
+with `robot-pool` (Robot Framework: partition fan-out, duration-balanced
+chunking, live verdicts, reruns, readable logs, drift refusal); a command per
+shard with `command`, for any framework with a command line; by triggering an
+existing parameterized Jenkins job with `jenkins` (results by callback or by
+polling the build); or on *your own agent anywhere* by exporting the document
+to the vendorable `runcomposer-exec`. A dispatch runs off the request path:
+the API answers at once, and the run is followed through its lifecycle
+(`DISPATCHED → RUNNING → COMPLETE`, or `AWAITING_RESULTS`, `FAILED`,
+`CANCELLED`, `STALE`) and its event stream, can be cancelled, and tells an
+observer (`webhook`, `jsonl`, `command`) when it is over. Each way has a
+runnable example run end to end by a test
+([the connector guide, §8](docs/connectors.md#8-four-ways-to-execute)).
+
+**Connect your own.** Everything a connector may import is one module,
+`runcomposer.sdk`; `runcomposer.testing` checks your source, runner, parser,
+store or observer against the contract and runs it inside a real
+runcomposer for your tests; and
+[examples/connector-template](examples/connector-template) is an installable
+connector package to copy. Configuration validates every plugin's options at
+startup, takes secrets as `${env:NAME}`, merges several sources into one
+catalog, and keeps a `connectors:` namespace for your package's own settings.
 
 **Ingest.** Results return over a token-guarded HTTP push, a watched file-drop
 directory, or `runcomposer ingest` on the command line. Redelivery rules are
@@ -91,7 +114,8 @@ CTRF; `robot-output-xml` and `junit-xml` parse results coming the other way
 (both refuse documents carrying entity or DTD declarations).
 
 The web UI ships pre-built inside the wheel in English and German, so
-evaluating it needs no Node toolchain. Persistence is sqlite by default, and
+evaluating it needs no Node toolchain. Persistence is sqlite by default (safe
+for the threads of a server and for several processes on one file), and
 `runcomposer gc` keeps runs, quarantine and artifacts bounded.
 
 ## The export round trip
@@ -124,9 +148,11 @@ neutral template a private adopter package copies.
 | | |
 |---|---|
 | [examples/robot-shop](examples/robot-shop) | 58 Robot Framework tests over a fictional web shop — the corpus behind the screenshot and the specs on the homepage. |
-| [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids — the framework-agnosticism proof. |
+| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions. |
+| [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids and executed by the `command` runner — the framework-agnosticism proof. |
+| [examples/jenkins](examples/jenkins) · [ci/jenkins](ci/jenkins) | The `jenkins` runner in both completion modes, and a pinned Jenkins-in-Docker whose job runs the vendored consumer; `ci/jenkins/e2e.py` drives one against the other. |
 | [examples/remote-agent](examples/remote-agent) | The full remote round trip on one machine. |
-| [ci/jenkins](ci/jenkins) | A reproducible Jenkins-in-Docker setup whose job runs the vendored consumer and posts results back. |
+| [examples/connector-template](examples/connector-template) | A connector package to copy: source, runner and observer, tested with `runcomposer.testing`. |
 | [examples/webshop-regression.runspec.yaml](examples/webshop-regression.runspec.yaml) | A complete run spec you can read. |
 
 Executing Robot Framework in-process needs one extra:
@@ -138,8 +164,9 @@ pip install "runcomposer[robot]"
 ## Developing
 
 ```bash
-pip install -e ".[dev]" && pytest         # Python 3.10–3.13
+pip install -e ".[dev]" && pytest         # Python 3.10–3.13 (add the [robot] extra for the Robot tests)
 ruff check src tests && mypy              # lint + type check, both kept clean
+python ci/jenkins/e2e.py                  # the jenkins runner against a real Jenkins (needs docker)
 cd ui && npm ci && npm run dev            # UI dev server (proxies to :8100)
 npm run build                             # rebuild src/runcomposer/ui_dist
 ```
