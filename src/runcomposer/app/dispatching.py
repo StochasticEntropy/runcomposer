@@ -808,17 +808,7 @@ def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":  # os.kill(pid, 0) would TERMINATE the process on Windows
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
-        if not handle:
-            return False
-        try:
-            code = ctypes.c_ulong()
-            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
-        finally:
-            kernel32.CloseHandle(handle)
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -828,3 +818,35 @@ def pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _pid_alive_windows(pid: int) -> bool:
+    """The Windows half of :func:`pid_alive`, mirroring the POSIX rules: a
+    process we may not open (``ERROR_ACCESS_DENIED``) exists, as a
+    ``PermissionError`` from ``os.kill`` means it does on POSIX; a process
+    whose exit code is still ``STILL_ACTIVE`` runs. (A process that exited
+    *with* code 259 reads as running — Windows offers no way to tell; for a
+    runcomposer owner process that is not an exit code it uses.)
+
+    Not exercised by the test suite on Windows (it is run on Linux and
+    macOS); read with that in mind."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    process_query_limited_information, error_access_denied, still_active = 0x1000, 5, 259
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == error_access_denied  # type: ignore[attr-defined]
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True  # it exists; its state cannot be read — like EPERM
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)

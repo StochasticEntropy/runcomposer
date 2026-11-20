@@ -969,3 +969,19 @@ class TestOnePathBase:
         config = load_config(str(write_config(tmp_path)))
         assert config.base_dir == tmp_path
         assert Path(config.store_spec().options["path"]) == tmp_path / "runcomposer.db"
+
+
+def test_values_shorter_than_four_characters_are_not_redacted(tmp_path, monkeypatch):
+    """A documented limit (DESIGN.md §8, the connector guide's Known limits):
+    blanking a value of one to three characters out of every recorded line
+    would mangle ordinary text (``${env:WORKERS:-4}`` would blank every "4"),
+    so such values are not treated as secrets. Use secrets of four characters
+    or more — any real token is."""
+    monkeypatch.setenv("SHOP_PIN", "123")
+    monkeypatch.setenv("SHOP_TOKEN", "s3cr")
+    path = write_config(tmp_path, runners={"demo": {}}, observers={
+        "hook": {"plugin": "webhook", "url": "https://chat.shop.example/hooks",
+                 "secret": "${env:SHOP_TOKEN}", "headers": {"X-Pin": "${env:SHOP_PIN}"}},
+    })
+    secrets = load_config(str(path)).secret_values()
+    assert "s3cr" in secrets and "123" not in secrets

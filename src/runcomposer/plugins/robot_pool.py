@@ -65,6 +65,8 @@ _STOPPED_BY_SIGNAL = 253
 #: turns the first termination signal into a graceful end of the *current*
 #: execution; the marker is how the worker knows not to start the next one.
 _STOP_FILE = ".stop-requested"
+#: How often a running pre_run_hook is checked for a cancellation.
+_HOOK_POLL_S = 0.2
 
 
 class RobotPoolRunner(RunnerBase):
@@ -329,11 +331,24 @@ class RobotPoolRunner(RunnerBase):
                 text=True,
                 start_new_session=os.name != "nt",
             )
-            try:
-                stdout, stderr = process.communicate(timeout=self.hook_timeout_s)
-            except subprocess.TimeoutExpired:
-                _stop_hook(process)
-                ctx.refuse(f"pre_run_hook did not finish within {self.hook_timeout_s:g}s: {hook!r}")
+            # Waited for in short steps, so that a cancellation stops a hook
+            # that is still running instead of waiting for its timeout.
+            # (Retrying communicate() after TimeoutExpired loses no output.)
+            deadline = time.monotonic() + self.hook_timeout_s
+            while True:
+                try:
+                    step = max(0.0, min(_HOOK_POLL_S, deadline - time.monotonic()))
+                    stdout, stderr = process.communicate(timeout=step)
+                    break
+                except subprocess.TimeoutExpired:
+                    if ctx.cancelled:
+                        _stop_hook(process)
+                        ctx.raise_if_cancelled()
+                    if time.monotonic() >= deadline:
+                        _stop_hook(process)
+                        ctx.refuse(
+                            f"pre_run_hook did not finish within {self.hook_timeout_s:g}s: {hook!r}"
+                        )
             if process.returncode != 0:
                 ctx.refuse(
                     f"pre_run_hook failed (rc {process.returncode}): {hook!r} — "

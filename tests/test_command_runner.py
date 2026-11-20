@@ -22,13 +22,12 @@ import pytest
 
 from runcomposer.sdk import ConfigError, InvalidParameter, ParserBase, Service
 
-from .conftest import REPO, compose, run_to_end, wait_until
+from .conftest import REPO, compose, posix_only, process_gone, run_to_end, wait_until
 
 RUNNER = "shop-tests"
 PY = sys.executable
 PYTEST_SHOP = REPO / "examples" / "pytest-shop"
 
-posix_only = pytest.mark.skipif(os.name == "nt", reason="uses a POSIX shell")
 
 #: The stand-in for somebody's test framework: `shop_runner.py IDS_FILE OUT_DIR`.
 SHOP_RUNNER = r'''
@@ -120,16 +119,6 @@ def environment(service: Service, run, shard: str = "1") -> dict:
 
 def events_of(service: Service, run_id: str, kind: str) -> list[dict]:
     return [dict(e.data) for e in service.store.events(run_id) if e.kind == kind]
-
-
-def process_gone(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    return False
 
 
 # -- the loop ---------------------------------------------------------------------

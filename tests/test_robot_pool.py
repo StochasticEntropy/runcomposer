@@ -23,7 +23,16 @@ import pytest
 
 from runcomposer.sdk import ConfigError, InvalidParameter, ParserBase, Service
 
-from .conftest import REPO, ROBOT_SHOP, compose, needs_robot, run_to_end, wait_until
+from .conftest import (
+    REPO,
+    ROBOT_SHOP,
+    compose,
+    needs_robot,
+    posix_only,
+    process_gone,
+    run_to_end,
+    wait_until,
+)
 
 pytestmark = needs_robot
 
@@ -1074,6 +1083,7 @@ class TestDrift:
 
 
 class TestHooksAndListeners:
+    @posix_only
     def test_pre_run_hooks_run_before_anything_executes(self, make_service, tmp_path):
         sentinel = tmp_path / "hook-ran.txt"
         root = shop_suite(
@@ -1086,6 +1096,7 @@ class TestHooksAndListeners:
         assert execute(service, "Checkout").completion == "PASS"
         assert sentinel.read_text(encoding="utf-8").strip() == "prepared"
 
+    @posix_only
     def test_a_failing_hook_refuses_the_dispatch(self, make_service):
         service = pool_service(make_service, pre_run_hooks=["echo doomed >&2; exit 3"])
         run_id = compose(service, "Smoke", runner_id=RUNNER)
@@ -1095,6 +1106,7 @@ class TestHooksAndListeners:
         assert run.state == "COMPOSED" and run.dispatches == ()
         assert service.store.verdicts_for(run_id) == []
 
+    @posix_only
     def test_a_hook_that_overruns_its_timeout_refuses_promptly(self, make_service, tmp_path):
         """The hook starts something that would run for a minute and then
         report. The refusal does not wait for that — and what the hook
@@ -1111,14 +1123,30 @@ class TestHooksAndListeners:
 
         child = int(pid_file.read_text(encoding="utf-8"))
 
-        def gone() -> bool:
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                return True
-            return False
+        wait_until(lambda: process_gone(child), timeout=10, what="the hook's child process to be gone")
 
-        wait_until(gone, timeout=10, what="the hook's child process to be gone")
+    @posix_only
+    def test_cancelling_stops_a_hook_that_is_still_running(self, make_service, tmp_path):
+        """Regression: a running pre_run_hook used to be ended only by its
+        timeout. A cancellation now stops it — and what it started — and the
+        dispatch ends CANCELLED long before the ten-minute timeout."""
+        pid_file = tmp_path / "hook-child.pid"
+        hook = f"sleep 600 & echo $! > '{pid_file}'; wait"
+        service = pool_service(make_service, pre_run_hooks=[hook], hook_timeout_s=600)
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        started = time.monotonic()
+        outcome = service.dispatch(run_id, RUNNER)
+        wait_until(lambda: pid_file.exists() and pid_file.read_text(encoding="utf-8").strip(),
+                   what="the hook to be running")
+        service.cancel(run_id)
+        assert outcome.done.wait(30)
+        assert time.monotonic() - started < 30
+        dispatch = service.require_run(run_id).latest_dispatch
+        assert dispatch is not None and dispatch.state == "CANCELLED"
+        assert "cancelled before the hand-off" in dispatch.error
+        child = int(pid_file.read_text(encoding="utf-8"))
+
+        wait_until(lambda: process_gone(child), timeout=10, what="the hook's child process to be gone")
 
     def test_a_user_listener_receives_the_run(self, make_service, tmp_path):
         listener_file = tmp_path / "SentinelListener.py"

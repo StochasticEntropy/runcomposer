@@ -32,7 +32,7 @@ from runcomposer.sdk import (
     load_config,
 )
 
-from .conftest import compose, wait_until, write_config
+from .conftest import compose, posix_only, wait_until, write_config
 from .exec_loader import runcomposer_exec
 
 SSO = ["Shop.Auth.SSO.T001", "Shop.Auth.SSO.T002", "Shop.Auth.SSO.T003"]
@@ -74,6 +74,21 @@ class GatedRunner(RunnerBase):
         wait_until(lambda: GATES[self.gate].is_set() or ctx.cancelled, what="the gate or a cancel")
         ctx.raise_if_cancelled()
         ctx.deliver("1", verdicts=[Verdict(i, "PASS", 5) for i in ctx.item_ids])
+
+
+class SlowRefusingRunner(RunnerBase):
+    """Prepares until the test opens its gate, then refuses — a refusal that
+    arrives after the request's hand-off wait is over."""
+
+    def __init__(self, gate: str):
+        self.gate = gate
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="slow-refusing")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        wait_until(lambda: GATES[self.gate].is_set(), what="the gate")
+        ctx.refuse("the staging shop went down while preparing")
 
 
 @pytest.fixture()
@@ -271,6 +286,44 @@ class TestRefusedDispatch:
         assert detail["state"] == "COMPOSED" and detail["dispatches"] == []
         refused = [e for e in detail["events"] if e["kind"] == "dispatch.refused"]
         assert refused[0]["data"]["reason"] == "the corpus changed since this run was composed"
+
+    def test_a_refusal_after_the_answer_keeps_the_run_the_answer_named(self, make_client, request):
+        """The rule is one rule: a refusal that is the request's answer
+        removes the run it composed (unless ``keep_run``); a run an answer
+        has named is never removed implicitly. ``handoff: pending`` in the
+        answer says which case a later refusal will be."""
+        name = request.node.name
+        GATES[name] = threading.Event()
+        try:
+            client, service = make_client(
+                runners={"slow": {"module": "tests.test_api:SlowRefusingRunner", "gate": name}},
+                core={"dispatch": {"handoff_wait_s": 0.05}},
+            )
+            response = client.post(
+                f"{API}/runs", json={"selection": {"tag_filter": "Auth"}, "dispatch": {"runner": "slow"}}
+            )
+            assert response.status_code == 201, response.text
+            body = response.json()
+            assert body["handoff"] == "pending" and body["dispatch"]["state"] == "DISPATCHED"
+            run_id = body["run"]["id"]
+            GATES[name].set()
+            follow(client, run_id, until="dispatch.refused")
+            detail = client.get(f"{API}/runs/{run_id}").json()
+            assert detail["state"] == "COMPOSED" and detail["dispatches"] == []
+            refused = [e for e in detail["events"] if e["kind"] == "dispatch.refused"]
+            assert refused[0]["data"]["reason"] == "the staging shop went down while preparing"
+        finally:
+            GATES[name].set()
+            service.dispatcher.join(30)
+            del GATES[name]
+
+    def test_an_answer_after_the_hand_off_says_done(self, gated):
+        client, _service, _started, release = gated
+        response = client.post(
+            f"{API}/runs", json={"selection": {"tag_filter": "Auth-SSO"}, "dispatch": {"runner": "gated"}}
+        )
+        assert response.status_code == 201 and response.json()["handoff"] == "done"
+        release.set()
 
     def test_dispatching_a_stored_run_keeps_the_run(self, refusing):
         client, service = refusing
@@ -1374,6 +1427,7 @@ class TestArtifactRoute:
         response = client.get(f"/artifacts//{tmp_path / 'secret.txt'}")
         assert response.status_code == 404 and "do not serve me" not in response.text
 
+    @posix_only
     def test_a_symlink_out_of_the_artifact_dir_is_a_404(self, with_artifact):
         client, _service, _run_id, tmp_path = with_artifact
         (tmp_path / "artifacts" / "escape.txt").symlink_to(tmp_path / "secret.txt")
@@ -1381,6 +1435,7 @@ class TestArtifactRoute:
         assert_error(response, 404, "unknown-artifact")
         assert "do not serve me" not in response.text
 
+    @posix_only
     def test_a_miss_and_a_refusal_are_indistinguishable_in_status_and_code(self, with_artifact):
         client, _service, _run_id, _tmp = with_artifact
         miss = assert_error(client.get("/artifacts/gone/away/output.xml"), 404, "unknown-artifact")

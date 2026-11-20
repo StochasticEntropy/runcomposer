@@ -52,10 +52,20 @@ def _start(
         return extra, exported.dispatch
     assert request.runner is not None
     outcome: Outcome = service.dispatch(run_id, request.runner, request.parameters)
-    service.dispatcher.wait_handoff(outcome, float(service.config.dispatch["handoff_wait_s"]))
+    handed_off = service.dispatcher.wait_handoff(
+        outcome, float(service.config.dispatch["handoff_wait_s"])
+    )
     if outcome.refusal is not None:
         raise DispatchRefused(outcome.refusal)
-    return {}, service.store.get_dispatch(outcome.dispatch_id)
+    return {"handoff": _handoff(handed_off)}, service.store.get_dispatch(outcome.dispatch_id)
+
+
+def _handoff(handed_off: bool) -> str:
+    """``done`` — the runner declared (or finished) within the hand-off
+    wait; ``pending`` — it is still preparing. A refusal that arrives while
+    ``pending`` cannot be this request's answer any more: the run, which the
+    answer has named, stays ``COMPOSED`` with a ``dispatch.refused`` event."""
+    return "done" if handed_off else "pending"
 
 
 @router.post("", status_code=201)
@@ -66,8 +76,12 @@ def create_run(body: ComposeRequest, service: Service = Depends(service_of)) -> 
     ``DISPATCHED`` or ``RUNNING`` and is followed through ``GET /runs/{id}``
     and its events. Everything that can be checked up front — the runner id,
     its per-run parameters — is checked before a run exists. If the dispatch
-    is refused, the composed run is removed again unless ``keep_run`` is set;
-    the error says which (``run_kept``).
+    is refused within the hand-off wait, that refusal is the answer and the
+    composed run is removed again unless ``keep_run`` is set; the error says
+    which (``run_kept``). A run an answer has named is never removed
+    implicitly: when the answer says ``handoff: pending`` and the runner
+    refuses afterwards, the run stays ``COMPOSED`` with the refusal as a
+    ``dispatch.refused`` event, whatever ``keep_run`` said.
     """
     request = body.dispatch
     runner_id = request.runner if request else None
@@ -298,7 +312,9 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
     target, outcome = service.rerun(
         run_id, scope=body.scope, runner_id=body.runner, parameters=body.parameters
     )
-    service.dispatcher.wait_handoff(outcome, float(service.config.dispatch["handoff_wait_s"]))
+    handed_off = service.dispatcher.wait_handoff(
+        outcome, float(service.config.dispatch["handoff_wait_s"])
+    )
     if outcome.refusal is not None:
         error = DispatchRefused(outcome.refusal)
         if target != run_id:
@@ -307,6 +323,7 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
         raise error
     dispatch = service.store.get_dispatch(outcome.dispatch_id)
     return {
+        "handoff": _handoff(handed_off),
         "source_run_id": run_id,
         "dispatch": dispatch_json(dispatch) if dispatch else None,
         "run": run_row(service.require_run(target)),

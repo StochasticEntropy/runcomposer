@@ -9,6 +9,7 @@ is a bug waiting for a slow machine.
 from __future__ import annotations
 
 import importlib.util
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -28,6 +29,23 @@ HAS_ROBOT = importlib.util.find_spec("robot") is not None
 needs_robot = pytest.mark.skipif(
     not HAS_ROBOT, reason="needs Robot Framework (pip install 'runcomposer[robot]')"
 )
+
+
+#: Mark for tests whose commands are POSIX shell (``echo``, ``sleep``, ``&``,
+#: ``$!``), or that rely on POSIX file semantics (unprivileged symlinks).
+#: They skip on Windows with that reason; the code they test has a Windows
+#: path that this suite does not exercise there.
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX shell / file semantics — not available on Windows"
+)
+
+
+def process_gone(pid: int) -> bool:
+    """Whether ``pid`` no longer runs — through runcomposer's own portable
+    probe. (``os.kill(pid, 0)`` would *terminate* the process on Windows.)"""
+    from runcomposer.app.dispatching import pid_alive
+
+    return not pid_alive(pid)
 
 
 def wait_until(
