@@ -5,7 +5,8 @@ Every error answer has the same body — ``{"detail": <string>, "code":
 <stable identifier>}`` — whatever raised it: a domain error, a request that
 failed validation, a missing route. ``detail`` is always a string; a
 validation failure adds ``fields`` (one entry per offending field), and a few
-errors add context of their own (``run_kept``, ``quarantine_entry``).
+errors add context of their own (``run_kept``, ``quarantine_entry``,
+``parameter``).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from runcomposer.core.errors import (
     Conflict,
     Forbidden,
     IngestError,
+    InvalidParameter,
     InvalidRequest,
     NotFound,
     ParseError,
@@ -79,6 +81,10 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RunComposerError)
     async def _domain(request: Request, exc: RunComposerError) -> JSONResponse:
         extra = dict(getattr(exc, "extra", None) or {})
+        # Which per-run parameter was refused — so a form can put the message
+        # on the field instead of reading it out of the text.
+        if isinstance(exc, InvalidParameter) and exc.parameter:
+            extra.setdefault("parameter", exc.parameter)
         # A runner may have quoted a configured option in what it raised.
         service = getattr(request.app.state, "service", None)
         detail = service.redact(str(exc)) if service is not None else str(exc)

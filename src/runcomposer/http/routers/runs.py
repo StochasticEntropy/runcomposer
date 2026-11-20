@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import yaml
@@ -192,6 +193,25 @@ def run_spec(
             media_type="application/yaml",
         )
     return spec
+
+
+@router.get("/{run_id}/export")
+def run_export(
+    run_id: str,
+    format: str = Query("ctrf", pattern="^ctrf$", description="the export format (supported: ctrf)"),
+    service: Service = Depends(service_of),
+) -> Response:
+    """The run's results as a normalized cross-tool document (CTRF) — the
+    same document ``runcomposer export`` writes, as a download."""
+    payload = json.dumps(service.export_ctrf(run_id), indent=2, ensure_ascii=False) + "\n"
+    return Response(
+        content=payload.encode("utf-8"),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="results-{run_id}.{format}.json"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/{run_id}/events")

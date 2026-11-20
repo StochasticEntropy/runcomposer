@@ -9,9 +9,9 @@ Anything else fails without ever being named here.
 
 Shapes checked, each over every tracked text file it can occur in:
 
-1. **Tag literals in the UI's test files** (quoted strings, comments
-   included): every bare word, `prefix:` and `regex:` pattern must match the
-   demo corpus.
+1. **Tag literals in the UI's test files** — unit tests and browser
+   end-to-end tests alike (quoted strings, comments included): every bare
+   word, `prefix:` and `regex:` pattern must match the demo corpus.
 2. **Filter expressions anywhere in the tracked tree** — prose, comments,
    docs: the operands of an uppercase `AND` / `OR` / `NOT` are tags by
    construction, so each capitalised operand must be a demo tag (or a
@@ -44,8 +44,8 @@ REPO = Path(__file__).resolve().parent.parent
 
 #: Suffixes scanned as text. Media and the minified UI bundle are not prose.
 TEXT_SUFFIXES = {
-    ".py", ".md", ".js", ".jsx", ".json", ".yaml", ".yml", ".toml", ".html",
-    ".css", ".robot", ".resource", ".sh", ".txt", ".cfg", ".ini", "",
+    ".py", ".md", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".json", ".yaml", ".yml", ".toml",
+    ".html", ".css", ".robot", ".resource", ".sh", ".txt", ".cfg", ".ini", "",
 }
 SKIPPED_DIRS = ("src/runcomposer/ui_dist/", "ui/node_modules/")
 SKIPPED_FILES = {"ui/package-lock.json"}
@@ -176,22 +176,67 @@ def test_pattern_classifier_checks_bare_prefix_and_regex_literals():
     assert pattern_is_of_the_demo_world("some prose here", tags) is None
 
 
+#: Names of keys a browser test presses. Not tags, and nobody's test data.
+_KEYBOARD_KEYS = {"Tab"}
+
+
+def ui_test_files() -> list[Path]:
+    """The UI's unit tests (anywhere under ``ui/src``) and its browser
+    end-to-end tests (``ui/e2e``)."""
+    ui = REPO / "ui"
+    unit = [path for pattern in ("*.test.ts", "*.test.tsx") for path in (ui / "src").rglob(pattern)]
+    return sorted([*unit, *(ui / "e2e").glob("*.ts")])
+
+
+def ui_own_vocabulary() -> set[str]:
+    """What the UI itself spells, and may therefore be spelled back by its
+    tests: operator ids, field ids, node kinds — whatever its non-test source
+    has in quotes — and every text of its locale files (a test names a button
+    by its label). Derived, so this guard needs no hand-kept list."""
+    ui_src = REPO / "ui" / "src"
+    own: set[str] = {"AND", "OR", "NOT"}
+    for pattern in ("*.ts", "*.tsx"):
+        for source in ui_src.rglob(pattern):
+            if ".test." not in source.name:
+                own.update(quoted_strings(source.read_text(encoding="utf-8")))
+
+    def texts(node: object) -> None:
+        if isinstance(node, dict):
+            for child in node.values():
+                texts(child)
+        elif isinstance(node, str):
+            own.add(node)
+
+    for locale in (ui_src / "locales").glob("*.json"):
+        texts(json.loads(locale.read_text(encoding="utf-8")))
+        # The keys too: a state or status the server sends (`INCOMPLETE`) is a key.
+        own.update(re.findall(r'"([A-Za-z_-]+)":', locale.read_text(encoding="utf-8")))
+    # A runner declares the labels of its per-run parameters and the UI shows
+    # them verbatim, so a test of the form names them: what the bundled
+    # plugins spell is the product's vocabulary as well.
+    for plugin in (REPO / "src" / "runcomposer" / "plugins").glob("*.py"):
+        own.update(quoted_strings(plugin.read_text(encoding="utf-8")))
+    return own | _KEYBOARD_KEYS
+
+
+def test_the_ui_has_tests_to_check():
+    """The guard below is vacuous if a change of layout hides the files from
+    it — so the files it reads are counted."""
+    names = {path.name for path in ui_test_files()}
+    if not (REPO / "ui" / "src").is_dir():  # the UI is optional in a source checkout
+        return
+    assert {"filter.test.ts", "editor.test.ts", "compose.spec.ts", "run.spec.ts"} <= names
+
+
 def test_ui_test_data_uses_only_the_demo_corpus_vocabulary():
     """The UI's tests pin filter behaviour, so they carry tag names. Those
     names must come from the shipped example world — a real corpus's tags in
     this repository are a self-containment failure."""
-    ui_src = REPO / "ui" / "src"
-    test_files = sorted(ui_src.glob("*.test.js"))
+    test_files = ui_test_files()
     if not test_files:  # the UI is optional in a source checkout
         return
     tags = demo_tags()
-    # Each module's own vocabulary — operator ids, glues, field ids, node
-    # kinds — is whatever its non-test source spells in quotes. Deriving it
-    # keeps this guard from needing a hand-maintained list that goes stale.
-    own: set[str] = {"AND", "OR", "NOT"}
-    for source in ui_src.rglob("*.js*"):
-        if not source.name.endswith(".test.js"):
-            own.update(quoted_strings(source.read_text(encoding="utf-8")))
+    own = ui_own_vocabulary()
     suspects: dict[str, set[str]] = {}
     for test_file in test_files:
         for value in quoted_strings(test_file.read_text(encoding="utf-8")):

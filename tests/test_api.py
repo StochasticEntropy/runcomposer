@@ -234,12 +234,14 @@ class TestErrorBody:
                 "dispatch": {"runner": "demo", "parameters": {"sed": "a"}},
             },
         )
-        assert_error(response, 400, "invalid-parameter", detail="unknown parameter 'sed'")
+        unknown = assert_error(response, 400, "invalid-parameter", detail="unknown parameter 'sed'")
+        assert unknown["parameter"] == "sed", "the body names the parameter; no client parses the text"
         ill_typed = client.post(
             f"{API}/runs",
             json={"selection": {"tag_filter": "Auth"}, "dispatch": {"runner": "demo", "parameters": {"seed": 7}}},
         )
-        assert_error(ill_typed, 400, "invalid-parameter", detail="parameter 'seed' must be a string")
+        refused = assert_error(ill_typed, 400, "invalid-parameter", detail="parameter 'seed' must be a string")
+        assert refused["parameter"] == "seed"
         assert client.get(f"{API}/runs").json()["total"] == 0
 
     def test_three_failed_dispatch_requests_leave_no_orphans(self, client):
@@ -369,8 +371,14 @@ class TestComposeAndDispatch:
         in_flight = client.get(f"{API}/runs/{run_id}").json()
         assert in_flight["state"] == "RUNNING" and in_flight["verdicts"] == []
         assert in_flight["shards"] == [
-            {"shard": "1", "declared": True, "delivered": False, "count": 0, "summary": {}, "completion": None}
+            {
+                "shard": "1", "declared": True, "delivered": False, "count": 0, "planned": None,
+                "summary": {}, "completion": None,
+            }
         ]
+        # This runner declared shard names only, so nothing says how many
+        # verdicts are owed: no denominator is invented.
+        assert in_flight["dispatches"][0]["planned_verdicts"] is None
 
         release.set()
         events = follow(client, run_id, until="run.completed")
@@ -670,7 +678,10 @@ class TestRunDetail:
         assert len(failing) == 2 and failing[0]["duration_ms"] > 0 and failing[0]["message"]
         assert {row["shard"] for row in body["verdicts"]} == {"1"}
         assert body["shards"] == [
-            {"shard": "1", "declared": True, "delivered": True, "count": 3, "summary": {"FAIL": 2, "PASS": 1}, "completion": "FAIL"}
+            {
+                "shard": "1", "declared": True, "delivered": True, "count": 3, "planned": 3,
+                "summary": {"FAIL": 2, "PASS": 1}, "completion": "FAIL",
+            }
         ]
         assert body["artifacts"] == [
             {
@@ -700,9 +711,10 @@ class TestRunDetail:
         assert set(dispatch) >= {
             "dispatch_id", "mode", "state", "created_at", "shards", "declared_shards", "completion",
             "completed_at", "summary", "error", "plan", "links", "parameters", "spec_sha256",
-            "cancel_requested", "executing",
+            "cancel_requested", "executing", "planned_verdicts",
         }
         assert dispatch["shards"] == ["1"] and "simulating 3 item(s)" in dispatch["plan"]
+        assert dispatch["planned_verdicts"] == 3, "what a progress display divides by"
 
     def test_fan_out_reads_green_here_red_there(self, make_client):
         client, service = make_client()
@@ -720,6 +732,7 @@ class TestRunDetail:
         assert body["completion"] == "FAIL" and len(body["verdicts"]) == 6
         by_shard = {entry["shard"]: entry for entry in body["shards"]}
         assert (by_shard["env1"]["completion"], by_shard["env2"]["completion"]) == ("PASS", "FAIL")
+        assert (by_shard["env1"]["planned"], by_shard["env1"]["count"]) == (None, 3)
         assert by_shard["env2"]["summary"] == {"PASS": 2, "FAIL": 1}
 
         only = client.get(f"{API}/runs/{run_id}/verdicts", params={"shard": "env2", "status": "FAIL"}).json()
@@ -793,6 +806,29 @@ class TestRunDetail:
         assert as_yaml.headers["content-type"].startswith("application/yaml")
         assert yaml.safe_load(as_yaml.text) == as_json and "prüfen" in as_yaml.text
         assert_error(client.get(f"{API}/runs/{run_id}/spec", params={"format": "toml"}), 400, "invalid-request")
+
+
+class TestResultsExport:
+    def test_the_results_as_a_ctrf_download(self, make_client):
+        """What `runcomposer export --format ctrf` writes, over HTTP."""
+        client, service = make_client()
+        run_id = finished_run(service, "Auth-SSO", "b", title="Anmeldung prüfen")  # 2 FAIL, 1 PASS
+        response = client.get(f"{API}/runs/{run_id}/export")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert f'filename="results-{run_id}.ctrf.json"' in response.headers["content-disposition"]
+        document = response.json()
+        assert document == service.export_ctrf(run_id)
+        summary = document["results"]["summary"]
+        assert (summary["tests"], summary["passed"], summary["failed"]) == (3, 1, 2)
+        assert {test["name"] for test in document["results"]["tests"]} == set(SSO)
+        assert client.get(f"{API}/runs/{run_id}/export", params={"format": "ctrf"}).json() == document
+
+    def test_an_unknown_format_or_run_is_refused(self, make_client):
+        client, service = make_client()
+        run_id = finished_run(service)
+        assert_error(client.get(f"{API}/runs/{run_id}/export", params={"format": "junit"}), 400, "invalid-request")
+        assert_error(client.get(f"{API}/runs/01NOPE/export"), 404, "unknown-run")
 
 
 # -- what a client asks first ------------------------------------------------------------------
@@ -1413,6 +1449,7 @@ class TestArtifactRoute:
         # Untrusted bytes on the API's own origin: no scripting, no sniffing.
         policy = response.headers["content-security-policy"]
         assert "sandbox" in policy and "default-src 'none'" in policy
+        assert "allow-scripts" not in policy and "script-src" not in policy
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
 
@@ -1478,6 +1515,26 @@ class TestArtifactRoute:
         assert client.get(f"/artifacts/{run_id}/dispatch-1/stray.txt").status_code == 404
         (entry,) = client.get(f"{API}/runs/{other}").json()["artifacts"]
         assert (entry["kind"], entry["href"]) == ("external-path", None)
+
+    def test_an_html_report_may_script_itself_but_never_this_origin(self, with_artifact):
+        """A framework's log is an HTML application: without its own script it
+        is a blank page. It runs in a sandbox that is not this origin and can
+        reach nothing."""
+        client, service, run_id, tmp_path = with_artifact
+        log = tmp_path / "artifacts" / run_id / "dispatch-1" / "env1" / "log.html"
+        log.write_text("<html><script>document.title = 'log'</script></html>", encoding="utf-8")
+        service.store.add_artifact_ref(run_id, None, name="log (env1)", media_type="text/html", url_or_path=str(log))
+        response = client.get(f"/artifacts/{run_id}/dispatch-1/env1/log.html")
+        assert response.status_code == 200 and response.headers["content-type"].startswith("text/html")
+        directives = {
+            part.split()[0]: part.split()[1:]
+            for part in response.headers["content-security-policy"].split(";") if part.strip()
+        }
+        assert directives["default-src"] == ["'none'"], "nothing is loaded or connected to"
+        assert directives["sandbox"] == ["allow-scripts"], "its own origin: no allow-same-origin"
+        assert "'unsafe-inline'" in directives["script-src"] and "connect-src" not in directives
+        assert directives["form-action"] == ["'none'"]
+        assert response.headers["x-content-type-options"] == "nosniff"
 
     @pytest.mark.parametrize(
         "attack",

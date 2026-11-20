@@ -877,7 +877,7 @@ class TestLiveStatus:
         assert mid["state"] == "RUNNING"
         assert mid["shards"] == [
             {"shard": "default", "declared": True, "delivered": False, "count": 0,
-             "summary": {}, "completion": None}
+             "planned": 2, "summary": {}, "completion": None}
         ]
         assert mid["live_summary"] == {"default": {"PASS": 1, "RUNNING": 1}}
         assert sorted((v["item_id"], v["status"], v["live"]) for v in mid["verdicts"]) == [

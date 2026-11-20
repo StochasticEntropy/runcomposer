@@ -1,0 +1,641 @@
+{
+  "nav": {
+    "label": "Hauptnavigation",
+    "skip": "Zum Inhalt springen",
+    "compose": "Zusammenstellen",
+    "runs": "Läufe",
+    "inbox": "Eingang",
+    "inboxWaiting": {
+      "one": "Lieferung wartet",
+      "other": "Lieferungen warten"
+    },
+    "apiDocs": "API-Referenz"
+  },
+  "prefs": {
+    "language": "Sprache",
+    "theme": "Farbschema",
+    "locale": {
+      "en": "English",
+      "de": "Deutsch"
+    },
+    "themes": {
+      "system": "Wie das System",
+      "light": "Hell",
+      "dark": "Dunkel"
+    }
+  },
+  "action": {
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "copied": "Kopiert",
+    "dismiss": "Ausblenden",
+    "done": "Fertig",
+    "refresh": "Aktualisieren",
+    "reload": "Seite neu laden",
+    "retry": "Erneut versuchen"
+  },
+  "state": {
+    "loading": "Lädt…"
+  },
+  "error": {
+    "generic": "Das hat nicht geklappt.",
+    "networkDetail": "Der Server hat nicht geantwortet. Prüfen, ob er läuft und erreichbar ist, dann erneut versuchen.",
+    "boundaryTitle": "In dieser Ansicht ist ein Fehler aufgetreten.",
+    "boundaryHint": "Auf dem Server ist nichts verloren gegangen. Seite neu laden oder eine andere Ansicht öffnen.",
+    "notFoundTitle": "Unter dieser Adresse gibt es nichts",
+    "notFoundBack": "Zum Zusammenstellen",
+    "code": {
+      "network": "Der Server ist nicht erreichbar.",
+      "client-error": "Die Seite konnte das nicht ausführen.",
+      "invalid-request": "Die Anfrage wurde nicht angenommen.",
+      "invalid-filter": "Der Filter ist ungültig.",
+      "invalid-selection": "Die Auswahl ist ungültig.",
+      "invalid-parameter": "Dieser Wert wurde nicht angenommen.",
+      "unknown-runner": "Dieser Runner ist nicht konfiguriert.",
+      "unknown-run": "Diesen Lauf gibt es nicht.",
+      "not-found": "Nicht gefunden.",
+      "method-not-allowed": "Der Server lässt das nicht zu.",
+      "conflict": "Das ist im aktuellen Zustand nicht möglich.",
+      "run-active": "Der Lauf ist noch unterwegs.",
+      "invalid-transition": "Der Lauf kann nicht in diesen Zustand wechseln.",
+      "spec-conflict": "Es gibt bereits einen anderen Lauf mit dieser ID.",
+      "dispatch-refused": "Der Runner hat den Start abgelehnt.",
+      "dispatch-cancelled": "Die Ausführung wurde abgebrochen.",
+      "token-required": "Ein Ingest-Token ist erforderlich.",
+      "token-rejected": "Das Ingest-Token wurde abgelehnt.",
+      "payload-too-large": "Der Upload ist zu groß.",
+      "parse-error": "Die Ergebnisse konnten nicht gelesen werden.",
+      "ingest-refused": "Die Ergebnisse wurden abgelehnt.",
+      "bad-bundle": "Die Ergebnisse konnten nicht gelesen werden.",
+      "unsolicited": "Auf diese Ergebnisse hat kein Lauf gewartet.",
+      "sha-mismatch": "Die Ergebnisse gehören zu einem anderen Laufdokument.",
+      "marker-conflict": "Die Ergebnisse nennen einen anderen Lauf.",
+      "unknown-dispatch": "Diese Ausführung gibt es nicht.",
+      "unknown-quarantine-entry": "Diesen Eintrag im Eingang gibt es nicht mehr.",
+      "unknown-artifact": "Die Datei ist nicht verfügbar.",
+      "spec-unreadable": "Das Laufdokument konnte nicht gelesen werden.",
+      "manifest-invalid": "Die Manifest-Datei ist ungültig.",
+      "taxonomy-invalid": "Die Taxonomie-Datei ist ungültig.",
+      "config-error": "Die Konfiguration des Servers ist ungültig.",
+      "plugin-error": "Ein Plugin konnte nicht geladen werden.",
+      "store-error": "Der Laufspeicher hat einen Fehler gemeldet.",
+      "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten."
+    }
+  },
+  "runState": {
+    "COMPOSED": "Zusammengestellt",
+    "DISPATCHED": "Startet",
+    "RUNNING": "Läuft",
+    "AWAITING_RESULTS": "Wartet auf Ergebnisse",
+    "COMPLETE": "Abgeschlossen",
+    "FAILED": "Lauf fehlgeschlagen",
+    "CANCELLED": "Abgebrochen",
+    "STALE": "Unterbrochen"
+  },
+  "completion": {
+    "PASS": "Bestanden",
+    "FAIL": "Fehlgeschlagen",
+    "ERROR": "Fehler",
+    "INCOMPLETE": "Unvollständig"
+  },
+  "verdict": {
+    "PASS": "bestanden",
+    "FAIL": "fehlgeschlagen",
+    "ERROR": "Fehler",
+    "SKIP": "übersprungen",
+    "MISSING": "fehlend"
+  },
+  "health": {
+    "ok": "verfügbar",
+    "degraded": "eingeschränkt",
+    "down": "nicht verfügbar",
+    "unknown": "nicht geprüft"
+  },
+  "mode": {
+    "export": "Export",
+    "ingest": "Eingelieferte Ergebnisse"
+  },
+  "origin": {
+    "api": "hier zusammengestellt",
+    "cli": "Kommandozeile",
+    "demo": "Demo",
+    "rerun": "Wiederholung des nicht Bestandenen",
+    "ingested": "aus gelieferten Ergebnissen"
+  },
+  "outcome": {
+    "new": "neu",
+    "duplicate": "doppelt",
+    "replaced": "ersetzt"
+  },
+  "event": {
+    "run": {
+      "composed": "Lauf zusammengestellt",
+      "dispatched": "An den Runner übergeben",
+      "running": "Ausführung gestartet",
+      "awaiting_results": "Wartet auf Ergebnisse",
+      "completed": "Abgeschlossen",
+      "failed": "Lauf fehlgeschlagen",
+      "cancelled": "Abgebrochen",
+      "cancel_requested": "Abbruch angefordert",
+      "stale": "Unterbrochen"
+    },
+    "dispatch": {
+      "refused": "Start abgelehnt"
+    },
+    "delivery": {
+      "recorded": "Ergebnisse geliefert",
+      "attached": "Ergebnisse aus dem Eingang zugeordnet"
+    },
+    "log": "Hinweis",
+    "warning": "Warnung"
+  },
+  "progress": {
+    "label": "{done} von {total} Ergebnissen eingegangen",
+    "none": "Noch keine Ergebnisse"
+  },
+  "filter": {
+    "title": "Filter",
+    "rootGroup": "Filterregeln, verknüpft mit {op}",
+    "group": "Gruppe, verknüpft mit {op}",
+    "not": "NOT",
+    "op": {
+      "AND": "AND",
+      "OR": "OR"
+    },
+    "opLong": {
+      "AND": "alle davon (AND)",
+      "OR": "mindestens eine davon (OR)"
+    },
+    "combine": "Wie die Regeln dieser Gruppe verknüpft sind",
+    "negateGroup": "Diese Gruppe verneinen",
+    "negateRule": "{pattern} verneinen",
+    "removeRule": "{pattern} entfernen",
+    "editPattern": "{pattern} bearbeiten",
+    "removeGroup": "Diese Gruppe entfernen",
+    "ungroup": "Gruppe auflösen",
+    "add": "Hinzufügen",
+    "addTag": "Tag oder Muster hinzufügen",
+    "addTagToGroup": "Tag oder Muster zu dieser Gruppe hinzufügen",
+    "addPlaceholder": "Tag, prefix:… oder regex:…",
+    "pick": "Tags auswählen…",
+    "addGroup": "Gruppe hinzufügen",
+    "clear": "Filter leeren",
+    "editAsText": "Als Text bearbeiten",
+    "asText": "Der Filter als Text",
+    "everything": "Alle Einträge",
+    "kind": {
+      "prefix": "Präfix",
+      "regex": "Regex"
+    },
+    "textLabel": "Filterausdruck",
+    "textHint": "Zum Beispiel: Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine- — ein Muster mit Leerzeichen oder Klammern in Anführungszeichen setzen.",
+    "textApply": "Übernehmen",
+    "parse": {
+      "empty": "Position {position}: Ein Muster ist leer.",
+      "unexpected-end": "Der Ausdruck endet, wo ein Tag oder Muster erwartet wird.",
+      "unexpected-operator": "Position {position}: Vor {token} fehlt ein Tag oder Muster.",
+      "missing-operator": "Position {position}: Vor „{token}“ fehlt ein Operator.",
+      "unbalanced-open": "Position {position}: Diese Klammer wird nie geschlossen.",
+      "unbalanced-close": "Position {position}: Zu dieser schließenden Klammer fehlt die öffnende.",
+      "unterminated-quote": "Position {position}: Dieses Anführungszeichen wird nie geschlossen.",
+      "needs-quotes": "Position {position}: Ein Muster mit Klammern oder Anführungszeichen in Anführungszeichen setzen — \"{token}…\"."
+    },
+    "negateAll": "Den ganzen Filter verneinen",
+    "pickForGroup": "Tags für diese Gruppe auswählen…",
+    "addGroupInGroup": "Gruppe in dieser Gruppe hinzufügen"
+  },
+  "picker": {
+    "title": "Tags auswählen",
+    "search": "Taxonomie durchsuchen",
+    "searchPlaceholder": "Tag, Bezeichnung oder Muster…",
+    "tree": "Taxonomie",
+    "unassigned": "Weitere Tags",
+    "hint": "Ein Haken heißt: Der Filter enthält dieses Tag. Pfeiltasten bewegen, rechts und links öffnen und schließen einen Zweig, die Leertaste setzt den Haken.",
+    "combine": "Einträge müssen",
+    "mode": {
+      "any": "eines der neuen Tags haben",
+      "all": "alle haben",
+      "none": "keines haben"
+    },
+    "items": {
+      "one": "{count} Eintrag",
+      "other": "{count} Einträge"
+    },
+    "excluded": "ausgeschlossen",
+    "insideChecked": {
+      "one": "{count} darin angehakt",
+      "other": "{count} darin angehakt"
+    },
+    "noMatches": "Kein Tag und keine Bezeichnung passt zur Suche.",
+    "noChange": "Tags anhaken, um sie hinzuzufügen; Haken entfernen, um sie herauszunehmen.",
+    "adds": {
+      "one": "Fügt {count} Tag hinzu",
+      "other": "Fügt {count} Tags hinzu"
+    },
+    "removes": {
+      "one": "entfernt {count} Tag",
+      "other": "entfernt {count} Tags"
+    },
+    "counting": "zählt Einträge…",
+    "result": {
+      "one": "→ {count} Eintrag",
+      "other": "→ {count} Einträge"
+    },
+    "resultWithNow": {
+      "one": "→ {count} Eintrag (jetzt {now})",
+      "other": "→ {count} Einträge (jetzt {now})"
+    },
+    "apply": "In den Filter übernehmen"
+  },
+  "preview": {
+    "title": "Vorschau",
+    "matched": {
+      "one": "{count} von {total} Einträgen passt",
+      "other": "{count} von {total} Einträgen passen"
+    },
+    "excluded": {
+      "one": "{count} abgewählt",
+      "other": "{count} abgewählt"
+    },
+    "excludedElsewhere": {
+      "one": "{count} abgewählter Eintrag passt nicht zum aktuellen Filter.",
+      "other": "{count} abgewählte Einträge passen nicht zum aktuellen Filter."
+    },
+    "clearExclusions": "Alle wieder anhaken",
+    "updating": "Wird aktualisiert…",
+    "loading": "Passende Einträge werden gesucht…",
+    "staleHint": "Diese Zeilen gehören zur letzten Auswahl, die funktioniert hat. Gestartet werden kann erst, wenn die Vorschau wieder aktuell ist.",
+    "fixFilter": "Filter korrigieren, um zu sehen, was er trifft.",
+    "empty": "Kein Eintrag passt zu dieser Auswahl.",
+    "noSearchHits": "Kein passender Eintrag trifft die Suche.",
+    "search": "Passende Einträge durchsuchen",
+    "searchPlaceholder": "Nach Name, Id oder Tag suchen…",
+    "sort": "Sortierung",
+    "sortBy": {
+      "catalog": "Reihenfolge im Katalog",
+      "id": "ID",
+      "name": "Name"
+    },
+    "group": "Nach Suite gruppieren",
+    "shown": "{count} von {total} angezeigt.",
+    "tableLabel": "Passende Einträge",
+    "selectAll": "Alle angezeigten Einträge ausführen",
+    "selectGroup": "Alle Einträge von {group} ausführen",
+    "selectItem": "{item} ausführen",
+    "noSuite": "Ohne Suite",
+    "items": {
+      "one": "{count} Eintrag",
+      "other": "{count} Einträge"
+    },
+    "column": {
+      "name": "Name",
+      "id": "ID",
+      "tags": "Tags"
+    },
+    "keys": "Pfeiltasten wechseln zwischen den Einträgen, die Leertaste setzt den Haken."
+  },
+  "compose": {
+    "runTitle": "Lauf",
+    "summary": "{selected} von {matched} passenden Einträgen ausgewählt ({total} im Katalog).",
+    "title": "Titel des Laufs",
+    "titlePlaceholder": "Lauf ohne Titel",
+    "titleFromRun": "Einträge von {title}",
+    "run": {
+      "one": "{count} Eintrag ausführen",
+      "other": "{count} Einträge ausführen"
+    },
+    "starting": "Startet…",
+    "export": "Exportieren…",
+    "started": {
+      "one": "„{title}“ mit {count} Eintrag gestartet.",
+      "other": "„{title}“ mit {count} Einträgen gestartet."
+    },
+    "countChanged": "Der Katalog hat sich seit der Vorschau geändert: {count} geplant, {expected} wurden angezeigt.",
+    "blocked": {
+      "updating": "Die Vorschau wird aktualisiert…",
+      "error": "Die Vorschau ist veraltet — zuerst den Fehler beheben.",
+      "empty": "Noch nichts ausgewählt.",
+      "nothing": "Kein Eintrag ist ausgewählt.",
+      "runner": "Einen Runner wählen."
+    },
+    "reset": "Neu beginnen",
+    "reloadCatalog": "Katalog neu laden",
+    "reloadCatalogHint": "Den Testbestand erneut einlesen, damit neue oder geänderte Tests erscheinen",
+    "catalogReloaded": {
+      "one": "Katalog neu geladen: {count} Eintrag.",
+      "other": "Katalog neu geladen: {count} Einträge."
+    },
+    "copyLink": "Link zu dieser Auswahl kopieren",
+    "linkWithoutExclusions": "Mehr als {max} Einträge sind abgewählt — der Link enthält nur den Filter.",
+    "unreadableLink": "Der Filter in diesem Link konnte nicht gelesen werden; die Auswahl beginnt leer.",
+    "pinned": {
+      "one": "Beschränkt auf den {count} Eintrag des Laufs",
+      "other": "Beschränkt auf die {count} Einträge des Laufs"
+    },
+    "pinnedLoading": "Einträge des Laufs werden geladen…",
+    "unpin": "Beschränkung entfernen",
+    "landing": {
+      "title": "Noch nichts ausgewählt",
+      "catalog": "Der Katalog enthält {items} Einträge und {tags} Tags.",
+      "loaded": "Eingelesen",
+      "starts": "Einen Filter bauen oder mit einem davon beginnen:",
+      "all": "Alle {count} Einträge auswählen"
+    },
+    "loadedFrom": "Aus „{title}“ geladen: Auswahl, Runner, Optionen und Labels."
+  },
+  "runner": {
+    "label": "Runner",
+    "choose": "Runner wählen…",
+    "none": "Auf diesem Server ist kein Runner konfiguriert. Eine Auswahl kann trotzdem exportiert werden.",
+    "unavailable": "nicht verfügbar",
+    "checking": "wird geprüft…",
+    "recheck": "Erneut prüfen",
+    "parameters": "Optionen dieses Runners",
+    "required": "erforderlich",
+    "noChoice": "— keine —",
+    "problem": {
+      "required": "Diese Angabe ist erforderlich.",
+      "integer": "Eine ganze Zahl eingeben.",
+      "choice": "Einen der aufgeführten Werte wählen."
+    },
+    "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen."
+  },
+  "labels": {
+    "label": "Labels",
+    "placeholder": "schlüssel=wert",
+    "add": "Label hinzufügen",
+    "remove": "Label {label} entfernen",
+    "hint": "Labels gruppieren Läufe — suite=nightly — und dienen in der Liste der Läufe als Filter.",
+    "invalid": "Ein Label hat die Form schlüssel=wert."
+  },
+  "export": {
+    "title": "Für eine externe Ausführung exportieren",
+    "introCompose": {
+      "one": "Aus dem {count} ausgewählten Eintrag wird ein Lauf zusammengestellt und sein Dokument herausgegeben.",
+      "other": "Aus den {count} ausgewählten Einträgen wird ein Lauf zusammengestellt und sein Dokument herausgegeben."
+    },
+    "introRun": {
+      "one": "Das Dokument von „{title}“ ({count} Eintrag) wird noch einmal herausgegeben.",
+      "other": "Das Dokument von „{title}“ ({count} Einträge) wird noch einmal herausgegeben."
+    },
+    "explain": "Hier wird nichts ausgeführt. Der Lauf wartet auf Ergebnisse, die jemand anderes aus dem Dokument erzeugt und zurückschickt.",
+    "format": "Format des Dokuments",
+    "confirm": "Export anlegen",
+    "working": "Exportiert…",
+    "doneTitle": "Exportiert — der Lauf wartet auf Ergebnisse",
+    "doneIntro": "„{title}“ wartet jetzt auf Ergebnisse.",
+    "stepDownload": "Laufdokument herunterladen",
+    "download": "Laufdokument herunterladen ({format})",
+    "downloadHint": "Die Datei unverändert verwenden: Ergebnisse werden dem Lauf über ihre Prüfsumme zugeordnet.",
+    "stepToken": "Ingest-Token aufbewahren",
+    "tokenOnce": "Dieses Token wird nur einmal angezeigt. Wer die Ergebnisse schickt, braucht es.",
+    "copyToken": "Token kopieren",
+    "noToken": "Dieser Server nimmt Ergebnisse ohne Token an.",
+    "stepPush": "Ergebnisse zurückschicken",
+    "pushHint": "Die Ergebnisdateien an den Lauf senden, zum Beispiel:",
+    "preview": "Dokument vorher anzeigen",
+    "previewHint": "So würde das Dokument jetzt zusammengestellt. Angelegt wurde noch nichts.",
+    "openRun": "Lauf öffnen",
+    "runTitle": "Der Lauf erhält den Titel „{title}“.",
+    "copyCommand": "Befehl kopieren"
+  },
+  "runs": {
+    "title": "Läufe",
+    "search": "Titel durchsuchen",
+    "searchPlaceholder": "Teil eines Titels…",
+    "state": "Zustand",
+    "anyState": "Jeder Zustand",
+    "label": "Label",
+    "clearFilters": "Filter zurücksetzen",
+    "refreshFailed": "Die Liste konnte nicht aktualisiert werden.",
+    "empty": "Noch keine Läufe.",
+    "composeFirst": "Den ersten Lauf zusammenstellen",
+    "noMatch": "Kein Lauf passt zu diesen Filtern.",
+    "notDispatched": "nicht gestartet",
+    "pages": "Seiten",
+    "range": "{first}–{last} von {total}",
+    "previous": "Zurück",
+    "next": "Weiter",
+    "column": {
+      "run": "Lauf",
+      "status": "Status",
+      "results": "Ergebnisse",
+      "items": "Einträge",
+      "duration": "Dauer",
+      "runner": "Runner",
+      "started": "Angelegt"
+    }
+  },
+  "run": {
+    "title": "Lauf",
+    "notFound": "Diesen Lauf gibt es nicht (mehr)",
+    "backToRuns": "Zurück zu den Läufen",
+    "id": "ID",
+    "started": "Angelegt",
+    "duration": "Dauer",
+    "runner": "Runner",
+    "items": "Einträge",
+    "origin": "Herkunft",
+    "actions": "Aktionen für diesen Lauf",
+    "cancel": "Lauf abbrechen",
+    "cancelTitle": "Diesen Lauf abbrechen?",
+    "cancelExplain": "Einträge, die noch nicht begonnen haben, werden nicht ausgeführt. Was schon fertig ist, behält sein Ergebnis.",
+    "cancelConfirm": "Lauf abbrechen",
+    "cancelForce": "Sofort schließen, ohne auf das Anhalten des Runners zu warten",
+    "cancelRequested": "Der Abbruch ist angefordert — der Runner hält gerade an.",
+    "rerunAll": "Erneut ausführen",
+    "dispatch": "Ausführen…",
+    "rerunFailed": {
+      "one": "{count} nicht bestandenen Eintrag wiederholen",
+      "other": "{count} nicht bestandene Einträge wiederholen"
+    },
+    "rerunFailedAny": "Nicht Bestandenes wiederholen",
+    "load": "In die Zusammenstellung laden",
+    "finalize": "So abschließen",
+    "finalizeTitle": "Diesen Lauf so abschließen?",
+    "finalizeExplain": "Auf ausstehende Ergebnisse wird nicht mehr gewartet: Einträge, die niemand gemeldet hat, zählen als fehlend.",
+    "export": "Exportieren…",
+    "delete": "Löschen",
+    "deleteTitle": "Diesen Lauf löschen?",
+    "deleteExplain": "„{title}“ wird mit seinen Ergebnissen und gespeicherten Dateien gelöscht. Das lässt sich nicht rückgängig machen.",
+    "deleteConfirm": "Lauf löschen",
+    "deleted": "„{title}“ wurde gelöscht.",
+    "refreshFailed": "Der Lauf konnte nicht aktualisiert werden.",
+    "runnerError": "Der Runner hat einen Fehler gemeldet:",
+    "staleHint": "Der Server wurde angehalten, während dieser Lauf ausgeführt wurde. Was fertig war, bleibt erhalten; erneut ausführen, um ihn zu vervollständigen.",
+    "awaitingHint": "Dieser Lauf wartet auf Ergebnisse von außen. Sie kommen per Upload oder über den Eingang.",
+    "composedHint": "Dieser Lauf ist zusammengestellt, wurde aber nie gestartet.",
+    "progress": "Fortschritt",
+    "showDispatch": "Ausführung anzeigen",
+    "dispatchOption": "{number} von {total}",
+    "sections": "Bereiche dieses Laufs",
+    "tab": {
+      "results": "Ergebnisse",
+      "selection": "Auswahl",
+      "activity": "Verlauf"
+    },
+    "shards": {
+      "one": "{count} Shard",
+      "other": "{count} Shards"
+    },
+    "shard": "Shard",
+    "allShards": "Alle Shards",
+    "unnamedShard": "(ohne Namen)",
+    "shardRunning": "läuft",
+    "shardWaiting": "wartet",
+    "shardProgress": "{done} von {total} gemeldet",
+    "shardReported": {
+      "one": "{count} gemeldet",
+      "other": "{count} gemeldet"
+    },
+    "shardUndeclared": "vom Runner nicht angekündigt",
+    "links": "Links und Dateien",
+    "opensNewTab": "öffnet in neuem Tab",
+    "artifactNoLink": "Diese Datei liegt außerhalb des Artefaktverzeichnisses des Servers und lässt sich von hier nicht öffnen.",
+    "verdicts": "Ergebnisse je Eintrag",
+    "neverDispatched": "Dieser Lauf wurde nie gestartet.",
+    "noVerdicts": "Es wurden keine Ergebnisse aufgezeichnet.",
+    "noVerdictsYet": "Noch keine Ergebnisse — sie erscheinen hier, sobald Einträge fertig sind.",
+    "noRowsMatch": "Kein Ergebnis passt zu diesen Filtern.",
+    "filterByStatus": "Nach Ergebnis filtern",
+    "filter": {
+      "all": "Alle",
+      "failed": "Fehlgeschlagen",
+      "missing": "Fehlend",
+      "skipped": "Übersprungen",
+      "passed": "Bestanden"
+    },
+    "searchVerdicts": "Einträge und Meldungen durchsuchen",
+    "live": "live, noch nicht geliefert",
+    "superseded": "durch einen späteren Versuch ersetzt",
+    "showMessage": "Ganze Meldung anzeigen",
+    "reason": {
+      "not-reported": "nicht gemeldet",
+      "drift": "nicht mehr im Katalog"
+    },
+    "column": {
+      "status": "Ergebnis",
+      "item": "Eintrag",
+      "shard": "Shard",
+      "attempt": "Versuch",
+      "duration": "Dauer",
+      "message": "Meldung"
+    },
+    "selection": {
+      "title": "Auswahl",
+      "filter": "Filter",
+      "noFilter": "keiner",
+      "fixed": "Feste Liste",
+      "fixedCount": {
+        "one": "{count} Eintrag per Id benannt",
+        "other": "{count} Einträge per Id benannt"
+      },
+      "derived": "Abgeleitet aus",
+      "derivedFrom": "was dort {verdicts} war",
+      "source": "Katalog",
+      "expect": "Ergebnisformat",
+      "dispatch": "So wurde ausgeführt",
+      "spec": "Laufdokument",
+      "downloads": "Downloads",
+      "results": "Ergebnisse",
+      "resultsHint": "Die letzten Ergebnisse als CTRF-Dokument, für andere Werkzeuge.",
+      "specHint": "Das gespeicherte Dokument, ohne Token."
+    },
+    "activity": {
+      "dispatches": "Ausführungen",
+      "events": "Ereignisse",
+      "deliveries": "Lieferungen",
+      "shards": "Shards",
+      "document": "Herausgegebenes Dokument",
+      "download": "Herunterladen",
+      "newToken": "Neues Token",
+      "format": "Format",
+      "received": "Eingegangen"
+    },
+    "rotateTitle": "Neues Ingest-Token erzeugen?",
+    "rotateExplain": "Das bisherige Token gilt sofort nicht mehr. Wer die Ergebnisse schickt, braucht das neue.",
+    "rotateConfirm": "Neues Token erzeugen",
+    "rotateDone": "Neues Ingest-Token",
+    "originOf": "aus",
+    "shardNothing": "keine Ergebnisse",
+    "showDetails": "Details zu {item}",
+    "seenLive": "zuletzt live gemeldet: {status}",
+    "cancelledHint": "Dieser Lauf wurde abgebrochen. Shards, die noch nicht geliefert hatten, zählen als fehlend — unabhängig davon, was sie live gemeldet haben.",
+    "downloadDocument": "Herausgegebenes Dokument herunterladen",
+    "cancelKeep": "Weiterlaufen lassen",
+    "resultCount": {
+      "one": "{count} Ergebnis",
+      "other": "{count} Ergebnisse"
+    }
+  },
+  "rerun": {
+    "titleAll": "Erneut ausführen",
+    "titleFirst": "Ausführen",
+    "titleFailed": "Nicht Bestandenes wiederholen",
+    "explainAll": {
+      "one": "Führt den {count} Eintrag von „{title}“ erneut aus, als neue Ausführung desselben Laufs.",
+      "other": "Führt alle {count} Einträge von „{title}“ erneut aus, als neue Ausführung desselben Laufs."
+    },
+    "explainFailed": {
+      "one": "Stellt einen neuen Lauf aus dem {count} Eintrag zusammen, der in „{title}“ fehlgeschlagen ist oder kein Ergebnis hat.",
+      "other": "Stellt einen neuen Lauf aus den {count} Einträgen zusammen, die in „{title}“ fehlgeschlagen sind oder kein Ergebnis haben."
+    },
+    "started": "Erneut gestartet.",
+    "startedNew": {
+      "one": "{count} Eintrag von „{title}“ wird wiederholt.",
+      "other": "{count} Einträge von „{title}“ werden wiederholt."
+    }
+  },
+  "inbox": {
+    "title": "Eingang",
+    "hint": "Hier warten Ergebnisse, die angekommen sind und keinem Lauf zugeordnet werden konnten. Nichts wird automatisch zugeordnet.",
+    "empty": "Der Eingang ist leer.",
+    "attach": "Einem Lauf zuordnen",
+    "attachTitle": "Einem Lauf zuordnen",
+    "attachExplain": "Die gelieferten Ergebnisse werden für den genannten Lauf aufgezeichnet.",
+    "runId": "Lauf",
+    "promote": "Zum Lauf machen",
+    "promoteTitle": "Aus dieser Lieferung einen Lauf machen",
+    "promoteExplain": "Aus den gelieferten Ergebnissen wird ein neuer Lauf angelegt.",
+    "format": "Ergebnisformat",
+    "formatPlaceholder": "wie von der Lieferung angegeben",
+    "formatHint": "Nur nötig, wenn die Lieferung nicht sagt, in welchem Format ihre Ergebnisse vorliegen.",
+    "discard": "Verwerfen",
+    "discardTitle": "Diese Lieferung verwerfen?",
+    "discardExplain": "Die gelieferten Ergebnisse werden gelöscht. Das lässt sich nicht rückgängig machen.",
+    "discardConfirm": "Lieferung verwerfen",
+    "discarded": "Die Lieferung wurde verworfen.",
+    "attached": {
+      "one": "Zugeordnet — {count} Ergebnis aufgezeichnet.",
+      "other": "Zugeordnet — {count} Ergebnisse aufgezeichnet."
+    },
+    "promoted": {
+      "one": "Aus {count} Ergebnis wurde ein Lauf angelegt.",
+      "other": "Aus {count} Ergebnissen wurde ein Lauf angelegt."
+    },
+    "openRun": "Lauf öffnen",
+    "reason": {
+      "unsolicited": "Kein Lauf hat darauf gewartet",
+      "unknown-run": "Nennt einen Lauf, den es nicht gibt",
+      "unknown-dispatch": "Nennt eine Ausführung, die es nicht gibt",
+      "sha-mismatch": "Gehört zu einem anderen Laufdokument",
+      "marker-conflict": "Nennt einen anderen Lauf als den, an den es ging",
+      "bad-bundle": "Konnte nicht gelesen werden",
+      "dispatch-cancelled": "Die zugehörige Ausführung wurde abgebrochen"
+    },
+    "transport": {
+      "push": "Upload",
+      "file-drop": "Dateiablage"
+    },
+    "column": {
+      "received": "Eingegangen",
+      "reason": "Warum es hier liegt",
+      "via": "Eingang über",
+      "claimed": "Genannter Lauf",
+      "format": "Format",
+      "actions": "Aktionen"
+    },
+    "nothingRecorded": "Es wurde nichts aufgezeichnet: Kein Ergebnis der Lieferung passt zu einem Eintrag des Laufs. Den Lauf prüfen, bevor man sich darauf verlässt.",
+    "runIdHint": "Einen Lauf aus der Liste wählen oder seine ID einfügen."
+  }
+}

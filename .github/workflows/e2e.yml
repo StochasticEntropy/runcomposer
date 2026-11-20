@@ -1,0 +1,51 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  browser:
+    # The built UI, as `runcomposer serve` serves it, driven by a real browser
+    # against real servers: every test starts its own on a free port in a temp
+    # directory. Includes real Robot Framework runs (the robot extra).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install runcomposer with the robot extra
+        run: python -m pip install -e ".[robot]"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Lint and type-check
+        working-directory: ui
+        run: npm run lint
+      - name: Install the browser
+        working-directory: ui
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests (rebuilds the bundle first)
+        working-directory: ui
+        env:
+          RUNCOMPOSER_PYTHON: python
+        run: npm run e2e
+      - name: The tested bundle is the committed one
+        run: git diff --exit-code src/runcomposer/ui_dist
+      - name: Keep the traces of a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: |
+            ui/test-results
+            ui/playwright-report
+          retention-days: 7

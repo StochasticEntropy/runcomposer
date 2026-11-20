@@ -74,6 +74,13 @@ def dispatch_json(dispatch: DispatchRecord) -> dict[str, Any]:
         "spec_sha256": dispatch.spec_sha256,
         "cancel_requested": dispatch.cancel_requested,
         "executing": dispatch.owner is not None,
+        # How many verdicts the dispatch owes over all its shards — what a
+        # progress display divides by. None when no shard declared its items.
+        "planned_verdicts": (
+            sum(len(items) for items in dispatch.shard_items.values())
+            if dispatch.shard_items
+            else None
+        ),
     }
 
 
@@ -197,7 +204,8 @@ def shard_summaries(
     """The fan-out roll-up: one entry per shard — declared ones first, in
     declaration order — with its own counts and computed completion. "Green
     on partition A, red on partition B" is read here, not aggregated by the
-    caller."""
+    caller. ``planned`` is how many items the shard said it would report
+    (None when it never said), so progress has a denominator per shard."""
     if dispatch is None:
         return []
     order = list(dispatch.shards)
@@ -219,6 +227,7 @@ def shard_summaries(
                 "declared": shard in order,
                 "delivered": has_delivered,
                 "count": len(lifecycle.effective_verdicts(verdicts)),
+                "planned": len(dispatch.shard_items[shard]) if shard in dispatch.shard_items else None,
                 "summary": lifecycle.summarize(verdicts),
                 "completion": lifecycle.completion_of(verdicts) if has_delivered else None,
             }

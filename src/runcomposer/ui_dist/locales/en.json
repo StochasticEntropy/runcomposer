@@ -1,153 +1,641 @@
 {
-  "app": {
-    "title": "runcomposer",
-    "tagline": "Compose test runs from tags"
-  },
   "nav": {
+    "label": "Main",
+    "skip": "Skip to content",
     "compose": "Compose",
     "runs": "Runs",
-    "quarantine": "Quarantine"
+    "inbox": "Inbox",
+    "inboxWaiting": {
+      "one": "delivery waiting",
+      "other": "deliveries waiting"
+    },
+    "apiDocs": "API reference"
   },
-  "language": {
-    "label": "Language"
+  "prefs": {
+    "language": "Language",
+    "theme": "Theme",
+    "locale": {
+      "en": "English",
+      "de": "Deutsch"
+    },
+    "themes": {
+      "system": "System theme",
+      "light": "Light",
+      "dark": "Dark"
+    }
   },
-  "theme": {
-    "label": "Theme",
-    "system": "System",
-    "light": "Light",
-    "dark": "Dark"
+  "action": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "copied": "Copied",
+    "dismiss": "Dismiss",
+    "done": "Done",
+    "refresh": "Refresh",
+    "reload": "Reload the page",
+    "retry": "Try again"
   },
-  "taxonomy": {
-    "items": "items",
-    "unassigned": "Unassigned tags",
-    "expand": "Expand {label}",
-    "collapse": "Collapse {label}"
+  "state": {
+    "loading": "Loading…"
+  },
+  "error": {
+    "generic": "That did not work.",
+    "networkDetail": "The server did not answer. Check that it is running and reachable, then try again.",
+    "boundaryTitle": "This view ran into an error.",
+    "boundaryHint": "Nothing was lost on the server. Reload the page, or go to another view.",
+    "notFoundTitle": "There is nothing at this address",
+    "notFoundBack": "Go to Compose",
+    "code": {
+      "network": "The server cannot be reached.",
+      "client-error": "The page could not do that.",
+      "invalid-request": "The request was not accepted.",
+      "invalid-filter": "The filter is not valid.",
+      "invalid-selection": "The selection is not valid.",
+      "invalid-parameter": "This value was not accepted.",
+      "unknown-runner": "This runner is not configured.",
+      "unknown-run": "This run does not exist.",
+      "not-found": "Not found.",
+      "method-not-allowed": "The server does not allow this.",
+      "conflict": "This is not possible in the current state.",
+      "run-active": "The run is still in flight.",
+      "invalid-transition": "The run cannot change to that state.",
+      "spec-conflict": "A different run with this id already exists.",
+      "dispatch-refused": "The runner refused to start.",
+      "dispatch-cancelled": "The dispatch was cancelled.",
+      "token-required": "An ingest token is required.",
+      "token-rejected": "The ingest token was rejected.",
+      "payload-too-large": "The upload is too large.",
+      "parse-error": "The results could not be read.",
+      "ingest-refused": "The results were refused.",
+      "bad-bundle": "The results could not be read.",
+      "unsolicited": "Nothing was waiting for these results.",
+      "sha-mismatch": "The results belong to a different run document.",
+      "marker-conflict": "The results name a different run.",
+      "unknown-dispatch": "The dispatch does not exist.",
+      "unknown-quarantine-entry": "This inbox entry no longer exists.",
+      "unknown-artifact": "The file is not available.",
+      "spec-unreadable": "The run document could not be read.",
+      "manifest-invalid": "The manifest file is not valid.",
+      "taxonomy-invalid": "The taxonomy file is not valid.",
+      "config-error": "The server's configuration is not valid.",
+      "plugin-error": "A plugin could not be loaded.",
+      "store-error": "The run store reported an error.",
+      "internal-error": "The server ran into an internal error."
+    }
+  },
+  "runState": {
+    "COMPOSED": "Composed",
+    "DISPATCHED": "Starting",
+    "RUNNING": "Running",
+    "AWAITING_RESULTS": "Awaiting results",
+    "COMPLETE": "Complete",
+    "FAILED": "Run failed",
+    "CANCELLED": "Cancelled",
+    "STALE": "Interrupted"
+  },
+  "completion": {
+    "PASS": "Passed",
+    "FAIL": "Failed",
+    "ERROR": "Error",
+    "INCOMPLETE": "Incomplete"
+  },
+  "verdict": {
+    "PASS": "passed",
+    "FAIL": "failed",
+    "ERROR": "error",
+    "SKIP": "skipped",
+    "MISSING": "missing"
+  },
+  "health": {
+    "ok": "available",
+    "degraded": "degraded",
+    "down": "down",
+    "unknown": "not checked"
+  },
+  "mode": {
+    "export": "Export",
+    "ingest": "Ingested results"
+  },
+  "origin": {
+    "api": "composed here",
+    "cli": "command line",
+    "demo": "demo",
+    "rerun": "re-run of what did not pass",
+    "ingested": "from delivered results"
+  },
+  "outcome": {
+    "new": "new",
+    "duplicate": "duplicate",
+    "replaced": "replaced"
+  },
+  "event": {
+    "run": {
+      "composed": "Run composed",
+      "dispatched": "Dispatched",
+      "running": "Execution started",
+      "awaiting_results": "Waiting for results",
+      "completed": "Completed",
+      "failed": "Run failed",
+      "cancelled": "Cancelled",
+      "cancel_requested": "Cancellation requested",
+      "stale": "Interrupted"
+    },
+    "dispatch": {
+      "refused": "Dispatch refused"
+    },
+    "delivery": {
+      "recorded": "Results delivered",
+      "attached": "Results attached from the inbox"
+    },
+    "log": "Note",
+    "warning": "Warning"
+  },
+  "progress": {
+    "label": "{done} of {total} results received",
+    "none": "No results yet"
   },
   "filter": {
     "title": "Filter",
-    "quickFilters": "Quick filters",
-    "clear": "Clear",
-    "fieldTag": "Tag",
-    "historyLabel": "History",
-    "historyRerunFailed": "Rerun what failed (latest run)",
-    "historyActive": "History: {query}",
-    "conditions": "Active conditions",
-    "summary": "Filter as a sentence",
-    "removeCondition": "Remove condition: {condition}",
-    "conditionGroup": "Group ({count} conditions)",
-    "conditionGroupOne": "Group (1 condition)",
-    "operator": {
-      "is": "=",
-      "isNot": "≠",
-      "startsWith": "begins with",
-      "notStartsWith": "does not begin with",
-      "contains": "contains",
-      "notContains": "does not contain",
-      "endsWith": "ends with",
-      "notEndsWith": "does not end with",
-      "isAnyOf": "is any of",
-      "isNoneOf": "is none of"
+    "rootGroup": "Filter rules, combined with {op}",
+    "group": "Group, combined with {op}",
+    "not": "NOT",
+    "op": {
+      "AND": "AND",
+      "OR": "OR"
     },
-    "empty": "No filter yet — everything matches. Pick tags, use a quick filter, or add a rule below."
+    "opLong": {
+      "AND": "all of these (AND)",
+      "OR": "any of these (OR)"
+    },
+    "combine": "How the rules of this group combine",
+    "negateGroup": "Negate this group",
+    "negateRule": "Negate {pattern}",
+    "removeRule": "Remove {pattern}",
+    "editPattern": "Edit {pattern}",
+    "removeGroup": "Remove this group",
+    "ungroup": "Ungroup",
+    "add": "Add",
+    "addTag": "Add a tag or pattern",
+    "addTagToGroup": "Add a tag or pattern to this group",
+    "addPlaceholder": "Tag, prefix:… or regex:…",
+    "pick": "Pick tags…",
+    "addGroup": "Add group",
+    "clear": "Clear filter",
+    "editAsText": "Edit as text",
+    "asText": "The filter as text",
+    "everything": "All items",
+    "kind": {
+      "prefix": "prefix",
+      "regex": "regex"
+    },
+    "textLabel": "Filter expression",
+    "textHint": "For example: Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine- — quote a pattern that contains spaces or parentheses.",
+    "textApply": "Apply",
+    "parse": {
+      "empty": "Position {position}: a pattern is empty.",
+      "unexpected-end": "The expression ends where a tag or pattern is expected.",
+      "unexpected-operator": "Position {position}: {token} needs a tag or pattern before it.",
+      "missing-operator": "Position {position}: an operator is missing before “{token}”.",
+      "unbalanced-open": "Position {position}: this parenthesis is never closed.",
+      "unbalanced-close": "Position {position}: this closing parenthesis has no opening one.",
+      "unterminated-quote": "Position {position}: this quote is never closed.",
+      "needs-quotes": "Position {position}: put a pattern that contains parentheses or quotes in quotes — \"{token}…\"."
+    },
+    "negateAll": "Negate the whole filter",
+    "pickForGroup": "Pick tags for this group…",
+    "addGroupInGroup": "Add a group inside this group"
+  },
+  "picker": {
+    "title": "Pick tags",
+    "search": "Search the taxonomy",
+    "searchPlaceholder": "Tag, label or pattern…",
+    "tree": "Taxonomy",
+    "unassigned": "Other tags",
+    "hint": "A tick means the filter includes that tag. Arrow keys move, right and left open and close a branch, space ticks.",
+    "combine": "Items must have",
+    "mode": {
+      "any": "any of the new tags",
+      "all": "all of them",
+      "none": "none of them"
+    },
+    "items": {
+      "one": "{count} item",
+      "other": "{count} items"
+    },
+    "excluded": "excluded",
+    "insideChecked": {
+      "one": "{count} ticked inside",
+      "other": "{count} ticked inside"
+    },
+    "noMatches": "No tag or label matches the search.",
+    "noChange": "Tick tags to add them, untick to remove them.",
+    "adds": {
+      "one": "Adds {count} tag",
+      "other": "Adds {count} tags"
+    },
+    "removes": {
+      "one": "removes {count} tag",
+      "other": "removes {count} tags"
+    },
+    "counting": "counting items…",
+    "result": {
+      "one": "→ {count} item",
+      "other": "→ {count} items"
+    },
+    "resultWithNow": {
+      "one": "→ {count} item (now {now})",
+      "other": "→ {count} items (now {now})"
+    },
+    "apply": "Apply to filter"
   },
   "preview": {
     "title": "Preview",
-    "matched": "{count} items matched",
-    "selected": "{selected} of {count} selected",
-    "empty": "No items match the current filter",
-    "loading": "Compiling selection…",
-    "columns": {
-      "id": "Item id",
+    "matched": {
+      "one": "{count} of {total} items matches",
+      "other": "{count} of {total} items match"
+    },
+    "excluded": {
+      "one": "{count} unticked",
+      "other": "{count} unticked"
+    },
+    "excludedElsewhere": {
+      "one": "{count} unticked item does not match the current filter.",
+      "other": "{count} unticked items do not match the current filter."
+    },
+    "clearExclusions": "Tick all again",
+    "updating": "Updating…",
+    "loading": "Finding the matching items…",
+    "staleHint": "These rows belong to the last selection that worked. Nothing can be run until the preview is current again.",
+    "fixFilter": "Fix the filter to see what it matches.",
+    "empty": "No item matches this selection.",
+    "noSearchHits": "No matched item fits the search.",
+    "search": "Search the matched items",
+    "searchPlaceholder": "Search by name, id or tag…",
+    "sort": "Sort",
+    "sortBy": {
+      "catalog": "Catalog order",
+      "id": "ID",
+      "name": "Name"
+    },
+    "group": "Group by suite",
+    "shown": "{count} of {total} shown.",
+    "tableLabel": "Matched items",
+    "selectAll": "Run all shown items",
+    "selectGroup": "Run all items of {group}",
+    "selectItem": "Run {item}",
+    "noSuite": "No suite",
+    "items": {
+      "one": "{count} item",
+      "other": "{count} items"
+    },
+    "column": {
       "name": "Name",
+      "id": "ID",
       "tags": "Tags"
-    }
+    },
+    "keys": "Arrow keys move between the items, space ticks."
   },
   "compose": {
-    "titleLabel": "Run title",
+    "runTitle": "Run",
+    "summary": "{selected} of {matched} matched items selected ({total} in the catalog).",
+    "title": "Run title",
     "titlePlaceholder": "Untitled run",
-    "runWith": "Run with",
-    "exportSpec": "Export spec",
-    "composing": "Composing…",
-    "runCreated": "Run {id} created — state {state}",
-    "specExported": "Spec exported for run {id} — dispatch {dispatch}",
-    "nothingSelected": "Select at least one item to compose a run"
+    "titleFromRun": "Items of {title}",
+    "run": {
+      "one": "Run {count} item",
+      "other": "Run {count} items"
+    },
+    "starting": "Starting…",
+    "export": "Export…",
+    "started": {
+      "one": "Started “{title}” with {count} item.",
+      "other": "Started “{title}” with {count} items."
+    },
+    "countChanged": "The catalog changed since the preview: {count} planned, {expected} were shown.",
+    "blocked": {
+      "updating": "The preview is updating…",
+      "error": "The preview is out of date — fix the error first.",
+      "empty": "Nothing is selected yet.",
+      "nothing": "No item is selected.",
+      "runner": "Choose a runner."
+    },
+    "reset": "Start over",
+    "reloadCatalog": "Reload catalog",
+    "reloadCatalogHint": "Read the test corpus again, to pick up tests that were added or changed",
+    "catalogReloaded": {
+      "one": "Catalog reloaded: {count} item.",
+      "other": "Catalog reloaded: {count} items."
+    },
+    "copyLink": "Copy link to this selection",
+    "linkWithoutExclusions": "More than {max} items are unticked — the link carries the filter only.",
+    "unreadableLink": "The filter in this link could not be read, so the builder starts empty.",
+    "pinned": {
+      "one": "Limited to the {count} item of run",
+      "other": "Limited to the {count} items of run"
+    },
+    "pinnedLoading": "Loading the run's items…",
+    "unpin": "Remove this limit",
+    "landing": {
+      "title": "Nothing selected yet",
+      "catalog": "The catalog has {items} items and {tags} tags.",
+      "loaded": "Read",
+      "starts": "Build a filter, or start from one of these:",
+      "all": "Select all {count} items"
+    },
+    "loadedFrom": "Loaded from “{title}”: its selection, runner, options and labels."
+  },
+  "runner": {
+    "label": "Runner",
+    "choose": "Choose a runner…",
+    "none": "No runner is configured on this server. A selection can still be exported.",
+    "unavailable": "unavailable",
+    "checking": "checking…",
+    "recheck": "Check again",
+    "parameters": "Options of this runner",
+    "required": "required",
+    "noChoice": "— none —",
+    "problem": {
+      "required": "This is required.",
+      "integer": "Enter a whole number.",
+      "choice": "Choose one of the listed values."
+    },
+    "unhealthyHint": "This runner reports a problem. A run started on it may fail."
+  },
+  "labels": {
+    "label": "Labels",
+    "placeholder": "key=value",
+    "add": "Add label",
+    "remove": "Remove label {label}",
+    "hint": "Labels group runs, for example suite=nightly. The runs list can be filtered by them.",
+    "invalid": "A label is written key=value."
+  },
+  "export": {
+    "title": "Export for an external executor",
+    "introCompose": {
+      "one": "This composes a run from the {count} selected item and hands its document out.",
+      "other": "This composes a run from the {count} selected items and hands its document out."
+    },
+    "introRun": {
+      "one": "This hands out the document of “{title}” ({count} item) once more.",
+      "other": "This hands out the document of “{title}” ({count} items) once more."
+    },
+    "explain": "Nothing is executed here. The run waits for results that somebody else produces from the document and sends back.",
+    "format": "Document format",
+    "confirm": "Create export",
+    "working": "Exporting…",
+    "doneTitle": "Exported — the run is waiting for results",
+    "doneIntro": "“{title}” is now waiting for results.",
+    "stepDownload": "Download the run document",
+    "download": "Download run spec ({format})",
+    "downloadHint": "Use this file exactly as downloaded: results are matched to the run by its checksum.",
+    "stepToken": "Keep the ingest token",
+    "tokenOnce": "This token is shown only once. Whoever sends the results needs it.",
+    "copyToken": "Copy token",
+    "noToken": "This server accepts results without a token.",
+    "stepPush": "Send the results back",
+    "pushHint": "Post the result files to the run, for example:",
+    "preview": "Show the document first",
+    "previewHint": "This is the document as it would be composed now. Nothing has been created yet.",
+    "openRun": "Open the run",
+    "runTitle": "The run will be titled “{title}”.",
+    "copyCommand": "Copy command"
   },
   "runs": {
     "title": "Runs",
-    "refresh": "Refresh",
-    "empty": "No runs stored yet — compose one from the Compose tab",
-    "columns": {
-      "id": "Run id",
-      "state": "State",
-      "result": "Result",
-      "created": "Created",
-      "title": "Title"
+    "search": "Search titles",
+    "searchPlaceholder": "Part of a title…",
+    "state": "State",
+    "anyState": "Any state",
+    "label": "Label",
+    "clearFilters": "Clear filters",
+    "refreshFailed": "The list could not be refreshed.",
+    "empty": "No runs yet.",
+    "composeFirst": "Compose the first run",
+    "noMatch": "No run matches these filters.",
+    "notDispatched": "not dispatched",
+    "pages": "Pages",
+    "range": "{first}–{last} of {total}",
+    "previous": "Previous",
+    "next": "Next",
+    "column": {
+      "run": "Run",
+      "status": "Status",
+      "results": "Results",
+      "items": "Items",
+      "duration": "Duration",
+      "runner": "Runner",
+      "started": "Created"
+    }
+  },
+  "run": {
+    "title": "Run",
+    "notFound": "This run does not exist (any more)",
+    "backToRuns": "Back to the runs",
+    "id": "ID",
+    "started": "Created",
+    "duration": "Duration",
+    "runner": "Runner",
+    "items": "Items",
+    "origin": "Origin",
+    "actions": "Actions for this run",
+    "cancel": "Cancel run",
+    "cancelTitle": "Cancel this run?",
+    "cancelExplain": "Items that have not started are not run. What already finished keeps its result.",
+    "cancelConfirm": "Cancel the run",
+    "cancelForce": "Close it now, without waiting for the runner to stop",
+    "cancelRequested": "Cancellation was requested — waiting for the runner to stop.",
+    "rerunAll": "Run again",
+    "dispatch": "Run…",
+    "rerunFailed": {
+      "one": "Re-run {count} item that did not pass",
+      "other": "Re-run {count} items that did not pass"
     },
-    "detail": {
+    "rerunFailedAny": "Re-run what did not pass",
+    "load": "Load into Compose",
+    "finalize": "Close as it stands",
+    "finalizeTitle": "Close this run as it stands?",
+    "finalizeExplain": "Results that have not arrived are given up: items nobody reported count as missing.",
+    "export": "Export…",
+    "delete": "Delete",
+    "deleteTitle": "Delete this run?",
+    "deleteExplain": "“{title}” is deleted with its results and stored files. This cannot be undone.",
+    "deleteConfirm": "Delete the run",
+    "deleted": "“{title}” was deleted.",
+    "refreshFailed": "The run could not be refreshed.",
+    "runnerError": "The runner reported an error:",
+    "staleHint": "The server stopped while this run was executing. What had finished is kept; run it again to complete it.",
+    "awaitingHint": "This run waits for results from outside. They arrive by upload or through the inbox.",
+    "composedHint": "This run is composed but was never dispatched.",
+    "progress": "Progress",
+    "showDispatch": "Show dispatch",
+    "dispatchOption": "{number} of {total}",
+    "sections": "Sections of this run",
+    "tab": {
+      "results": "Results",
+      "selection": "Selection",
+      "activity": "Activity"
+    },
+    "shards": {
+      "one": "{count} shard",
+      "other": "{count} shards"
+    },
+    "shard": "Shard",
+    "allShards": "All shards",
+    "unnamedShard": "(unnamed)",
+    "shardRunning": "running",
+    "shardWaiting": "waiting",
+    "shardProgress": "{done} of {total} reported",
+    "shardReported": {
+      "one": "{count} reported",
+      "other": "{count} reported"
+    },
+    "shardUndeclared": "not announced by the runner",
+    "links": "Links and files",
+    "opensNewTab": "opens in a new tab",
+    "artifactNoLink": "This file is outside the server's artifact directory and cannot be opened from here.",
+    "verdicts": "Results per item",
+    "neverDispatched": "This run was never dispatched.",
+    "noVerdicts": "No results were recorded.",
+    "noVerdictsYet": "No results yet — they appear here as items finish.",
+    "noRowsMatch": "No result fits these filters.",
+    "filterByStatus": "Filter by result",
+    "filter": {
+      "all": "All",
+      "failed": "Failed",
+      "missing": "Missing",
+      "skipped": "Skipped",
+      "passed": "Passed"
+    },
+    "searchVerdicts": "Search items and messages",
+    "live": "live, not delivered yet",
+    "superseded": "superseded by a later attempt",
+    "showMessage": "Show the whole message",
+    "reason": {
+      "not-reported": "not reported",
+      "drift": "no longer in the catalog"
+    },
+    "column": {
+      "status": "Result",
+      "item": "Item",
+      "shard": "Shard",
+      "attempt": "Attempt",
+      "duration": "Duration",
+      "message": "Message"
+    },
+    "selection": {
+      "title": "Selection",
+      "filter": "Filter",
+      "noFilter": "none",
+      "fixed": "Fixed list",
+      "fixedCount": {
+        "one": "{count} item named by id",
+        "other": "{count} items named by id"
+      },
+      "derived": "Derived from",
+      "derivedFrom": "what was {verdicts} there",
+      "source": "Catalog",
+      "expect": "Result format",
+      "dispatch": "How it was run",
+      "spec": "Run spec",
+      "downloads": "Downloads",
+      "results": "Results",
+      "resultsHint": "The latest results as a CTRF document, for other tools.",
+      "specHint": "The stored document, without any token."
+    },
+    "activity": {
       "dispatches": "Dispatches",
+      "events": "Events",
       "deliveries": "Deliveries",
-      "verdicts": "Verdicts",
-      "mode": "mode",
-      "shards": "shards",
-      "shard": "shard",
-      "format": "format",
-      "none": "none yet",
-      "live": "live",
-      "progress": "{done} of {planned} verdicts in"
+      "shards": "Shards",
+      "document": "Handed-out document",
+      "download": "Download",
+      "newToken": "New token",
+      "format": "Format",
+      "received": "Received"
+    },
+    "rotateTitle": "Create a new ingest token?",
+    "rotateExplain": "The current token stops working at once. Whoever sends the results needs the new one.",
+    "rotateConfirm": "Create new token",
+    "rotateDone": "New ingest token",
+    "originOf": "in",
+    "shardNothing": "no results",
+    "showDetails": "Details of {item}",
+    "seenLive": "last seen live: {status}",
+    "cancelledHint": "This run was cancelled. Shards that had not delivered count as missing, whatever they reported live.",
+    "downloadDocument": "Download the handed-out document",
+    "cancelKeep": "Keep it running",
+    "resultCount": {
+      "one": "{count} result",
+      "other": "{count} results"
     }
   },
-  "errors": {
-    "request": "Request failed: {message}"
+  "rerun": {
+    "titleAll": "Run again",
+    "titleFirst": "Run",
+    "titleFailed": "Re-run what did not pass",
+    "explainAll": {
+      "one": "Runs the {count} item of “{title}” again, as a new dispatch of the same run.",
+      "other": "Runs all {count} items of “{title}” again, as a new dispatch of the same run."
+    },
+    "explainFailed": {
+      "one": "Composes a new run from the {count} item that failed or has no result in “{title}”.",
+      "other": "Composes a new run from the {count} items that failed or have no result in “{title}”."
+    },
+    "started": "Started again.",
+    "startedNew": {
+      "one": "Re-running {count} item of “{title}”.",
+      "other": "Re-running {count} items of “{title}”."
+    }
   },
-  "quarantine": {
-    "title": "Quarantine",
-    "refresh": "Refresh",
-    "hint": "Unmatched deliveries wait here — nothing is auto-attached. Attach to a run, promote to a new run, or discard.",
-    "empty": "Quarantine is empty — every delivery matched its run",
-    "runIdPlaceholder": "Run id",
-    "attach": "Attach",
-    "promote": "Promote",
+  "inbox": {
+    "title": "Inbox",
+    "hint": "Results that arrived and could not be matched to a run wait here. Nothing is attached automatically.",
+    "empty": "The inbox is empty.",
+    "attach": "Attach to a run",
+    "attachTitle": "Attach to a run",
+    "attachExplain": "The delivered results are recorded for the run you name.",
+    "runId": "Run",
+    "promote": "Make it a run",
+    "promoteTitle": "Make a run of this delivery",
+    "promoteExplain": "A new run is created from the delivered results.",
+    "format": "Result format",
+    "formatPlaceholder": "as the delivery says",
+    "formatHint": "Only needed when the delivery does not say which format its results are in.",
     "discard": "Discard",
-    "attached": "Delivery attached to run {id}",
-    "promoted": "Promoted to new run {id} (origin: ingested)",
-    "discarded": "Quarantine entry discarded",
-    "columns": {
-      "entry": "Entry",
+    "discardTitle": "Discard this delivery?",
+    "discardExplain": "The delivered results are deleted. This cannot be undone.",
+    "discardConfirm": "Discard the delivery",
+    "discarded": "The delivery was discarded.",
+    "attached": {
+      "one": "Attached — {count} result recorded.",
+      "other": "Attached — {count} results recorded."
+    },
+    "promoted": {
+      "one": "A run was created from {count} result.",
+      "other": "A run was created from {count} results."
+    },
+    "openRun": "Open the run",
+    "reason": {
+      "unsolicited": "No run was waiting for it",
+      "unknown-run": "Names a run that does not exist",
+      "unknown-dispatch": "Names a dispatch that does not exist",
+      "sha-mismatch": "Belongs to a different run document",
+      "marker-conflict": "Names a different run than it was sent to",
+      "bad-bundle": "Could not be read",
+      "dispatch-cancelled": "Its dispatch was cancelled"
+    },
+    "transport": {
+      "push": "upload",
+      "file-drop": "file drop"
+    },
+    "column": {
       "received": "Received",
-      "reason": "Reason",
-      "transport": "Transport",
-      "claimedRun": "Claimed run",
+      "reason": "Why it is here",
+      "via": "Arrived by",
+      "claimed": "Run it names",
+      "format": "Format",
       "actions": "Actions"
-    }
-  },
-  "picker": {
-    "open": "Pick tags…",
-    "title": "Add tags to the filter",
-    "tree": "Taxonomy",
-    "mode": "Include or exclude",
-    "modeInclude": "Include",
-    "modeExclude": "Exclude",
-    "within": "The selected tags",
-    "withinAny": "match any of them",
-    "withinAll": "match all of them",
-    "withinNone": "match none of them",
-    "join": "Join with the current filter",
-    "joinAnd": "AND — narrow what is there",
-    "joinOr": "OR — widen what is there",
-    "search": "Search",
-    "searchPlaceholder": "Tag, label, group…",
-    "and": "AND",
-    "or": "OR",
-    "not": "NOT",
-    "hint": "Arrow keys move, space selects, shift or ctrl/cmd selects several. A ✓ marks a tag the filter already carries — press it to take that one out.",
-    "tooBroad": "{count} matches — too many to open at once. The branches stay closed; narrow the search, or open the one you want.",
-    "noMatches": "No matches",
-    "tag": "Tag",
-    "inFilter": "Already in the filter",
-    "inFilterInside": "{count} already in the filter in this branch",
-    "selected": "Selected: {count}",
-    "apply": "Apply as filter",
-    "cancel": "Cancel",
-    "close": "Close"
+    },
+    "nothingRecorded": "Nothing was recorded: no result in the delivery matched an item of the run. Look at the run before relying on it.",
+    "runIdHint": "Choose a run from the list, or paste its ID."
   }
 }
