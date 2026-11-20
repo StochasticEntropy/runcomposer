@@ -190,7 +190,8 @@ jobs:
       - name: The container serves
         run: |
           docker run -d --rm --name rc -p 127.0.0.1:8100:8100 runcomposer:ci
-          curl -sf --retry 30 --retry-delay 1 --retry-connrefused localhost:8100/api/v1/health
+          # Docker accepts the connection before the app inside does: retry every error.
+          curl -sf --retry 30 --retry-delay 1 --retry-all-errors localhost:8100/api/v1/health
           docker stop rc
 
   jenkins:
