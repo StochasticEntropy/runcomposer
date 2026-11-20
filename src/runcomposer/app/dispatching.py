@@ -46,6 +46,12 @@ from runcomposer.core.errors import (
     RunActive,
     UnknownRun,
 )
+from runcomposer.core.handoff import (
+    HandoffOrder,
+    check_delivery_args,
+    check_reportable,
+    normalize_shards,
+)
 from runcomposer.core.hashing import bundle_hash, sha256_hex
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.lifecycle import ACTIVE_STATES
@@ -120,7 +126,7 @@ class _Context:
         self.parameters: Mapping[str, Any] = MappingProxyType(dict(parameters))
         self.options: Mapping[str, Any] = MappingProxyType({**options, **parameters})
         self.history = _History(service.store)
-        self.declared = dispatch.state != "DISPATCHED"
+        self._order = HandoffOrder(dispatch.dispatch_id, declared=dispatch.state != "DISPATCHED")
         self.links: Mapping[str, str] = dict(dispatch.links)
         self._shards: tuple[str, ...] = dispatch.shards
         self._cancel = threading.Event()
@@ -155,8 +161,12 @@ class _Context:
 
     # -- the hand-off --------------------------------------------------------------
 
+    @property
+    def declared(self) -> bool:
+        return self._order.declared
+
     def refuse(self, reason: str) -> NoReturn:
-        raise DispatchRefused(reason)
+        self._order.refuse(reason)
 
     def declare(
         self,
@@ -166,21 +176,8 @@ class _Context:
         links: Mapping[str, str] | None = None,
         spec_sha256: str | None = None,
     ) -> None:
-        if self.declared:
-            raise RuntimeError(
-                f"dispatch {self.dispatch_id} is already declared — one hand-off per dispatch "
-                "(re-running a spec is a new dispatch, DESIGN.md §4)"
-            )
-        if isinstance(shards, Mapping):
-            names = [str(name) for name in shards]
-            shard_items = {str(name): [str(i) for i in items] for name, items in shards.items()}
-        else:
-            if isinstance(shards, str):
-                raise TypeError("declare() takes a sequence of shard names, not one string")
-            names = [str(name) for name in shards]
-            shard_items = {}
-        if len(set(names)) != len(names):
-            raise ValueError(f"shard names must be distinct, got {names}")
+        self._order.before_declare()
+        names, shard_items = normalize_shards(shards)
         self._service.ledger.declare(
             self.dispatch_id, shards=names, shard_items=shard_items, plan=plan, links=links or {}
         )
@@ -189,7 +186,7 @@ class _Context:
             self._service.store.update_dispatch(self.dispatch_id, spec_sha256=spec_sha256)
         self._shards = tuple(names)
         self.links = dict(links or {})
-        self.declared = True
+        self._order.declared = True
         self.handoff.set()
 
     # -- results ---------------------------------------------------------------------
@@ -256,10 +253,8 @@ class _Context:
         bundle: str | Path | None = None,
         format: str | None = None,
     ) -> str:
-        if not self.declared:
-            raise RuntimeError("deliver() before declare(): declare the shard set first")
-        if (verdicts is None) == (bundle is None):
-            raise TypeError("deliver() takes exactly one of verdicts= or bundle=")
+        self._order.before_deliver()
+        check_delivery_args(verdicts, bundle)
         format_id = format or expected_format(self.spec)
         content_hash: str | None = None
         if bundle is not None:
@@ -269,13 +264,7 @@ class _Context:
             content_hash = bundle_hash(path)
         else:
             assert verdicts is not None
-            delivered = list(verdicts)
-            for verdict in delivered:
-                if verdict.status not in REPORTABLE_STATUSES:
-                    raise ValueError(
-                        f"a delivered verdict carries status {verdict.status!r} — "
-                        f"report one of {REPORTABLE_STATUSES}"
-                    )
+            delivered = check_reportable(verdicts)
         self._drain_live()
         dispatch = self._service.store.get_dispatch(self.dispatch_id)
         if dispatch is None:

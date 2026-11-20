@@ -26,11 +26,17 @@ class VerdictsParser(ParserBase):
 
     def parse(self, path: Any) -> list[ParsedVerdict]:
         """Parse a results file, or every matching ``*.json`` in a bundle
-        directory (JSON files that are not this format are skipped)."""
+        directory (there, JSON files that are not this format are skipped)."""
         root = Path(path)
-        files = [root] if root.is_file() else sorted(root.rglob("*.json"))
+        if root.is_file():
+            # A file named directly is meant to be this format: anything else
+            # is bad input (ParseError), not an empty result.
+            document = self._try_load(root)
+            if document is None:
+                raise ParseError(f"{root}: not a {self.format_id} document (unreadable JSON or another format)")
+            return self._parse_document(document, root)
         parsed: list[ParsedVerdict] = []
-        for file in files:
+        for file in sorted(root.rglob("*.json")):
             document = self._try_load(file)
             if document is not None:
                 parsed.extend(self._parse_document(document, file))

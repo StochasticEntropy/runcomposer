@@ -34,10 +34,11 @@ from runcomposer.core.errors import (
     PluginError,
     UnknownRun,
 )
+from runcomposer.core.handoff import correlate
 from runcomposer.core.hashing import bundle_hash, sha256_hex, verdicts_hash
 from runcomposer.core.lifecycle import ACTIVE_STATES
 from runcomposer.core.marker import read_marker
-from runcomposer.core.model import REPORTABLE_STATUSES, DispatchRecord, RunRecord, Verdict
+from runcomposer.core.model import DispatchRecord, RunRecord, Verdict
 from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
@@ -135,45 +136,12 @@ class Ingestion:
         reported as warnings, never invented as ids."""
         parser = self.parser(format_id)
         try:
-            parsed = list(parser.parse(bundle))
-        except ParseError as exc:
-            raise IngestError(str(exc), reason="bad-bundle") from exc
-        except IngestError:
+            return correlate(parser, bundle, format_id, self._service.catalog.resolve)
+        except IngestError as exc:
+            cause = exc.__cause__
+            if cause is not None and not isinstance(cause, (ParseError, IngestError)):
+                log.warning("parser %r raised on %s", format_id, bundle, exc_info=cause)
             raise
-        except Exception as exc:  # a parser bug is still a bundle we cannot take in
-            log.warning("parser %r raised on %s", format_id, bundle, exc_info=True)
-            raise IngestError(
-                f"{bundle}: the {format_id!r} parser failed: {type(exc).__name__}: {exc}",
-                reason="bad-bundle",
-            ) from exc
-        if not parsed:
-            raise IngestError(
-                f"bundle contains no {format_id!r} results: {bundle}", reason="bad-bundle"
-            )
-        catalog = self._service.catalog
-        verdicts: list[Verdict] = []
-        warnings: list[str] = []
-        for entry in parsed:
-            if entry.status not in REPORTABLE_STATUSES:
-                raise IngestError(
-                    f"{bundle}: result {entry.native_name!r} carries status {entry.status!r} — "
-                    f"an executor reports one of {REPORTABLE_STATUSES}",
-                    reason="bad-bundle",
-                )
-            item_id = catalog.resolve(entry.native_name)
-            if item_id is None:
-                warnings.append(f"unknown native name {entry.native_name!r} — verdict skipped")
-                continue
-            verdicts.append(
-                Verdict(
-                    item_id=item_id,
-                    status=entry.status,
-                    duration_ms=entry.duration_ms,
-                    message=entry.message,
-                    attempt=entry.attempt,
-                )
-            )
-        return verdicts, warnings
 
     # -- the pipeline ---------------------------------------------------------------
 

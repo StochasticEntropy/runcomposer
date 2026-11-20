@@ -152,11 +152,12 @@ def test_the_layers_above_do_not_import_plugins():
     """Plugins are loaded by name (entry points, ``module:``), never imported
     by the application layer or a transport — otherwise a "reference" plugin
     is quietly a dependency of the tool."""
-    for layer in ("app", "http", "cli"):
+    for layer in ("app", "http", "cli", "core"):
         for path in sorted((PACKAGE_DIR / layer).rglob("*.py")):
             for name, line in imported_modules(path):
-                assert not name.startswith("runcomposer.plugins"), (
-                    f"{layer}/{path.name}:{line} imports {name!r}"
+                assert not name.startswith(("runcomposer.plugins", "runcomposer.testing")), (
+                    f"{layer}/{path.name}:{line} imports {name!r} — plugins are loaded by name, "
+                    "and the conformance kit is for tests"
                 )
 
 
