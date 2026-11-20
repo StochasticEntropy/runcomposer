@@ -113,8 +113,14 @@ def test_the_runner_meets_the_contract(shop):
 
 def test_the_observer_meets_the_contract(tmp_path):
     path = tmp_path / "summary.txt"
-    check_observer(RunSummaryObserver(str(path)), threads=2)
-    # it writes for the five kinds that end a dispatch, once per notification
+    # It passes on the five kinds that end a dispatch and nothing else: with
+    # `kinds=` the check holds it to exactly that, once per notification.
+    check_observer(
+        RunSummaryObserver(str(path)),
+        seen=lambda: path.read_text(encoding="utf-8").splitlines() if path.exists() else [],
+        kinds=["run.completed", "run.failed", "run.cancelled", "run.stale", "dispatch.refused"],
+        threads=2,
+    )
     assert len(path.read_text(encoding="utf-8").splitlines()) == 5 * 3
 
 

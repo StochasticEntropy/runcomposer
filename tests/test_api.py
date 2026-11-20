@@ -686,7 +686,8 @@ class TestRunDetail:
         assert body["artifacts"] == [
             {
                 "name": "log.html (1)", "media_type": "text/html", "dispatch_id": outcome.dispatch_id,
-                "shard": "1", "group": None, "url_or_path": str(log), "kind": "local",
+                "shard": "1", "group": None,
+                "url_or_path": f"{run_id}/{outcome.dispatch_id}/1/log.html", "kind": "local",
                 "href": f"/artifacts/{run_id}/{outcome.dispatch_id}/1/log.html",
             },
             {
@@ -1583,7 +1584,14 @@ class TestArtifactRoute:
         )
         by_name = {a["name"]: a for a in client.get(f"{API}/runs/{run_id}").json()["artifacts"]}
         assert (by_name["stray"]["kind"], by_name["stray"]["href"]) == ("external-path", None)
-        assert by_name["stray"]["url_or_path"] == str(tmp_path / "secret.txt")
+        # Listed, by name only: where it lies on the server is not a client's business.
+        assert by_name["stray"]["url_or_path"] == "secret.txt"
+        assert str(tmp_path) not in client.get(f"{API}/runs/{run_id}").text
+        # A reader on this machine (the CLI) is given the recorded path.
+        local = {a["name"]: a for a in service.artifacts.list(run_id, server_paths=True)}
+        assert local["stray"]["url_or_path"] == str(tmp_path / "secret.txt")
+        assert local["output.xml (env1)"]["url_or_path"].startswith(str(tmp_path))
+        assert by_name["output.xml (env1)"]["url_or_path"] == f"{run_id}/dispatch-1/env1/output.xml"
         assert (by_name["not a link"]["kind"], by_name["not a link"]["href"]) == ("external-path", None)
 
 

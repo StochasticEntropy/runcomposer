@@ -144,6 +144,58 @@ class TestThePlanRules:
         check_runner(NoPlanCapability(), expect="complete")
 
 
+# -- check_observer: an observer that passes on only some kinds ----------------------------
+
+
+class FinalOnly:
+    """Keeps a line per event that ends a dispatch — and nothing else."""
+
+    OPTIONS = None
+    CONNECTOR = None
+
+    def __init__(self, drop: bool = False) -> None:
+        self.lines: list[str] = []
+        self.drop = drop
+        self._lock = threading.Lock()
+
+    @classmethod
+    def resolve_config_paths(cls, options: dict[str, Any], resolve: Any) -> dict[str, Any]:
+        return options
+
+    def notify(self, event: Any) -> None:
+        if event.kind in ("run.completed", "run.failed") and not (self.drop and self.lines):
+            with self._lock:
+                self.lines.append(event.kind)
+
+
+class TestObserverKinds:
+    def test_an_observer_that_filters_is_held_to_exactly_what_it_passes_on(self):
+        from runcomposer.testing import check_observer
+
+        observer = FinalOnly()
+        check_observer(observer, seen=lambda: observer.lines, kinds=["run.completed", "run.failed"], threads=3)
+        assert len(observer.lines) == 2 * 4
+        patterned = FinalOnly()
+        with pytest.raises(AssertionError) as caught:   # run.* is more than it passes on
+            check_observer(patterned, seen=lambda: patterned.lines, kinds=["run.*"])
+        assert rule_of(caught) == "observer.delivers-each" and "of the kinds ['run.*']" in str(caught.value)
+
+    def test_without_kinds_a_filtering_observer_cannot_pass_and_a_dropping_one_is_caught_with_them(self):
+        from runcomposer.testing import check_observer
+
+        observer = FinalOnly()
+        with pytest.raises(AssertionError) as caught:
+            check_observer(observer, seen=lambda: observer.lines)
+        assert rule_of(caught) == "observer.delivers-each"
+        dropping = FinalOnly(drop=True)
+        with pytest.raises(AssertionError) as caught:
+            check_observer(dropping, seen=lambda: dropping.lines, kinds=["run.completed", "run.failed"])
+        assert rule_of(caught) == "observer.delivers-each"
+        with pytest.raises(AssertionError) as caught:
+            check_observer(FinalOnly(), seen=lambda: [], kinds=["shop.restocked"])
+        assert rule_of(caught) == "observer.kinds"
+
+
 # -- check_store: groups, RUNNING, statuses, seeds -----------------------------------------
 
 
@@ -379,7 +431,7 @@ class TestSmallHelpers:
         from .conftest import REPO
 
         pinned = re.search(r"^FROM jenkins/jenkins:([0-9.]+)", (REPO / "ci/jenkins/Dockerfile").read_text(), re.M)
-        assert pinned and FakeJenkins.VERSION == pinned.group(1)
+        assert pinned and pinned.group(1) == FakeJenkins.VERSION
 
     def test_the_kit_and_its_stand_in_import_without_pytest(self):
         code = ("import sys, runcomposer.testing, runcomposer.testing.jenkins; "

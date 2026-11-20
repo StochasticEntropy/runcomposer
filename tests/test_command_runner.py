@@ -326,7 +326,7 @@ class TestFailures:
         assert len(service.store.verdicts_for(run.id)) == delivered
         assert dict(dispatch.summary) == {"PASS": delivered, "MISSING": len(dispatch.shard_items["2"])}
         # The failed shard's output is recorded, so "see command.log" leads somewhere.
-        artifacts = {a["name"]: a for a in service.artifacts.list(run.id)}
+        artifacts = {a["name"]: a for a in service.artifacts.list(run.id, server_paths=True)}
         failed_log = artifacts["command.log (shard 2)"]
         assert failed_log["shard"] == "2" and failed_log["href"]
         assert "shop runner:" in Path(failed_log["url_or_path"]).read_text(encoding="utf-8")

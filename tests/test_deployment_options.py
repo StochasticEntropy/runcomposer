@@ -242,3 +242,41 @@ class TestDoctorDetails:
     def test_the_global_verbose_flag_shows_them_too(self, tmp_path, capsys):
         cli_main(["-v", "doctor", "--config", self.config(tmp_path)])
         assert "[FAIL] browser installed" in capsys.readouterr().out
+
+
+class TestMappingParametersOnTheCommandLine:
+    """A `mapping` parameter is name → text. On the command line its values
+    are taken as text, exactly as typed — a number or `true` among them is
+    not a reason to refuse (the API stays strict: JSON says what it means)."""
+
+    def config(self, tmp_path: Path) -> str:
+        return str(write_config(tmp_path, runners={"pytest": {
+            "plugin": "command", "command": "true",
+            "parameters": [{"name": "overrides", "kind": "mapping"}, {"name": "retries", "kind": "integer"}],
+        }}))
+
+    def test_scalars_in_a_mapping_are_text_as_typed(self, tmp_path, capsys):
+        code = cli_main(["plan", "Cart", "--runner", "pytest", "--json", "--config", self.config(tmp_path),
+                         "--param", "overrides={PRICE: 1300, VAT: 19.0, GIFT: true, NOTE: as is}",
+                         "--param", "retries=2"])
+        answer = json.loads(capsys.readouterr().out)
+        assert code == 0, answer
+        assert answer["parameters"] == {
+            "overrides": {"PRICE": "1300", "VAT": "19.0", "GIFT": "true", "NOTE": "as is"}, "retries": 2,
+        }
+
+    def test_what_is_not_a_mapping_is_still_refused_naming_the_parameter(self, tmp_path, capsys):
+        config = self.config(tmp_path)
+        assert cli_main(["plan", "Cart", "--runner", "pytest", "--config", config,
+                         "--param", "overrides={PRICE: {EUR: 13}}"]) == 1
+        assert "parameter 'overrides' must be a mapping of names to strings" in capsys.readouterr().err
+        assert cli_main(["plan", "Cart", "--runner", "pytest", "--config", config, "--param", "retries={a: 1}"]) == 1
+        assert "parameter 'retries' must be an integer" in capsys.readouterr().err
+
+    def test_the_api_stays_strict(self, make_client):
+        client, _service = make_client(runners={"pytest": {
+            "plugin": "command", "command": "true", "parameters": [{"name": "overrides", "kind": "mapping"}]}})
+        response = client.post(f"{API}/plan", json={
+            "selection": {"tag_filter": "Cart"}, "runner": "pytest", "parameters": {"overrides": {"PRICE": 1300}}})
+        assert (response.status_code, response.json()["code"]) == (400, "invalid-parameter")
+        assert response.json()["parameter"] == "overrides"

@@ -201,7 +201,7 @@ def _finish(service: Service, run_id: str, outcome: Outcome, args: argparse.Name
             file=sys.stderr,
         )
         run = service.wait(run_id, timeout=args.timeout, dispatch_id=outcome.dispatch_id)
-    detail = run_detail(service, run, dispatch_id=outcome.dispatch_id)
+    detail = run_detail(service, run, dispatch_id=outcome.dispatch_id, server_paths=True)
     dispatch = next(d for d in detail["dispatches"] if d["dispatch_id"] == outcome.dispatch_id)
     if args.as_json:
         emit_json(detail)
@@ -438,7 +438,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     from runcomposer.app.views import run_detail
 
     with service_for(args) as service:
-        detail = run_detail(service, service.require_run(args.run_id))
+        detail = run_detail(service, service.require_run(args.run_id), server_paths=True)
     if args.as_json:
         emit_json(detail)
         return EXIT_OK

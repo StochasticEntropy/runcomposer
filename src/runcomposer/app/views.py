@@ -236,8 +236,16 @@ def shard_summaries(
 
 
 def run_detail(
-    service: Service, run: RunRecord, *, dispatch_id: str | None = None, events_limit: int = 200
+    service: Service,
+    run: RunRecord,
+    *,
+    dispatch_id: str | None = None,
+    events_limit: int = 200,
+    server_paths: bool = False,
 ) -> dict[str, Any]:
+    """``server_paths`` is for a reader on this machine (the CLI): artifacts
+    then carry the path they were recorded under. Over HTTP they do not —
+    a client gets ``href`` and a path relative to the artifact directory."""
     data = run_row(run)
     dispatch = run.latest_dispatch
     if dispatch_id is not None:
@@ -263,7 +271,7 @@ def run_detail(
             # For a run composed by `rerun` with scope `failed`: the run it
             # was derived from. (Scope `all` re-dispatches the same run.)
             "rerun_of": _rerun_of(run, selection),
-            "artifacts": service.artifacts.list(run.id),
+            "artifacts": service.artifacts.list(run.id, server_paths=server_paths),
             "events": [event_json(event) for event in events],
             "last_event_seq": events[-1].seq if events else 0,
             "selection": {

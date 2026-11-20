@@ -17,6 +17,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
@@ -570,13 +571,20 @@ def check_observer(
     observer: Any,
     *,
     seen: Callable[[], Sequence[Any]] | None = None,
+    kinds: Sequence[str] | None = None,
     threads: int = 4,
 ) -> None:
     """Check a :class:`runcomposer.sdk.RunObserver`: it accepts every event
     kind, returns ``None``, and copes with being called from several threads
     at once. With ``seen`` — a callable returning what your observer's
     destination received so far (requests, lines, files) — every
-    notification must have arrived exactly once."""
+    notification must have arrived exactly once.
+
+    ``kinds`` is for an observer that passes on only some event kinds by its
+    own decision (a summary of finished runs): the kinds it does pass on, as
+    names or ``fnmatch`` patterns (``"run.*"``). ``seen`` is then expected to
+    grow by exactly the notifications of those kinds — the others must be
+    accepted and must leave no trace."""
     _members(observer, RunObserver, "observer.contract")
     before = len(seen()) if seen is not None else 0
     events = sample_events()
@@ -602,9 +610,24 @@ def check_observer(
         worker.join(60)
     _require(not errors, "observer.thread-safe", f"concurrent notify() raised: {errors[:1]}")
     if seen is not None:
-        expected = len(events) * (1 + threads)
+        passed_on = [
+            event for event in events
+            if kinds is None or any(fnmatchcase(event.kind, pattern) for pattern in kinds)
+        ]
+        if kinds is not None:
+            _require(
+                bool(passed_on), "observer.kinds",
+                f"kinds={list(kinds)} matches no event kind an observer is told about "
+                f"({[event.kind for event in events]})",
+            )
+        expected = len(passed_on) * (1 + threads)
         got = len(seen()) - before
-        _require(got == expected, "observer.delivers-each", f"{expected} notifications made, {got} arrived")
+        _require(
+            got == expected, "observer.delivers-each",
+            f"{expected} notifications "
+            + ("made" if kinds is None else f"of the kinds {list(kinds)} made")
+            + f", {got} arrived",
+        )
 
 
 # -- RunStore ----------------------------------------------------------------------------

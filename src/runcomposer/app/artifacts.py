@@ -93,15 +93,32 @@ class Artifacts:
                     return True
         return False
 
-    def list(self, run_id: str, dispatch_id: str | None = None) -> list[dict[str, Any]]:
+    def list(
+        self, run_id: str, dispatch_id: str | None = None, *, server_paths: bool = False
+    ) -> list[dict[str, Any]]:
+        """A run's artifacts as a client reads them. ``kind`` says what an
+        entry is: ``url`` (a link, ``href`` is the URL), ``local`` (a
+        recorded file, ``href`` is the path it is served under),
+        ``directory`` (a recorded directory: its files are servable, it has
+        no ``href`` itself) or ``external-path`` (a file outside the run's
+        artifact directory: listed, never served).
+
+        ``url_or_path`` never tells a remote client where things lie on this
+        machine: for a URL it is the URL, for a file or directory inside the
+        artifact directory the path *relative to that directory*, for a file
+        outside it the bare file name. ``server_paths=True`` — for the CLI,
+        which runs on this machine — gives the recorded path as it is."""
         root = self.root()
         resolved = []
         for ref in self._store.artifact_refs(run_id, dispatch_id):
             kind, href = "external-path", None
+            shown = ref.url_or_path if server_paths else Path(ref.url_or_path).name
             if is_http_url(ref.url_or_path):
-                kind, href = "url", ref.url_or_path
+                kind, href, shown = "url", ref.url_or_path, ref.url_or_path
             else:
                 relative = self._relative(ref.url_or_path, root)
+                if relative is not None and not server_paths:
+                    shown = relative
                 if relative is not None and relative.split("/", 1)[0] == ref.run_id:
                     if Path(ref.url_or_path).is_dir():
                         # A recorded directory: its files are servable, the
@@ -116,7 +133,7 @@ class Artifacts:
                     "dispatch_id": ref.dispatch_id,
                     "shard": ref.shard,
                     "group": ref.group,
-                    "url_or_path": ref.url_or_path,
+                    "url_or_path": shown,
                     "kind": kind,
                     "href": href,
                 }

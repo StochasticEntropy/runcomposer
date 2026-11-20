@@ -64,8 +64,9 @@ def add_selection_args(parser: argparse.ArgumentParser, *, history: bool = True)
 def add_param_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--param", action="append", default=[], metavar="NAME=VALUE",
                         help="per-run runner parameter (repeatable). VALUE is read as YAML, so "
-                        "'--param partitions=[env1,env2]' is a list and '--param allow_drift=true' "
-                        "a boolean; see `runcomposer doctor` for what a runner accepts")
+                        "'--param partitions=[env1,env2]' is a list, '--param allow_drift=true' a "
+                        "boolean and '--param variables={LOCALE: de, RETRIES: 3}' a mapping whose "
+                        "values are taken as text; see `runcomposer doctor` for what a runner accepts")
 
 
 def add_wait_args(parser: argparse.ArgumentParser) -> None:
@@ -113,7 +114,13 @@ def parse_params(pairs: list[str]) -> dict[str, Any] | None:
         if not sep or not name:
             fail(f"--param must be NAME=VALUE, got {pair!r}")
         try:
-            params[name] = yaml.safe_load(value)
+            parsed = yaml.safe_load(value)
+            if isinstance(parsed, dict):
+                # A mapping on the command line is name → text, as a `mapping`
+                # parameter wants it: `{RETRIES: 3}` means the text "3",
+                # exactly as typed — not a number the runner would refuse.
+                parsed = yaml.load(value, Loader=yaml.BaseLoader)
+            params[name] = parsed
         except yaml.YAMLError as exc:
             fail(f"--param {name}: cannot parse value: {exc}")
     return params
