@@ -183,13 +183,21 @@ class LiveStatusListener:
     when it ends — written to a ``LiveChannel``, so it works in a worker
     process and with any RunStore. The parse of the finished output is the
     authoritative result; live status is replaced by it when the shard
-    delivers. Streaming is best-effort and never breaks the execution."""
+    delivers. Streaming is best-effort and never breaks the execution.
+
+    ``stopped`` (optional) says whether the execution was asked to stop. A
+    test that is cut short by a stop ends as a failure in Robot's eyes; that
+    is not something the test did, so its end is not reported — what stays
+    is that it was ``RUNNING`` when the stop came."""
 
     ROBOT_LISTENER_API_VERSION = 3
 
-    def __init__(self, channel: LiveChannel, shard: str):
+    def __init__(
+        self, channel: LiveChannel, shard: str, stopped: Callable[[], bool] | None = None
+    ):
         self._channel = channel
         self._shard = shard
+        self._stopped = stopped
 
     def start_test(self, data: Any, result: Any) -> None:
         try:
@@ -199,6 +207,8 @@ class LiveStatusListener:
 
     def end_test(self, data: Any, result: Any) -> None:
         try:
+            if self._stopped is not None and self._stopped():
+                return
             self._channel.live(
                 self._shard,
                 result.longname,
@@ -467,7 +477,9 @@ def _execute_shard(
         target.mkdir(parents=True, exist_ok=True)
         listeners: list[Any] = list(payload.listeners)
         if channel is not None and payload.live_status:
-            listeners.append(LiveStatusListener(channel, payload.shard))
+            listeners.append(
+                LiveStatusListener(channel, payload.shard, (out_dir / STOP_FILE).exists)
+            )
         selection = ExactSelection(execution.item_ids, payload.executed_tag)
         options: dict[str, Any] = dict(payload.robot_options)
         options.update(

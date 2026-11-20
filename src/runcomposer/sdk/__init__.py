@@ -73,6 +73,7 @@ from runcomposer.core.errors import (
 )
 from runcomposer.core.events import LIFECYCLE_KINDS
 from runcomposer.core.filter import FilterError, format_filter, parse_filter
+from runcomposer.core.handoff import corpus_drifted
 from runcomposer.core.hashing import bundle_hash, canonical_json, sha256_hex, verdicts_hash
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.lifecycle import (
@@ -209,6 +210,7 @@ __all__ = [
     "canonical_json",
     "completion_of",
     "contract_members",
+    "corpus_drifted",
     "effective_verdicts",
     "epoch_ms",
     "forbid_dtd",

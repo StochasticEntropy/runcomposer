@@ -245,8 +245,11 @@ where the member, field or behaviour did not exist or worked differently.
   worker and its supervisor with lanes, timeouts and the stop protocol,
   delivery, output merging) and `runcomposer.sdk.jenkins` (`JenkinsClient`:
   crumb and session, bounded retry, trigger → queue item → build, lookup by
-  queue id, stop and cancel, artifacts and URLs below a build;
-  `encode_spec` / `decode_spec`). `robot-pool` and `jenkins` are built on
+  queue id, stop and cancel, `follow` — a build from queue item to its end,
+  taken back when the dispatch was cancelled before there was a link to
+  stop it by — artifacts and URLs below a build; `encode_spec` /
+  `decode_spec`). `corpus_drifted(ctx)` in the SDK asks the drift question
+  every runner asks. `robot-pool` and `jenkins` are built on
   them and import nothing else of runcomposer; guard tests hold the names,
   the imports and that Robot Framework is loaded only to execute. New in
   `runcomposer.sdk`: `LIVE_STATUSES`, `LiveStatus`, `PlanContext`,
@@ -331,7 +334,13 @@ where the member, field or behaviour did not exist or worked differently.
   `store.duration-statuses`, `store.duration-seeds`;
   `ConnectorHarness.start()` (a handle to follow and cancel),
   `ConnectorHarness.plan()`, `ConnectorHarness(serve=True)` serving the
-  API on a free port.
+  API on a free port, `ConnectorHarness.artifacts()` (a run's artifacts
+  with the path each is served under); `plugin(section, name, **options)`
+  builds an installed plugin by its config name; the fake validates and
+  defaults per-run parameters against the runner it is run with; and
+  `runcomposer.testing.jenkins` — `FakeJenkins`, the protocol stand-in the
+  reference `jenkins` runner is tested with, for a connector's own Jenkins
+  runner.
 - **CLI**: `plan`, `history import`, `history durations`, `doctor -v`
   (every runner's health data; a list of checks reads as a checklist),
   `rerun --title`; `show` prints groups and what is running now.

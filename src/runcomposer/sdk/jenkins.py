@@ -16,7 +16,9 @@ covers what a runner needs from a Jenkins server and nothing else:
   may be somebody else's — and, once Jenkins has forgotten the queue item (it
   does a few minutes after the build started), by the queue id the build
   itself records;
-- **stop / cancel** of a build or a queued item;
+- **stop / cancel** of a build or a queued item, and ``follow`` — a build
+  from queue item to its end that is taken back when the dispatch is
+  cancelled meanwhile;
 - **results**: the archived artifacts of a build, and any other URL below
   the build (what a publisher plugin serves without archiving it).
 
@@ -282,6 +284,54 @@ class JenkinsClient:
             check=check,
         )
         return result
+
+    def follow(
+        self,
+        job: str,
+        queue_url: str,
+        *,
+        timeout_s: float,
+        poll_interval_s: float = 5.0,
+        check: Callable[[], None] | None = None,
+        on_build: Callable[[str], None] | None = None,
+        tree: str = "building,result,artifacts[relativePath]",
+    ) -> dict[str, Any]:
+        """A triggered build from queue item to its end: wait until the queue
+        item became a build, tell ``on_build(build_url)`` (record the link
+        there — ``ctx.set_link("build", url)``), wait until the build is
+        over, and return its API document with ``"url"`` set to the build's.
+
+        ``check`` may raise to give up (pass ``ctx.raise_if_cancelled``). It
+        is called **once before anything else, and if it raises there the
+        build is taken back** — stopped, or taken out of the queue — before
+        the exception goes on. That closes the one window a runner's
+        ``cancel`` cannot: a cancel that arrived while the trigger was still
+        under way found no link to stop anything by, so without this the
+        build would run on for a cancelled dispatch. After that it is called
+        before every probe, where a cancellation has already been acted on
+        by the runner's ``cancel`` (the link was there), and once more when
+        the build is over. A timeout leaves the build alone and raises
+        :class:`JenkinsTimeout`."""
+        if check is not None:
+            try:
+                check()
+            except BaseException:
+                try:
+                    self.cancel(job, queue_url)
+                except JenkinsError:
+                    pass  # already gone, or unreachable: nothing more to do here
+                raise
+        build_url = self.wait_for_build(
+            job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check
+        )
+        if on_build is not None:
+            on_build(build_url)
+        build = self.wait_until_finished(
+            build_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check, tree=tree
+        )
+        if check is not None:
+            check()
+        return {**build, "url": build_url}
 
     # -- stopping ------------------------------------------------------------------------------
 

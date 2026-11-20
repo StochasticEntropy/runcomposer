@@ -44,7 +44,7 @@ from .checks import (
     xml_with_dtd,
 )
 from .fake import Delivery, FakeDispatchContext, FakeHistory, ListSource
-from .harness import ConnectorHarness, DispatchHandle, HarnessRun
+from .harness import ConnectorHarness, DispatchHandle, HarnessRun, plugin
 
 __all__ = [
     "DEFAULT_ITEM_IDS",
@@ -60,6 +60,7 @@ __all__ = [
     "check_runner",
     "check_source",
     "check_store",
+    "plugin",
     "sample_events",
     "xml_with_dtd",
 ]

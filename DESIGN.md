@@ -1069,7 +1069,9 @@ explicit about which:
   than offering a link that cannot work. A recorded **directory** is listed
   with kind `directory` and no href: it is not a document to open, but every
   file below it is servable — a report together with the images and
-  screenshots it refers to.
+  screenshots it refers to. Hidden files and directories below it (a tool's
+  own bookkeeping, such as a worker's hand-back file) are not part of that:
+  they are served only when recorded by themselves.
 
 A built-in route serves `/artifacts/{run_id}/{dispatch_id}/…` — the layout of
 `ctx.workdir` — and **only what was recorded**: a file a runner recorded with
@@ -1156,7 +1158,9 @@ runners are made of:
 - `runcomposer.sdk.jenkins` — `JenkinsClient` (session and crumb, bounded
   retry, TLS, trigger → queue item → build, lookup by queue id once the
   queue item is gone, stop and cancel, archived artifacts and any URL below
-  a build), `JenkinsError` / `JenkinsTimeout`, and `encode_spec` /
+  a build, and `follow`: a triggered build from its queue item to its end,
+  taken back when the dispatch was cancelled before a link existed to stop
+  it by), `JenkinsError` / `JenkinsTimeout`, and `encode_spec` /
   `decode_spec` for the compressed spec.
 
 Why they are exported rather than kept inside the runners: a connector whose
@@ -1211,7 +1215,10 @@ real dispatch; `ConnectorHarness` builds a real `Service` in a temporary
 directory and drives compose → dispatch → settled with a timeout, starts a
 dispatch to follow and cancel (`start` → a handle with `wait_until`,
 `cancel`, `read`), previews (`plan`), and with `serve=True` serves the API
-on a free port for an executor that pushes. Every reference plugin is tested
+on a free port for an executor that pushes. `runcomposer.testing.jenkins`
+holds the Jenkins protocol stand-in the reference runner is tested with
+(`FakeJenkins`), so a connector's own Jenkins runner is tested against the
+same thing; `plugin(...)` builds an installed plugin by its config name. Every reference plugin is tested
 with it — the evidence that it suffices (tests/test_kit_additions.py,
 tests/test_testing_kit.py).
 `examples/connector-template/` is an installable connector package for the

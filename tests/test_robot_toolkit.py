@@ -50,7 +50,7 @@ from runcomposer.sdk.robot import (
 )
 from runcomposer.testing import ConnectorHarness, FakeDispatchContext, check_runner
 
-from .conftest import needs_robot
+from .conftest import needs_robot, wait_until
 from .test_robot_pool import (
     FIVE_TESTS,
     QUICK,
@@ -326,6 +326,28 @@ class TestTheSupervisor:
         assert result is not None and result.stopped, "the worker ended its execution and said why"
         assert (tmp_path / "out" / ".stop-requested").exists()
 
+    def test_a_test_cut_short_by_a_stop_is_not_reported_as_having_failed(self, make_service, tmp_path):
+        """Robot ends a stopped test as a failure. That is not something the
+        test did: after a cancel the last thing streamed about it is that it
+        was RUNNING — which is also what its MISSING verdict then says."""
+        from runcomposer.app.views import run_detail
+
+        service = pool_service(make_service, staged_suite(tmp_path, 120), max_workers=1)
+        run_id = service.compose_run({"tag_filter": "Checkout"}, title="t", origin="test", runner_id="robot-pool").run.id
+        outcome = service.dispatch(run_id, "robot-pool")
+        wait_until(
+            lambda: any(v.item_id == SLOW and v.status == "RUNNING"
+                        for v in service.store.live_verdicts(run_id, outcome.dispatch_id)),
+            timeout=90, what="the slow test to be running",
+        )
+        service.cancel(run_id)
+        assert outcome.done.wait(60) and service.require_run(run_id).state == "CANCELLED"
+        live = {v.item_id: v.status for v in service.store.live_verdicts(run_id, outcome.dispatch_id)}
+        assert live == {QUICK: "PASS", SLOW: "RUNNING"}
+        missing = {v["item_id"]: v for v in run_detail(service, service.require_run(run_id))["verdicts"]
+                   if v["status"] == "MISSING"}
+        assert missing[SLOW]["last_live"]["status"] == "RUNNING" and missing[QUICK]["last_live"]["status"] == "PASS"
+
     def test_a_shard_over_its_timeout_is_stopped_and_reported(self, tmp_path):
         root = staged_suite(tmp_path, 120)
         (outcome,) = supervise([payload(root, tmp_path / "out", [SLOW])], max_workers=1, timeout_s=3)
@@ -563,8 +585,11 @@ class TestPreDispatchAndRunParameters:
         for path in ("booking.json", "../private/booking.json", "prepared.txt", ".live"):
             response = client.get(f"/artifacts/{run.id}/{dispatch_id}/{path}")
             assert response.status_code == 404 and "k-booking-4711" not in response.text
-        # …while what the runner recorded is served.
+        # …while what the runner recorded is served — the shard's directory
+        # too, but not the worker's own bookkeeping in it.
         assert client.get(f"/artifacts/{run.id}/{dispatch_id}/staging/log.html").status_code == 200
+        assert (service.config.artifact_dir / run.id / dispatch_id / "staging" / RESULT_FILE).is_file()
+        assert client.get(f"/artifacts/{run.id}/{dispatch_id}/staging/{RESULT_FILE}").status_code == 404
         service.delete_run(run.id)
         assert not (service.config.private_dir / run.id).exists(), "removed with the run"
 

@@ -51,7 +51,7 @@ PUBLIC_NAMES = {
     "missing_verdicts", "outstanding_shards", "summarize", "new_ulid", "utc_now", "parse_time",
     "normalize_time", "epoch_ms", "parse_filter", "format_filter", "load_document",
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
-    "RemoteLiveChannel",
+    "RemoteLiveChannel", "corpus_drifted",
     # embedding
     "Service", "load_config", "Config",
 }

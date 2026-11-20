@@ -453,20 +453,20 @@ class JenkinsRunner(RunnerBase):
                 "Jenkins accepted the trigger but returned no queue location, so the build "
                 "cannot be identified — use completion: callback with this server"
             )
-        try:
-            build_url = self.client.wait_for_build(
-                self.job, queue_url, timeout_s=self.timeout_s,
-                poll_interval_s=self.poll_interval_s, check=ctx.raise_if_cancelled,
-            )
+        def started(url: str) -> None:
             # Known from here on: a cancel — also one made after a restart,
             # with a context rebuilt from the record — goes straight to it.
-            ctx.set_link("build", build_url)
-            ctx.add_artifact("Jenkins build", build_url, media_type="text/html")
-            ctx.log(f"jenkins: build started — {build_url}")
-            build = self.client.wait_until_finished(
-                build_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s,
-                check=ctx.raise_if_cancelled,
+            ctx.set_link("build", url)
+            ctx.add_artifact("Jenkins build", url, media_type="text/html")
+            ctx.log(f"jenkins: build started — {url}")
+
+        try:
+            build = self.client.follow(
+                self.job, queue_url, timeout_s=self.timeout_s,
+                poll_interval_s=self.poll_interval_s, check=ctx.raise_if_cancelled,
+                on_build=started,
             )
+            build_url = str(build["url"])
         except JenkinsTimeout as exc:
             raise RuntimeError(
                 f"the Jenkins build did not {exc.what} within timeout_s={self.timeout_s:g}"

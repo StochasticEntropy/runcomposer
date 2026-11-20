@@ -114,6 +114,28 @@ class TestTheClient:
         assert jenkins.builds[(JOB, 2)].stop.is_set() and not jenkins.builds[(JOB, 1)].stop.is_set()
         client.stop_build(f"{jenkins.url}/job/{JOB}/1")
 
+    def test_follow_takes_a_build_from_its_queue_item_to_its_end(self, jenkins):
+        jenkins.add_job(JOB, lambda build: build.pages.update(consoleText=b"done"))
+        client = client_for(jenkins)
+        seen: list[str] = []
+        build = client.follow(JOB, client.trigger(JOB, {}), timeout_s=5, poll_interval_s=0.01, on_build=seen.append)
+        assert build["url"] == f"{jenkins.url}/job/{JOB}/1" == seen[0]
+        assert (build["result"], build["building"]) == ("SUCCESS", False)
+
+    def test_follow_takes_the_build_back_when_the_cancel_was_there_before_it_started(self, jenkins):
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        client = client_for(jenkins)
+        queue_url = client.trigger(JOB, {})
+        wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build to start")
+
+        def cancelled() -> None:
+            raise DispatchCancelled("cancelled while the trigger was under way")
+
+        with pytest.raises(DispatchCancelled):
+            client.follow(JOB, queue_url, timeout_s=5, check=cancelled)
+        assert jenkins.builds[(JOB, 1)].stop.is_set(), "nobody else could have stopped it"
+        assert jenkins.gets(f"/job/{JOB}/1/api/json") == [], "it did not start following"
+
     def test_cancel_takes_a_queued_item_out_of_the_queue(self, jenkins):
         jenkins.auto_start = False
         client = client_for(jenkins)
@@ -582,12 +604,14 @@ class NightlyRunner(RunnerBase):
         ctx.declare(regions, plan=self.plan(ctx).text, links={"queue": queue_url or "", "job": self.client.job_url(self.job)})
         if queue_url is None:
             raise RuntimeError("the server did not say where it queued the build")
-        check = ctx.raise_if_cancelled
-        build_url = self.client.wait_for_build(
-            self.job, queue_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s, check=check)
-        ctx.set_link("build", build_url)
-        self.client.wait_until_finished(
-            build_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s, check=check)
+        # Queue item → build → its end; a cancel that came while the trigger
+        # was under way is seen by the first check, and the build taken back.
+        build = self.client.follow(
+            self.job, queue_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s,
+            check=ctx.raise_if_cancelled, on_build=lambda url: ctx.set_link("build", url))
+        if build["result"] not in ("SUCCESS", "UNSTABLE"):
+            raise RuntimeError(f"the build ended {build['result']}: {build['url']}")
+        build_url = build["url"]
         console = self.client.download_build_file(build_url, "consoleText", ctx.private_dir / "console.txt")
         for region in ctx.outstanding_shards():
             _, found, rest = console.read_text(encoding="utf-8").partition(f"=== results {region} ===\n")
@@ -651,6 +675,22 @@ class TestAComposedRunner:
             handle.cancel()
             assert handle.wait(timeout=30).state == "CANCELLED"
             assert jenkins.builds[(JOB, 1)].stop.is_set()
+
+    def test_a_cancel_that_arrives_during_its_trigger_takes_the_build_back(self, jenkins):
+        """Before the hand-off there is no link for ``cancel`` to find the
+        build by. ``follow`` sees the cancellation at its first check and
+        stops what the trigger started."""
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        stalled = threading.Event()
+        jenkins.stalls["/buildWithParameters"] = stalled
+        with ConnectorHarness(runners={"nightly": {"module": NIGHTLY, **self.options(jenkins)}}) as harness:
+            handle = harness.start("Payments-Cards", runner="nightly")
+            wait_until(lambda: jenkins.triggers(), what="the trigger request to be in flight")
+            handle.cancel()
+            stalled.set()
+            assert handle.wait(timeout=30).state == "CANCELLED"
+            wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build")
+            assert jenkins.builds[(JOB, 1)].stop.is_set() or jenkins.queue[1].cancelled
 
     def test_it_uses_only_the_sdk_and_the_jenkins_toolkit(self):
         import ast

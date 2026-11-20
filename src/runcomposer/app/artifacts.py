@@ -16,8 +16,9 @@ purpose:
 **Only what was recorded is served.** A file in a dispatch's work directory
 is not downloadable because it is there: it is downloadable because a runner
 recorded it with ``add_artifact`` — the file itself, or a directory it lies
-under (a recorded directory makes its whole tree servable: a report with the
-images it refers to). Everything else in the artifact directory answers 404,
+under (a recorded directory makes its tree servable — a report with the
+images it refers to — except hidden files and directories in it, which are
+a tool's own bookkeeping and are served only when recorded by themselves). Everything else in the artifact directory answers 404,
 exactly like a file that does not exist.
 """
 
@@ -81,8 +82,15 @@ class Artifacts:
                 recorded = Path(ref.url_or_path).resolve()
             except OSError:
                 continue
-            if recorded == candidate or recorded in candidate.parents:
+            if recorded == candidate:
                 return True
+            if recorded in candidate.parents:
+                # Under a recorded directory — except what is hidden there: a
+                # tool's own bookkeeping (dot-files, dot-directories) is not
+                # part of what the runner meant to publish.
+                below = candidate.relative_to(recorded).parts
+                if not any(part.startswith(".") for part in below):
+                    return True
         return False
 
     def list(self, run_id: str, dispatch_id: str | None = None) -> list[dict[str, Any]]:

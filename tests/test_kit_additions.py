@@ -332,6 +332,51 @@ class TestTheFake:
             FakeDispatchContext.from_source(source, ["shop.cart.gone"])
 
 
+class TestSmallHelpers:
+    def test_plugin_builds_an_installed_plugin_by_its_config_name(self, tmp_path):
+        from runcomposer.testing import plugin
+
+        manifest = tmp_path / "catalog.json"
+        manifest.write_text('{"items": [{"id": "shop.cart.add", "tags": ["Cart"]}]}', encoding="utf-8")
+        source = plugin("sources", "manifest", path=str(manifest))
+        assert [item.id for item in source.items()] == ["shop.cart.add"]
+        assert FakeDispatchContext.from_source(source, "Cart").item_ids == ("shop.cart.add",)
+        assert plugin("parsers", "junit-xml").format_id == "junit-xml"
+        with pytest.raises(ValueError, match="unknown section 'plugins'"):
+            plugin("plugins", "manifest")
+
+    def test_corpus_drifted_asks_the_question_every_runner_asks(self):
+        from runcomposer.sdk import corpus_drifted
+
+        ctx = FakeDispatchContext(CART)
+        assert corpus_drifted(ctx) is False
+        moved = FakeDispatchContext(spec=dict(ctx.spec), source=ListSource([Item(CART[0]), Item("Shop.Cart.Core.T009")]))
+        assert corpus_drifted(moved) is True
+
+    def test_the_jenkins_stand_in_is_part_of_the_kit(self):
+        """A connector that drives Jenkins tests its runner against the same
+        stand-in the reference runner is tested with."""
+        import runcomposer.testing.jenkins as stand_in
+        from runcomposer.sdk.jenkins import JenkinsClient
+
+        assert set(stand_in.__all__) == {"FakeJenkins", "Build", "QueueItem", "Seen"}
+        fake = stand_in.FakeJenkins()
+        try:
+            fake.add_job("shop-nightly", lambda build: build.pages.update(consoleText=b"3 passed"))
+            client = JenkinsClient(fake.url, retry_backoff_s=0.01)
+            build = client.follow("shop-nightly", client.trigger("shop-nightly", {"REGION": "eu"}),
+                                  timeout_s=10, poll_interval_s=0.01)
+            assert fake.triggers()[0].form == {"REGION": "eu"} and build["result"] == "SUCCESS"
+            assert fake.builds[("shop-nightly", 1)].params == {"REGION": "eu"}
+        finally:
+            fake.close()
+
+    def test_the_kit_and_its_stand_in_import_without_pytest(self):
+        code = ("import sys, runcomposer.testing, runcomposer.testing.jenkins; "
+                "assert 'pytest' not in sys.modules and '_pytest' not in sys.modules")
+        subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
+
+
 # -- ConnectorHarness: in the background, and served ---------------------------------------
 
 GATES: dict[str, threading.Event] = {}
@@ -422,6 +467,7 @@ class TestTheServingHarness:
             runners=gated("served", callback_base="${env:RUNCOMPOSER_HARNESS_URL}"), serve=True
         ) as harness:
             assert harness.url.startswith("http://127.0.0.1:") and harness.api == f"{harness.url}/api/v1"
+            assert harness.artifacts("01NOSUCHRUN000000000000000") == []
             assert harness.service.runner("gated").callback_base == harness.url
             with urllib.request.urlopen(f"{harness.api}/health", timeout=10) as response:
                 assert response.status == 200

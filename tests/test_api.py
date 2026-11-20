@@ -1454,6 +1454,18 @@ class TestArtifactRoute:
         served = client.get(f"/artifacts/{run_id}/dispatch-1/env2/screenshots/checkout.png")
         assert served.status_code == 200 and served.content == b"\x89PNG"
         assert client.get(f"/artifacts/{run_id}/dispatch-1/notes.txt").status_code == 404
+        # Hidden files in a recorded directory are a tool's own bookkeeping:
+        # not served with the directory — only when recorded by themselves.
+        (workdir / "env2" / ".worker-state.json").write_text("{}", encoding="utf-8")
+        (workdir / "env2" / ".cache").mkdir()
+        (workdir / "env2" / ".cache" / "session.txt").write_text("k-123456", encoding="utf-8")
+        for hidden in (".worker-state.json", ".cache/session.txt"):
+            assert client.get(f"/artifacts/{run_id}/dispatch-1/env2/{hidden}").status_code == 404
+        service.store.add_artifact_ref(
+            run_id, None, name="worker state", media_type="application/json",
+            url_or_path=str(workdir / "env2" / ".worker-state.json"),
+        )
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/env2/.worker-state.json").status_code == 200
         listed = {a["name"]: a for a in client.get(f"{API}/runs/{run_id}").json()["artifacts"]}
         assert (listed["files (env2)"]["kind"], listed["files (env2)"]["href"]) == ("directory", None)
 

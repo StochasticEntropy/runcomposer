@@ -22,6 +22,7 @@ __all__ = [
     "HandoffOrder",
     "check_delivery_args",
     "check_reportable",
+    "corpus_drifted",
     "correlate",
     "normalize_groups",
     "normalize_shards",
@@ -72,6 +73,17 @@ def normalize_shards(
     if len(set(names)) != len(names):
         raise ValueError(f"shard names must be distinct, got {names}")
     return names, shard_items
+
+
+def corpus_drifted(ctx: Any) -> bool:
+    """Has the corpus changed since the run of ``ctx`` (a plan or dispatch
+    context) was composed? True when the live catalog's snapshot differs from
+    the one recorded in the run's document (``source.snapshot``, §3.3) — the
+    question a runner asks before it executes ids that may no longer mean
+    what they meant. What it does about a yes is the runner's decision:
+    refuse, or execute what still exists."""
+    composed = (ctx.spec.get("source") or {}).get("snapshot")
+    return bool(ctx.source.snapshot() != composed)
 
 
 def normalize_groups(

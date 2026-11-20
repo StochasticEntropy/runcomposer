@@ -59,7 +59,7 @@ from runcomposer.core.model import (
     Verdict,
 )
 
-__all__ = ["ConnectorHarness", "DispatchHandle", "HarnessRun"]
+__all__ = ["ConnectorHarness", "DispatchHandle", "HarnessRun", "plugin"]
 
 #: Set while a serving harness is open: its base URL, for ``${env:…}``
 #: references in the plugin entries it is given.
@@ -112,6 +112,31 @@ class HarnessRun:
             for event in self.events
             if event.kind in ("log", "warning") and (level is None or event.data.get("level") == level)
         ]
+
+
+_SECTIONS = {
+    "sources": "runcomposer.sources",
+    "runners": "runcomposer.runners",
+    "parsers": "runcomposer.parsers",
+    "observers": "runcomposer.observers",
+    "store": "runcomposer.stores",
+}
+
+
+def plugin(section: str, name: str, **options: Any) -> Any:
+    """Build an installed plugin by the name a config file gives it —
+    ``plugin("sources", "robotframework", root="suites")``,
+    ``plugin("parsers", "junit-xml")`` — without importing the module it
+    lives in. For a test that needs a reference plugin beside your own: the
+    Robot source as the catalog of ``FakeDispatchContext.from_source``, say.
+    ``section`` is the config section (``sources``, ``runners``, ``parsers``,
+    ``observers``, ``store``); ``options`` are the entry's options, with
+    paths as you give them (nothing is anchored to a config file here)."""
+    from runcomposer.core.registry import load_entry_point
+
+    if section not in _SECTIONS:
+        raise ValueError(f"unknown section {section!r} (one of {sorted(_SECTIONS)})")
+    return load_entry_point(_SECTIONS[section], name)(**options)
 
 
 class DispatchHandle:
@@ -425,6 +450,15 @@ class ConnectorHarness:
             artifacts=store.artifact_refs(run_id, dispatch_id) if dispatch_id else [],
             warnings=[str(e.data.get("message", "")) for e in events if e.kind == "warning"],
         )
+
+    def artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        """The run's artifacts as the API lists them: ``name``, ``kind``
+        (``local`` / ``directory`` / ``url`` / ``external-path``), ``shard``,
+        ``group`` and ``href`` — for a local file the path it is served
+        under, so that with ``serve=True`` its address is
+        ``harness.url + href``."""
+        listing: list[dict[str, Any]] = self.service.artifacts.list(run_id)
+        return listing
 
     def flush_observers(self, timeout: float = 10.0) -> bool:
         """Wait until every observer was told every event emitted so far

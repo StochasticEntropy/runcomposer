@@ -31,28 +31,6 @@ references are given where it matters.
 [Composing the reference runners](#9-composing-the-reference-runners) ·
 [Known limits](#10-known-limits)
 
-> **Migrating a connector written against an earlier 0.2 state.** The 0.2
-> contract grew before its release. A connector written against an earlier
-> state of it needs these changes:
->
-> - `ctx.options` no longer contains the per-run parameters: it is the
->   runner's config entry and nothing else. Read what a run chose from
->   `ctx.parameters` ([§3.1](#31-describe--who-it-is-and-what-a-run-may-choose)).
-> - `FakeDispatchContext.delivered_shards` is a method now,
->   `delivered_shards()`, beside `outstanding_shards()`.
-> - `FakeDispatchContext.live_updates` keeps the whole stream — `RUNNING`
->   included, and after the shard delivered; what a store holds at the moment
->   is `live_now` ([§6](#6-the-conformance-kit)).
-> - A `RunStore` implements `seed_durations`, `duration_aggregates(…,
->   statuses=…)`, `shard_groups` in `update_dispatch`, an artifact's `group`
->   in `add_artifact_ref`, and takes and returns `LiveStatus` records for live
->   status ([§4](#runstore--persistence)).
-> - A runner that does not derive from `RunnerBase` must define `plan(ctx)`
->   ([§3.2](#32-planctx--a-preview-without-side-effects)).
-> - Only recorded artifacts are served: a file in `ctx.workdir` is
->   downloadable once `ctx.add_artifact` recorded it, or a directory above
->   it — not because it is there ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
-
 ---
 
 ## 1. The surface
@@ -442,8 +420,10 @@ mean duration per item over the last `last_n` dispatches that delivered;
 test often ends early and would distort a balance). An execution that
 reported 0 ms is not counted: 0 means "unknown", to the store and to the
 planner. `plan_chunks(item_ids, n, durations)` from the SDK cuts a
-duration-balanced plan with it (round-robin on a cold start;
-`ChunkPlan.balanced` says which). Both are empty on a fresh store — unless it
+duration-balanced plan with it: longest first onto the lightest chunk, an
+item without a known duration weighted with the *mean of the known ones* —
+so a test that reports 0 ms counts as an average test, not as a free one —
+and round-robin on a cold start (`ChunkPlan.balanced` says which). Both are empty on a fresh store — unless it
 was seeded: `runcomposer history import FILE [--label k=v]` reads a CSV
 (`item,duration_ms` or `item,duration_s`) or JSON (`{"durations": {item:
 ms}}`, or a list of `{item, duration_ms}`) and keeps it as the answer for
@@ -528,6 +508,25 @@ here. Bad input is a `ParseError` and nothing else. Read XML through
 `parse_xml(path)` (or call `forbid_dtd(path)` first): a document with a DTD
 is refused wherever the declaration sits. A parser with options is configured
 under `parsers:`, keyed by its format id.
+
+**The reference format, `runcomposer-verdicts`,** is what an executor writes
+when it has no native format worth a parser — one JSON document:
+
+```json
+{"format": "runcomposer-verdicts",
+ "verdicts": [
+   {"name": "Shop.Checkout.Express.T001", "status": "PASS", "duration_ms": 420},
+   {"name": "Shop.Checkout.Express.T002", "status": "FAIL", "duration_ms": 95,
+    "message": "the gateway refused the card", "attempt": 1}
+ ]}
+```
+
+`format` and `verdicts` are required; of an entry, `name` (the native name,
+resolved through `TestSource.resolve` like any other) and `status` (`PASS`,
+`FAIL`, `SKIP` or `ERROR`) are; `duration_ms` (default 0), `message` and
+`attempt` (default 1) are optional, other keys are ignored. A bundle is that
+file, or a directory holding one or more of them — JSON files in it that are
+not this format are skipped (`tests/test_parsers.py`).
 
 ### `RunStore` — persistence
 
@@ -723,6 +722,16 @@ assert ctx.live_now == [] and ctx.outstanding_shards() == [] and ctx.refusal is 
 ctx.deliveries, ctx.shard_groups, ctx.links, ctx.artifacts, ctx.logs, ctx.exported, ctx.tokens
 ```
 
+- **How `run` ends.** `ctx.run(runner)` returns `complete`, `awaiting`,
+  `refused`, `undeclared` or `cancelled`. Any other exception the runner
+  raises comes out of `run` — there is no "failed" return: in runcomposer one
+  raised after the hand-off is a `FAILED` dispatch, and a test should see it.
+- **What is recorded.** `ctx.logs` is a list of `(level, message)` pairs —
+  the runner's `ctx.log` lines and what its workers logged through the
+  channel; `ctx.warnings()` the messages of the warnings among them.
+  `ctx.history.calls` records every `durations(...)` call with its `labels`,
+  `last_n` and `statuses` — the way to assert in a unit test that a plan was
+  balanced by passed executions only.
 - **The live stream, two ways.** `live_updates` is everything the runner
   streamed, in order — `RUNNING` included, and kept after the shard delivered:
   the whole stream, for asserting what a runner reported while it ran.
@@ -781,7 +790,9 @@ with ConnectorHarness(
 ```
 
 It writes a config into a temporary directory — so relative paths in the
-entries you pass resolve against *that* directory; give absolute ones —
+entries you pass resolve against *that* directory: give absolute ones, or
+pass `directory=` (a directory of yours the config is then written into, and
+kept) to test that a path option really resolves against the config file —
 (sqlite store, the demo corpus unless you give `items=` or `sources=`), builds a `Service` and validates it
 as `serve` would, composes the run, dispatches it on the dispatch manager and
 waits — with a timeout, after which it cancels and fails — until the runner
@@ -820,6 +831,59 @@ plugins are built, so an entry refers to it as
 `${env:RUNCOMPOSER_HARNESS_URL}` — a `callback_base`, say — and an executor
 that pushes results or progress is tested against the real endpoints
 (`tests/test_kit_additions.py::TestTheServingHarness`).
+`harness.artifacts(run_id)` lists a run's artifacts as the API does — `name`,
+`kind`, `shard`, `group`, `href` — so the address of a served file is
+`harness.url + href`, and a test can ask for it, and for a file beside it
+that was not recorded.
+
+**A stand-in for Jenkins.** A runner that drives Jenkins — your own, built on
+`runcomposer.sdk.jenkins`, or the reference one with your configuration — is
+tested against `runcomposer.testing.jenkins.FakeJenkins`: a real HTTP server
+on a local port speaking the protocol such a runner uses (the crumb and its
+session, `buildWithParameters` → queue item → build, a queue item that can be
+forgotten, stop and cancel, archived artifacts and anything else below a
+build's URL, Basic auth, injected faults and stalled answers).
+
+```python
+from runcomposer.testing.jenkins import Build, FakeJenkins
+
+def nightly(build: Build) -> None:            # what the job "does", on a thread per build
+    regions = build.params["REGIONS"].split(",")
+    build.pages["consoleText"] = "\n".join(f"=== results {r} ===\n…\n=== end ===" for r in regions).encode()
+    build.artifacts["reports/junit.xml"] = b"<testsuite/>"     # archived files, by relative path
+    # build.result = "UNSTABLE"; a job that holds waits on build.stop
+
+fake = FakeJenkins()                          # auto_start=False: builds stay queued until fake.start(n)
+fake.add_job("shop-nightly", nightly)
+try:
+    ...                                       # your runner against fake.url
+    fake.triggers()[0].form                   # the build parameters it sent
+    fake.builds[("shop-nightly", 1)].stop.is_set()
+finally:
+    fake.close()
+```
+
+It is the stand-in runcomposer's own `jenkins` runner is tested with
+(`tests/test_jenkins.py`, `tests/test_kit_additions.py::TestSmallHelpers::test_the_jenkins_stand_in_is_part_of_the_kit`);
+what no stand-in covers is a real server's own behaviour.
+
+**A reference plugin beside yours.** `plugin(section, name, **options)` from
+the kit builds an installed plugin by the name a config file gives it,
+without importing its module — the Robot source as the catalog of a fake:
+
+```python
+from runcomposer.testing import FakeDispatchContext, check_runner, plugin
+
+source = plugin("sources", "robotframework", root="tests/suites")
+check_runner(LaneRunner("tests/suites", ["staging", "preview"]),
+             FakeDispatchContext.from_source(source, "Checkout"), expect="complete")
+```
+
+**What `check_runner`'s cancel does and does not meet.**
+`cancel_after_declare=True` cancels the moment the runner has declared — for
+a runner that starts worker processes, before any of them runs. It checks
+that the runner stops; to cancel *in the middle of an execution*, use
+`harness.start(...)` and `wait_until` a `RUNNING` status, as above.
 
 ---
 
@@ -1009,7 +1073,7 @@ test's longname):
 |---|---|
 | `ExactSelection(ids, tag=None)` | a pre-run modifier keeping exactly the tests whose longname is in `ids` — an id is never read as a pattern; `kept` counts what was found |
 | `attribute_roots(suite_roots, item_ids, items=())` | which suite root each item is executed from |
-| `LiveStatusListener(channel, shard)`, `RemoteLiveStatusListener(...)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start |
+| `LiveStatusListener(channel, shard, stopped=None)`, `RemoteLiveStatusListener(...)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start. A test cut short by a stop is not reported as failed: what stays is that it was `RUNNING` |
 | `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup`, `rerun_failed`, `rpa`, `robot_options`, … |
 | `run_shard(payload)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `read_shard_result(out_dir)` reads that back as a `ShardResult` of `ShardOutput`s |
 | `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None)` | runs payloads on spawned worker processes: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol; `on_done(outcome)` is called with a `ShardOutcome` in the calling thread as each payload ends |
@@ -1023,7 +1087,7 @@ test's longname):
 | Name | What |
 |---|---|
 | `JenkinsClient(base_url, *, user, api_token, verify_tls, ca_bundle, request_timeout_s, retries, retry_backoff_s)` | one server: a session whose crumb belongs to it, bounded retry on transient errors (a trigger is repeated only when it provably did not take effect), TLS with an optional CA bundle; thread-safe |
-| `trigger(job, parameters)`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records |
+| `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by |
 | `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now |
 | `artifacts`, `download_artifact`, `download_build_file`, `download`, `get_json`, `request`, `version`, `job_exists`, `job_url` | results — archived artifacts and any URL below the build — and the plumbing |
 | `JenkinsError` (`.status`), `JenkinsTimeout` (`.what`, `.timeout_s`) | what went wrong; `status == 404` for something Jenkins no longer knows |
@@ -1036,7 +1100,8 @@ chunk a shard of its own:
 
 ```python
 from runcomposer.sdk import (
-    DispatchContext, Parameter, PlanContext, PlanPreview, RunnerBase, RunnerInfo, plan_chunks, split_max,
+    DispatchContext, Parameter, PlanContext, PlanPreview, RunnerBase, RunnerInfo,
+    corpus_drifted, plan_chunks, split_max,
 )
 from runcomposer.sdk.robot import Execution, ShardOutcome, ShardPayload, deliver_shard, supervise
 
@@ -1058,7 +1123,7 @@ class LaneRunner(RunnerBase):
 
     def _shards(self, ctx: PlanContext) -> dict[str, tuple[str, list[str]]]:
         """shard → (stage, item ids): shared by plan() and dispatch()."""
-        if ctx.source.snapshot() != (ctx.spec.get("source") or {}).get("snapshot"):
+        if corpus_drifted(ctx):
             ctx.refuse("the corpus changed since this run was composed")
         stages = list(ctx.parameters.get("stages") or self.stages)
         lanes = plan_chunks(ctx.item_ids, len(stages), ctx.history.durations(statuses=("PASS",)))
@@ -1083,7 +1148,8 @@ class LaneRunner(RunnerBase):
             ShardPayload(shard=shard, out_dir=str(ctx.workdir / shard),
                          executions=(Execution(self.root, tuple(items)),),
                          variables={"STAGE": preview.groups[shard]}, partition=preview.groups[shard],
-                         lane=preview.groups[shard], channel=channel)
+                         lane=preview.groups[shard], channel=channel,
+                         run_id=ctx.run_id, dispatch_id=ctx.dispatch_id)
             for shard, items in preview.shards.items()
         ]
         ctx.declare(preview.shards, plan=preview.text, groups=preview.groups)
@@ -1094,7 +1160,7 @@ class LaneRunner(RunnerBase):
             if problem:
                 problems.append(problem)
 
-        supervise(payloads, max_workers=len(self.stages), on_done=finished,
+        supervise(payloads, max_workers=len(set(preview.groups.values())), on_done=finished,
                   cancelled=lambda: ctx.cancelled)
         ctx.raise_if_cancelled()
         if problems:
@@ -1102,7 +1168,10 @@ class LaneRunner(RunnerBase):
 ```
 
 Configured as `lanes: {module: "shop_connector.lanes:LaneRunner", root:
-tests/, stages: [staging, preview]}`. Its fuller twin,
+tests/, stages: [staging, preview]}`. Workers are *spawned* processes: a
+script that drives such a runner directly (not through `runcomposer` or
+pytest) needs the usual `if __name__ == "__main__":` guard around what it
+runs, or every worker re-executes the script. Its fuller twin,
 `tests/test_robot_toolkit.py::LaneRunner`, passes `check_runner` against a
 real catalog (`FakeDispatchContext.from_source`), runs in a real deployment
 and is cancelled there in the middle of a lane
@@ -1149,12 +1218,15 @@ class NightlyRunner(RunnerBase):
         ctx.declare(regions, plan=self.plan(ctx).text, links={"queue": queue_url} if queue_url else None)
         if queue_url is None:
             raise RuntimeError("Jenkins did not say where it queued the build")
-        wait = {"timeout_s": self.timeout_s, "poll_interval_s": self.poll_interval_s,
-                "check": ctx.raise_if_cancelled}
-        build_url = self.client.wait_for_build(self.job, queue_url, **wait)
-        ctx.set_link("build", build_url)          # from now on a cancel stops the build itself
-        self.client.wait_until_finished(build_url, **wait)
-        console = self.client.download_build_file(build_url, "consoleText", ctx.private_dir / "console.txt")
+        # Queue item → build → its end. A cancel that arrived while the trigger was under
+        # way found no link to stop anything by: `follow` sees it and takes the build back.
+        build = self.client.follow(
+            self.job, queue_url, timeout_s=self.timeout_s, poll_interval_s=self.poll_interval_s,
+            check=ctx.raise_if_cancelled,
+            on_build=lambda url: ctx.set_link("build", url))   # from now on a cancel stops the build itself
+        if build["result"] not in ("SUCCESS", "UNSTABLE"):
+            raise RuntimeError(f"the build ended {build['result']}: {build['url']}")
+        console = self.client.download_build_file(build["url"], "consoleText", ctx.private_dir / "console.txt")
         text = console.read_text(encoding="utf-8")
         for region in ctx.outstanding_shards():   # a region the job pushed itself is done
             _, found, rest = text.partition(f"=== results {region} ===\n")
@@ -1177,7 +1249,33 @@ The console log is downloaded into `ctx.private_dir`, so it is never served;
 only the results it recorded are. Its twin,
 `tests/test_jenkins_toolkit.py::NightlyRunner`, passes `check_runner`, runs in
 a serving deployment where its private file answers `404`, and is cancelled
-while its build runs (`tests/test_jenkins_toolkit.py::TestAComposedRunner`).
+while its build runs — and during its trigger, where the build is taken back
+(`tests/test_jenkins_toolkit.py::TestAComposedRunner`). The results it
+delivers are in the reference format ([§4](#resultparser--native-artifacts-in-native-names-out)).
+
+---
+
+> **Migrating a connector written against an earlier 0.2 state.** The 0.2
+> contract grew before its release. A connector written against an earlier
+> state of it needs these changes:
+>
+> - `ctx.options` no longer contains the per-run parameters: it is the
+>   runner's config entry and nothing else. Read what a run chose from
+>   `ctx.parameters` ([§3.1](#31-describe--who-it-is-and-what-a-run-may-choose)).
+> - `FakeDispatchContext.delivered_shards` is a method now,
+>   `delivered_shards()`, beside `outstanding_shards()`.
+> - `FakeDispatchContext.live_updates` keeps the whole stream — `RUNNING`
+>   included, and after the shard delivered; what a store holds at the moment
+>   is `live_now` ([§6](#6-the-conformance-kit)).
+> - A `RunStore` implements `seed_durations`, `duration_aggregates(…,
+>   statuses=…)`, `shard_groups` in `update_dispatch`, an artifact's `group`
+>   in `add_artifact_ref`, and takes and returns `LiveStatus` records for live
+>   status ([§4](#runstore--persistence)).
+> - A runner that does not derive from `RunnerBase` must define `plan(ctx)`
+>   ([§3.2](#32-planctx--a-preview-without-side-effects)).
+> - Only recorded artifacts are served: a file in `ctx.workdir` is
+>   downloadable once `ctx.add_artifact` recorded it, or a directory above
+>   it — not because it is there ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
 
 ---
 

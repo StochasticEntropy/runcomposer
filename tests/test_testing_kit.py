@@ -70,7 +70,7 @@ CART = ["Shop.Cart.Core.T001", "Shop.Cart.Core.T002", "Shop.Cart.Core.T003"]
 #: The kit's public names, frozen like runcomposer.sdk's (tests/test_sdk.py).
 KIT_NAMES = {
     "check_source", "check_runner", "check_parser", "check_store", "check_observer",
-    "ConnectorHarness", "HarnessRun", "DispatchHandle", "FakeDispatchContext", "FakeHistory",
+    "ConnectorHarness", "HarnessRun", "DispatchHandle", "FakeDispatchContext", "FakeHistory", "plugin",
     "ListSource",
     "Delivery", "DEFAULT_ITEM_IDS", "sample_events", "xml_with_dtd",
 }
