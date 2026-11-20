@@ -2,7 +2,7 @@
 
 An open-source, tag-based test run composer & orchestrator.
 
-Status: rev 4 — describes runcomposer 0.2 as built. Decisions final unless
+Status: rev 5 — describes runcomposer 0.2 as built. Decisions final unless
 marked open; §15 dates them.
 
 **Reading this document.** This is a design document, and not everything
@@ -49,7 +49,8 @@ Foundational decisions:
   Framework, a Jenkins trigger, and a generic command runner — plus a
   first-class **export mode**: the spec must let any third-party executor
   integrate with **zero core interface changes**. They are plugins on the
-  same surface (`runcomposer.sdk`) any private connector uses.
+  same surface (`runcomposer.sdk` and its two toolkits, §6.6) any private
+  connector uses.
 - **Generic, i18n'd UI** (EN + DE shipped), all environment specifics served
   from config.
 - Prototype code and its old YAML contract are input, **not** constraints.
@@ -98,8 +99,9 @@ command), `demo` (simulates).
 | **Run spec** | The versioned document: identity + selection (incl. materialization) + source snapshot + results contract + one opaque runner section. |
 | **Run** | The stored record for one spec. Its state is a *headline*: derived from its latest dispatch, never written on its own (§4). |
 | **Dispatch** | One hand-off of a run to an executor, and the unit the lifecycle is tracked on. `mode` is a configured runner id, `export` (the document was handed out for somebody else to execute) or `ingest` (results arrived for a run nothing was dispatched for). One run may have several dispatches (re-runs). |
-| **Shard** | A named part of one dispatch — a partition, a chunk, a CI job. A dispatch *declares* its shard set at hand-off; completion is computed against those names. |
+| **Shard** | A named part of one dispatch — a partition, a chunk, a CI job. A dispatch *declares* its shard set at hand-off; completion is computed against those names. Shards may be declared in **groups** (the chunks of one partition): a label for display and roll-up that decides nothing. |
 | **Delivery** | One shard's results arriving, content-hashed. Idempotent per `(run, dispatch, shard)` (§5). |
+| **Live status** | What is known about an item *while* its shard executes: `RUNNING`, or the status it ended with. A progress report, kept apart from verdicts and replaced by the shard's delivery (§4). |
 | **Verdict** | Per-item result: a status, duration, message, the `shard` it was delivered under, and `attempt`. An executor reports `PASS`, `FAIL`, `SKIP` or `ERROR`. A fifth status, **`MISSING`**, is never reported and never stored: it is *derived* for a planned item that never came back once nothing more is expected (§4). The shard is assigned by the delivery, not the producer: a parser emits verdicts without one, the delivery labels the bundle, and every verdict read back carries it. `attempt` counts executions of an item within one shard; the highest attempt is the **effective** verdict — the one that decides the outcome — and `flaky` is derivable from the earlier ones. |
 | **Completion** | A finished dispatch's outcome, aggregated over the effective verdicts including the derived `MISSING` ones: `ERROR` > `FAIL` > `INCOMPLETE` > `PASS`. `INCOMPLETE` means something planned was never reported; a run with a missing item cannot be `PASS`, and neither can a run nobody reported anything for. |
 | **Runner** | Anything that fulfills a run spec. In-process runners are plugins handed a `DispatchContext` (§6.2); external runners just consume the document. |
@@ -269,7 +271,9 @@ the contract: three obligations, one document.
                              │                                    (PASS | FAIL |
                              │                                     ERROR | INCOMPLETE)
    from DISPATCHED / RUNNING / AWAITING_RESULTS:
-      → FAILED     the runner raised after the hand-off; delivered results are kept
+      → FAILED     the runner raised after the hand-off, or (AWAITING_RESULTS)
+                   results were awaited longer than core.dispatch.awaiting_timeout_s;
+                   delivered results are kept
       → CANCELLED  cancellation was requested and honoured
       → STALE      the process that was executing the dispatch is gone
 ```
@@ -333,8 +337,27 @@ error text, and whatever was delivered until then is kept.
   or after it was cancelled.
 - **Late results.** `FAILED` and `STALE` dispatches keep their partial
   results and can still be completed by deliveries that arrive afterwards: an
-  interrupted process does not un-run the tests that had finished.
+  interrupted process does not un-run the tests that had finished, and an
+  expired wait (below) does not refuse the results that end it.
   `CANCELLED` is final — results for a cancelled dispatch are refused.
+- **Expiry of a wait for results.** A dispatch handed to an external
+  executor waits in `AWAITING_RESULTS`; if the executor died, nothing ever
+  arrives. With `core.dispatch.awaiting_timeout_s` set (default `null`:
+  wait until someone finalizes or cancels), a dispatch that has waited
+  longer than that becomes `FAILED` with a `run.failed` event whose data
+  says so — `expired: true`, `waited_s`, `awaiting_timeout_s` and the
+  `outstanding_shards` that never delivered — and whose error says that
+  results arriving later are still taken in. The clock starts when the
+  dispatch began to wait and restarts with every delivery, so a job that
+  reports shard after shard is not expired between two of them. A dispatch
+  still executing in a runner is not what expires. `serve` applies the rule
+  in a background loop (every quarter of the timeout, but no more often than
+  once a second and at least once a minute); `runcomposer gc` applies it once, for
+  a deployment without a server (`expired_dispatches` in its report).
+  Failing rather than finalizing is deliberate: an expired dispatch is an
+  execution that broke, not a result, and `FAILED` keeps it open for the
+  results that may still come (tests/test_runner_contract.py,
+  `TestAwaitingExpiry`).
 - **Cancellation** (`POST /runs/{id}/cancel`, `runcomposer cancel`). For a
   dispatch executing in this process the context's `cancelled` flag is set and
   the runner's `cancel(ctx)` is called; the dispatch becomes `CANCELLED` when
@@ -356,22 +379,39 @@ error text, and whatever was delivered until then is kept.
   owns a store (§13), so that is a container that was replaced. What cannot
   be told apart is a process id that was reused by an unrelated program: the
   dispatch then looks owned. `cancel --force` (`?force=true`) is the way out
-  — it closes a dispatch as `CANCELLED` whoever owns it. Expiring a dispatch that merely
-  waits for results too long (`AWAITING_RESULTS` > N days) is `[planned]`;
-  such a run waits until someone finalizes or cancels it, or retention prunes
-  it.
+  — it closes a dispatch as `CANCELLED` whoever owns it. (A dispatch that
+  merely *waits* for results has no owner; its way out is the expiry above,
+  `finalize` or `cancel`.)
 - **Events.** Every state change emits an event — `run.composed`,
   `run.dispatched`, `run.running`, `run.awaiting_results`, `run.completed`,
   `run.failed`, `run.cancelled`, `run.stale` — as do `dispatch.refused`,
   `delivery.recorded`, `delivery.attached` (a quarantined bundle bound to a
-  run by a person), `run.cancel_requested`, and a runner's `log` / `warning`
-  lines. Events are appended to the store with an increasing `seq`, read back
+  run by a person), `run.cancel_requested`, and `log` / `warning` lines — a
+  runner's, its worker processes' (through the live channel), and an
+  external executor's (pushed, marked `source: push`, §5). Events are appended to the store with an increasing `seq`, read back
   after a cursor (`GET /runs/{id}/events?after=`), and handed to observers
   (§6.5).
 - **Live status** is an optional runner capability: per-item status streamed
-  while a shard is still executing. It is kept apart from delivered verdicts,
-  flagged `live` where it is shown, and replaced by the shard's delivery.
-  Without it a run shows planned → final.
+  while a shard is still executing — `RUNNING` when an item starts, then the
+  status it ended with (`LIVE_STATUSES`). It is its own record
+  (`LiveStatus`), not a verdict: `RUNNING` can be streamed but never
+  delivered, stored as a verdict or scored, and a delivery or push that
+  claims it is refused. Live status is kept apart from delivered verdicts,
+  replaced per (shard, item) by the next update, flagged `live` where it is
+  shown, and dropped when the shard delivers; an item the run did not plan
+  or a status outside `LIVE_STATUSES` is ignored. It comes from a runner's
+  `ctx.live` / live channel (§6.2) or, for an executor runcomposer did not
+  start, from the progress endpoints (§5). The run detail counts what is
+  streaming per shard (`live_summary`). Without it a run shows planned →
+  final (tests/test_runner_contract.py, `TestRunningAndWorkerLogs`).
+- **What a `MISSING` verdict last saw.** `MISSING` says "nothing was
+  delivered for this item" — which is also true of an item that was seen
+  passing live in a shard that was cancelled or never delivered. So every
+  `MISSING` row of a run detail carries `last_live`: what was last streamed
+  for that item (`status`, `duration_ms`, `message`, `shard`), or `null`. It
+  stays `MISSING` — a live report is not a result — but nobody has to match
+  rows up to tell "never started" from "ran, result not delivered"
+  (`TestRunDetailSemantics`).
 - **Unsolicited results** (unknown or missing `run.id`) never create run
   records by themselves. From the file drop they land in a visible
   **quarantine** for a person to attach or promote (`runcomposer quarantine`,
@@ -451,7 +491,11 @@ concurrent deliveries to one shard leave exactly one.
   evicts the oldest) are config. Identical bundles are quarantined once.
 - *Explicit, logged attach.* Binding a quarantined bundle to a run is a
   person's decision (`quarantine attach`); it is recorded as a
-  `delivery.attached` event on the run.
+  `delivery.attached` event on the run. An attach that would record nothing
+  of the run — not one of the bundle's results is for an item the run
+  planned — is refused (`409`, `nothing-planned`): binding it would only
+  close the run as `INCOMPLETE`. The run and the quarantine entry stay as
+  they were (tests/test_runner_contract.py, `TestRunDetailSemantics`).
 - *Defused XML.* A document carrying a DTD is refused by the parser itself —
   wherever the declaration sits, in whatever encoding — through one shared
   helper every XML-reading parser uses (`forbid_dtd` / `parse_xml`, §6.6).
@@ -462,6 +506,33 @@ concurrent deliveries to one shard leave exactly one.
 
 Full authN/authZ stays out of scope (§13); the write path is not open by
 default.
+
+**Progress from an executor elsewhere.** Results are not the only thing an
+external executor has to say: while it works, which item is executing and
+how items ended is worth showing, and so are its log lines. Two endpoints
+take them, authorized exactly like the results push — the run first, then
+the dispatch's ingest token (`X-Runcomposer-Token` or `Bearer`), before
+anything is read:
+
+- `POST /api/v1/runs/{id}/live` — `{dispatch?, updates: [{shard, item_id,
+  status, duration_ms?, message?}]}` → `{dispatch_id, accepted, ignored,
+  reason}`. The same rules as a runner's `ctx.live`, said in the answer
+  instead of silently: a status outside `LIVE_STATUSES` is a `400`; an item
+  the run did not plan, a shard that has delivered, and everything once the
+  dispatch is over are ignored and counted.
+- `POST /api/v1/runs/{id}/log` — `{dispatch?, lines: [{message, level?}]}`
+  → `{dispatch_id, accepted}`: `log` events (`warning` for the levels
+  warning and error) marked `source: push`.
+
+Both name the dispatch their token is bound to; a token used for another
+dispatch is a `403`. Neither is a result: live status is dropped when the
+shard delivers, and only the results push completes anything. The client
+side is `RemoteLiveChannel` in the SDK (a `LiveChannel` that POSTs),
+`runcomposer.sdk.robot.RemoteLiveStatusListener` for a Robot Framework agent
+(configured from `RUNCOMPOSER_CALLBACK_URL`, `RUNCOMPOSER_INGEST_TOKEN`,
+`RUNCOMPOSER_SHARD`, `RUNCOMPOSER_DISPATCH_ID`), and `runcomposer-exec
+--callback` (§6.2c) (tests/test_runner_contract.py, `TestPushedProgress`,
+`TestTheRemoteChannelAndTheConsumer`).
 
 **The file drop.** Each immediate subdirectory of the inbox
 (`core.ingestion.inbox`) is one bundle, taken in when it is *complete*:
@@ -487,7 +558,7 @@ the items they were meant for end up `MISSING`.
 **Refusals over HTTP** carry the reason as the error `code` and a status that
 says what kind of refusal it was: `422` the bundle cannot be read
 (`bad-bundle`, `unsolicited`), `409` it contradicts the run (`sha-mismatch`,
-`marker-conflict`, `dispatch-cancelled`), `404` `unknown-run` /
+`marker-conflict`, `dispatch-cancelled`, `nothing-planned`), `404` `unknown-run` /
 `unknown-dispatch`, `400` a declared format that is not the run's, `413` too
 large.
 
@@ -516,8 +587,8 @@ are first-class; there is no env-var module loading.
 **Two import rules, each held by a guard test.** `runcomposer.core` imports
 nothing above it — not the application layer, not a plugin — and names no
 framework. The reference plugins in `runcomposer.plugins` import from this
-package only `runcomposer.sdk` (§6.6): the same surface a connector outside
-this repository has.
+package only `runcomposer.sdk` and its toolkits (§6.6): the same surface a
+connector outside this repository has.
 
 ### 6.1 `TestSource`
 
@@ -576,8 +647,10 @@ cross-invocation cache is not built.)
 def describe() -> RunnerInfo
 def dispatch(ctx: DispatchContext) -> None
 # optional — defaults in the RunnerBase helper class:
+def plan(ctx: PlanContext) -> PlanPreview    # declared by the "plan" capability
 def cancel(ctx: DispatchContext) -> None     # declared by the "cancel" capability
-def health() -> Health                       # status ok | degraded | down | unknown
+def health() -> Health                       # status ok | degraded | down | unknown;
+                                             #   data: runner-defined, shown verbatim
 ```
 
 One instance is built per configured runner id and may be dispatching
@@ -588,14 +661,28 @@ every configured plugin is built once at startup (§8).
 **`RunnerInfo`**: `id` (the plugin's name — the id a deployment dispatches to
 is the config key, so one plugin can be configured several times), `title`,
 `description`, `capabilities` (flags; `live_status`, `partitions`, `cancel`,
-`external_delivery`, `simulated` have meaning to clients), `result_format`,
-and **`parameters`**: the per-run options the runner accepts from whoever
-starts a run. A `Parameter` has `name`, `kind` (`string | integer | boolean |
-choice | multi_choice`), `label`, `help`, `default`, `choices`, `required`.
-The API exposes them (`GET /runners`, `/meta`), validates submitted values
-against them — an unknown, missing or ill-typed value is a `400` naming the
+`plan`, `external_delivery`, `simulated` have meaning to clients),
+`result_format`, and **`parameters`**: the per-run options the runner
+accepts from whoever starts a run. A `Parameter` has `name`, `kind`,
+`label`, `help`, `default`, `choices`, `required` and an optional `pattern`.
+The seven kinds:
+
+| kind | value |
+|---|---|
+| `string` | one line of text |
+| `text` | several lines — a form renders a text area |
+| `integer`, `boolean` | as named |
+| `choice` / `multi_choice` | one value / a list drawn from `choices` |
+| `mapping` | names to strings — extra variables of a test framework, say |
+
+`pattern` is a regular expression the whole value must match
+(`re.fullmatch`) — of a `string`, of the whole `text`, of every *value* of a
+`mapping` — checked when the run is requested, not inside the runner, with
+an error naming the parameter. The API exposes the declarations, `pattern`
+included (`GET /runners`, `/meta`), validates submitted values against them
+— an unknown, missing, ill-typed or non-matching value is a `400` naming the
 parameter — and writes the accepted values into `runner.<id>` of the spec
-document.
+document (tests/test_parameters.py).
 
 **A document cannot reconfigure the machine that executes it.** Of a spec's
 `runner.<id>` section, an in-process runner sees exactly the keys it declared
@@ -604,98 +691,233 @@ warning event — it may be meant for an external executor — and cannot
 override a configured option. Readiness hooks, listeners, paths and
 credentials come from the config file only.
 
+**Options and parameters stay apart.** `ctx.options` holds the options
+written in the runner's config entry, as its constructor received them
+(`${env:…}` resolved), and nothing else; `ctx.parameters` holds the
+validated per-run values, defaults applied. Nothing is overlaid: a per-run
+value never appears in `options`, so a parameter cannot shadow the option of
+the same name, and a runner that wants a per-run value reads it from
+`parameters` (tests/test_runner_contract.py, `TestOptionsAndParameters`).
+
 **`DispatchContext`** — everything a runner gets, and everything it may do:
 
 | | |
 |---|---|
 | `run_id`, `dispatch_id`, `runner_id` | identity; the dispatch id is minted by runcomposer |
 | `spec`, `item_ids` | the document (read-only) and `selection.materialized.item_ids` — the authoritative executed set |
-| `options`, `parameters` | configured options overlaid by the validated per-run parameters; and the parameters on their own |
-| `workdir` | a directory for this dispatch under the artifact root, already created; files written here are servable (§6.4) |
+| `options`, `parameters` | the options of the runner's config entry and nothing else; the validated per-run parameters, defaults applied — apart, never overlaid (above) |
+| `workdir` | a directory for this dispatch under the artifact root, already created; a file written here is served once it is recorded with `add_artifact` (§6.4) |
+| `private_dir` | a directory for this dispatch that is **never** served, whatever is recorded — for files that must not be downloadable (credentials a hook writes, intermediate state). Under `core.private_dir`, created on first use, removed with the run and swept by `gc` |
 | `source` | the catalog as it is now — drift check, name resolution |
-| `history.durations(labels=, last_n=)` | mean duration per item id from earlier dispatches |
+| `history.durations(labels=, last_n=, statuses=)` | mean duration per item id from earlier dispatches; `statuses` restricts it to executions that ended so (§7) |
 | `refuse(reason)` | decline; legal before `declare`, leaves no dispatch |
-| `declare(shards, *, plan="", links=None, spec_sha256=None)` | THE hand-off (§4): shard names, or names mapped to the item ids each shard will report; exactly once. `spec_sha256` records the hash of document bytes the runner serialized itself (`export_spec()` records it for the bytes it returns) |
-| `live(shard, item_id, status, …)` / `live_channel()` | streamed per-item status; the channel is a **picklable** object with the same method for worker processes |
+| `declare(shards, *, plan="", links=None, spec_sha256=None, groups=None)` | THE hand-off (§4): shard names, or names mapped to the item ids each shard will report; exactly once. `groups` labels shards that belong together (`{shard: label}` — the partition each chunk runs on): results are rolled up per group as well as per shard. `spec_sha256` records the hash of document bytes the runner serialized itself (`export_spec()` records it for the bytes it returns) |
+| `set_link(name, url)` | record or replace one named link for what is only known after the hand-off — the URL of the build a queued job became. Before `declare` it joins the hand-off's links; after it, it is stored (and logged), so a context rebuilt for `cancel` carries it |
+| `live(shard, item_id, status, …)` / `live_channel()` | streamed per-item status — `RUNNING`, then how the item ended (§4); the channel is a **picklable** object with `live` and `log` for worker processes |
+| `delivered_shards()`, `outstanding_shards()` | this dispatch's shards that have delivered — by this runner or by a push from outside — and those still owed, in declaration order. A runner whose executor pushes results itself may find its dispatch already complete |
 | `parse(bundle, *, format=None)` | native artifacts → correlated verdicts, with the configured parser — for runners that relabel (attempts) before delivering |
 | `deliver(shard, *, verdicts=… \| bundle=…, format=None)` | one shard's results; idempotent by content hash; completion is recomputed after every delivery |
-| `add_artifact(name, path_or_url, *, media_type=None, shard=None)` | |
+| `add_artifact(name, path_or_url, *, media_type=None, shard=None, group=None)` | record a file, a **directory** or an `http(s)` link — of the dispatch, of one shard, or of a group of shards. Recording is what makes a local file downloadable (§6.4) |
 | `log(message, level="info")` | a line in the run's event stream |
 | `export_spec()` | the document as the exact JSON bytes to hand to an external executor; their hash is recorded for marker verification (§5) |
-| `ingest_token()` | mint the token an external executor pushes results with (§5) |
-| `links` | what was given to `declare` — how `cancel` finds its executor |
+| `ingest_token()` | mint the token an external executor pushes results — and progress — with (§5) |
+| `links` | what was given to `declare` and set with `set_link` — how `cancel` finds its executor |
 | `cancelled`, `raise_if_cancelled()` | cooperative cancellation |
 
 It is a protocol, so a runner can be tested against a fake. The live channel
 works with **any** RunStore: it carries no store, only a file in `workdir`
 that worker processes append to (one file per process) and the dispatching
-process tails.
+process tails — live status and log lines alike, so a worker's progress
+lands in the run's event stream (tests/test_runner_contract.py,
+`TestOwnDispatch`, `TestShardGroups`, `TestRunningAndWorkerLogs`).
+
+**Previewing a dispatch.** `plan(ctx: PlanContext) -> PlanPreview` answers
+"what would this dispatch do?" — which item goes to which shard — without
+executing, recording or triggering anything. `PlanContext` is a strict
+subset of `DispatchContext`: `run_id`, `runner_id`, `spec`, `item_ids`,
+`options`, `parameters`, `source`, `history`, `refuse()` and
+`export_spec()` (whose bytes are recorded nowhere). There is no `declare`,
+no `deliver`, no artifact, no token and no work directory, so a preview has
+nothing to act with, and one planning function serves `plan` and
+`dispatch` — the preview shows what the dispatch does. `PlanPreview` carries
+`text` (the plan as people read it, the same text a dispatch records),
+`shards` (each shard the dispatch would declare, mapped to its item ids — an
+empty list where the executor distributes on its own), `groups`,
+`estimates_ms` (per shard, where history allows), `notes` (what a preview
+cannot check, a cold start) and runner-defined `data`. A preview may refuse
+for the reasons a dispatch would; the refusal is the answer, not an error.
+`RunnerBase.plan` says that the runner offers no preview; a runner that can
+tell declares the `plan` capability, and every reference runner does. It is
+reached through `POST /api/v1/plan`, `POST /runs/{id}/plan` and
+`runcomposer plan` (§9) (tests/test_runner_contract.py, `TestPlanApi`,
+`TestPlanCommand`).
 
 **a) `robot-pool`** — Robot Framework executed on this machine in worker
 processes (started with the `spawn` method, one per shard, at most
-`max_workers` at a time).
+`max_workers` at a time). It is built on the Robot Framework toolkit
+(`runcomposer.sdk.robot`, §6.6) and imports nothing else of runcomposer.
 
-- *Plan.* The selection × `partitions` (configured; chosen per run through
-  the `partitions` multi-choice parameter), each partition cut into
-  duration-balanced chunks — history from the store over the last
-  `history_depth` dispatches of runs matching `history_selector.labels`;
-  round-robin on a cold start, and the plan text says so. One
-  (partition, chunk) is one shard, declared with its item ids. The planner is
-  `plan_chunks` in the SDK, for any runner to reuse.
+- *Plan.* How the selection meets the `partitions` (configured; chosen per
+  run through the `partitions` multi-choice parameter) is
+  `partition_mode`: `each` (default) runs the selection once *per* chosen
+  partition — the same tests against every environment — each partition cut
+  into duration-balanced chunks; `split` runs every test *once*, the chosen
+  partitions being parallel lanes the selection is distributed over,
+  balanced by duration. History comes from the store over the last
+  `history_depth` dispatches of runs matching `history_selector.labels`,
+  restricted to `history_statuses` when set (`[PASS]`: a failing test often
+  ends early and would distort the balance), seeded durations filling the
+  gaps (§7); round-robin on a cold start, and the plan says so. One chunk is
+  one shard, declared with its item ids and grouped by partition. The
+  planner is `plan_chunks` in the SDK, for any runner to reuse.
+- *Pieces.* `max_tests_per_chunk` bounds a single Robot execution: a chunk
+  is executed in pieces, one after another. Merged into one result per
+  chunk by default; with `chunk_shards: true` each piece is a declared shard
+  of its own (`<lane>-01`, `<lane>-02`, …), delivered as soon as it is done.
 - *Exact selection.* Tests are chosen by exact id, not by name pattern: an id
   containing `[` or `*` is that one test. `suite_root` or `suite_roots`: with
-  several roots each item is executed from the root it came from.
+  several roots each item is executed from the root it came from. `rpa`
+  (`true` / `false` / `null`, default `null`: Robot decides) sets the
+  execution mode: a root that mixes tests and tasks needs it, since Robot
+  refuses a selection keeping both — and that dispatch fails with Robot's own
+  message and a hint naming the option.
 - *Execution.* `variables` for all, `partition_variables` per partition, the
   partition itself under `partition_variable` (default `PARTITION`).
-  `executed_tag` (a template over `{partition}` / `{shard}`) is stamped on
-  every executed test. `worker_setup` — import-path callables — run inside
-  each worker before Robot and may contribute variables; `pythonpath` and
-  `listener` are passed on. `max_tests_per_chunk` bounds a single Robot
-  execution; `rerun_failed: N` re-executes failures up to N times, each
-  attempt delivered with its attempt number. Everything a shard executed is
-  merged into one `output.xml` / `log.html` / `report.html` (`log`, `report`,
-  default on), recorded as artifacts.
+  `run_parameters` declares further per-run parameters (any of the seven
+  kinds) and `parameter_variables` turns them into Robot variables — a value
+  into the named variable, a `mapping` parameter (written `"*"`) into one
+  variable per entry. `executed_tag` (a template over `{partition}` /
+  `{shard}`) is stamped on every executed test. `worker_setup` — import-path
+  callables — run inside each worker before Robot and may contribute
+  variables; `pythonpath` and `listener` are passed on, `robot_options` are
+  further keyword options for Robot's own `run`. `rerun_failed: N`
+  re-executes failures up to N times, each attempt delivered with its
+  attempt number. Everything a shard executed is merged into one
+  `output.xml` / `log.html` / `report.html` (`log`, `report`, default on) —
+  without the "added from merged output" note a merge of disjoint executions
+  would stamp on every test — and recorded as artifacts, together with the
+  shard's directory itself (`files (<shard>)`, a recorded directory), so the
+  files a log refers to are servable (§6.4).
 - *Results* are parsed with the configured ResultParser (`format`, else the
   run's expected format, else `robot-output-xml`) — so a parser configured
   under `parsers:` applies to what this runner produces as well.
 - *Refusals before the hand-off:* corpus drift (§3.3; `allow_drift`, also a
   per-run parameter, executes the intersection and reports the rest as
   `SKIP` / `drift`), a failing or overrunning `pre_run_hooks` command
-  (`hook_timeout_s`), a missing suite root.
+  (`hook_timeout_s`), a missing suite root, and whatever a `pre_dispatch`
+  step refuses. `pre_dispatch` names `"pkg.mod:callable"` steps called in
+  the dispatching process before the hand-off as `step(ctx, info)`, where
+  `info` holds the plan — `partitions`, `parameters`, `shards`, `groups`,
+  `plan`, `item_ids`, `variables`, `workdir`. A step may `ctx.refuse`, log,
+  keep files in `ctx.private_dir`, and return a mapping that is added to the
+  Robot variables of every shard: preparation that needs to know what is
+  about to run.
 - *Stopping.* Cancellation, and `shard_timeout_s`, stop worker processes;
   outstanding shards are not started. Delivered shards are kept. A
   `pre_run_hooks` command still running is stopped by a cancellation too
   (with what it started), and the dispatch ends `CANCELLED`.
 - *Live status* comes from a listener streaming through the live channel
-  (`live_status`, default on).
+  (`live_status`, default on): `RUNNING` when a test starts, its status when
+  it ends. Workers log their progress into the run's event stream through
+  the same channel.
+- *Preview and health.* `plan` shows the shards, groups and estimates a
+  dispatch would declare, and notes that readiness steps run only at
+  dispatch. `health` data: `robot_version`, `max_workers`, `suite_roots`,
+  `partitions`, `partition_mode`.
 
-**b) `jenkins`** — triggers an existing parameterized Jenkins job. Options:
-`base_url`, `job` (folders as `folder/job`), `parameters` — a mapping of *your
-job's* build-parameter names to templates over `{spec_json}` `{run_id}`
-`{dispatch_id}` `{callback_url}` `{token}` `{item_ids}` `{title}`
-`{labels[key]}` `{params[name]}` (per-run parameters declared under
-`run_parameters`) — `completion: callback | poll`, `callback_base`,
-`artifact_paths` (glob patterns over the build's archived files),
-`format`, `user` / `api_token` (give them as `${env:…}`), `verify_tls` /
-`ca_bundle`, `request_timeout_s`, `retries` with backoff on transient HTTP
-errors, `poll_interval_s`, `timeout_s`.
+`examples/robot-pool/config.yaml` configures the plugin twice: `robot-pool`
+(`each`, two partitions, reruns) and `robot-lanes` (`split`, two-test
+pieces as shards, a `mapping` and a `choice` parameter turned into Robot
+variables, balanced on passing durations) — each run end to end by
+tests/test_four_ways.py (`test_1_…`, `test_1b_…`); the switches are tested in
+tests/test_robot_toolkit.py and tests/test_robot_pool.py.
 
-With `callback` the job POSTs its bundle to `{callback_url}` using
-`{token}`; `dispatch` returns once the build is queued and the run waits in
+**b) `jenkins`** — triggers an existing parameterized Jenkins job. It is
+built on the Jenkins toolkit (`runcomposer.sdk.jenkins`, §6.6) and imports
+nothing else of runcomposer. Options: `base_url`, `job` (folders as
+`folder/job`), `parameters` — a mapping of *your job's* build-parameter
+names to templates (below) — `completion: callback | poll`,
+`callback_base`, `shards`, `artifact_paths`, `result_urls`,
+`field_providers`, `postprocess`, `format`, `run_parameters`, `user` /
+`api_token` (give them as `${env:…}`), `verify_tls` / `ca_bundle`,
+`request_timeout_s`, `retries` with backoff on transient HTTP errors,
+`poll_interval_s`, `timeout_s`, `max_parameter_bytes`, `max_request_bytes`.
+
+*What travels to the job* is configured, not fixed. A template may use the
+document — `{spec_b64}` (the exact bytes, gzip + base64: one line of ASCII
+that survives any form or shell, decoded with `base64 -d | gunzip`),
+`{spec_url}` (where the job downloads the exact bytes; needs
+`callback_base`) or `{spec_json}` (the document as text, for small specs
+only: a build parameter is one form field and one environment variable of
+the build) — identity (`{run_id}`, `{dispatch_id}`, `{title}`,
+`{labels[key]}`), the way back (`{callback_url}`, `{token}` — bind it to a
+password parameter), the work (`{item_ids}` one per line, `{shards}`
+comma-separated, `{params[name]}` for the per-run parameters declared under
+`run_parameters`: a list comma-joined, a `mapping` as `name=value` lines),
+and every name under `field_providers` — a `"pkg.mod:callable"` called as
+`callable(ctx, fields) -> str` that may `ctx.refuse` when the job cannot
+express the run (it is called for a preview too, so it must be free of side
+effects). Every template is checked at startup against these names. A
+trigger whose parameters exceed `max_parameter_bytes` (one value, default
+128 000) or `max_request_bytes` (all of them, default 1 000 000; `null`
+lifts either) is refused before anything is sent, with a message naming the
+way out (`{spec_b64}` or `{spec_url}` instead of `{spec_json}`).
+
+*Shards.* `shards` names what one build reports separately — a list, or a
+template rendering to a comma- or newline-separated list
+(`"{params[regions]}"`); default `["1"]`. With `callback` the job pushes
+each with `shard=<name>`. With `poll`, `{shard}` in `artifact_paths` /
+`result_urls` tells their files apart (or a `postprocess` splits what was
+downloaded); several shards that could not be told apart are refused before
+the trigger.
+
+*How results come back.* With `callback` the job POSTs its bundle to
+`{callback_url}` using `{token}` — and may report progress through the same
+token (§5); `dispatch` returns once the build is queued and the run waits in
 `AWAITING_RESULTS`. With `poll`, runcomposer follows the queue item the
-trigger returned to *its* build — never "the latest build of the job" — waits
-for it, downloads what matches `artifact_paths` and delivers it; the build
-URL is recorded as an artifact link. `cancel` stops the build (or cancels the
-queue item); `health` probes the server and the job. A rejected trigger is a
+trigger returned to *its* build — never "the latest build of the job" —
+records the build URL as the dispatch's `build` link and as an artifact,
+waits for it, downloads what matches `artifact_paths` (glob patterns over
+the archived files; default `results/*` when no `result_urls` are given)
+and the `result_urls` — paths below the build's URL that a publisher serves
+without archiving, such as `consoleText` — runs `postprocess`
+(`callable(ctx, shard, directory) -> Path | None`; the path it returns is
+what is delivered) and delivers each shard. A shard the job already pushed
+is not downloaded again (`ctx.outstanding_shards()`).
+
+*Stopping.* `cancel` stops the build through its recorded `build` link when
+there is one; otherwise it asks the queue item what it became — a running
+build, also when Jenkins has already forgotten the queue item (it does so a
+few minutes after the build started; the build is then found by the queue
+id it records), or a queued item, which is cancelled. A cancel that arrives
+while the trigger is under way is handled by the runner itself: it takes the
+build back and the dispatch ends `CANCELLED`. A rejected trigger is a
 refusal; a build that never finishes is a `FAILED` dispatch.
 
+*Preview and health.* `plan` shows the build parameters that would be sent —
+long values as `‹N bytes›`, the token and the dispatch id as `‹at
+dispatch›` — and the shards, and triggers nothing; it cannot say which item
+goes to which shard, since the job distributes them. `health` data:
+`version`, `job_url`, `completion` and `checks` (`{check, ok, detail}` for
+"server reachable" and "job readable").
+
 The CI side needs a thin consumer — a job step that runs `runcomposer-exec`
-(§6.2c) and, for `callback`, a POST of the bundle. A reproducible
-Jenkins-in-docker setup with that job is in `ci/jenkins/`. What is verified
-how: the test suite runs the runner against an in-process HTTP stand-in that
-speaks the Jenkins endpoints it uses (crumb + session cookie, queue item →
-build, artifact listing and download, stop, cancel); the docker setup is the
-manual end-to-end check against a real Jenkins.
+(§6.2c) and, for `callback`, a POST of the bundle (or `runcomposer-exec
+--push`). `examples/jenkins/config.yaml` configures four entries:
+`jenkins` (callback) and `jenkins-poll` (poll) for a job that runs the
+whole selection, and `jenkins-fanout` (poll; shards from a per-run
+parameter, the document as `{spec_b64}`, a field computed from the
+selection, results cut out of the console log by a `postprocess`) and
+`jenkins-fanout-push` (callback; the job pushes each region with progress)
+for a job that runs it once per region — their two callables in
+`examples/jenkins/shop_job.py`. A reproducible Jenkins-in-docker setup with
+both jobs is in `ci/jenkins/`. What is verified how: the test suite runs the
+runner against an in-process HTTP stand-in that speaks the Jenkins endpoints
+it uses (crumb + session cookie, queue item → build, a queue item that
+expired, artifact listing and download, URLs below the build, stop, cancel)
+— tests/test_jenkins.py, tests/test_jenkins_toolkit.py, and the fan-out
+entries in tests/test_four_ways.py (`test_2b_…`); `ci/jenkins/e2e.py` is
+the manual end-to-end check against a real Jenkins.
 
 **c) Export / remote round-trip** — for executors runcomposer never talks to
 (a remote checkout that receives code via git and returns result bundles the
@@ -714,6 +936,20 @@ complete bundle. It stays framework-agnostic on purpose: rendering a
 to that command is `[planned]`; nothing on the exec path reads the `runner`
 section today.
 
+Talking back is optional and needs nothing but the stdlib either. With
+`--callback URL` (the run's results URL, as a runner hands it out) and the
+dispatch's ingest token (`--token`, or `RUNCOMPOSER_INGEST_TOKEN` in the
+environment) the consumer reports while it works through the progress
+endpoints (§5): a log line when it starts and, after a `--command`, one
+with the command's exit code; with `--simulate` also the live status of
+every item. Progress is best-effort —
+a report that cannot be delivered is said once and dropped, and the
+execution goes on. `--push` uploads the finished bundle to that URL as one
+multipart POST, so no other transport is needed; a push that is refused or
+cannot be delivered is an error of the consumer (exit `4`), with the bundle
+and its marker left on disk (tests/test_runner_contract.py,
+`TestTheRemoteChannelAndTheConsumer`).
+
 **`runcomposer-exec` distribution — decided: both, by construction.** It is a
 single self-contained **stdlib-only** Python file (reads the spec as JSON;
 YAML only if a parser happens to be importable), distributed both as part of
@@ -726,21 +962,27 @@ placeholders `{ids_file}` `{out_dir}` `{spec_file}` `{run_id}`
 `{dispatch_id}` `{shard}` — replaced literally, nothing else in braces is
 touched — plus `format`, `shards`, `max_parallel`, `cwd`, `env`, `timeout_s`,
 `ok_exit_codes`, `allow_drift`, and declared per-run `parameters` (handed to
-the command as `RUNCOMPOSER_PARAM_<NAME>`). Any framework that starts from a
-command line and writes a result file is connected by configuration alone.
+the command as `RUNCOMPOSER_PARAM_<NAME>`; a `mapping` as `name=value`
+lines). Any framework that starts from a command line and writes a result
+file is connected by configuration alone. Its `plan` names the shards and
+the items each would run.
 
 **e) `demo`** — **simulated**. No test is run: verdicts derive from a seed
 (a per-run parameter), so the compose → dispatch → results loop can be shown
 without a test framework. It says so itself (`simulated` capability, every
-failure message). Only dispatchable where it is configured.
+failure message). With `delay_s` (configured only) each item takes that
+long, streaming `RUNNING` and then its status, so live progress and
+cancellation can be watched. Only dispatchable where it is configured.
 
 ### 6.3 `RunStore`
 
-Persists runs, specs, dispatches (state, declared shards and their items,
-plan, links, error, parameters, outcome summary, owner, cancel request),
-the exact bytes handed out per dispatch, ingest-token hashes, deliveries,
-verdicts, live status, artifact references and the event stream. **The store
-records; it decides nothing** — lifecycle state is computed by
+Persists runs, specs, dispatches (state, declared shards, their items and
+their groups, plan, links, error, parameters, outcome summary, owner, cancel
+request), the exact bytes handed out per dispatch, ingest-token hashes,
+deliveries, verdicts, live status (as `LiveStatus` records, `RUNNING`
+included — `record_live_verdict` / `live_verdicts`), artifact references
+(with their shard or group), imported durations and the event stream. **The
+store records; it decides nothing** — lifecycle state is computed by
 `core.lifecycle` and written by the application's ledger, the one place that
 does.
 
@@ -755,9 +997,21 @@ The history-query surface is explicit because §7 depends on it:
   the total, each run carrying its dispatches — what a run list needs without
   a query per row. Times are compared as stored, so a run's `created_at` is
   stored normalized to UTC whatever spelling its document uses;
-- `duration_aggregates(labels, last_n)`;
+- `duration_aggregates(labels, last_n, statuses=None)` — the mean over the
+  last `last_n` dispatches that delivered, of verdicts with a duration above
+  0 (0 means "not known") and, with `statuses`, one of those statuses; an
+  item nothing was measured for falls back to its seeded duration;
+- `seed_durations(durations, labels=None)` — keep imported durations as
+  that fallback (§7), scoped by labels the way a run's labels scope its
+  history; importing an item again under the same labels replaces its seed;
 - `events(run_id, after, limit)`, and `latest_events(run_id, limit)` — a
   bounded read of the tail, which is what a run detail shows.
+
+A dispatch's groups are written with `update_dispatch(shard_groups=…)` and
+read back as `DispatchRecord.shard_groups`; an artifact's group goes in with
+`add_artifact_ref(…, group=…)` and comes back as `ArtifactRef.group`. The
+conformance kit checks all of it (`check_store`: `store.shard-groups`,
+`store.live-running`, `store.duration-statuses`, `store.duration-seeds`).
 
 `add_dispatch(..., exclusive=True)` refuses (`RunActive`) when the run's
 latest dispatch is in flight, checked inside the transaction that inserts:
@@ -773,8 +1027,10 @@ cannot interleave with another. `path: ":memory:"` is supported for tests and
 throwaway use.
 
 **Schema version and migration.** The sqlite schema is versioned in
-`PRAGMA user_version` and migrated in place. A database written by 0.1.x
-opens as it is: deliveries without a dispatch get an `ingest` dispatch, where
+`PRAGMA user_version` — version 3 today — and migrated in place: from
+version 2 by adding the dispatches' `shard_groups`, the artifact
+references' `shard_group` and the `duration_seeds` table. A database written
+by 0.1.x opens as it is: deliveries without a dispatch get an `ingest` dispatch, where
 0.1 left several deliveries for one shard the newest wins, a plaintext token
 in a stored document is replaced by its hash, a dispatch that was executing
 is `STALE` — and completion is **recomputed** under §4's rules, so a run 0.1
@@ -789,14 +1045,15 @@ A second store over `postgres` is `[planned]`; until it exists, an adopter
 who must live in an existing database writes their own against this port.
 Stated plainly: **history features are dark on a fresh store** — failed-rerun
 and duration-balancing activate as runs accrue. The one store that starts
-warm is the demo's (§12).
+warm is the demo's (§12); duration balancing can be warmed by importing
+known durations (`runcomposer history import`, §7).
 
 ### 6.4 Artifacts
 
 Not a port: the store records artifact references
-`(name, media_type, url_or_path, shard)` and reads them back. They surface in
-`GET /api/v1/runs/{id}` under `artifacts`, each resolved to something a
-reader can follow.
+`(name, media_type, url_or_path, shard, group)` and reads them back. They
+surface in `GET /api/v1/runs/{id}` under `artifacts`, each resolved to
+something a reader can follow and carrying its `shard` and `group`.
 
 **`url_or_path` is one field with two meanings**, and the resolution is
 explicit about which:
@@ -807,11 +1064,31 @@ explicit about which:
   deliberately *not* treated as a URL: handing one out as a link is a
   link-injection vector.
 - anything else is a **local path**, servable only when it really lies inside
-  `core.artifact_dir`. A path outside stays visible in the payload with no
-  href, rather than offering a link that cannot work.
+  the recording run's directory under `core.artifact_dir`. A path outside
+  stays visible in the payload with no href (kind `external-path`), rather
+  than offering a link that cannot work. A recorded **directory** is listed
+  with kind `directory` and no href: it is not a document to open, but every
+  file below it is servable — a report together with the images and
+  screenshots it refers to.
 
 A built-in route serves `/artifacts/{run_id}/{dispatch_id}/…` — the layout of
-`ctx.workdir`. Two safety properties, both deliberate:
+`ctx.workdir` — and **only what was recorded**: a file a runner recorded with
+`add_artifact`, or a file under a directory it recorded, by the run whose
+directory the file lies in. Anything else in the artifact directory answers
+`404`, exactly like a file that does not exist. A file is downloadable
+because a runner said so, not because it happens to be in a served tree —
+so an intermediate file, a token a hook wrote or another run's file is never
+handed out by accident (tests/test_api.py,
+`test_only_recorded_artifacts_are_served`,
+`test_a_recorded_directory_makes_its_tree_servable_and_nothing_beside_it`,
+`test_a_file_recorded_by_another_run_is_not_served_from_this_runs_directory`).
+What must never be downloadable, whatever is recorded, belongs in
+`ctx.private_dir`: a directory per dispatch under `core.private_dir`
+(default `private/` next to the config file), which must lie outside
+`core.artifact_dir` — a configuration that puts it inside is refused at
+startup.
+
+Two safety properties of the route, both deliberate:
 
 1. **Containment, checked after resolution.** Artifact paths are
    attacker-influenced. The request path is resolved fully and refused unless
@@ -828,7 +1105,8 @@ A built-in route serves `/artifacts/{run_id}/{dispatch_id}/…` — the layout o
 **Retention is config, not an afterthought:** `core.retention.max_age_days`
 (`null` = no age limit) and `max_runs`, applied by `runcomposer gc`.
 Artifacts live and die with their run: pruning or deleting a run removes its
-directory, and a directory that belongs to no stored run is swept.
+directory — and its private directory — and a directory that belongs to no
+stored run is swept from both roots.
 
 ### 6.5 `RunObserver`
 
@@ -853,16 +1131,54 @@ as JSON on stdin; never on the command line).
 
 ### 6.6 The SDK
 
-`runcomposer.sdk` is the connector surface: the protocols, their base classes
-(`SourceBase`, `RunnerBase`, `ParserBase`, `StoreBase`, `ObserverBase`, all
-derived from `PluginBase`), the records, the error taxonomy, and the helpers
-a connector needs — the chunk planner, content hashes, the marker reader, the
-defused XML reader, lifecycle functions, parameter validation — plus
-`load_config` and `Service` for driving runcomposer from Python (compose →
-dispatch → wait → read, in one process). Its names keep their meaning within
-a minor line; a removal is a breaking change listed in the changelog. A
-frozen list of the names in the test suite makes every change to it
-deliberate.
+`runcomposer.sdk` is the connector surface: the protocols (the five roles,
+`DispatchContext`, `PlanContext`, `LiveChannel`, `History`), their base
+classes (`SourceBase`, `RunnerBase`, `ParserBase`, `StoreBase`,
+`ObserverBase`, all derived from `PluginBase`), the records (`LiveStatus`
+and `PlanPreview` among them, `LIVE_STATUSES`), the error taxonomy, and the
+helpers a connector needs — the chunk planner, content hashes, the marker
+reader, the defused XML reader, lifecycle functions, parameter validation,
+`load_import_path` (for a plugin's own `"pkg.mod:callable"` options),
+`RemoteLiveChannel` (§5) — plus `load_config` and `Service` for driving
+runcomposer from Python (compose → dispatch → wait → read, in one process).
+
+It is a package with **two toolkits**, the building blocks the reference
+runners are made of:
+
+- `runcomposer.sdk.robot` — exact-id selection (`ExactSelection`), the
+  live listeners (`LiveStatusListener`, and `RemoteLiveStatusListener` for
+  an agent that executes elsewhere), what one worker is told and its entry
+  point (`ShardPayload`, `run_shard`), the supervisor of worker processes
+  (`supervise`: a bound on parallelism, lanes that must not overlap, a
+  per-shard timeout, the stop protocol), delivery of what a worker produced
+  (`deliver_shard`, `collect_verdicts`), `merge_outputs`, `attribute_roots`,
+  `robot_version`;
+- `runcomposer.sdk.jenkins` — `JenkinsClient` (session and crumb, bounded
+  retry, TLS, trigger → queue item → build, lookup by queue id once the
+  queue item is gone, stop and cancel, archived artifacts and any URL below
+  a build), `JenkinsError` / `JenkinsTimeout`, and `encode_spec` /
+  `decode_spec` for the compressed spec.
+
+Why they are exported rather than kept inside the runners: a connector whose
+needs differ from what the reference runners' switches offer should compose
+the same parts — the Robot worker and its stop protocol, the Jenkins queue
+semantics — instead of restating them, and restating them is where such
+details go wrong. `robot-pool` and `jenkins` are built on the toolkits and
+import nothing else of runcomposer, which is the evidence that the toolkits
+suffice; two composed example runners in the test suite, written against
+the SDK and one toolkit alone, run through the kit and a real deployment
+(`LaneRunner` in tests/test_robot_toolkit.py, `NightlyRunner` in
+tests/test_jenkins_toolkit.py).
+
+The names of the SDK and of both toolkits keep their meaning within a minor
+line; a removal is a breaking change listed in the changelog. Guard tests
+hold the shape: frozen lists of the names of the SDK and of each toolkit,
+importing the SDK loads neither toolkit nor Robot Framework, the Robot
+toolkit and `robot-pool` import without Robot Framework installed (it is
+imported only inside the functions that execute), the toolkits import only
+`runcomposer.sdk` from this package, the SDK has exactly these two
+toolkits, and the reference runners are built on them (tests/test_sdk.py,
+tests/test_self_containment.py).
 
 **The contract is checked, not discovered.** Every member the application
 calls on a plugin is a member of its protocol; the optional ones have
@@ -884,10 +1200,20 @@ misuse with the same message.
 SDK (plugins import the SDK at run time, tests import the kit), stable on
 the same terms: `check_source`, `check_runner`, `check_parser`,
 `check_store`, `check_observer` run a port's invariants against a caller's
-instance and fail naming the violated rule; `FakeDispatchContext` records
-what a runner does; `ConnectorHarness` builds a real `Service` in a
-temporary directory and drives compose → dispatch → settled with a timeout.
-Every reference plugin is tested with it — the evidence that it suffices.
+instance and fail naming the violated rule — for a runner with the `plan`
+capability also `runner.plan`, `runner.plan-is-read-only` and
+`runner.plan-matches-dispatch`; `FakeDispatchContext` records what a runner
+does — the whole live stream in order (`live_updates`, `RUNNING` included)
+next to what a store would hold (`live_now`), groups, links, worker log
+lines, `private_dir`, `delivered_shards()` / `outstanding_shards()` — and
+previews a runner (`preview`), with options and parameters apart as in a
+real dispatch; `ConnectorHarness` builds a real `Service` in a temporary
+directory and drives compose → dispatch → settled with a timeout, starts a
+dispatch to follow and cancel (`start` → a handle with `wait_until`,
+`cancel`, `read`), previews (`plan`), and with `serve=True` serves the API
+on a free port for an executor that pushes. Every reference plugin is tested
+with it — the evidence that it suffices (tests/test_kit_additions.py,
+tests/test_testing_kit.py).
 `examples/connector-template/` is an installable connector package for the
 example world, tested with the kit; [docs/connectors.md](docs/connectors.md)
 is the author's guide.
@@ -904,10 +1230,12 @@ compose-time: RunStore query → item ids materialized into selection
             → spec records derived_from provenance (§3.1)
 ```
 
-The full picker — `Select items by history: [failed] in [latest completed run
-| run <id> | last run before <date>] (filter: labels)` — is `[planned]` in the
-UI, which today offers one fixed `failed@latest` button. Every selector and
-scope below is already reachable from the CLI and the API.
+In the UI, "rerun what failed" is an action of a run — the run view's rerun,
+which composes `failed+error+missing@run:<id>` like `rerun --scope failed`.
+A free picker over selectors and scopes — `Select items by history:
+[failed] in [latest completed run | run <id> | last run before <date>]
+(filter: labels)` — is `[planned]` in the UI. Every selector and scope below
+is reachable from the CLI and the API.
 
 The executed spec stays static and reproducible; provenance keeps it
 auditable. Locale date words are UI sugar, never spec content. The
@@ -966,6 +1294,32 @@ the same way, so the rerun joins the stream it reran:
 `runcomposer spec --from-history 'failed@latest?suite=nightly' --label
 suite=nightly`.
 
+A rerun of failures (`rerun --scope failed`, `POST /runs/{id}/rerun`) keeps
+the source run's title unless it is given one (`--title`, `title`): that it
+is a rerun, and of what, is data — origin `rerun`, `derived_from`, and
+`rerun_of: {run_id, scope}` in the answer and in the new run's detail — not
+prose in a title (tests/test_runner_contract.py, `TestRunDetailSemantics`).
+
+**Duration history.** The other half of history is how long items take —
+what duration-balanced planning reads (`ctx.history.durations`, §6.2). It is
+the mean over the last N dispatches that delivered, of runs carrying the
+given labels, optionally restricted to executions that ended with given
+statuses (`statuses=("PASS",)`, a runner's `history_statuses`): a failing
+test often ends early and would make its chunk look short. A duration of 0
+ms means "not known" to the store and to the planner alike, never "instant".
+A fresh store knows nothing, so a deployment that already knows how long its
+tests take can **seed** it: `runcomposer history import FILE [--label k=v]`
+reads a CSV (a header naming an `item` column and `duration_ms` or
+`duration_s`) or JSON (`{"durations": {item: ms}}`, or a list of `{item,
+duration_ms}`), resolves every name through the catalog — an item id or any
+native name the source resolves — and stores the durations under the
+given labels; names the catalog does not know are reported, not stored. A
+seed answers only for an item nothing was measured for: the first real
+execution takes over. `runcomposer history durations [--label] [--last N]
+[--status S]` prints the means as a planner sees them.
+`examples/history/durations.csv` is a sample in the example world
+(tests/test_runner_contract.py, `TestDurationHistory`).
+
 ---
 
 ## 8. Configuration
@@ -976,8 +1330,11 @@ core:
   api: { host: 127.0.0.1, port: 8100, cors: [...] }
   taxonomy_file: taxonomy.yaml        # curated tree over tag patterns; format: docs/taxonomy.md
   artifact_dir: artifacts/
+  private_dir: private/               # ctx.private_dir — never served; outside artifact_dir
   retention: { max_age_days: 90, max_runs: null }      # null = no limit
-  dispatch: { max_concurrent: 2, handoff_wait_s: 2.0 }
+  dispatch: { max_concurrent: 2, handoff_wait_s: 2.0,
+              awaiting_timeout_s: null }               # null = wait for results until
+                                                       #   finalized or cancelled (§4)
   ingestion: { tokens: required, inbox: results_inbox/, max_upload_mb: 200,
                quarantine_dir: quarantine/, quarantine_max: 100,
                poll_interval_s: 2.0, settle_s: null }
@@ -1000,8 +1357,16 @@ parsers:                               # options per result format id
 observers:
   team-chat: { plugin: webhook, url: "https://chat.shop.example/hooks/tests",
                secret: "${env:SHOP_HOOK_SECRET}", events: [run.completed, run.failed] }
-ui:                                    # served at /api/v1/ui-config and /meta
-  quick_filters: [...]
+ui:                                    # served at /api/v1/ui-config, /meta and /presets
+  quick_filters:                       # a pattern, or a whole filter expression
+    - { label: "Cards", filter: Payments-Cards }
+    - { label: "Checkout, not quarantined",
+        filter: { op: AND, items: [Checkout, { not: "prefix:Quarantine-" }] } }
+  default_filter: Regression           # what a new selection starts from
+  presets:                             # named, complete starting points
+    - { name: nightly-smoke, label: "Nightly smoke", filter: Smoke,
+        runner: robot-pool, parameters: { partitions: [staging] },
+        title: "Nightly smoke", labels: { suite: nightly } }
 connectors:                            # free-form: a connector package's own settings
   shop-connector: { ... }
 ```
@@ -1048,6 +1413,21 @@ Rules:
   error that says so and names `connectors:`.
 - **`parsers:`** configures result parsers by format id, with the same
   `module:` / `plugin:` selection. A run spec names a format id only (§5).
+- **`ui:`** is served to clients (`GET /api/v1/ui-config`, `/meta`) with
+  every key as written — except the three that carry selections, which are
+  validated against the filter grammar at startup and served in one
+  normalized shape. `quick_filters` are `{label, filter}` entries whose
+  `filter` is one pattern or a whole filter expression (a bare string is
+  short for a pattern labelled with itself); `default_filter` is the
+  expression a new selection starts from; `presets` are named, complete
+  starting points — `name` and `filter`, optionally `label`, `description`,
+  `title`, `labels`, and a `runner` with its per-run `parameters`. Each
+  selection is served with `tag_filter` (the expression in the grammar
+  `selection.tag_filter` takes), `text` (one line to show) and `kind`
+  (`pattern` or `expression`); `GET /api/v1/presets` serves the three
+  together. A preset that names an unconfigured runner, or parameters that
+  runner would refuse, refuses the start — otherwise a client would offer a
+  start the API then refuses (tests/test_deployment_options.py).
 - **Zero-config.** With no config file at all runcomposer runs on built-in
   defaults *spelled as configuration*: the sqlite store in
   `./runcomposer.db`, the `demo-corpus` source, the bundled taxonomy, and the
@@ -1056,10 +1436,15 @@ Rules:
 
 **One path base.** A relative path anywhere in the config file resolves against the
 **config file's own directory** — the core's keys (`taxonomy_file`,
-`artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`) and the plugin
-sections alike. A config directory is therefore portable, and one `--config`
-behaves identically from every working directory. Absolute paths are left as
-written.
+`artifact_dir`, `private_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`)
+and the plugin sections alike. A config directory is therefore portable, and
+one `--config` behaves identically from every working directory. Absolute
+paths are left as written. A path may come from the environment, and then
+`${env:…}` is substituted **before** the path is anchored — so `root:
+${env:SHOP_CHECKOUT}/tests` with an absolute value stays where the variable
+points, and a relative value is anchored like any other; this holds for the
+core's keys and for every option a plugin names in `PATH_OPTIONS`
+(tests/test_deployment_options.py).
 
 The core must not decide what a plugin's options *mean*, and "which of these
 strings are paths" is exactly that kind of decision — a listener spec, a
@@ -1093,15 +1478,18 @@ GET    /api/v1/health                     # is this process serving
 GET    /api/v1/meta                       # boot info in one call: version, locale, runners +
                                           #   parameters, catalog size, taxonomy, what is
                                           #   configured (loaded) and what is installed
-GET    /api/v1/ui-config
-GET    /api/v1/runners[?refresh=true]     # configured runners: id, capabilities, parameters,
-                                          #   health (cached 30 s)
+GET    /api/v1/ui-config                  # the ui: section, selections normalized (§8)
+GET    /api/v1/presets                    # {presets, default_filter, quick_filters}
+GET    /api/v1/runners[?refresh=true]     # configured runners: id, capabilities, parameters
+                                          #   (with pattern), health + data (cached 30 s)
 GET    /api/v1/catalog/tags               # every tag with its item count
 POST   /api/v1/catalog/reload             # re-read the corpus now
 GET    /api/v1/taxonomy[?resolve=true]    # the validated file; or resolved against the catalog
 
 POST   /api/v1/selection/compile          # preview: matched items, total, warnings, derived_from
 POST   /api/v1/selection/spec-preview     # the would-be runspec — nothing is stored
+POST   /api/v1/plan                       # what a runner would do with a selection — nothing is
+                                          #   stored, executed or triggered (§6.2)
 
 POST   /api/v1/runs                       # compose (+ dispatch: {runner, parameters} | {mode: export})
 GET    /api/v1/runs                       # list: state, label, q, since, until, limit, offset → total
@@ -1110,14 +1498,18 @@ DELETE /api/v1/runs/{id}
 GET    /api/v1/runs/{id}/items            # the materialized selection
 GET    /api/v1/runs/{id}/spec             # the stored document (never a token)
 GET    /api/v1/runs/{id}/events?after=    # the event stream after a cursor; wait= long-polls
-GET    /api/v1/runs/{id}/verdicts         # dispatch, shard, status filters; limit/offset
+GET    /api/v1/runs/{id}/verdicts         # dispatch, shard, status filters (status=RUNNING:
+                                          #   what is executing now); limit/offset
+POST   /api/v1/runs/{id}/plan             # what a dispatch of this run would do
 POST   /api/v1/runs/{id}/dispatch         # dispatch or export a stored run
 POST   /api/v1/runs/{id}/cancel           # ?force=true closes it whoever owns it (§4)
-POST   /api/v1/runs/{id}/rerun            # scope: all | failed
+POST   /api/v1/runs/{id}/rerun            # scope: all | failed; title — answers rerun_of
 POST   /api/v1/runs/{id}/finalize
 GET    /api/v1/runs/{id}/dispatches/{dispatch_id}/spec    # the exact bytes handed out
 POST   /api/v1/runs/{id}/dispatches/{dispatch_id}/token   # rotate the ingest token
 POST   /api/v1/runs/{id}/results          # ingestion push (multipart; token)
+POST   /api/v1/runs/{id}/live             # live status from an external executor (token, §5)
+POST   /api/v1/runs/{id}/log              # log lines from an external executor (token, §5)
 
 GET    /api/v1/quarantine
 POST   /api/v1/quarantine/{id}/attach     # bind to an existing run (logged)
@@ -1143,13 +1535,35 @@ record of the refusal.
 
 **A run row is complete for a list** — verdict counts by status, planned
 count, duration, the latest dispatch's mode, labels, origin — and `total` is
-the size of the whole filtered set. **A run detail** adds deliveries, verdicts
-(shard, attempt, duration, `live`), a per-shard roll-up (`shards`: counts and
-computed completion per shard — "green on one partition, red on the other" is
-read, not aggregated), artifacts with hrefs, recent events, and the
-`selection` the run was composed from (filter AST, picked ids, history
-provenance), so a client can load it back into a builder. The verdict list is
-flat and labelled rather than nested by shard: a per-item view wants it flat.
+the size of the whole filtered set. Like every other headline field, the
+run's `duration_s` describes its **latest dispatch** (a run dispatched again
+a week later did not take a week); each entry of `dispatches` carries its
+own `duration_s` and `shard_groups`. **A run detail** adds deliveries,
+verdicts (shard, attempt, duration, `live`; a `MISSING` row also
+`last_live`, §4), a per-shard roll-up (`shards`: counts and computed
+completion per shard — "green on one partition, red on the other" is read,
+not aggregated), the shard groups (`shard_groups`: shard → label) and their
+own roll-up (`groups`: `{group, shards, declared_shards, delivered_shards,
+planned, count, summary, live, completion}`, the completion `null` until
+every shard of the group delivered), what is streaming now (`live_summary`:
+`{shard: {status: count}}`), `rerun_of` for a run a failed-rerun composed,
+artifacts with hrefs, their shard and group, and kind (`local`, `url`,
+`directory`, `external-path`), recent events, and the `selection` the run
+was composed from (filter AST, picked ids, history provenance), so a client
+can load it back into a builder. The verdict list is flat and labelled
+rather than nested by shard: a per-item view wants it flat.
+
+**Plans are answers, not errors.** `POST /plan` (`{selection, runner,
+parameters?, title?, labels?}`) and `POST /runs/{id}/plan` (`{runner,
+parameters?}`; without `parameters`, the ones the run's document carries)
+answer `{runner, run_id, item_count, parameters, refused, refusal, plan,
+warnings}`, where `plan` is `{text, shards: [{shard, group, count, item_ids,
+estimate_ms}], groups: [{group, shards, count, estimate_ms}], notes, data}`
+— or `null` with `refused: true` and the `refusal` a dispatch would meet,
+answered `200`. Parameters are validated as for a dispatch (a bad one is a
+`400` naming it), and a runner without the `plan` capability is a `400`.
+Nothing is stored, executed or triggered, and a stored run is left alone in
+whatever state it is.
 
 **Exports are byte-exact.** An export answers with `spec_url`, `spec_sha256`
 and — once — `ingest_token`. The URL serves exactly the bytes the hash was
@@ -1173,7 +1587,7 @@ file must keep getting the file. Static files are served with
 the hashed `/assets/`.
 
 Runner-specific admin actions (e.g. a pool reload) are declined: a runner
-offers `dispatch`, `cancel`, `health` and declared per-run parameters, and an
+offers `dispatch`, `plan`, `cancel`, `health` and declared per-run parameters, and an
 endpoint whose meaning only one runner knows would be an unchecked surface of
 the API.
 
@@ -1181,11 +1595,12 @@ the API.
 
 | | |
 |---|---|
-| look | `catalog` · `taxonomy-check` · `compile` · `validate` · `doctor` |
-| compose | `spec` (`--dry-run`, `--export`, `--runner` / `--param`) · `export-spec` |
-| run | `run` (compose → dispatch → wait → summary) · `dispatch` (a spec file or `--run`) · `rerun` (`--scope all\|failed`) · `cancel` (`--force`) · `watch` |
+| look | `catalog` · `taxonomy-check` · `compile` · `validate` · `doctor` (`-v`: every runner's health data) |
+| compose | `spec` (`--dry-run`, `--export`, `--runner` / `--param`) · `export-spec` · `plan` (a selection or `--run`; `--items`) |
+| run | `run` (compose → dispatch → wait → summary) · `dispatch` (a spec file or `--run`) · `rerun` (`--scope all\|failed`, `--title`) · `cancel` (`--force`) · `watch` |
 | read | `runs` (`--failed-in`) · `show` · `export --format ctrf` |
 | results | `ingest` · `quarantine list\|attach\|promote\|discard` · `finalize` |
+| history | `history import` (seed durations from a file) · `history durations` (`--label`, `--last`, `--status`) |
 | operate | `serve` · `gc` · `delete` · `demo` |
 
 `run`, `dispatch` and `rerun` execute the runner in the CLI's own process and
@@ -1197,8 +1612,9 @@ per-run parameters for this dispatch, and is validated like `--param`.
 `--json` prints one JSON document — the same shapes the API returns. Exit
 codes are the same everywhere: `0` done, or the run is `PASS`; `1` the answer
 is no (the run is not `PASS`, a spec is invalid, a bundle refused, a run
-unknown); `2` the command line or the configuration is wrong; `3` the run
-ended without a result (refused, failed, cancelled, stale, timed out). Every
+unknown, a plan that would be refused); `2` the command line or the
+configuration is wrong; `3` the run ended without a result (refused, failed,
+cancelled, stale, timed out). Every
 command that reads a deployment takes `--config` — the only way to select a
 config file. Plus the
 vendorable **`runcomposer-exec`** consumer (§6.2c), shipped as its own tiny
@@ -1206,7 +1622,7 @@ artifact.
 
 Logging uses the `logging` module under `runcomposer.*`; `serve` installs a
 default handler (`--log-level`), the other commands print warnings and, with
-`-v`, what they do.
+`-v`, what they do (`doctor -v` also prints every runner's health data).
 
 ---
 
@@ -1225,33 +1641,52 @@ neither is a degraded version of the other:
 1. **i18n** — every literal in locale files; `en` + `de` shipped; locale date
    sugar lives here.
 2. **Config-driven environment** — whatever the deployment puts under `ui:` is
-   served from `/api/v1/ui-config`, never hardcoded. The UI reads
-   `quick_filters` today; `examples` and partition pickers are `[planned]`, so
-   a key the UI does not yet read is served and silently ignored.
+   served from `/api/v1/ui-config`, never hardcoded (§8). The UI reads
+   `quick_filters` as starting points of a selection; using `default_filter`
+   and `presets` (also served by `GET /api/v1/presets`) is `[planned]`, and so
+   are `examples`, so a key the UI does not yet read is served and silently
+   ignored. Partitions are not a UI setting: they are the `partitions`
+   parameter a runner declares, chosen in the runner form.
 3. **Runner-aware compose footer** — "Run with: [robot-pool ▾] | Export spec";
    runs list shows dispatch mode + lifecycle state incl. `AWAITING_RESULTS`;
-   a quarantine view for unmatched deliveries.
+   an inbox view for unmatched (quarantined) deliveries.
 
-**The bundled UI predates the 0.2 API** and is being reworked against it.
-What the API offers and the UI does not use yet is `[planned]` on the UI
-side: a form rendered from a runner's declared parameters (§6.2), cancel /
-rerun / delete, the event stream and live progress, paging and search in the
-runs list, the per-shard roll-up and artifact links in the run detail, the
-exported document downloaded byte-exact from `spec_url` (§9), and the states
-and statuses 0.2 added (`FAILED`, `CANCELLED`, `STALE`; `MISSING`,
-`INCOMPLETE`).
+**What the UI covers of the 0.2 API.** Four hash routes — `#/compose`,
+`#/runs`, `#/runs/<id>`, `#/inbox` — so a deep link survives a reload
+without the server knowing a single UI route, and the UI works unchanged
+behind a reverse proxy that mounts it under a path prefix. Compose: the tag
+picker, the filter editor, the auto-compiled preview, a runner form rendered
+from the runner's declared parameters with its health status, and export
+with the document downloaded byte-exact from `spec_url` (§9). Runs: paging,
+search, state and label filters. A run: the lifecycle states and statuses
+0.2 added (`FAILED`, `CANCELLED`, `STALE`; `MISSING`, `INCOMPLETE`), the
+event stream followed live, the per-shard roll-up and artifact links,
+cancel, rerun (all, or what failed) and delete. Inbox: attach, promote,
+discard.
 
-**Stack — decided:** current React/Vite/deps at P1; the SVAR filter widget
-stays as the filter-builder (MIT, actively maintained, React-19 peer deps;
-verified 2026-07-06), kept behind the existing adapter so it remains
-swappable. `react-aria-components` (Apache-2.0) carries the tag picker's tree
-and modal: a multi-select tree with real keyboard semantics and screen-reader
-behaviour is the whole point of that dialog and a bad thing to hand-roll. It
-costs ~58 kB gzip of the bundle, and its tree is virtualized because the
-resolved tree grows with the catalog. P1 spike: SVAR built-in label localization for the i18n story;
-override via the adapter if not exposed. Per-item *live* state requires the
-listener path (§6.2a); without it the grid shows planned → final, honestly
-labeled.
+What the API offers beyond that is `[planned]` on the UI side: plan previews
+(`POST /plan`, §6.2), form fields for the `text` and `mapping` parameter
+kinds and for a parameter's `pattern`, the `RUNNING` live status per item
+and `live_summary`, the shard groups and their roll-up, presets and the
+default filter, a runner's health `data` (what its checks found), and
+`last_live` on a `MISSING` row.
+
+**Stack — decided:** TypeScript and React, and nothing else at run time —
+React and React DOM are the only dependencies. What earlier versions took
+from widget libraries the UI does itself, because each piece is small next to
+what depends on getting it exactly right: an expression editor over the run
+spec's own filter grammar (a rule is a chip, a group a box with its
+operator, NOT a switch on either, and the same expression can be typed as
+text — the grammar of §3.1 rather than a widget's model translated through
+an adapter); dialogs on the native `<dialog>` element (focus trap,
+`Escape`, return of focus); and its own windowing for long lists, so the
+resolved tag tree — which grows with the catalog — the selection preview and
+the run's results keep only the rows in view in the DOM. Vite builds it
+into the wheel. Unit tests run with vitest; browser end-to-end tests with
+Playwright (`npm run e2e`, which builds first); `npm run lint` is eslint plus
+the TypeScript check. Per-item *live* state requires a runner that streams
+it (§6.2a) or an executor that pushes it (§5); without it the grid shows
+planned → final, honestly labeled.
 
 ---
 
@@ -1378,7 +1813,7 @@ as history; `CHANGELOG.md` says what changed.
 |---|---|---|
 | 1 | Name | **`runcomposer`** — verified free on PyPI + npm 2026-07-06, still unclaimed at 0.1.0. Placeholder-package reservation was **dropped** (2026-08-28): a squat advertises the gap it fills, and every documented path installs from a clone anyway. Publishing for real is the owner's call, gated behind the `PYPI_PUBLISH` repo variable. |
 | 2 | Warm history at adopters | **Start fresh everywhere**; no migration machinery in core; private adopters may seed their own stores. |
-| 3 | UI stack | **Refresh to current React/Vite at P1; keep SVAR** behind the adapter; localization spike noted. |
+| 3 | UI stack (superseded by #23) | **Refresh to current React/Vite at P1; keep SVAR** behind the adapter; localization spike noted. |
 | 4 | License | **MIT.** |
 | 5 | `runcomposer-exec` distribution | **Both by construction**: stdlib-only single file, also pipx-installable; JSON spec input so zero deps. |
 | 6 | Who mints the dispatch id (2026-08-28; the mechanism is superseded by #11/#12) | **runcomposer does**, offered to the runner as a `DispatchReservation` via the optional `bind_dispatch` hook (§6.2); the runner decides *when* the hand-off is recorded, and the returned handle refines the declaration. Rejected: passing the id into `dispatch()` (breaks the published signature), and letting bound runners write their own dispatch rows (duplicates the ledger, unavailable to unbound runners, and lets a runner's own id drift from its configured `mode`). A refused dispatch — refusal always precedes the recording — leaves **no** row. |
@@ -1394,3 +1829,8 @@ as history; `CHANGELOG.md` says what changed.
 | 16 | What a spec's `runner` section may do (0.2) | **Carry declared per-run parameters; nothing else reaches an in-process runner** (§6.2). Rejected: overlaying the whole section on the configured options (0.1) — a document could then set readiness hooks and listeners, i.e. execute code on the machine that runs it. Same reasoning for result formats: names resolved through configuration, never import paths from a document. |
 | 17 | Config: what names a plugin instance (0.2) | **The entry's key is the id; `plugin:` / `module:` select the class** (§8). The API lists and dispatches by that id, so one plugin can be configured several times. Rejected: the key as the plugin id with a single instance each (0.1), and reporting the plugin's own `describe().id`, which is not the name anyone can dispatch to. |
 | 18 | What the manifest snapshot hashes (0.2) | **Ids and tags** — what a selection depends on, and what the Robot source already hashed. Rejected: the whole item (0.1), which made a renamed test or an edited `meta` drift. Consequence: a spec composed by 0.1 against a manifest reads as drifted under 0.2. |
+| 19 | Options and per-run parameters on the context (0.2) | **Apart, never overlaid** (§6.2): `ctx.options` is the config entry, `ctx.parameters` the validated per-run values. Rejected: options overlaid by parameters — a parameter could then shadow an option of the same name, and a runner could not tell what the deployment configured from what a person chose. |
+| 20 | What the artifact route serves (0.2) | **Only what a runner recorded** — a file, or the tree under a recorded directory — and a never-served `private_dir` for the rest (§6.4). Rejected: serving whatever lies in a dispatch's work directory — every intermediate file, and any credential a hook wrote there, was one guessed URL away. |
+| 21 | A dispatch whose results never come (0.2) | **Opt-in expiry to `FAILED`** (`core.dispatch.awaiting_timeout_s`, §4), the clock restarted by every delivery, late results still taken in. Rejected: finalizing on expiry (an executor that died is a broken execution, not a result), and an expiry on by default (how long a remote job may take is the deployment's knowledge, not the core's). |
+| 22 | The reference runners' parts (0.2) | **Exported as SDK toolkits** (`runcomposer.sdk.robot`, `.jenkins`, §6.6), the reference runners built on them. Rejected: keeping the parts private to the runners — a connector with different needs would restate the worker stop protocol or the Jenkins queue semantics, which is where such details go wrong. |
+| 23 | UI stack (0.2; supersedes #3) | **TypeScript and React only** (§10): the expression editor, dialogs and list windowing are the UI's own. Rejected: keeping the filter widget behind an adapter — the filter is the run spec's grammar, and translating a widget's model into it was a standing source of silent mistranslations. |

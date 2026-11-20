@@ -209,10 +209,12 @@ class there (`SourceBase`, `RunnerBase`, `ParserBase`, `StoreBase`,
 `ObserverBase`) that supplies its optional members. Derive from the base
 class, or define every member yourself: runcomposer checks each configured
 plugin against its protocol at startup and refuses one that lacks a member,
-naming it. **Import everything from `runcomposer.sdk`** and from nowhere else
-in the package; that module is the connector surface, and the reference
-plugins themselves import nothing else. 0.2 is a breaking revision of these
-ports: a plugin written against 0.1 has to be ported.
+naming it. **Import everything from `runcomposer.sdk`** — and, for a runner
+that executes Robot Framework or drives Jenkins its own way, from its toolkits
+`runcomposer.sdk.robot` and `runcomposer.sdk.jenkins` — and from nowhere else
+in the package; that is the connector surface, and the reference plugins
+themselves import nothing else. 0.2 is a breaking revision of these ports: a
+plugin written against 0.1 has to be ported.
 
 ### `TestSource` — where tests come from
 
@@ -242,6 +244,7 @@ Ships: `manifest` (JSON/YAML, only `id` + `tags` required), `robotframework`
 def describe(self) -> RunnerInfo                  # id, title, capabilities, per-run parameters
 def dispatch(self, ctx: DispatchContext) -> None  # prepare → declare → deliver
 # optional (defaults in RunnerBase):
+def plan(self, ctx: PlanContext) -> PlanPreview   # what a dispatch would do, doing nothing
 def cancel(self, ctx: DispatchContext) -> None
 def health(self) -> Health
 ```
@@ -268,7 +271,7 @@ class MyRunner(RunnerBase):
     def dispatch(self, ctx: DispatchContext) -> None:
         if ctx.source.snapshot() != ctx.spec["source"]["snapshot"]:
             ctx.refuse("the corpus changed since this run was composed — compose it again")
-        ctx.declare(["1"], plan=f"my-runner: {len(ctx.item_ids)} item(s) on {ctx.options['stage']}")
+        ctx.declare(["1"], plan=f"my-runner: {len(ctx.item_ids)} item(s) on {ctx.parameters['stage']}")
         verdicts = [Verdict(item_id, "PASS", duration_ms=120) for item_id in ctx.item_ids]
         ctx.deliver("1", verdicts=verdicts)
 ```
@@ -294,12 +297,18 @@ The shape is always the same:
   executor and `ctx.ingest_token()` the token it needs to push.
 
 Also on the context: `ctx.item_ids`, `ctx.spec` (read-only), `ctx.options`
-(your configured options overlaid by the validated per-run parameters),
-`ctx.workdir` (a directory for this dispatch, served as artifacts),
-`ctx.source` (the live catalog), `ctx.history.durations(...)`,
-`ctx.live(...)` and the picklable `ctx.live_channel()` for per-item status
-from worker processes, `ctx.add_artifact(...)`, `ctx.log(...)`,
-`ctx.cancelled` / `ctx.raise_if_cancelled()`.
+(your runner's config entry as written, and nothing else) and
+`ctx.parameters` (what this run chose: the validated per-run parameters,
+defaults applied — a parameter never appears in `ctx.options`),
+`ctx.workdir` (a directory for this dispatch under the artifact root — a file
+there is served once `ctx.add_artifact(...)` recorded it, not before),
+`ctx.private_dir` (for files that must never be served), `ctx.source` (the
+live catalog), `ctx.history.durations(...)`, `ctx.live(...)` and the picklable
+`ctx.live_channel()` for per-item status (`RUNNING`, then the verdict) and log
+lines from worker processes, `ctx.set_link(...)`, `ctx.outstanding_shards()`,
+`ctx.log(...)`, `ctx.cancelled` / `ctx.raise_if_cancelled()`. A runner with
+the `plan` capability also answers `plan(ctx)` — a preview of the dispatch
+that executes, records and triggers nothing (`runcomposer plan`).
 
 **`dispatch` may block for as long as the execution takes.** runcomposer calls
 it off the request path: `POST /api/v1/runs` with a dispatch answers at once,
@@ -318,7 +327,13 @@ duration-balanced chunking, exact id selection, readable `log.html`, reruns of
 failures, live verdicts, cancellation), `jenkins` (a parameterized Jenkins job
 with configurable parameter names and artifact paths; callback or polling
 completion), `command` (a configured command line per shard — the connector
-for any framework that has one), and `demo` (simulated).
+for any framework that has one), and `demo` (simulated). Before writing a
+runner, read the
+[connector guide §9](docs/connectors.md#9-composing-the-reference-runners):
+`robot-pool` and `jenkins` have switches for much that looks like it needs
+code (partitions as lanes, every chunk a shard, preparation before the
+hand-off, a job that fans out, results read from a build's console log), and
+the toolkits they are built from are there for when it does.
 
 ### `ResultParser` — what results look like
 
@@ -520,6 +535,14 @@ on its own; or push them to `POST /api/v1/runs/{id}/results` with the ingest
 token that the export printed (it is shown once, belongs to that export
 dispatch, and is never part of the spec document); or run `runcomposer ingest`
 from cron on your side.
+
+An executor that can reach the API may also report while it works, with
+the same token: `runcomposer_exec.py --callback <results URL> [--push]` sends
+log lines (and pushes the finished bundle with `--push`), and a Robot
+execution started with `--listener runcomposer.sdk.robot.RemoteLiveStatusListener`
+streams which test is running — that one needs runcomposer installed where
+Robot runs ([connector guide
+§3.3](docs/connectors.md#33-dispatchctx--prepare-declare-execute-deliver)).
 
 A worked, runnable version of this whole loop ships in
 [`examples/remote-agent/`](examples/remote-agent). Start from there.

@@ -33,3 +33,27 @@
   Run it from wherever you like: the kit's config is all relative paths, and
   relative in a runcomposer config means "next to the config file" (DESIGN.md
   §8), so every byte of state lands in `examples/remote-agent/state/`.
+
+- **`robot-pool/`, `jenkins/`, `pytest-shop/`** — three of the "four ways to
+  execute" ([connector guide §8](../docs/connectors.md#8-four-ways-to-execute)),
+  each a config file run end to end by `tests/test_four_ways.py`. The
+  `robot-lanes` entry of `robot-pool/config.yaml` and the `jenkins-fanout`
+  entries of `jenkins/config.yaml` (with their callables in
+  `jenkins/shop_job.py`) show the reference runners' switches — configured,
+  not coded ([§9](../docs/connectors.md#9-composing-the-reference-runners)).
+  Try, without running anything:
+
+  ```
+  runcomposer plan Cart --runner robot-lanes --config examples/robot-pool/config.yaml
+  ```
+
+- **`history/durations.csv`** — durations to seed a fresh store with, so the
+  first plan is balanced instead of round-robin:
+
+  ```
+  runcomposer history import examples/history/durations.csv --config …
+  ```
+
+- **`connector-template/`** — a complete, installable connector package with
+  its tests, to copy when you write plugins of your own
+  ([connector guide](../docs/connectors.md)).

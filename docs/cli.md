@@ -24,6 +24,7 @@ runcomposer [--version] [-v] [-h] <command> [options]
 
   running
     run             compose, dispatch to a runner, wait, summarise
+    plan            show what a dispatch would do, without doing it
     dispatch        dispatch a runspec file or a stored run to a runner
     rerun           run a stored run again — all of it, or what failed
     cancel          cancel a run's dispatch in flight
@@ -40,7 +41,8 @@ runcomposer [--version] [-v] [-h] <command> [options]
     quarantine      list, attach, promote or discard quarantined deliveries
     finalize        close a run as it stands
     delete          delete a run, its results and its artifacts
-    gc              apply retention
+    gc              apply retention, expire dispatches that wait too long
+    history         seed and read the duration history plans balance with
 
   operating
     demo            boot the neutral web-shop demo end-to-end
@@ -49,8 +51,9 @@ runcomposer [--version] [-v] [-h] <command> [options]
 ```
 
 The samples on this page were produced by running the commands shown, against
-the bundled web-shop corpus. Run ids, timestamps and tokens are those of that
-session; yours will differ.
+the bundled web-shop corpus and the example Robot Framework suite
+(`examples/robot-shop`). Run ids, timestamps and tokens are those of the
+sessions they were taken in; yours will differ.
 
 ---
 
@@ -169,9 +172,9 @@ With `-o`, the document goes to the file and the commentary stays on stderr.
 
 ### `--json` — one document for a script
 
-`catalog`, `compile`, `run`, `dispatch`, `rerun`, `cancel`, `show`, `runs`,
-`finalize`, `ingest`, `quarantine list|attach|promote`, `gc` and `doctor` take
-`--json`: instead of text they print **one JSON document on stdout** — the same
+`catalog`, `compile`, `run`, `plan`, `dispatch`, `rerun`, `cancel`, `show`,
+`runs`, `finalize`, `ingest`, `quarantine list|attach|promote`, `gc`,
+`history import|durations` and `doctor` take `--json`: instead of text they print **one JSON document on stdout** — the same
 shapes the HTTP API returns ([DESIGN.md](../DESIGN.md) §9). `watch --json`
 prints one JSON object per event, one per line. Exit codes are unchanged.
 
@@ -205,7 +208,9 @@ demo runner: simulating 4 item(s) with seed 'demo'
 …
 ```
 
-`serve` has its own [`--log-level`](#serve) instead.
+`serve` has its own [`--log-level`](#serve) instead. For `doctor` the
+global flag also does what its own `-v` does: print every runner's health
+data ([below](#doctor)).
 
 ---
 
@@ -864,7 +869,9 @@ $ echo $?
 
 What is printed: the runner's **plan** verbatim (whatever it declared at the
 hand-off), the dispatch, the state with the computed completion and verdict
-counts, and one line per shard.
+counts, one line per shard group when the runner grouped its shards, and one
+line per shard. To see the plan *before* anything runs, use
+[`plan`](#plan).
 
 ### The runner executes in this process
 
@@ -912,39 +919,218 @@ robot-pool plan: 13 item(s) × 2 partition(s) → 2 chunk(s)/partition, max_work
   cold start: no duration history — round-robin chunking; balance improves as completed dispatches accrue
   chunk 1: 7 item(s), est 0ms
   chunk 2: 6 item(s), est 0ms
-run 01M7X3JYYQWXFAT46NMDW5FR2D: dispatch 01M7X3JYYSFVE428AG6Z3SVQ6T via 'robot-pool' (4 shard(s))
+  env1: 2 shard(s), 13 item(s)
+  env2: 2 shard(s), 13 item(s)
+run 01M7X9FG96HQ6X5QCDSM6ZNPV4: dispatch 01M7X9FG972JJ5R9FVM0EPR98A via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
-  shard env1-1: PASS — 7 PASS
-  shard env1-2: FAIL — 5 PASS, 1 FAIL
-  shard env2-1: PASS — 7 PASS
-  shard env2-2: FAIL — 5 PASS, 1 FAIL
+  group env1: FAIL — 12 PASS, 1 FAIL
+  group env2: FAIL — 12 PASS, 1 FAIL
+  shard env1-1 [env1]: PASS — 7 PASS
+  shard env1-2 [env1]: FAIL — 5 PASS, 1 FAIL
+  shard env2-1 [env2]: PASS — 7 PASS
+  shard env2-2 [env2]: FAIL — 5 PASS, 1 FAIL
 
 $ runcomposer run Payments --runner robot-pool --param 'partitions=[env1]' --title "Payments on env1" --config shop/config.yaml
 robot-pool plan: 13 item(s) × 1 partition(s) → 4 chunk(s)/partition, max_workers=4
-  duration-balanced chunking: history for 3/13 item(s)
+  duration-balanced chunking: history for 7/13 item(s)
   chunk 1: 4 item(s), est 1ms
-  chunk 2: 3 item(s), est 1ms
-  chunk 3: 3 item(s), est 1ms
-  chunk 4: 3 item(s), est 0ms
-run 01M7X3JZRJ1SBYP197Q03C72J5: dispatch 01M7X3JZRKFNAN66Y5TKVG6GRR via 'robot-pool' (4 shard(s))
+  chunk 2: 3 item(s), est 2ms
+  chunk 3: 3 item(s), est 2ms
+  chunk 4: 3 item(s), est 2ms
+  env1: 4 shard(s), 13 item(s)
+run 01M7X9FS7FZ2S4E71MN2JNCM52: dispatch 01M7X9FS7H6GVWV5EB0R753Z3Y via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 12 PASS, 1 FAIL
-  shard env1-1: PASS — 4 PASS
-  shard env1-2: FAIL — 2 PASS, 1 FAIL
-  shard env1-3: PASS — 3 PASS
-  shard env1-4: PASS — 3 PASS
+  group env1: FAIL — 12 PASS, 1 FAIL
+  shard env1-1 [env1]: PASS — 4 PASS
+  shard env1-2 [env1]: FAIL — 2 PASS, 1 FAIL
+  shard env1-3 [env1]: PASS — 3 PASS
+  shard env1-4 [env1]: PASS — 3 PASS
 
 $ runcomposer run Payments --runner robot-pool --param 'partitions=[env3]' --config shop/config.yaml
 error: parameter 'partitions' must be a list drawn from ['env1', 'env2'], got ['env3']
 ```
 
-Thirteen items on two partitions is twenty-six verdicts, rolled up per shard —
-"green on `env1-1`, red on `env1-2`" is read, not computed. The second run
-plans from the first one's durations. The third never became a run.
+Thirteen items on two partitions is twenty-six verdicts, rolled up per shard
+and per partition — "green on `env1-1`, red on `env1-2`" is read, not
+computed. The second run plans from the first one's durations (a test that
+reported 0 ms counts as unknown, which is why history covers only some of
+the items). The third never became a run.
 
 **`run` leaves nothing behind when nothing ran.** If the runner id or a
 parameter is wrong, the request is refused before a run exists. If the runner
 *refuses* the dispatch (a drift check, a failed readiness hook), the composed
 run is removed again and the command exits `3`.
+
+---
+
+## `plan`
+
+Show what a dispatch would do — which item goes to which shard and group,
+with duration estimates where history allows — without executing, storing or
+triggering anything.
+
+```
+runcomposer plan [FILTER] [--id ITEM_ID ...] [--from-history QUERY]
+                 [--run RUN_ID] --runner RUNNER [--param NAME=VALUE ...]
+                 [--items] [--json] [--config PATH]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `FILTER`, `--id`, `--from-history` | — | A selection, as in [`spec`](#spec). It is composed for the preview and **not stored**. |
+| `--run RUN_ID` | — | Plan a stored run instead of a selection. Without `--param`, the parameters its document carries for the runner are used — the preview of what `dispatch --run` would start. The run is left alone, whatever its state. |
+| `--runner RUNNER` | **required** | A runner id configured under `runners:`. It must offer previews (the `plan` capability; every runner that ships does). |
+| `--param NAME=VALUE` | the runner's defaults | Per-run runner parameter, repeatable; validated as for a dispatch. |
+| `--items` | off | List every item under its shard (default: counts only). |
+| `--json` | off | The API's answer ([DESIGN.md](../DESIGN.md) §9): `refused`, `refusal`, `plan` with `text`, `shards`, `groups`, `notes`, `data`. |
+| `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
+
+A selection and `--run` exclude each other. The answer is the runner's own:
+the plan text a dispatch would record, then the groups and shards, then
+notes. The `robot-lanes` entry of
+[`examples/robot-pool/config.yaml`](../examples/robot-pool/config.yaml)
+distributes a selection over two partitions in pieces of two tests, each
+piece a shard of its own — on a fresh store, round-robin:
+
+```console
+$ runcomposer plan Cart --runner robot-lanes --config robot-pool/config.yaml
+plan for this selection on runner robot-lanes: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False, 'browser': 'firefox'}
+  robot-pool plan: 8 item(s) distributed over 2 of 2 partition(s) — each test once, max_workers=2
+    cold start: no duration history — round-robin chunking; balance improves as completed dispatches accrue
+    chunk 1: 4 item(s), est 0ms
+    chunk 2: 4 item(s), est 0ms
+    at most 2 test(s) per execution, each execution a shard of its own
+    eu: 2 shard(s), 4 item(s)
+    us: 2 shard(s), 4 item(s)
+group eu: 2 shard(s), 4 item(s)
+group us: 2 shard(s), 4 item(s)
+shard eu-01 [eu]: 2 item(s)
+shard eu-02 [eu]: 2 item(s)
+shard us-01 [us]: 2 item(s)
+shard us-02 [us]: 2 item(s)
+note: cold start: no duration history for this selection — the distribution is round-robin until executions (or imported durations) say how long tests take
+nothing was executed, stored or triggered
+```
+
+With durations known — here imported with [`history import`](#history) into
+a fresh copy of the same example — the same preview is balanced, and
+`--items` says which test goes where:
+
+```console
+$ runcomposer history import cart-durations.csv --config robot-pool/config.yaml
+imported 8 duration(s)
+
+$ runcomposer plan Cart --runner robot-lanes --items --config robot-pool/config.yaml
+plan for this selection on runner robot-lanes: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False, 'browser': 'firefox'}
+  robot-pool plan: 8 item(s) distributed over 2 of 2 partition(s) — each test once, max_workers=2
+    duration-balanced chunking: history for 8/8 item(s)
+    chunk 1: 4 item(s), est 29000ms
+    chunk 2: 4 item(s), est 29000ms
+    at most 2 test(s) per execution, each execution a shard of its own
+    eu: 2 shard(s), 4 item(s)
+    us: 2 shard(s), 4 item(s)
+group eu: 2 shard(s), 4 item(s), est 29.0s
+group us: 2 shard(s), 4 item(s), est 29.0s
+shard eu-01 [eu]: 2 item(s), est 20.0s
+    Tests.Cart.Add To Cart Increases The Count
+    Tests.Cart.Two Promo Codes Do Not Stack
+shard eu-02 [eu]: 2 item(s), est 9.0s
+    Tests.Cart.Expired Promo Code Is Refused
+    Tests.Cart.Cart Subtotal Sums Line Items
+shard us-01 [us]: 2 item(s), est 20.0s
+    Tests.Cart.Remove From Cart Decreases The Count
+    Tests.Cart.Promo Code Reduces The Total
+shard us-02 [us]: 2 item(s), est 9.0s
+    Tests.Cart.Free Gift Threshold Is Honoured
+    Tests.Cart.Quantity Cannot Go Below One
+nothing was executed, stored or triggered
+```
+
+**A refusal is an answer** — the one the dispatch would meet — and exits
+`1`. A run composed before the corpus changed, planned by id, before and
+after a test was renamed:
+
+```console
+$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --config robot-pool/config.yaml
+plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
+  robot-pool plan: 8 item(s) × 2 partition(s) → 2 chunk(s)/partition, max_workers=4
+    duration-balanced chunking: history for 8/8 item(s)
+    chunk 1: 4 item(s), est 29000ms
+    chunk 2: 4 item(s), est 29000ms
+    eu: 2 shard(s), 8 item(s)
+    us: 2 shard(s), 8 item(s)
+    failures are re-executed up to 1 time(s)
+group eu: 2 shard(s), 8 item(s), est 58.0s
+group us: 2 shard(s), 8 item(s), est 58.0s
+shard eu-1 [eu]: 4 item(s), est 29.0s
+shard eu-2 [eu]: 4 item(s), est 29.0s
+shard us-1 [us]: 4 item(s), est 29.0s
+shard us-2 [us]: 4 item(s), est 29.0s
+nothing was executed, stored or triggered
+
+$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --config robot-pool/config.yaml
+plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
+would be refused: live corpus snapshot differs from source.snapshot in the spec — refusing (§3.3 drift check; composed sha256:21ee74fed1fcf5e66b71b3d4b6f4845c96d3acb4d3a9bfd4bcb58603bb1e95e4, live sha256:783b37438fc9b1716546e6b0a35420e5474b20fe10ef29f953623509a786cec1). Set the allow_drift parameter to execute the intersection.
+$ echo $?
+1
+
+$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --param allow_drift=true --param 'partitions=[eu]' --config robot-pool/config.yaml
+plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu'], 'allow_drift': True}
+  robot-pool plan: 7 item(s) × 1 partition(s) → 4 chunk(s)/partition, max_workers=4
+    duration-balanced chunking: history for 7/7 item(s)
+    chunk 1: 1 item(s), est 12000ms
+    chunk 2: 2 item(s), est 15000ms
+    chunk 3: 2 item(s), est 14000ms
+    chunk 4: 2 item(s), est 14000ms
+    eu: 4 shard(s), 7 item(s)
+    failures are re-executed up to 1 time(s)
+    drift: 1 planned item(s) no longer exist — reported as SKIP
+group eu: 4 shard(s), 7 item(s), est 55.0s
+shard eu-1 [eu]: 1 item(s), est 12.0s
+shard eu-2 [eu]: 2 item(s), est 15.0s
+shard eu-3 [eu]: 2 item(s), est 14.0s
+shard eu-4 [eu]: 2 item(s), est 14.0s
+shard drift: 1 item(s)
+nothing was executed, stored or triggered
+```
+
+A runner that hands the work to somebody else previews what it would hand
+over: the `jenkins` runner shows the build parameters a trigger would send —
+long values as `‹N bytes›`, the token and the dispatch id as `‹at dispatch›`
+— and its shards as "items decided by the executor", since the job
+distributes them itself. It needs no Jenkins to answer; here the fan-out
+entry of [`examples/jenkins/config.yaml`](../examples/jenkins/config.yaml),
+whose field provider lives next to it (hence `PYTHONPATH`):
+
+```console
+$ PYTHONPATH=jenkins runcomposer plan Payments-Cards --runner jenkins-fanout --param 'regions=[eu,apac]' --config jenkins/config.yaml
+plan for this selection on runner jenkins-fanout: 6 item(s); parameters {'regions': ['eu', 'apac'], 'hold_s': 0}
+  jenkins: job http://localhost:8080/job/runcomposer-fanout would be triggered, 2 shard(s) ['eu', 'apac']; completion by polling the build
+    SPEC_B64 = ‹592 bytes›
+    REGIONS = eu,apac
+    INCLUDE = Payments-Cards
+    DISPATCH_ID = ‹at dispatch›
+    HOLD_SECONDS = 0
+shard eu: items decided by the executor
+shard apac: items decided by the executor
+note: the job distributes the items over its shards itself — a preview cannot say which item goes where
+note: nothing was sent to Jenkins; the token and the dispatch id exist only once the run is dispatched
+nothing was executed, stored or triggered
+```
+
+The `demo` runner says that nothing would run:
+
+```console
+$ runcomposer plan Payments-Refunds --runner demo --config demo/config.yaml
+plan for this selection on runner demo: 4 item(s); parameters {'seed': 'demo'}
+  demo runner: simulating 4 item(s) with seed 'demo'
+shard 1: 4 item(s), est 10.7s
+note: simulated: no test would be executed
+nothing was executed, stored or triggered
+```
+
+A wrong runner id or parameter is an error (exit `1`), exactly as for
+[`run`](#run).
 
 ---
 
@@ -1043,7 +1229,8 @@ state: COMPLETE (PASS) — 8 PASS
 Run a stored run again — all of it, or what did not pass.
 
 ```
-runcomposer rerun RUN_ID [--scope all|failed] [--runner RUNNER] [--param NAME=VALUE ...]
+runcomposer rerun RUN_ID [--scope all|failed] [--title TITLE] [--runner RUNNER]
+                  [--param NAME=VALUE ...]
                   [--no-wait] [--timeout SECONDS] [--json] [--config PATH]
 ```
 
@@ -1051,6 +1238,7 @@ runcomposer rerun RUN_ID [--scope all|failed] [--runner RUNNER] [--param NAME=VA
 |---|---|---|
 | `RUN_ID` | — | The run to run again. |
 | `--scope all\|failed` | `all` | `all`: a new dispatch of the same run. `failed`: a **new run** composed from what did not pass. |
+| `--title TITLE` | the source run's title | With `--scope failed`: the title of the run it composes. |
 | `--runner RUNNER` | the one the run last used | A configured runner id. Required for a run that was only ever exported or ingested. |
 | `--param NAME=VALUE` | those of the last dispatch (same runner) | Per-run runner parameter, repeatable. |
 | `--no-wait`, `--timeout`, `--json` | | As in [`run`](#run). |
@@ -1065,23 +1253,52 @@ state: COMPLETE (FAIL) — 11 PASS, 1 FAIL, 1 SKIP
 ```
 
 Same run id, a second dispatch. `--scope failed` is a different thing — a
-different item set is a different run:
+different item set is a different run. In the demo workspace
+(`runcomposer demo --workspace demo`), against a "Checkout regression" run
+composed there with one failure:
 
 ```console
-$ runcomposer rerun 01M7X3BQGZF71M0YWCBJ9W0EJD --scope failed --param seed=retry-1
-rerun of 01M7X3BQGZF71M0YWCBJ9W0EJD: composed run 01M7X3BS5MNB5XF32BX5X497NQ
+$ runcomposer rerun 01M7X98NN8478Z22NS2YQ0BKKY --scope failed --param seed=retry-1 --config demo/config.yaml
+rerun of 01M7X98NN8478Z22NS2YQ0BKKY: composed run 01M7X98WYBW7Z1NGPE39YXJM18
 demo runner: simulating 1 item(s) with seed 'retry-1'
-run 01M7X3BS5MNB5XF32BX5X497NQ: dispatch 01M7X3BS5NGCRWSA2688WRZAAR via 'demo' (1 shard(s))
+run 01M7X98WYBW7Z1NGPE39YXJM18: dispatch 01M7X98WYCBQVEQN21W3Z1EWQ6 via 'demo' (1 shard(s))
 state: COMPLETE (PASS) — 1 PASS
   shard 1: PASS — 1 PASS
+
+$ runcomposer rerun 01M7X98NN8478Z22NS2YQ0BKKY --scope failed --title "Checkout failures, second look" --config demo/config.yaml
+rerun of 01M7X98NN8478Z22NS2YQ0BKKY: composed run 01M7X98X3WADVQC9YYZTY5PW6A
+demo runner: simulating 1 item(s) with seed 'demo'
+run 01M7X98X3WADVQC9YYZTY5PW6A: dispatch 01M7X98X3XDH3JPD10S6VJCNR0 via 'demo' (1 shard(s))
+state: COMPLETE (FAIL) — 1 FAIL
+  shard 1: FAIL — 1 FAIL
+
+$ runcomposer runs --config demo/config.yaml --limit 3
+RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
+01M7X98X3WADVQC9YYZTY5PW6A  COMPLETE          FAIL        demo          2026-11-20T20:09:55Z  Checkout failures, second look
+01M7X98WYBW7Z1NGPE39YXJM18  COMPLETE          PASS        demo          2026-11-20T20:09:55Z  Checkout regression
+01M7X98NN8478Z22NS2YQ0BKKY  COMPLETE          FAIL        demo          2026-11-20T20:09:47Z  Checkout regression
+# 3 of 8 run(s) — page with --limit / --offset
 ```
 
 "Failed" here means everything that is not a pass or a skip: `FAIL`, `ERROR`
-and `MISSING` (planned, never reported). The new run is titled
-`Rerun of failures: <title>`, carries the original's labels — so it joins the
-same stream — and records `derived_from` provenance naming the run it came
-from. `--scope failed` needs a run that is over; the exit code is the *new*
-run's.
+and `MISSING` (planned, never reported). The new run keeps the original's
+title unless `--title` gives it another, carries the original's labels — so
+it joins the same stream — and says what it is as data rather than in its
+title: origin `rerun`, `derived_from` provenance naming the run it came
+from, and `rerun_of` in its detail:
+
+```console
+$ runcomposer show 01M7X98WYBW7Z1NGPE39YXJM18 --json --config demo/config.yaml | grep -A3 rerun_of
+  "rerun_of": {
+    "run_id": "01M7X98NN8478Z22NS2YQ0BKKY",
+    "scope": "failed"
+  },
+```
+
+Without `--param`, a rerun takes the parameters of the source run's last
+dispatch to the same runner — which is why the second rerun simulated with
+the seed `demo` again. `--scope failed` needs a run that is over; the exit
+code is the *new* run's.
 
 ---
 
@@ -1116,25 +1333,30 @@ A run started through the server with a slow runner, cancelled from the CLI:
 $ curl -s -X POST localhost:8200/api/v1/runs -H 'Content-Type: application/json' \
       -d '{"selection": {"tag_filter": "Checkout"}, "title": "Slow checkout", "dispatch": {"runner": "demo-slow"}}'
 …
-$ runcomposer show 01M7X3H2HEJQN3WD6176WB48R8
-run 01M7X3H2HEJQN3WD6176WB48R8  Slow checkout
+$ runcomposer show 01M7X9DZHKZD64WRKBQXF0XC7J --config envs/staging/config.yaml
+run 01M7X9DZHKZD64WRKBQXF0XC7J  Slow checkout
 state: RUNNING — no verdicts
-planned: 13 item(s); created 2026-11-20T18:29:31Z; origin api; labels {}
-dispatch 01M7X3H2HFPK2YAWR2DDNW98A9  demo-slow  RUNNING  no verdicts
+planned: 13 item(s); created 2026-11-20T20:12:41Z; origin api; labels {}
+dispatch 01M7X9DZHN62WK74DM0JJ8MNC8  demo-slow  RUNNING  no verdicts
   shard 1: outstanding — no verdicts
+  running now: 1 item(s)
+  live: 4 item(s) reported so far by shards still executing
 
-$ runcomposer cancel 01M7X3H2HEJQN3WD6176WB48R8
-run 01M7X3H2HEJQN3WD6176WB48R8: cancellation requested for dispatch 01M7X3H2HFPK2YAWR2DDNW98A9 (RUNNING) — the process executing it will stop it; follow with `runcomposer watch 01M7X3H2HEJQN3WD6176WB48R8`
+$ runcomposer cancel 01M7X9DZHKZD64WRKBQXF0XC7J --config envs/staging/config.yaml
+run 01M7X9DZHKZD64WRKBQXF0XC7J: cancellation requested for dispatch 01M7X9DZHN62WK74DM0JJ8MNC8 (RUNNING) — the process executing it will stop it; follow with `runcomposer watch 01M7X9DZHKZD64WRKBQXF0XC7J`
 
-$ runcomposer watch 01M7X3H2HEJQN3WD6176WB48R8
-2026-11-20T18:29:31Z  #57   run.composed
-2026-11-20T18:29:31Z  #58   run.dispatched  state=DISPATCHED
-2026-11-20T18:29:31Z  #59   run.running  state=RUNNING
-2026-11-20T18:29:32Z  #60   run.cancel_requested  state=RUNNING
-2026-11-20T18:29:32Z  #61   run.cancelled  state=CANCELLED  error=cancelled on request  13 MISSING
+$ runcomposer watch 01M7X9DZHKZD64WRKBQXF0XC7J --config envs/staging/config.yaml
+2026-11-20T20:12:41Z  #1    run.composed
+2026-11-20T20:12:41Z  #2    run.dispatched  state=DISPATCHED
+2026-11-20T20:12:41Z  #3    run.running  state=RUNNING
+2026-11-20T20:12:45Z  #4    run.cancel_requested  state=RUNNING
+2026-11-20T20:12:46Z  #5    run.cancelled  state=CANCELLED  error=cancelled on request  13 MISSING
 $ echo $?
 3
 ```
+
+(The `demo-slow` runner takes a second per item and streams each one's
+status while it goes: one item `RUNNING`, three already reported.)
 
 An export nobody will answer, cancelled at once:
 
@@ -1147,13 +1369,45 @@ run 01M7X3BAYWFJ8T23DSVVT3NNV8: dispatch 01M7X3BAZ2NSV8BDFAGV7KYDDQ CANCELLED
 exits `1`:
 
 ```console
-$ runcomposer cancel 01M7X3H2HEJQN3WD6176WB48R8
-error: run 01M7X3H2HEJQN3WD6176WB48R8 has nothing in flight to cancel (state CANCELLED)
+$ runcomposer cancel 01M7X9DZHKZD64WRKBQXF0XC7J --config envs/staging/config.yaml
+error: run 01M7X9DZHKZD64WRKBQXF0XC7J has nothing in flight to cancel (state CANCELLED)
 ```
 
 Whatever was delivered before the cancellation is kept; items that never
-reported are `MISSING`. To cancel a run this very shell is executing, press
-`Ctrl-C`.
+reported are `MISSING` — also the three seen passing live, since no result
+was delivered for them. The run says both:
+
+```console
+$ runcomposer show 01M7X9DZHKZD64WRKBQXF0XC7J --config envs/staging/config.yaml
+run 01M7X9DZHKZD64WRKBQXF0XC7J  Slow checkout
+state: CANCELLED — 13 MISSING
+planned: 13 item(s); created 2026-11-20T20:12:41Z; origin api; labels {}
+dispatch 01M7X9DZHN62WK74DM0JJ8MNC8  demo-slow  CANCELLED  13 MISSING
+  error: cancelled on request
+  shard 1: outstanding — 13 MISSING
+  last live status of shards that never delivered: 4 item(s)
+
+$ curl -s localhost:8200/api/v1/runs/01M7X9DZHKZD64WRKBQXF0XC7J | python3 -m json.tool | grep -m1 -B7 -A6 '"last_live": {'
+            "item_id": "Shop.Checkout.Express.T001",
+            "status": "MISSING",
+            "duration_ms": 0,
+            "message": "not-reported",
+            "shard": "1",
+            "attempt": 1,
+            "live": false,
+            "last_live": {
+                "status": "PASS",
+                "duration_ms": 3277,
+                "message": "",
+                "shard": "1"
+            }
+        },
+```
+
+Every `MISSING` row of a run detail carries `last_live` — what was last
+streamed for that item, or `null` — so "never started" and "ran, result not
+delivered" can be told apart without matching rows up. To cancel a run this
+very shell is executing, press `Ctrl-C`.
 
 ---
 
@@ -1214,29 +1468,38 @@ One run in full.
 runcomposer show RUN_ID [--json] [--config PATH]
 ```
 
-The headline, every dispatch with its own state and counts, the per-shard
-roll-up of the latest dispatch, and the artifacts recorded for the run:
+The headline, every dispatch with its own state and counts, the roll-up per
+shard group and per shard of the latest dispatch, and the artifacts recorded
+for the run:
 
 ```console
-$ runcomposer show 01M7X3JYYQWXFAT46NMDW5FR2D --config shop/config.yaml
-run 01M7X3JYYQWXFAT46NMDW5FR2D  Payments on both environments
+$ runcomposer show 01M7X9FG96HQ6X5QCDSM6ZNPV4 --config shop/config.yaml
+run 01M7X9FG96HQ6X5QCDSM6ZNPV4  Payments on both environments
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
-planned: 13 item(s); created 2026-11-20T18:30:33Z; origin cli; labels {}
-dispatch 01M7X3JYYSFVE428AG6Z3SVQ6T  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
-  shard env1-1: PASS — 7 PASS
-  shard env1-2: FAIL — 5 PASS, 1 FAIL
-  shard env2-1: PASS — 7 PASS
-  shard env2-2: FAIL — 5 PASS, 1 FAIL
-  artifact log.html (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/log.html
-  artifact report.html (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/report.html
-  artifact output.xml (env1-1): /artifacts/01M7X3JYYQWXFAT46NMDW5FR2D/01M7X3JYYSFVE428AG6Z3SVQ6T/env1-1/output.xml
+planned: 13 item(s); created 2026-11-20T20:13:31Z; origin cli; labels {}
+dispatch 01M7X9FG972JJ5R9FVM0EPR98A  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
+  group env1: FAIL — 12 PASS, 1 FAIL
+  group env2: FAIL — 12 PASS, 1 FAIL
+  shard env1-1 [env1]: PASS — 7 PASS
+  shard env1-2 [env1]: FAIL — 5 PASS, 1 FAIL
+  shard env2-1 [env2]: PASS — 7 PASS
+  shard env2-2 [env2]: FAIL — 5 PASS, 1 FAIL
+  artifact log.html (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/log.html
+  artifact report.html (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/report.html
+  artifact output.xml (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/output.xml
 …
 ```
 
-An artifact line is the path under which `runcomposer serve` serves the file
-(`http://<host>:<port>/artifacts/…`); the file itself is under
-`core.artifact_dir` with the same relative path. An artifact that is a remote
-URL (a CI build link) is printed as that URL.
+A group line appears for a runner that grouped its shards (`robot-pool`
+groups by partition); its result is `n/m shard(s) delivered` until every
+shard of the group is in. An artifact line is the path under which
+`runcomposer serve` serves the file (`http://<host>:<port>/artifacts/…`); the
+file itself is under `core.artifact_dir` with the same relative path. Only
+recorded files are served. A recorded *directory* — `robot-pool` records
+each shard's directory as `files (<shard>)`, so that what a log refers to is
+servable too — is printed as its path on disk, since it is not a document to
+open. An artifact that is a remote URL (a CI build link) is printed as that
+URL.
 
 The counts are over **effective** verdicts — the last attempt of each item per
 shard — and include `MISSING`, the status of an item that was planned and
@@ -1257,10 +1520,13 @@ dispatch 01M7X3DD0GCKQGKG8PT3J34RHS  export  COMPLETE (INCOMPLETE)  3 PASS, 1 MI
 run, not from the shard's own report — an export does not say which shard
 carries which item. A runner that declares its shards' items, as `robot-pool`
 does, shows the missing item under its shard.) While shards are still
-executing, a `live:` line counts the items they have reported so far.
-`--json` prints everything the API's
-run detail has: verdicts with shard, attempt and duration, deliveries, events,
-and the selection the run was composed from.
+executing, `running now:` counts the items executing at this moment and
+`live:` the items they have reported so far; for a run that ended without
+those shards delivering, a last line counts what they had streamed
+([`cancel`](#cancel) shows both). `--json` prints everything the API's run
+detail has: verdicts with shard, attempt and duration (`last_live` on a
+`MISSING` row), groups, `live_summary`, `rerun_of`, deliveries, events, and
+the selection the run was composed from.
 
 ---
 
@@ -1287,11 +1553,19 @@ runcomposer runs [--state STATE] [--label KEY=VALUE ...] [-q TEXT]
 | `--json` | off | `{"runs": […], "total", "limit", "offset"}` — each row with verdict counts, planned count, duration and the latest dispatch's mode. |
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
+In the demo workspace of the [`rerun`](#rerun) samples — the seeded nightly
+runs, a "Checkout regression" and the two reruns of its failures, which
+carry its labels:
+
 ```console
-$ runcomposer runs --state COMPLETE --label suite=nightly
+$ runcomposer runs --state COMPLETE --label suite=nightly --config demo/config.yaml
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7X3BS5MNB5XF32BX5X497NQ  COMPLETE          PASS        demo          2026-11-20T18:26:38Z  Rerun of failures: Checkout regression
-01M7X3BQGZF71M0YWCBJ9W0EJD  COMPLETE          FAIL        demo          2026-11-20T18:26:36Z  Checkout regression
+01M7X98X3WADVQC9YYZTY5PW6A  COMPLETE          FAIL        demo          2026-11-20T20:09:55Z  Checkout failures, second look
+01M7X98WYBW7Z1NGPE39YXJM18  COMPLETE          PASS        demo          2026-11-20T20:09:55Z  Checkout regression
+01M7X98NN8478Z22NS2YQ0BKKY  COMPLETE          FAIL        demo          2026-11-20T20:09:47Z  Checkout regression
+01M7X96VB481BVG60R976QG44Z  COMPLETE          FAIL        demo          2026-11-20T20:08:48Z  Nightly regression #3
+01M7X96VB101N9E42251J59VJC  COMPLETE          FAIL        demo          2026-11-20T20:08:48Z  Nightly regression #2
+01M7X96VAZFA7RMHP5YPCG3HJZ  COMPLETE          FAIL        demo          2026-11-20T20:08:48Z  Nightly regression #1
 ```
 
 `STATE` is the lifecycle state; `RESULT` is the computed completion of a
@@ -1301,10 +1575,10 @@ a run nothing was dispatched for). Filters combine, the window is on
 **creation** time, and times may carry an offset:
 
 ```console
-$ runcomposer runs -q checkout --limit 2
+$ runcomposer runs -q checkout --limit 2 --config demo/config.yaml
 RUN ID                      STATE             RESULT      MODE          CREATED               TITLE
-01M7X3BS5MNB5XF32BX5X497NQ  COMPLETE          PASS        demo          2026-11-20T18:26:38Z  Rerun of failures: Checkout regression
-01M7X3BQGZF71M0YWCBJ9W0EJD  COMPLETE          FAIL        demo          2026-11-20T18:26:36Z  Checkout regression
+01M7X98X3WADVQC9YYZTY5PW6A  COMPLETE          FAIL        demo          2026-11-20T20:09:55Z  Checkout failures, second look
+01M7X98WYBW7Z1NGPE39YXJM18  COMPLETE          PASS        demo          2026-11-20T20:09:55Z  Checkout regression
 # 2 of 3 run(s) — page with --limit / --offset
 
 $ runcomposer runs --since 2026-11-20T00:00:00Z --until 2026-11-22T00:00:00+01:00 --limit 2 --offset 1
@@ -1333,7 +1607,8 @@ $ runcomposer runs --failed-in latest --label suite=nightly
 # 0 item(s) FAILED in run 01M7X3BA2EBNAEW1XZXKWXS8JD (scope: {'suite': 'nightly'})
 ```
 
-"Latest" means latest *completed*: in this store that is "Nightly payments",
+"Latest" means latest *completed*: in the store most samples on this page
+use (`envs/staging`) that is "Nightly payments",
 whose exported results were ingested after the other nightly runs finished
 — and nothing failed in it. To ask about the "Checkout regression" run
 instead, name it. Piping means dropping the header:
@@ -1716,6 +1991,146 @@ artifacts: removed 0 run director(y/ies)
 - **The quarantine** is trimmed to `quarantine_max` (it is also bounded
   whenever something is added).
 - **Processed inbox bundles** older than `max_age_days` are removed.
+- **Private directories** (`core.private_dir`) of runs that are gone are
+  swept, like their artifact directories.
+- **Dispatches waiting for results too long** are expired, when
+  `core.dispatch.awaiting_timeout_s` is set (default: never). `serve` does
+  this on its own; `gc` does it once, for a deployment without a server.
+
+An export nobody answered, with `awaiting_timeout_s: 2` in the config:
+
+```console
+$ runcomposer spec Payments-Refunds --title "Refunds, handed out" --format json -o refunds.json --export --token-file refunds.token --config config.yaml
+spec written to refunds.json
+run: 01M7X9ASYAC0FBX60KCDFR8SDN (state COMPOSED)
+export dispatch: 01M7X9ASYGJDVCJ94X0Q745402 (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: 2b77e6d61f13029877940b0f05065810535f14990a979e2380116ec9ce9ad1fc
+ingest token written to refunds.token
+
+$ runcomposer gc --config config.yaml           # a few seconds later
+WARNING runcomposer.service: dispatch 01M7X9ASYGJDVCJ94X0Q745402 of run 01M7X9ASYAC0FBX60KCDFR8SDN expired while awaiting results
+quarantine: removed 0 entr(y/ies) beyond the configured bound
+inbox/processed: removed 0 expired bundle(s)
+store: pruned 0 run(s) past retention
+artifacts: removed 0 run director(y/ies)
+dispatches: expired 1 that waited for results longer than core.dispatch.awaiting_timeout_s
+
+$ runcomposer show 01M7X9ASYAC0FBX60KCDFR8SDN --config config.yaml
+run 01M7X9ASYAC0FBX60KCDFR8SDN  Refunds, handed out
+state: FAILED — 4 MISSING
+planned: 4 item(s); created 2026-11-20T20:10:57Z; origin cli; labels {}
+dispatch 01M7X9ASYGJDVCJ94X0Q745402  export  FAILED  4 MISSING
+  error: expired: no results for 4s, longer than core.dispatch.awaiting_timeout_s (2s) — outstanding shard(s): ['1']. Results that still arrive are taken in and may complete it
+  shard 1: outstanding — no verdicts
+  reported by no shard: 4 MISSING
+```
+
+The `run.failed` event carries `expired`, `waited_s`,
+`awaiting_timeout_s` and `outstanding_shards`. `FAILED` is not final:
+results that arrive afterwards are taken in, and complete the dispatch —
+here, the bundle `runcomposer-exec` wrote from `refunds.json`:
+
+```console
+$ runcomposer ingest results --config config.yaml
+01M7X9ASYAC0FBX60KCDFR8SDN shard 1: delivery recorded (4 verdict(s))
+run state: COMPLETE (PASS)
+```
+
+The clock restarts with every delivery, so a job that reports shard after
+shard is not expired between two of them. `--json` reports the expired
+dispatches under `expired_dispatches`.
+
+---
+
+## `history`
+
+The duration history runners balance their plans with: seed it from a file,
+and read it as a planner sees it.
+
+```
+runcomposer history import FILE [--label KEY=VALUE ...] [--json] [--config PATH]
+runcomposer history durations [--label KEY=VALUE ...] [--last N] [--status STATUS ...]
+                              [--json] [--config PATH]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `FILE` | — | `import`: a CSV file whose header names an `item` column and a `duration_ms` (or `duration_s`) column — other columns are ignored — or JSON: `{"durations": {"<item>": <ms>, …}}`, or a list of `{"item": …, "duration_ms": …}`. `item` is an item id or any native name the catalog resolves. |
+| `--label KEY=VALUE` | none | `import`: store the seeds under these labels, as a run's labels scope its history — give what your runner's `history_selector` asks for. `durations`: only history of runs (and seeds) carrying them. Repeatable. |
+| `--last N` | `5` | `durations`: the mean over the last N dispatches that delivered. |
+| `--status STATUS` | any | `durations`: only executions that ended with this status, repeatable — `--status PASS` is what a runner with `history_statuses: [PASS]` sees. |
+| `--json` | off | `import`: `{imported, unknown, without_duration, labels}`. `durations`: `{durations, items}`. |
+| `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
+
+A fresh store knows nothing about durations, so the first plans are
+round-robin. A deployment that already knows how long its tests take — from
+a CI server's reports, from an earlier tool — can start balanced instead.
+The durations of the [`plan`](#plan) sample:
+
+```console
+$ cat cart-durations.csv
+item,duration_s
+Tests.Cart.Add To Cart Increases The Count,12
+Tests.Cart.Quantity Cannot Go Below One,4
+Tests.Cart.Promo Code Reduces The Total,9
+Tests.Cart.Two Promo Codes Do Not Stack,8
+Tests.Cart.Remove From Cart Decreases The Count,11
+Tests.Cart.Cart Subtotal Sums Line Items,3
+Tests.Cart.Expired Promo Code Is Refused,6
+Tests.Cart.Free Gift Threshold Is Honoured,5
+
+$ runcomposer history import cart-durations.csv --config robot-pool/config.yaml
+imported 8 duration(s)
+```
+
+Every name goes through the catalog. What it does not know is reported and
+not stored, and a duration of 0 is skipped — 0 means "not known", to the
+store and to the planner alike. A file that imports nothing it was asked to
+exits `1`. The sample file of the example world, imported into a freshly
+seeded demo workspace (two of its names are not in the demo corpus), and a
+file with nothing usable in it:
+
+```console
+$ runcomposer history import durations.csv --config demo/config.yaml
+imported 7 duration(s)
+  not in the catalog, skipped: Shop.Checkout.Cart.T001
+  not in the catalog, skipped: Shop.Checkout.Cart.T002
+
+$ runcomposer history import unknown.csv --config demo/config.yaml
+imported 0 duration(s)
+  skipped 1 with a duration of 0 (0 means: not known)
+  not in the catalog, skipped: Shop.No.Such.T999
+$ echo $?
+1
+```
+
+**A seed answers only for an item nothing was measured for** — the first
+real execution takes over, and a seed never dilutes a measurement.
+`durations` prints the means as a planner sees them, longest first:
+
+```console
+$ runcomposer history durations --config demo/config.yaml | head -4
+      3969 ms  Shop.Payments.Wallets.T002
+      3897 ms  Shop.Payments.Invoicing.T003
+      3880 ms  Shop.Auth.Login.T002
+      3861 ms  Shop.Catalog.Search.T005
+```
+
+With `--status`, "measured" means measured with that status. In the demo's
+history `Shop.Payments.Cards.T001` has one execution, and it failed: so its
+measured mean answers without a filter, and restricted to passes its seed
+does (6100 ms in `durations.csv`):
+
+```console
+$ runcomposer history durations --config demo/config.yaml | grep Cards.T001
+      3016 ms  Shop.Payments.Cards.T001
+
+$ runcomposer history durations --status PASS --config demo/config.yaml | grep Cards.T001
+      6100 ms  Shop.Payments.Cards.T001
+```
+
+The file is plain on purpose: a CSV export of any report with a test name
+and a time is enough. `examples/history/durations.csv` is the sample.
 
 ---
 
@@ -1725,8 +2140,14 @@ Everything that can be wrong with a deployment before a run is started, in one
 report.
 
 ```
-runcomposer doctor [--json] [--config PATH]
+runcomposer doctor [-v] [--json] [--config PATH]
 ```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-v`, `--details` | off | Also print every runner's health data — what its checks found. The global `-v` does the same. |
+| `--json` | off | [One JSON document](#--json--one-document-for-a-script); it always carries the health data. |
+| `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
 ```console
 $ runcomposer doctor --config shop/config.yaml
@@ -1783,6 +2204,61 @@ What it checks, in order:
 It also performs the one repair that is always right: a dispatch that a
 process which no longer exists left `DISPATCHED` or `RUNNING` is marked
 `STALE` (as `serve` does at startup), and reported.
+
+### `-v` — what the runners' health checks found
+
+A runner's health carries data of its own, shown verbatim: `robot-pool` its
+Robot Framework version, workers, suite roots and partitions; `jenkins` the
+server version, the job URL and a list of checks, which reads as a
+checklist (`[ok  ] server reachable`, `[FAIL] job … readable`). The
+[`examples/robot-pool`](../examples/robot-pool/config.yaml) config, which
+configures the plugin twice:
+
+```console
+$ runcomposer doctor -v --config robot-pool/config.yaml
+runcomposer 0.2.0
+config: robot-pool/config.yaml
+installed plugins:
+…
+configured (what this deployment loads):
+  store      sqlite                 runcomposer.plugins.sqlite_store:SqliteRunStore  runcomposer 0.2.0
+  sources    robot-shop             runcomposer.plugins.robot_source:RobotFrameworkSource  runcomposer 0.2.0
+  runners    robot-pool             runcomposer.plugins.robot_pool:RobotPoolRunner  runcomposer 0.2.0
+  runners    robot-lanes            runcomposer.plugins.robot_pool:RobotPoolRunner  runcomposer 0.2.0
+catalog: 58 items, 50 tags, sources ['robot-shop'], snapshot sha256:21ee74fed1fc…
+runners:
+  robot-pool (robot-pool): ok — Robot Framework 7.5.1
+      robot_version: 7.5.1
+      max_workers: 4
+      suite_roots:
+        - robot-pool/../robot-shop/tests
+      partitions:
+        - eu
+        - us
+      partition_mode: each
+      --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
+      --param allow_drift=<boolean>  default False
+  robot-lanes (robot-pool): ok — Robot Framework 7.5.1
+      robot_version: 7.5.1
+      max_workers: 2
+      suite_roots:
+        - robot-pool/../robot-shop/tests
+      partitions:
+        - eu
+        - us
+      partition_mode: split
+      --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
+      --param allow_drift=<boolean>  default False
+      --param variables=<mapping>  default None
+      --param browser=<choice> ['firefox', 'chromium']  default 'firefox'
+taxonomy: bundled demo taxonomy, 11 leaf pattern(s); 39 unclaimed tag(s), 0 dead leaf/leaves
+
+no problems found
+```
+
+The `--param` lines name every kind a runner may declare — `string`, `text`,
+`integer`, `boolean`, `choice`, `multi_choice`, `mapping`; a `mapping` is
+given as YAML: `--param 'variables={LOCALE: de}'`.
 
 `doctor` exits `1` when it found a problem, with the list at the end:
 
@@ -1851,6 +2327,9 @@ While it runs, the server:
   empty `.done` file, otherwise once nothing in it has changed for
   `core.ingestion.settle_s` (default: two poll intervals). Ingested or
   quarantined, the bundle is then moved to `processed/`;
+- **expires dispatches that wait for results too long**, when
+  `core.dispatch.awaiting_timeout_s` is set ([`gc`](#gc) shows what that
+  looks like);
 - **logs** one line per run event (stderr), next to the HTTP access log:
 
   ```
@@ -1866,7 +2345,9 @@ runner, so the UI is never empty on a fresh install:
 $ curl -s localhost:8100/api/v1/health
 {"status":"ok","version":"0.2.0"}
 $ curl -s localhost:8100/api/v1/runners
-[{"id":"demo","plugin":"demo","title":"Demo (simulated)","description":"Simulates an execution: no test is run, verdicts are derived from a seed.","capabilities":["simulated","live_status","cancel"],"result_format":"runcomposer-verdicts","parameters":[{"name":"seed","kind":"string","label":"Seed","help":"Same seed, same simulated verdicts; change it to see results flip.","default":"demo","choices":[],"required":false}],"health":{"status":"ok","detail":"simulated — always available","data":{}}}]
+[{"id":"demo","plugin":"demo","title":"Demo (simulated)","description":"Simulates an execution: no test is run, verdicts are derived from a seed.","capabilities":["simulated","live_status","cancel","plan"],"result_format":"runcomposer-verdicts","parameters":[{"name":"seed","kind":"string","label":"Seed","help":"Same seed, same simulated verdicts; change it to see results flip.","default":"demo","choices":[],"required":false,"pattern":null}],"health":{"status":"ok","detail":"simulated — always available","data":{}}}]
+$ curl -s localhost:8100/api/v1/presets
+{"presets":[],"default_filter":null,"quick_filters":[]}
 ```
 
 `Ctrl-C` shuts down in order: dispatches still executing are cancelled, the
@@ -1874,10 +2355,11 @@ inbox watcher stops. A server that is *killed* leaves its dispatches to the
 next startup's reconciliation (`STALE`).
 
 `--host 0.0.0.0` is what you need when something outside the machine has to
-reach the push endpoint — a CI job posting results back, for instance. There
-is no authentication in front of the API beyond the per-dispatch ingest token
-on the push endpoint ([DESIGN.md](../DESIGN.md) §13); put a reverse proxy in
-front of anything public.
+reach the push endpoints — a CI job posting results or progress back, for
+instance. There is no authentication in front of the API beyond the
+per-dispatch ingest token on the push endpoints (`…/results`, `…/live`,
+`…/log`; [DESIGN.md](../DESIGN.md) §5, §13); put a reverse proxy in front of
+anything public.
 
 ---
 
@@ -1892,6 +2374,7 @@ wherever your tests actually live. Vendorable by copying
 runcomposer-exec SPEC (--simulate | --command TEMPLATE)
                  [--out DIR] [--dispatch ID] [--shard LABEL] [--seed SEED]
                  [--ok-exit-codes CODES]
+                 [--callback URL [--token TOKEN] [--push]]
 ```
 
 | Flag | Default | Meaning |
@@ -1904,6 +2387,9 @@ runcomposer-exec SPEC (--simulate | --command TEMPLATE)
 | `--shard LABEL` | none | Shard label to record in the marker. |
 | `--seed SEED` | `exec` | Seed for `--simulate`. |
 | `--ok-exit-codes CODES` | `0` | Exit codes of `--command` after which the bundle is complete: `0`, `0,1`, `0-249`. |
+| `--callback URL` | none | The run's results URL (`…/api/v1/runs/<id>/results`, as a runner hands it out): report log lines — and with `--simulate` the live status of every item — while executing. [Below](#talking-back----callback-and---push). |
+| `--token TOKEN` | `$RUNCOMPOSER_INGEST_TOKEN` | The dispatch's ingest token, for `--callback` and `--push`. |
+| `--push` | off | Upload the finished bundle to `--callback` (needs it). Exit `4` when the push is refused or cannot be delivered. |
 
 It executes exactly `selection.materialized.item_ids` and refuses a spec
 without one; it refuses any `runspec` MAJOR other than `1`. On success it
@@ -1989,6 +2475,63 @@ $ echo $?
 With the marker written, `runcomposer-exec` exits `0` — whether the tests
 passed is in the bundle, and becomes the run's completion when it is ingested.
 
+### Talking back — `--callback` and `--push`
+
+Optional, and still nothing but the stdlib. With `--callback` and the
+dispatch's ingest token the consumer reports to a running server while it
+works — a log line when it starts and, after a `--command`, one with the
+command's exit code; with `--simulate` also each item's live status
+(`RUNNING`, then how it ended) — through the token-guarded progress
+endpoints ([DESIGN.md](../DESIGN.md) §5). With `--push` it then uploads the
+finished bundle to the results endpoint, so no other transport is needed.
+The samples use the single file as vendored — a copy of
+`src/runcomposer_exec.py` next to the spec — against a `runcomposer serve`
+on port 8237:
+
+```console
+$ runcomposer spec Payments-Wallets --title "Wallets, pushed back" --format json -o wallets.json --export --token-file wallets.token --config config.yaml
+spec written to wallets.json
+run: 01M7X9BPCTDN44ET1ZPG9YKM14 (state COMPOSED)
+export dispatch: 01M7X9BPD1R6V42EB24Z365MSF (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: 3f6f19aa6d96bfd76411e7278fe47bdcebc0e14386dfbba9dcecadaf1ca19301
+ingest token written to wallets.token
+
+$ python3 runcomposer_exec.py wallets.json --out wallets --simulate --dispatch 01M7X9BPD1R6V42EB24Z365MSF \
+      --callback http://127.0.0.1:8237/api/v1/runs/01M7X9BPCTDN44ET1ZPG9YKM14/results --token "$(cat wallets.token)" --push
+runcomposer-exec: simulated 4 items (4 PASS)
+runcomposer-exec: bundle ready at wallets (marker: runcomposer_run.json)
+runcomposer-exec: bundle pushed: {"run_id":"01M7X9BPCTDN44ET1ZPG9YKM14","dispatch_id":"01M7X9BPD1R6V42EB24Z365MSF","shard":"1","outcome":"new","verdict_count":4,"run_state":"COMPLETE","completion":"PASS","warnings":[]}
+
+$ runcomposer watch 01M7X9BPCTDN44ET1ZPG9YKM14 --no-follow --config config.yaml
+2026-11-20T20:11:27Z  #1    run.composed
+2026-11-20T20:11:27Z  #2    run.awaiting_results  state=AWAITING_RESULTS
+2026-11-20T20:11:53Z  #3    log  message=runcomposer-exec: shard 1: 4 item(s) to execute
+2026-11-20T20:11:53Z  #4    delivery.recorded  shard=1  outcome=new
+2026-11-20T20:11:53Z  #5    run.completed  state=COMPLETE  completion=PASS  4 PASS
+```
+
+Progress is best-effort: a report that cannot be delivered is said once and
+dropped, and the execution goes on. The push is not — a push that is refused
+(or cannot be delivered) exits `4`, with the bundle and its marker left on
+disk for another transport. Here with the token of another dispatch:
+
+```console
+$ python3 runcomposer_exec.py invoicing.json --out invoicing --simulate \
+      --callback http://127.0.0.1:8237/api/v1/runs/01M7X9CP9ECYE6T9S4RP8AE7MM/results --token "$(cat wallets.token)" --push
+runcomposer-exec: progress could not be reported (HTTP Error 403: Forbidden)
+runcomposer-exec: simulated 3 items (3 PASS)
+runcomposer-exec: bundle ready at invoicing (marker: runcomposer_run.json)
+runcomposer-exec: the push was refused (403): {"detail":"the ingest token does not match this run","code":"token-rejected"}
+$ echo $?
+4
+```
+
+So the exit codes of `runcomposer-exec` are: `0` the bundle is complete
+(and pushed, with `--push`); the command's own exit code (or `1`) when the
+command failed and no marker was written; `4` the push was refused or could
+not be delivered; `2` for an unknown or missing flag. A spec it cannot
+execute, or `--push` without `--callback`, exits `1` with an `error:` line.
+
 ---
 
 ## The export loop, end to end
@@ -2020,6 +2563,8 @@ runcomposer export <run-id> --format ctrf --config envs/staging/config.yaml
 Step 4 has two other spellings that need no command at all: copy the bundle
 into the inbox of a running `runcomposer serve` (the marker tells it the
 bundle is complete), or have the executing side `POST` it to
-`/api/v1/runs/<run-id>/results` with the ingest token step 2 printed. And when
+`/api/v1/runs/<run-id>/results` with the ingest token step 2 printed —
+which is what [`runcomposer-exec --callback … --push`](#talking-back----callback-and---push)
+does. And when
 the tests can run on the machine runcomposer is on, the whole loop is one
 command: [`runcomposer run`](#run).

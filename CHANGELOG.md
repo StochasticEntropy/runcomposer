@@ -66,6 +66,57 @@ sqlite database opens as it is.
   (`InvalidRequest`, `NotFound` / `UnknownRun`, `Conflict` / `RunActive` /
   `DispatchRefused` / `SpecConflict`, `IngestError`, `ConfigError`, …), each
   with a stable `code`.
+- **`runcomposer.plugins.robot_listener` is gone.** The live listener is
+  `runcomposer.sdk.robot.LiveStatusListener` (and
+  `RemoteLiveStatusListener` for an agent that pushes to the API).
+
+**Changed during the 0.2 line.** For code written against an earlier,
+unreleased state of 0.2. Each of these is also a break relative to 0.1.x,
+where the member, field or behaviour did not exist or worked differently.
+
+- **`ctx.options` holds the configured options only.** It is the runner's
+  config entry as its constructor received it (`${env:…}` resolved); the
+  validated per-run values are in `ctx.parameters` and nowhere else — they
+  are no longer overlaid on the options. A runner that read a per-run value
+  from `ctx.options` reads it from `ctx.parameters`.
+- **Only recorded artifacts are served.** A file under a dispatch's
+  `workdir` is downloadable only once a runner recorded it with
+  `add_artifact` — the file itself, or a directory above it; everything else
+  under `/artifacts/` answers `404`. Record what should be served; keep what
+  must never be in `ctx.private_dir`.
+- **`Runner.plan(ctx) -> PlanPreview` is a member of the runner contract.**
+  `RunnerBase` supplies a default ("no preview"); a runner that does not
+  derive from it must define `plan`, or startup refuses it naming the
+  member.
+- **The `RunStore` port grew**: `seed_durations()`;
+  `duration_aggregates(statuses=)`; `update_dispatch(shard_groups=)` and
+  `DispatchRecord.shard_groups`; `add_artifact_ref(group=)` and
+  `ArtifactRef.group`; `record_live_verdict` takes and `live_verdicts`
+  returns `LiveStatus` records (not `Verdict`s), `RUNNING` included. A store
+  of your own adds them; `check_store` names what is missing.
+- **The sqlite schema is version 3**: dispatches gain `shard_groups`,
+  artifact references `shard_group`, and there is a `duration_seeds` table.
+  A database of 0.1.x or of schema 2 is migrated in place when it is opened;
+  an earlier state of 0.2 refuses a migrated database as newer than it
+  understands.
+- **A `string` parameter is one line.** A value with a line break is a
+  `400`; declare the parameter as `text` to take several lines.
+- **`ui.quick_filters` are served normalized**, by `GET /api/v1/ui-config`
+  and `/meta`: every entry is an object `{label, filter, tag_filter, text,
+  kind}`, also one that was written as a bare string.
+- **A run's `duration_s` describes its latest dispatch**, like every other
+  headline field; each entry of `dispatches` carries its own `duration_s`.
+- **A rerun of failures keeps the source run's title** (it was
+  `Rerun of failures: <title>`); `--title` / `title` sets another. That it
+  is a rerun is data: origin `rerun`, `derived_from`, and `rerun_of` in the
+  answer and in the new run's detail.
+- **The `gc` report gains `expired_dispatches`** (`--json`; a line in the
+  text output when there are any).
+- **Kit:** `FakeDispatchContext.delivered_shards` is a method,
+  `delivered_shards()` (next to `outstanding_shards()`; `outstanding` stays
+  an attribute), and `live_updates` keeps the whole stream in order —
+  `RUNNING` included, and kept after the shard delivered; what a store would
+  hold is `live_now`.
 
 **Configuration**
 
@@ -157,9 +208,11 @@ sqlite database opens as it is.
   `connectors.<name>` as `connector_settings` (`${env:…}` resolved,
   redacted).
 - **`ci/jenkins/e2e.py`**: the `jenkins` runner against a real Jenkins in
-  docker — health, callback, poll, cancel in both modes; the image pins
-  Jenkins and every plugin, and passes the ingest token as a password
-  parameter.
+  docker — health, callback, poll, cancel in both modes, a plan preview, a
+  second job that fans out into one shard per region (results read from the
+  console log; results pushed by the job with progress), and a cancel after
+  Jenkins forgot the queue item; the image pins Jenkins and every plugin,
+  and passes the ingest token as a password parameter.
 
 - **Asynchronous dispatch** through a dispatch manager with a bounded pool
   (`core.dispatch.max_concurrent`), the same code in the foreground for the
@@ -186,6 +239,106 @@ sqlite database opens as it is.
 - **Configuration**: several `sources:` as one catalog, `parsers:`,
   `observers:`, `connectors:`, `${env:NAME}` secrets, `PATH_OPTIONS`,
   `core.dispatch`, `core.ingestion.settle_s`.
+
+- **Two SDK toolkits.** `runcomposer.sdk` is a package with
+  `runcomposer.sdk.robot` (exact-id selection, the live listeners, the shard
+  worker and its supervisor with lanes, timeouts and the stop protocol,
+  delivery, output merging) and `runcomposer.sdk.jenkins` (`JenkinsClient`:
+  crumb and session, bounded retry, trigger → queue item → build, lookup by
+  queue id, stop and cancel, artifacts and URLs below a build;
+  `encode_spec` / `decode_spec`). `robot-pool` and `jenkins` are built on
+  them and import nothing else of runcomposer; guard tests hold the names,
+  the imports and that Robot Framework is loaded only to execute. New in
+  `runcomposer.sdk`: `LIVE_STATUSES`, `LiveStatus`, `PlanContext`,
+  `PlanPreview`, `RemoteLiveChannel`, `load_import_path`.
+- **Plan previews.** `Runner.plan(ctx: PlanContext) -> PlanPreview` and the
+  `plan` capability: which item goes to which shard, groups, estimates and
+  notes — nothing executed, stored or triggered. Every reference runner
+  previews. `POST /api/v1/plan`, `POST /api/v1/runs/{id}/plan` (a refusal is
+  the answer, `refused: true`), `runcomposer plan`.
+- **Parameter kinds `text` and `mapping`** (seven kinds in all) and an
+  optional `pattern` the whole value must match — of a `mapping`, every
+  value; checked when the run is requested. The runner listing carries it.
+- **`RUNNING` live status**, worker log lines in the run's event stream
+  (`LiveChannel.log`), and **progress endpoints** for an executor
+  runcomposer did not start: `POST /api/v1/runs/{id}/live` and `/log`,
+  authorized by the dispatch's ingest token. `RemoteLiveChannel` and
+  `runcomposer.sdk.robot.RemoteLiveStatusListener` are the clients.
+  `GET /runs/{id}/verdicts?status=RUNNING` selects what is executing now.
+- **Shard groups**: `ctx.declare(…, groups={shard: label})`,
+  `ctx.add_artifact(…, group=…)`; the run detail rolls results up per group
+  (`groups`) next to the per-shard roll-up, and counts what is streaming per
+  shard (`live_summary`).
+- **A runner reads its own dispatch**: `ctx.delivered_shards()`,
+  `ctx.outstanding_shards()` (results pushed from outside included),
+  `ctx.set_link()` for what is known after the hand-off (a build URL),
+  `ctx.private_dir` — a directory that is never served
+  (`core.private_dir`, outside `core.artifact_dir`, removed with the run,
+  swept by `gc`). A recorded directory makes the files below it servable
+  (artifact kind `directory`).
+- **Expiry of a dispatch waiting for results**:
+  `core.dispatch.awaiting_timeout_s` (default `null`) — such a dispatch
+  becomes `FAILED` with a `run.failed` event that says why and names the
+  shards that never delivered; every delivery restarts the clock, late
+  results still complete it. Applied by `serve` and once by `gc`.
+- **Duration history by status, and seeded durations.**
+  `ctx.history.durations(statuses=)`; 0 ms means "not known" to the store
+  and the planner; `runcomposer history import FILE` (CSV or JSON, names
+  resolved through the catalog, scoped by `--label`) seeds durations that
+  answer only for items nothing was measured for; `runcomposer history
+  durations` prints what a planner sees. Sample:
+  `examples/history/durations.csv`.
+- **`robot-pool` switches**: `partition_mode: each | split` (every test once,
+  partitions as lanes), `chunk_shards` (every `max_tests_per_chunk` piece a
+  shard of its own, delivered when done), shards grouped by partition,
+  `pre_dispatch` (preparation steps that see the plan and may refuse or add
+  variables), `run_parameters` with `parameter_variables`, `rpa`,
+  `robot_options`, `history_statuses`; merged outputs without "added from
+  merged output" notes; `RUNNING` at test start and worker progress in the
+  event stream; each shard's directory recorded as an artifact; health data.
+  Example entry `robot-lanes` in `examples/robot-pool/config.yaml`.
+- **`jenkins` switches**: `shards` (a list, or a template such as
+  `"{params[regions]}"`; `{shards}` and `{shard}` in templates and paths),
+  `result_urls` (URLs below the build, e.g. `consoleText`),
+  `field_providers` (computed build parameters that may refuse),
+  `postprocess` (over downloaded files before parsing), `{spec_b64}` and
+  `{spec_url}`, `max_parameter_bytes` / `max_request_bytes` (refused before
+  the trigger, naming the way out); a `mapping` parameter renders as
+  `name=value` lines; `cancel` through the recorded build link, else the
+  queue item, else the build found by its queue id; a cancel during the
+  trigger takes the build back; a shard the job pushed is not downloaded
+  again; health checks. Example entries `jenkins-fanout` and
+  `jenkins-fanout-push` with `examples/jenkins/shop_job.py`, and the job
+  `runcomposer-fanout` in `ci/jenkins/casc.yaml`.
+- **`command` and `demo`** preview their plans; `command` hands a `mapping`
+  parameter to the command as `name=value` lines.
+- **Configuration**: `${env:…}` is substituted before a path is anchored
+  (plugin `PATH_OPTIONS` and the core's own paths), so a path from the
+  environment stays where it points; `ui.quick_filters` take whole filter
+  expressions, `ui.default_filter` and `ui.presets` are new — all validated
+  at startup (a preset's runner and parameters included) and served
+  normalized; `GET /api/v1/presets`.
+- **Run detail**: `shard_groups`, `groups`, `live_summary`, `rerun_of`,
+  `last_live` on a `MISSING` row (what was last streamed for an item that
+  delivered nothing), a `duration_s` per dispatch, artifacts with their
+  `group`. Attaching a quarantined delivery that holds nothing the run
+  planned is refused (`409`, `nothing-planned`) and changes nothing.
+- **Kit**: `FakeDispatchContext.from_source`, `preview`, `live_now`,
+  `shard_groups`, `set_link`, `private_dir`, `spec_bytes()`, worker log
+  lines in `logs`; `check_runner` rules `runner.plan`,
+  `runner.plan-is-read-only`, `runner.plan-matches-dispatch`;
+  `check_store` rules `store.shard-groups`, `store.live-running`,
+  `store.duration-statuses`, `store.duration-seeds`;
+  `ConnectorHarness.start()` (a handle to follow and cancel),
+  `ConnectorHarness.plan()`, `ConnectorHarness(serve=True)` serving the
+  API on a free port.
+- **CLI**: `plan`, `history import`, `history durations`, `doctor -v`
+  (every runner's health data; a list of checks reads as a checklist),
+  `rerun --title`; `show` prints groups and what is running now.
+- **`runcomposer-exec --callback URL [--token T] [--push]`**: log lines and
+  (with `--simulate`) live status while it works, and the finished bundle
+  pushed to the API — exit `4` when the push is refused or cannot be
+  delivered.
 - **Catalog reload** when the corpus changes (`fingerprint()` on sources),
   `POST /catalog/reload`.
 - **Ingest tokens bound to a dispatch**, stored hashed, returned once,
@@ -256,7 +409,7 @@ sqlite database opens as it is.
 
 ### Known limits
 
-Each written down with its reason in [docs/connectors.md](docs/connectors.md#9-known-limits):
+Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-known-limits):
 
 - Declined: a taxonomy leaf holding a full filter expression; a per-runner
   custom "actions" endpoint; a catalog cache shared across CLI invocations;

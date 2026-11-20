@@ -85,11 +85,31 @@ the API answers at once, and the run is followed through its lifecycle
 observer (`webhook`, `jsonl`, `command`) when it is over. Each way has a
 runnable example run end to end by a test
 ([the connector guide, §8](docs/connectors.md#8-four-ways-to-execute)).
+The two reference runners have modes beyond the basics:
 
-**Connect your own.** Everything a connector may import is one module,
-`runcomposer.sdk`; `runcomposer.testing` checks your source, runner, parser,
-store or observer against the contract and runs it inside a real
-runcomposer for your tests; and
+- `robot-pool` can *distribute* a selection over its partitions instead of
+  repeating it on each (`partition_mode: split`), make every bounded piece a
+  shard of its own that delivers when done (`chunk_shards`), and run
+  preparation steps that see the plan before anything starts (`pre_dispatch`).
+- `jenkins` can drive a job that fans out into several shards in one build,
+  pass the document compressed (`{spec_b64}`), compute build parameters from
+  the selection (`field_providers`), and read results from any URL below the
+  build, such as its console log (`result_urls`, `postprocess`).
+
+**Look before you start.** `runcomposer plan Cart --runner robot-lanes
+--config examples/robot-pool/config.yaml` (or `POST /api/v1/plan`) shows
+what a dispatch would do — which test goes to
+which shard and group, with duration estimates, or the build parameters a
+Jenkins trigger would send — and executes, stores and triggers nothing.
+While a run executes, items show as `RUNNING`; an executor elsewhere reports
+progress with its dispatch's token.
+
+**Connect your own.** Everything a connector may import is one package,
+`runcomposer.sdk`, with two toolkits — `runcomposer.sdk.robot` and
+`runcomposer.sdk.jenkins`, the parts the reference runners are built from,
+to compose instead of rewrite; `runcomposer.testing` checks your source,
+runner, parser, store or observer against the contract and runs it inside
+a real runcomposer for your tests; and
 [examples/connector-template](examples/connector-template) is an installable
 connector package to copy. Configuration validates every plugin's options at
 startup, takes secrets as `${env:NAME}`, merges several sources into one
@@ -105,9 +125,11 @@ quietly entering history.
 
 **Reuse.** Once runs accrue, history becomes a selection source:
 `runcomposer runs --failed-in latest --label suite=nightly`, `spec
---from-history 'failed@latest?suite=nightly'`, and a UI quick-pick. The label
-scope keeps "latest" from meaning somebody else's run, and the resolved
-reference run is recorded in `selection.derived_from`.
+--from-history 'failed@latest?suite=nightly'`, and `rerun --scope failed`
+(a run's rerun in the UI). The label scope keeps "latest" from meaning
+somebody else's run, and the resolved reference run is recorded in
+`selection.derived_from`. Durations balance the next plan; a fresh store can
+be seeded with known ones (`runcomposer history import`).
 
 **Hand off.** `runcomposer export <run> --format ctrf` for tools that speak
 CTRF; `robot-output-xml` and `junit-xml` parse results coming the other way
@@ -148,9 +170,9 @@ neutral template a private adopter package copies.
 | | |
 |---|---|
 | [examples/robot-shop](examples/robot-shop) | 58 Robot Framework tests over a fictional web shop — the corpus behind the screenshot and the specs on the homepage. |
-| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions. |
+| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions — once each (`robot-pool`), or distributed over them in two-test shards (`robot-lanes`). |
 | [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids and executed by the `command` runner — the framework-agnosticism proof. |
-| [examples/jenkins](examples/jenkins) · [ci/jenkins](ci/jenkins) | The `jenkins` runner in both completion modes, and a pinned Jenkins-in-Docker whose job runs the vendored consumer; `ci/jenkins/e2e.py` drives one against the other. |
+| [examples/jenkins](examples/jenkins) · [ci/jenkins](ci/jenkins) | The `jenkins` runner in both completion modes, also against a job that fans out into one shard per region, and a pinned Jenkins-in-Docker whose jobs run the vendored consumer; `ci/jenkins/e2e.py` drives one against the other. |
 | [examples/remote-agent](examples/remote-agent) | The full remote round trip on one machine. |
 | [examples/connector-template](examples/connector-template) | A connector package to copy: source, runner and observer, tested with `runcomposer.testing`. |
 | [examples/webshop-regression.runspec.yaml](examples/webshop-regression.runspec.yaml) | A complete run spec you can read. |
