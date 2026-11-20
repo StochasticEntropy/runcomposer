@@ -52,6 +52,7 @@ PUBLIC_NAMES = {
     "normalize_time", "epoch_ms", "parse_filter", "format_filter", "load_document",
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
     "RemoteLiveChannel", "corpus_drifted", "ConfiguredCall", "configured_calls",
+    "push_results", "ResultsPushRefused",
     # embedding
     "Service", "load_config", "Config",
 }
@@ -67,7 +68,7 @@ ROBOT_TOOLKIT = {
     "collect_verdicts", "deliver_shard", "merge_outputs", "MergeNoiseRemover", "robot_version",
 }
 JENKINS_TOOLKIT = {
-    "JenkinsClient", "JenkinsError", "JenkinsTimeout", "encode_spec", "decode_spec", "queue_id_of",
+    "JenkinsClient", "JenkinsError", "JenkinsTimeout", "JenkinsQueueCancelled", "encode_spec", "decode_spec", "queue_id_of",
 }
 
 

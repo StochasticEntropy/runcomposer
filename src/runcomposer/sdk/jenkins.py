@@ -18,7 +18,11 @@ covers what a runner needs from a Jenkins server and nothing else:
   itself records;
 - **stop / cancel** of a build or a queued item, and ``follow`` — a build
   from queue item to its end that is taken back when the dispatch is
-  cancelled meanwhile;
+  cancelled meanwhile, and that can ride out the server being away for a
+  while (``outage_tolerance_s``: a restart, a proxy that drops connections);
+- **the job's declared parameters** (``job_parameters``) — Jenkins ignores a
+  build parameter its job does not declare, silently, so this is how a
+  runner finds out before anybody wonders why the job did not get it;
 - **results**: the archived artifacts of a build, and any other URL below
   the build (what a publisher plugin serves without archiving it).
 
@@ -34,6 +38,7 @@ from __future__ import annotations
 import base64
 import fnmatch
 import gzip
+import http.client
 import http.cookiejar
 import json
 import ssl
@@ -49,6 +54,7 @@ from typing import Any
 __all__ = [
     "JenkinsClient",
     "JenkinsError",
+    "JenkinsQueueCancelled",
     "JenkinsTimeout",
     "decode_spec",
     "encode_spec",
@@ -66,6 +72,18 @@ class JenkinsError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+class JenkinsQueueCancelled(JenkinsError):
+    """The queued item was cancelled before it became a build — by somebody
+    in Jenkins, or by :meth:`JenkinsClient.cancel`. A :class:`JenkinsError`
+    with ``status`` ``None`` like an unreachable server, so it has a class of
+    its own: it is an answer, and final — ``follow`` never waits it out as
+    an outage. ``queue_url`` is the item's URL."""
+
+    def __init__(self, queue_url: str):
+        super().__init__(f"the queued Jenkins build was cancelled: {queue_url}")
+        self.queue_url = queue_url
 
 
 class JenkinsTimeout(JenkinsError):
@@ -166,6 +184,33 @@ class JenkinsClient:
                 return False
             raise
 
+    def job_parameters(self, job: str) -> list[str] | None:
+        """The names of the build parameters the job declares, in its order,
+        or ``None`` when the job is not parameterized at all. Raises
+        :class:`JenkinsError` (``status == 404``) for a job that does not
+        exist or is not readable with these credentials. One attempt, as
+        :meth:`job_exists` — it is what a health check asks.
+
+        Worth asking because Jenkins drops a build parameter its job does not
+        declare without a word: the trigger succeeds, the build runs, and the
+        value never arrives. The definitions are read where current servers
+        keep them (the job's ``ParametersDefinitionProperty``) and where older
+        ones did (an action of the job)."""
+        tree = "property[parameterDefinitions[name]],actions[parameterDefinitions[name]]"
+        document = self.get_json(
+            f"{self.job_url(job)}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}"),
+            retry=False,
+        )
+        names: list[str] = []
+        for holder in [*(document.get("property") or []), *(document.get("actions") or [])]:
+            if not isinstance(holder, Mapping):
+                continue
+            for definition in holder.get("parameterDefinitions") or []:
+                name = definition.get("name") if isinstance(definition, Mapping) else None
+                if name and str(name) not in names:
+                    names.append(str(name))
+        return names or None
+
     # -- trigger → queue item → build -------------------------------------------------------
 
     def trigger(self, job: str, parameters: Mapping[str, str]) -> str | None:
@@ -180,46 +225,54 @@ class JenkinsClient:
             location = response.headers.get("Location")
         return str(location).rstrip("/") + "/" if location else None
 
-    def build_of(self, queue_url: str) -> str | None:
+    def build_of(self, queue_url: str, *, retry: bool = True) -> str | None:
         """The URL of the build a queue item became (no trailing slash), or
-        ``None`` while it is still queued. Raises :class:`JenkinsError` when
-        the queued item was cancelled, and with ``status == 404`` once
-        Jenkins has forgotten the item — then :meth:`find_build` still finds
-        the build."""
-        item = self.get_json(queue_url.rstrip("/") + "/api/json")
+        ``None`` while it is still queued. Raises
+        :class:`JenkinsQueueCancelled` when the queued item was cancelled,
+        and :class:`JenkinsError` with ``status == 404`` once Jenkins has
+        forgotten the item — then :meth:`find_build` still finds the build.
+        ``retry=False``: one attempt instead of the client's bounded retry
+        (as for every lookup below)."""
+        item = self.get_json(queue_url.rstrip("/") + "/api/json", retry=retry)
         if item.get("cancelled"):
-            raise JenkinsError(f"the queued Jenkins build was cancelled: {queue_url}")
+            raise JenkinsQueueCancelled(queue_url)
         executable = item.get("executable") or {}
         return str(executable["url"]).rstrip("/") if executable.get("url") else None
 
-    def find_build(self, job: str, queue_id: int, *, depth: int = 50) -> str | None:
+    def find_build(
+        self, job: str, queue_id: int, *, depth: int = 50, retry: bool = True
+    ) -> str | None:
         """The build of ``job`` that came from queue item ``queue_id``, looked
         up among the job's last ``depth`` builds by the queue id each build
         records. This is the way to a build after its queue item expired."""
         tree = f"builds[number,url,queueId]{{0,{int(depth)}}}"
         listing = self.get_json(
-            f"{self.job_url(job)}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}")
+            f"{self.job_url(job)}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}"),
+            retry=retry,
         )
         for build in listing.get("builds") or []:
             if build.get("queueId") == queue_id and build.get("url"):
                 return str(build["url"]).rstrip("/")
         return None
 
-    def locate_build(self, job: str, queue_url: str) -> str | None:
+    def locate_build(self, job: str, queue_url: str, *, retry: bool = True) -> str | None:
         """:meth:`build_of`, falling back to :meth:`find_build` when the
         queue item is gone. ``None`` while the build has not started."""
         try:
-            return self.build_of(queue_url)
+            return self.build_of(queue_url, retry=retry)
         except JenkinsError as exc:
             if exc.status != 404:
                 raise
         queue_id = queue_id_of(queue_url)
-        return self.find_build(job, queue_id) if queue_id is not None else None
+        return self.find_build(job, queue_id, retry=retry) if queue_id is not None else None
 
-    def build_info(self, build_url: str, tree: str = "building,result,number,url") -> dict[str, Any]:
+    def build_info(
+        self, build_url: str, tree: str = "building,result,number,url", *, retry: bool = True
+    ) -> dict[str, Any]:
         """The build's API document, restricted to ``tree``."""
         return self.get_json(
-            f"{build_url.rstrip('/')}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}")
+            f"{build_url.rstrip('/')}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}"),
+            retry=retry,
         )
 
     def wait(
@@ -230,18 +283,55 @@ class JenkinsClient:
         timeout_s: float,
         poll_interval_s: float = 5.0,
         check: Callable[[], None] | None = None,
+        outage_tolerance_s: float | None = None,
     ) -> Any:
         """Poll ``probe`` until it returns something true and return that.
         ``check`` is called before every probe and may raise to give up (pass
         ``ctx.raise_if_cancelled``). Raises :class:`JenkinsTimeout` after
-        ``timeout_s``, naming ``what`` was waited for."""
+        ``timeout_s``, naming ``what`` was waited for.
+
+        ``outage_tolerance_s`` lets the wait ride out a server that is away
+        for a while: a probe that fails with an *outage* — no answer at all
+        (refused, dropped, timed out) or a transient status (429, 502, 503,
+        504) — is tried again at the next poll, as long as the server last
+        answered less than ``outage_tolerance_s`` seconds ago (counted from
+        the start of the wait until it first answers). What is measured is
+        the time since the last answer, never a count of errors: failures
+        with answers in between do not add up. Past the tolerance the wait
+        raises a :class:`JenkinsError` that says for how long nothing
+        answered. Anything else — a 404, a 401, a cancelled queue item — is
+        an answer and raised at once, as is everything without a tolerance
+        (``None`` or ``0``). The tolerance does not extend ``timeout_s``.
+        The probe's own retries come on top: a probe for a tolerant wait
+        should make one attempt (``retry=False``), as the waits of this
+        client do."""
+        return self._wait(
+            probe, what=what, timeout_s=timeout_s, poll_interval_s=poll_interval_s,
+            check=check, answers=_Answers(outage_tolerance_s),
+        )
+
+    def _wait(
+        self,
+        probe: Callable[[], Any],
+        *,
+        what: str,
+        timeout_s: float,
+        poll_interval_s: float,
+        check: Callable[[], None] | None,
+        answers: _Answers,
+    ) -> Any:
         deadline = time.monotonic() + timeout_s
         while True:
             if check is not None:
                 check()
-            value = probe()
-            if value:
-                return value
+            try:
+                value = probe()
+            except JenkinsError as exc:
+                answers.failed(exc)  # raises unless it is an outage within the tolerance
+            else:
+                answers.answered()
+                if value:
+                    return value
             if time.monotonic() >= deadline:
                 raise JenkinsTimeout(what, timeout_s)
             time.sleep(poll_interval_s)
@@ -254,12 +344,31 @@ class JenkinsClient:
         timeout_s: float,
         poll_interval_s: float = 5.0,
         check: Callable[[], None] | None = None,
+        outage_tolerance_s: float | None = None,
     ) -> str:
-        """Wait until the queue item became a build; returns its URL."""
+        """Wait until the queue item became a build; returns its URL.
+        ``outage_tolerance_s`` as for :meth:`wait`."""
+        return self._wait_for_build(
+            job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
+            answers=_Answers(outage_tolerance_s),
+        )
+
+    def _wait_for_build(
+        self,
+        job: str,
+        queue_url: str,
+        *,
+        timeout_s: float,
+        poll_interval_s: float,
+        check: Callable[[], None] | None,
+        answers: _Answers,
+    ) -> str:
+        retry = not answers.tolerant  # with a tolerance, that is the retry policy
         return str(
-            self.wait(
-                lambda: self.locate_build(job, queue_url),
+            self._wait(
+                lambda: self.locate_build(job, queue_url, retry=retry),
                 what="start", timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
+                answers=answers,
             )
         )
 
@@ -271,17 +380,35 @@ class JenkinsClient:
         poll_interval_s: float = 5.0,
         check: Callable[[], None] | None = None,
         tree: str = "building,result,artifacts[relativePath]",
+        outage_tolerance_s: float | None = None,
     ) -> dict[str, Any]:
         """Wait until the build is over; returns its API document (``result``
-        is ``SUCCESS``, ``UNSTABLE``, ``FAILURE``, ``ABORTED`` …)."""
+        is ``SUCCESS``, ``UNSTABLE``, ``FAILURE``, ``ABORTED`` …).
+        ``outage_tolerance_s`` as for :meth:`wait`."""
+        return self._wait_until_finished(
+            build_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
+            tree=tree, answers=_Answers(outage_tolerance_s),
+        )
+
+    def _wait_until_finished(
+        self,
+        build_url: str,
+        *,
+        timeout_s: float,
+        poll_interval_s: float,
+        check: Callable[[], None] | None,
+        tree: str,
+        answers: _Answers,
+    ) -> dict[str, Any]:
+        retry = not answers.tolerant
 
         def finished() -> dict[str, Any] | None:
-            build = self.build_info(build_url, tree)
+            build = self.build_info(build_url, tree, retry=retry)
             return build if not build.get("building") and build.get("result") else None
 
-        result: dict[str, Any] = self.wait(
+        result: dict[str, Any] = self._wait(
             finished, what="finish", timeout_s=timeout_s, poll_interval_s=poll_interval_s,
-            check=check,
+            check=check, answers=answers,
         )
         return result
 
@@ -295,6 +422,7 @@ class JenkinsClient:
         check: Callable[[], None] | None = None,
         on_build: Callable[[str], None] | None = None,
         tree: str = "building,result,artifacts[relativePath]",
+        outage_tolerance_s: float | None = None,
     ) -> dict[str, Any]:
         """A triggered build from queue item to its end: wait until the queue
         item became a build, tell ``on_build(build_url)`` (record the link
@@ -311,7 +439,20 @@ class JenkinsClient:
         before every probe, where a cancellation has already been acted on
         by the runner's ``cancel`` (the link was there), and once more when
         the build is over. A timeout leaves the build alone and raises
-        :class:`JenkinsTimeout`."""
+        :class:`JenkinsTimeout`; ``timeout_s`` applies to each of the two
+        waits (to start, to finish). A queue item cancelled in Jenkins raises
+        :class:`JenkinsQueueCancelled`.
+
+        ``outage_tolerance_s`` lets the follow ride out the server being
+        away — a restart, a proxy dropping connections — for up to that many
+        seconds since it last answered, across both waits (see :meth:`wait`
+        for what counts as an outage). ``on_build`` is still told exactly
+        once, ``check`` still runs before every probe (a cancel during an
+        outage is noticed; stopping the build then may fail like any request
+        to a server that is away), and neither timeout starts again. With a
+        tolerance every probe is a single attempt — the tolerance is the
+        retry policy, so the client's own retries do not multiply the time a
+        probe may take."""
         if check is not None:
             try:
                 check()
@@ -321,13 +462,16 @@ class JenkinsClient:
                 except JenkinsError:
                     pass  # already gone, or unreachable: nothing more to do here
                 raise
-        build_url = self.wait_for_build(
-            job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check
+        answers = _Answers(outage_tolerance_s)  # one measure across both waits
+        build_url = self._wait_for_build(
+            job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
+            answers=answers,
         )
         if on_build is not None:
             on_build(build_url)
-        build = self.wait_until_finished(
-            build_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check, tree=tree
+        build = self._wait_until_finished(
+            build_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
+            tree=tree, answers=answers,
         )
         if check is not None:
             check()
@@ -394,17 +538,24 @@ class JenkinsClient:
         path = Path(target)
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.request("GET", url) as response:
-            path.write_bytes(response.read())
+            try:
+                content = response.read()
+            except (OSError, http.client.HTTPException) as exc:
+                raise JenkinsError(f"the download of {url} broke off: {exc}") from None
+        path.write_bytes(content)
         return path
 
     # -- HTTP plumbing ---------------------------------------------------------------------------
 
-    def get_json(self, url: str) -> dict[str, Any]:
-        with self.request("GET", url) as response:
+    def get_json(self, url: str, *, retry: bool = True) -> dict[str, Any]:
+        """GET a JSON object. ``retry=False``: one attempt."""
+        with self.request("GET", url, retry=retry) as response:
             try:
                 body = json.loads(response.read().decode("utf-8"))
             except ValueError:
                 raise JenkinsError(f"unexpected answer from {url} (not JSON)") from None
+            except (OSError, http.client.HTTPException) as exc:
+                raise JenkinsError(f"the answer from {url} broke off: {exc}") from None
         if not isinstance(body, dict):
             raise JenkinsError(f"unexpected answer from {url}")
         return body
@@ -476,9 +627,50 @@ class JenkinsClient:
                 if retry_unsent_only:
                     raise JenkinsError(f"timed out: {method} {url}") from None
                 last, status = exc, None
+            except (http.client.HTTPException, ConnectionError) as exc:
+                # The connection was dropped after the request went out (a
+                # restarting server, a proxy): no answer — and, for a
+                # request that must not happen twice, maybe received.
+                if retry_unsent_only:
+                    raise JenkinsError(
+                        f"the connection was dropped: {method} {url} ({exc!r})"
+                    ) from None
+                last, status = exc, None
             if attempt + 1 < attempts:
                 time.sleep(self.retry_backoff_s * (2**attempt))
         reason = last.reason if isinstance(last, urllib.error.URLError) else last
         raise JenkinsError(
             f"{reason} for {method} {url} (after {attempts} attempt(s))", status=status
         )
+
+
+class _Answers:
+    """When the server last answered, for a wait that tolerates outages."""
+
+    def __init__(self, tolerance_s: float | None):
+        self.tolerance_s = float(tolerance_s or 0)
+        self.last = time.monotonic()
+
+    @property
+    def tolerant(self) -> bool:
+        return self.tolerance_s > 0
+
+    def answered(self) -> None:
+        self.last = time.monotonic()
+
+    def failed(self, exc: JenkinsError) -> None:
+        """Return to wait on, or raise: ``exc`` itself when it is not an
+        outage (or nothing is tolerated), an error saying for how long the
+        server has not answered when the tolerance is used up."""
+        outage = not isinstance(exc, (JenkinsQueueCancelled, JenkinsTimeout)) and (
+            exc.status is None or exc.status in _TRANSIENT
+        )
+        if not self.tolerant or not outage:
+            raise exc
+        silent = time.monotonic() - self.last
+        if silent >= self.tolerance_s:
+            raise JenkinsError(
+                f"Jenkins has not answered for {silent:.1f}s, longer than "
+                f"outage_tolerance_s={self.tolerance_s:g}: {exc}",
+                status=exc.status,
+            ) from exc

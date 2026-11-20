@@ -128,7 +128,7 @@ from runcomposer.core.ports import (
     contract_members,
 )
 from runcomposer.core.registry import ConfiguredCall, configured_calls, load_import_path
-from runcomposer.core.remote import RemoteLiveChannel
+from runcomposer.core.remote import RemoteLiveChannel, ResultsPushRefused, push_results
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
 from runcomposer.core.timeutil import epoch_ms, normalize_time, parse_time, utc_now
@@ -186,6 +186,7 @@ __all__ = [
     "PluginError",
     "RemoteLiveChannel",
     "ResultParser",
+    "ResultsPushRefused",
     "RunActive",
     "RunComposerError",
     "RunEvent",
@@ -229,6 +230,7 @@ __all__ = [
     "parse_time",
     "parse_xml",
     "plan_chunks",
+    "push_results",
     "read_marker",
     "sha256_hex",
     "split_max",

@@ -15,7 +15,10 @@ correctness:
   its archived artifacts and whatever else a job puts below its URL
   (``pages``: a console text, a publisher's report), and can be stopped; a
   queue item can be cancelled;
-- optional Basic authentication; injected faults and stalled answers.
+- a job may declare its build parameters — then, as on a real server, a
+  trigger's form field the job does not declare is dropped without a word;
+- optional Basic authentication; injected faults, stalled answers, and a
+  server that is down for a while (``down`` / ``up``).
 
 ::
 
@@ -26,7 +29,7 @@ correctness:
         build.artifacts["reports/junit.xml"] = b"<testsuite …/>"
 
     fake = FakeJenkins()
-    fake.add_job("shop-nightly", job)
+    fake.add_job("shop-nightly", job, parameters=["SPEC_B64", "REGIONS"])
     try:
         ...  # point your runner at fake.url; read fake.triggers(), fake.builds
     finally:
@@ -47,7 +50,7 @@ import json
 import secrets
 import threading
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -72,7 +75,8 @@ class Build:
     test reads afterwards. A job sets ``artifacts`` (archived files by
     relative path), ``pages`` (anything else served below the build's URL)
     and, to end other than ``SUCCESS``, ``result``; ``params`` are the build
-    parameters of the trigger; ``stop`` is set when the build was asked to
+    parameters of the trigger the job accepted (a job that declares its
+    parameters gets those only); ``stop`` is set when the build was asked to
     stop (a job that holds waits on it)."""
 
     job: str
@@ -109,13 +113,25 @@ class FakeJenkins:
     - ``crumbs=False`` — no crumb issuer; ``auth=(user, token)`` — Basic
       authentication required; ``auto_start=False`` — builds stay queued
       until ``fake.start(queue_number)``.
+    - ``fake.add_job(name, job, parameters=[names])`` — a job that declares
+      its build parameters: the job's ``api/json`` lists them (as a
+      ``ParametersDefinitionProperty``), and a trigger's form field it does
+      not declare is dropped silently, as a real server does — it never
+      reaches the queue item or ``Build.params``, and is recorded in
+      ``fake.ignored_parameters`` as ``(job, name)``. Without
+      ``parameters=`` the job is not parameterized and takes every field.
     - ``fake.expire(queue_number)`` forgets a queue item (404 from then on),
       as Jenkins does by itself some minutes after the item left the queue.
     - ``fake.faults`` — ``(method, path fragment, status)`` answered once;
       ``fake.stalls`` — ``{path fragment: event}`` an answer waits for.
-    - What happened: ``fake.seen`` (every request), ``fake.triggers()``,
-      ``fake.posts(fragment)``, ``fake.gets(fragment)``, ``fake.queue``,
-      ``fake.builds`` (``{(job, number): Build}``).
+    - ``fake.down(status=503)`` — every request is answered with ``status``
+      (``status=None``: the connection is closed without an answer) until
+      ``fake.up()``: a server restarting, a proxy in front of one that is
+      away. Builds go on meanwhile, as they do on a real restart's agents.
+    - What happened: ``fake.seen`` (every request, also those answered while
+      down), ``fake.triggers()``, ``fake.posts(fragment)``,
+      ``fake.gets(fragment)``, ``fake.queue``, ``fake.builds``
+      (``{(job, number): Build}``), ``fake.ignored_parameters``.
     """
 
     #: The Jenkins version it answers as: the one the reference runner is
@@ -135,6 +151,14 @@ class FakeJenkins:
         self.auto_start = auto_start
         self.send_location = True
         self.jobs: dict[str, Callable[[Build], None] | None] = {}
+        #: job → the build parameters it declares (``None``: not parameterized).
+        self.job_parameters: dict[str, list[str] | None] = {}
+        #: ``(job, name)`` of every form field a trigger sent that the job
+        #: does not declare — dropped, as a real server drops it.
+        self.ignored_parameters: list[tuple[str, str]] = []
+        #: While down: the status every request is answered with (``None``:
+        #: the connection is closed without an answer).
+        self._down: tuple[int | None] | None = None
         self.queue: dict[int, QueueItem] = {}
         self.builds: dict[tuple[str, int], Build] = {}
         self.sessions: dict[str, str] = {}
@@ -177,8 +201,28 @@ class FakeJenkins:
 
     # -- what tests arrange and read -------------------------------------------
 
-    def add_job(self, name: str, job: Callable[[Build], None] | None = None) -> None:
+    def add_job(
+        self,
+        name: str,
+        job: Callable[[Build], None] | None = None,
+        parameters: Sequence[str] | None = None,
+    ) -> None:
+        """Register (or replace) a job. ``parameters``: the names of the
+        build parameters it declares — see the class docstring."""
+        if isinstance(parameters, str):
+            raise TypeError("parameters is a list of names, not one string")
         self.jobs[name] = job
+        self.job_parameters[name] = [str(p) for p in parameters] if parameters is not None else None
+
+    def down(self, status: int | None = 503) -> None:
+        """From now on answer every request with ``status`` — or, with
+        ``None``, close each connection without answering — until
+        :meth:`up`."""
+        self._down = (status,)
+
+    def up(self) -> None:
+        """Answer again, after :meth:`down`."""
+        self._down = None
 
     def job_url(self, name: str) -> str:
         return self.url + "".join(f"/job/{part}" for part in name.split("/"))
@@ -239,6 +283,12 @@ class FakeJenkins:
         headers = {key.lower(): value for key, value in request.headers.items()}
         self.seen.append(Seen(method, parsed.path, query, headers, form))
 
+        down = self._down
+        if down is not None:
+            if down[0] is None:
+                request.close_connection = True  # no answer at all
+                return None
+            return self._send(request, down[0], b"Service Unavailable")
         for fragment, event in list(self.stalls.items()):
             if fragment in parsed.path:
                 event.wait(30)
@@ -286,10 +336,17 @@ class FakeJenkins:
                 (b for (name, _n), b in self.builds.items() if name == job),
                 key=lambda b: b.number, reverse=True,
             )
+            declared = self.job_parameters.get(job)
             return self._json(
                 request,
                 {
                     "name": job.rsplit("/", 1)[-1],
+                    "property": [] if declared is None else [
+                        {
+                            "_class": "hudson.model.ParametersDefinitionProperty",
+                            "parameterDefinitions": [{"name": name} for name in declared],
+                        }
+                    ],
                     "builds": [
                         {"number": b.number, "url": b.url, "queueId": b.queue_id} for b in newest_first
                     ],
@@ -321,6 +378,10 @@ class FakeJenkins:
         return ("/".join(names) or None), segments[index:]
 
     def _trigger(self, request: BaseHTTPRequestHandler, job: str, form: dict[str, str]) -> None:
+        declared = self.job_parameters.get(job)
+        if declared is not None:
+            self.ignored_parameters.extend((job, name) for name in form if name not in declared)
+            form = {name: value for name, value in form.items() if name in declared}
         with self._lock:
             number = len(self.queue) + 1
             self.queue[number] = QueueItem(number, job, form)

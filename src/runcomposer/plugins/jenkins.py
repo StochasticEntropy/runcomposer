@@ -16,9 +16,15 @@ build-parameter name of *your* job to a template. Available fields:
   dispatch — bind it to a password parameter);
 - the work: ``{item_ids}`` (one per line), ``{shards}`` (comma-separated) and
   ``{params[name]}`` (per-run parameters declared under ``run_parameters``);
-- your own: every name under ``field_providers`` — a ``"pkg.mod:callable"``
+- your own: every name under ``field_providers`` — a configured callable
   called with the context and the fields above, returning the text of the
-  field. It may ``ctx.refuse`` a run its job has no way to carry out.
+  field. It may ``ctx.refuse`` a run its job has no way to carry out. And
+  every name listed under ``plan_fields``, which ``plan_provider`` yields.
+
+A configured callable — ``field_providers`` values, ``postprocess``,
+``plan_provider`` — is ``"pkg.mod:callable"``, or ``{call: "pkg.mod:callable",
+with: {…}}`` to hand it settings: the ``with:`` mapping arrives as the keyword
+argument ``settings``, so one function serves several entries.
 
 A trigger whose parameters exceed ``max_parameter_bytes`` (one value) or
 ``max_request_bytes`` (all of them) is refused before anything is sent.
@@ -28,6 +34,33 @@ or a template rendering to a comma- or newline-separated one
 (``"{params[regions]}"``). The job pushes each with ``shard=<name>``, or
 leaves each one's files where ``artifact_paths`` / ``result_urls`` point —
 ``{shard}`` in those is replaced by the shard's name.
+
+**A plan of your own.** ``plan_provider`` is a configured callable that works
+out the plan for a job that cannot: called ``(ctx, fields)`` with the
+built-in fields (``{shards}`` as the ``shards`` option renders), it returns a
+mapping with any of
+
+- ``"shards": {name: [item ids]}`` — the shards, and which planned items each
+  will report. They replace what the ``shards`` option says (the provider
+  wins when both are configured), are declared with their items, and show in
+  the plan preview with them; ``{shards}`` is rendered from their names;
+- ``"groups": {shard: label}`` — shards that belong together, declared as
+  groups and shown in the preview (for shards the provider returned);
+- ``"fields": {name: text}`` — template fields. Their names are listed under
+  ``plan_fields`` so the templates can be checked at startup; one the
+  provider does not yield renders as empty text.
+
+It is called by the plan preview and by the dispatch alike, so it must not
+change anything; it may ``ctx.refuse``. What it returns is checked before
+anything is sent — a shape it should not have, or an item that is not
+planned, fails the dispatch (or the preview) naming the provider.
+``field_providers`` run after it and see its fields.
+
+**Is the job given what is configured?** Jenkins ignores a build parameter
+its job does not declare — silently: the build runs, the value never arrives.
+``check_parameters: true`` makes the health check compare the names under
+``parameters`` with the job's declared parameters (a degraded runner names
+the ones the job would drop).
 
 **How results come back** is ``completion``:
 
@@ -39,6 +72,9 @@ leaves each one's files where ``artifact_paths`` / ``result_urls`` point —
   matching ``artifact_paths`` and the build-relative URLs listed under
   ``result_urls`` (what a publisher serves without archiving it), runs
   ``postprocess`` over them if one is configured, and delivers them.
+  ``outage_tolerance_s`` lets the following ride out a Jenkins that is away
+  for up to that many seconds (a restart): without it, a request that still
+  fails after the client's bounded retries fails the dispatch.
 
 The build is identified through the queue item the trigger returns — never by
 "the latest build of the job", which may be somebody else's — and, after
@@ -47,15 +83,18 @@ Jenkins has forgotten the queue item, by the queue id the build records.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import string
 import urllib.parse
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from runcomposer.sdk import (
     ConfigError,
+    ConfiguredCall,
     DispatchCancelled,
     DispatchContext,
     Health,
@@ -64,10 +103,15 @@ from runcomposer.sdk import (
     PluginError,
     RunnerBase,
     RunnerInfo,
-    load_import_path,
     parameters_from_config,
 )
-from runcomposer.sdk.jenkins import JenkinsClient, JenkinsError, JenkinsTimeout, encode_spec
+from runcomposer.sdk.jenkins import (
+    JenkinsClient,
+    JenkinsError,
+    JenkinsQueueCancelled,
+    JenkinsTimeout,
+    encode_spec,
+)
 
 __all__ = ["JenkinsRunner"]
 
@@ -118,15 +162,56 @@ def _check_template(where: str, template: Any, extra: tuple[str, ...] = ()) -> s
     return template
 
 
-def _load(ref: Any, option: str) -> Callable[..., Any]:
+def _configured(entry: Any, option: str) -> ConfiguredCall:
+    """A configured callable option, its shape checked (the import happens
+    at the first call)."""
+    if isinstance(entry, str):
+        module, sep, attr = entry.partition(":")
+        if not sep or not module or not attr:
+            raise ConfigError(
+                f"jenkins: {option} is an import path 'package.module:callable' (or "
+                f"{{call: 'package.module:callable', with: {{…}}}}), got {entry!r}"
+            )
+    return ConfiguredCall.parse(entry, f"jenkins: {option}")
+
+
+def _call(call: ConfiguredCall, *args: Any) -> Any:
+    """Call a configured callable; one that cannot be imported is a
+    configuration error naming its option."""
     try:
-        target = load_import_path(str(ref))
+        call.load()
     except PluginError as exc:
-        raise ConfigError(f"jenkins: {option}: {exc}") from None
-    if not callable(target):
-        raise ConfigError(f"jenkins: {option}: {ref!r} is not callable")
-    loaded: Callable[..., Any] = target
-    return loaded
+        raise ConfigError(str(exc)) from None
+    return call(*args)
+
+
+def _field_name(name: str, option: str) -> str:
+    if not name.isidentifier() or name in TEMPLATE_FIELDS or name == "shard":
+        raise ConfigError(
+            f"jenkins: {option}: a field name is an identifier that is "
+            f"not one of the built-in fields {list(TEMPLATE_FIELDS)}"
+        )
+    return name
+
+
+@dataclass
+class _Plan:
+    """What ``plan_provider`` returned, checked."""
+
+    shards: dict[str, list[str]] | None = None
+    groups: dict[str, str] = dataclasses.field(default_factory=dict)
+    fields: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+@dataclass
+class _Rendered:
+    """A run as it would be triggered."""
+
+    shards: list[str]
+    #: The items of each shard, when ``plan_provider`` said which.
+    shard_items: dict[str, list[str]] | None
+    groups: dict[str, str]
+    build_parameters: dict[str, str]
 
 
 class JenkinsRunner(RunnerBase):
@@ -142,8 +227,12 @@ class JenkinsRunner(RunnerBase):
         shards: list[str] | str | None = None,
         artifact_paths: list[str] | None = None,
         result_urls: list[str] | None = None,
-        field_providers: Mapping[str, str] | None = None,
-        postprocess: str | None = None,
+        field_providers: Mapping[str, Any] | None = None,
+        postprocess: str | Mapping[str, Any] | None = None,
+        plan_provider: str | Mapping[str, Any] | None = None,
+        plan_fields: list[str] | None = None,
+        check_parameters: bool = False,
+        outage_tolerance_s: float | None = None,
         format: str | None = None,
         user: str | None = None,
         api_token: str | None = None,
@@ -178,20 +267,31 @@ class JenkinsRunner(RunnerBase):
         self.base_url = self.client.base_url
         self.job = job
         self.job_url = self.client.job_url(job)
-        self.field_providers = {str(name): str(ref) for name, ref in (field_providers or {}).items()}
-        for name, ref in self.field_providers.items():
-            if not name.isidentifier() or name in TEMPLATE_FIELDS or name == "shard":
-                raise ConfigError(
-                    f"jenkins: field_providers.{name}: a field name is an identifier that is "
-                    f"not one of the built-in fields {list(TEMPLATE_FIELDS)}"
-                )
-            module, sep, attr = ref.partition(":")
-            if not sep or not module or not attr:
-                raise ConfigError(
-                    f"jenkins: field_providers.{name} is an import path "
-                    f"'package.module:callable', got {ref!r}"
-                )
-        provided = tuple(self.field_providers)
+        if field_providers is not None and not isinstance(field_providers, Mapping):
+            raise ConfigError("jenkins: field_providers maps field names to configured callables")
+        self.field_providers: dict[str, ConfiguredCall] = {
+            _field_name(str(name), f"field_providers.{name}"):
+                _configured(ref, f"field_providers.{name}")
+            for name, ref in (field_providers or {}).items()
+        }
+        self.plan_provider = (
+            _configured(plan_provider, "plan_provider") if plan_provider else None
+        )
+        if plan_fields is not None and not isinstance(plan_fields, (list, tuple)):
+            raise ConfigError("jenkins: plan_fields is a list of field names")
+        self.plan_fields = [_field_name(str(name), f"plan_fields.{name}") for name in plan_fields or ()]
+        if self.plan_fields and self.plan_provider is None:
+            raise ConfigError(
+                "jenkins: plan_fields names fields that plan_provider yields — configure a "
+                "plan_provider, or drop plan_fields"
+            )
+        both = sorted(set(self.plan_fields) & set(self.field_providers))
+        if both:
+            raise ConfigError(
+                f"jenkins: {both} named under plan_fields and field_providers — a field comes "
+                "from one of them"
+            )
+        provided = (*self.field_providers, *self.plan_fields)
         self.parameters = {
             str(name): _check_template(f"parameters.{name}", template, provided)
             for name, template in (parameters or DEFAULT_PARAMETERS).items()
@@ -223,14 +323,17 @@ class JenkinsRunner(RunnerBase):
                 raise ConfigError(
                     f"jenkins: result_urls entries are paths below the build's URL, got {url!r}"
                 )
-        self.postprocess = str(postprocess) if postprocess else None
-        if self.postprocess:
-            module, sep, attr = self.postprocess.partition(":")
-            if not sep or not module or not attr:
-                raise ConfigError(
-                    "jenkins: postprocess is an import path 'package.module:callable', "
-                    f"got {postprocess!r}"
-                )
+        self.postprocess = _configured(postprocess, "postprocess") if postprocess else None
+        self.check_parameters = bool(check_parameters)
+        if outage_tolerance_s is not None and (
+            isinstance(outage_tolerance_s, bool)
+            or not isinstance(outage_tolerance_s, (int, float))
+            or outage_tolerance_s < 0
+        ):
+            raise ConfigError(
+                "jenkins: outage_tolerance_s is a number of seconds (0 or null: no tolerance)"
+            )
+        self.outage_tolerance_s = float(outage_tolerance_s) if outage_tolerance_s else None
         self.format = format
         self.user = user
         self.poll_interval_s = float(poll_interval_s)
@@ -267,15 +370,50 @@ class JenkinsRunner(RunnerBase):
             problem = None if readable else "404 Not Found"
         except Exception as exc:
             readable, problem = False, str(exc)
-        data["checks"] = [
+        checks: list[dict[str, Any]] = [
             {"check": "server reachable", "ok": True, "detail": f"Jenkins {data['version']}".strip()},
             {"check": f"job {self.job!r} readable", "ok": readable, "detail": problem or self.job_url},
         ]
+        data["checks"] = checks
+        if self.check_parameters:
+            checks.append(self._parameter_check(readable))
         if not readable:
             return Health(
                 status="degraded", detail=f"job {self.job!r} not readable: {problem}", data=data
             )
+        if not checks[-1]["ok"]:
+            return Health(status="degraded", detail=f"job {self.job!r}: {checks[-1]['detail']}", data=data)
         return Health(status="ok", detail=f"Jenkins {data['version']}".strip(), data=data)
+
+    def _parameter_check(self, readable: bool) -> dict[str, Any]:
+        """Does the job declare every build parameter configured under
+        ``parameters``? Jenkins drops the others without a word."""
+        row: dict[str, Any] = {"check": "job parameters", "ok": False}
+        if not readable:
+            return {**row, "detail": "not checked — the job is not readable"}
+        try:
+            declared = self.client.job_parameters(self.job)
+        except Exception as exc:
+            return {**row, "detail": f"the job's parameters could not be read: {exc}"}
+        configured = list(self.parameters)
+        if declared is None:
+            return {
+                **row,
+                "detail": "the job declares no parameters — every configured one would be "
+                f"ignored ({', '.join(configured)}); make it a parameterized job",
+            }
+        unknown = [name for name in configured if name not in declared]
+        if unknown:
+            return {
+                **row,
+                "detail": f"the job does not declare {', '.join(unknown)} — Jenkins would "
+                "ignore them silently; add them to the job, or rename them under parameters "
+                f"(the job declares: {', '.join(declared)})",
+            }
+        return {
+            **row, "ok": True,
+            "detail": f"the job declares all {len(configured)} configured parameter(s)",
+        }
 
     # -- what would be sent ---------------------------------------------------------------
 
@@ -296,11 +434,10 @@ class JenkinsRunner(RunnerBase):
             templates.append(self.shards)
         return any(field in _fields_of(template, "template") for template in templates)
 
-    def _render(
-        self, ctx: PlanContext, *, dispatch_id: str, token: str
-    ) -> tuple[list[str], dict[str, str]]:
-        """``(shards, build parameters)`` for this run. Everything a trigger
-        can be refused for without talking to Jenkins is refused here."""
+    def _render(self, ctx: PlanContext, *, dispatch_id: str, token: str) -> _Rendered:
+        """The shards, their items and groups, and the build parameters for
+        this run. Everything a trigger can be refused for without talking to
+        Jenkins is refused here."""
         run = ctx.spec.get("run") or {}
         spec_url = ""
         if self._uses("spec_url"):
@@ -328,18 +465,26 @@ class JenkinsRunner(RunnerBase):
         if isinstance(self.shards, str):
             rendered = formatter.vformat(self.shards, (), fields)
             shards = [part.strip() for part in rendered.replace("\n", ",").split(",") if part.strip()]
+        else:
+            shards = list(self.shards)
+        fields["shards"] = ",".join(shards)
+        planned = self._ask_plan_provider(ctx, dict(fields)) if self.plan_provider else _Plan()
+        if planned.shards is not None:
+            shards = list(planned.shards)
+        elif isinstance(self.shards, str):
             if not shards:
                 ctx.refuse(f"jenkins: shards ({self.shards!r}) rendered to nothing for this run")
             if len(set(shards)) != len(shards):
                 ctx.refuse(f"jenkins: shards ({self.shards!r}) rendered to duplicates: {shards}")
-        else:
-            shards = list(self.shards)
         fields["shards"] = ",".join(shards)
-        for name, ref in self.field_providers.items():
-            value = _load(ref, f"field_providers.{name}")(ctx, dict(fields))
+        for name in self.plan_fields:
+            fields[name] = ""
+        fields.update(planned.fields)
+        for name, call in self.field_providers.items():
+            value = _call(call, ctx, dict(fields))
             if not isinstance(value, str):
                 raise TypeError(
-                    f"jenkins: field provider {ref} returned {type(value).__name__}, not text"
+                    f"jenkins: field provider {call.ref} returned {type(value).__name__}, not text"
                 )
             fields[name] = value
         build_parameters = {
@@ -355,7 +500,78 @@ class JenkinsRunner(RunnerBase):
                 "results apart — put {shard} into artifact_paths / result_urls, or configure a "
                 "postprocess that splits what was downloaded"
             )
-        return shards, build_parameters
+        return _Rendered(
+            shards=shards, shard_items=planned.shards, groups=planned.groups,
+            build_parameters=build_parameters,
+        )
+
+    def _ask_plan_provider(self, ctx: PlanContext, fields: dict[str, Any]) -> _Plan:
+        """Call ``plan_provider`` and check what it returned: a mistake there
+        is caught before anything is sent, naming the provider."""
+        assert self.plan_provider is not None
+        ref = self.plan_provider.ref
+        answer = _call(self.plan_provider, ctx, fields)
+
+        def wrong(what: str) -> RuntimeError:
+            return RuntimeError(f"jenkins: plan_provider {ref} returned {what}")
+
+        if answer is None:
+            return _Plan()
+        if not isinstance(answer, Mapping):
+            raise wrong(f"{type(answer).__name__}, not a mapping of shards / groups / fields")
+        unknown = sorted(str(key) for key in answer if key not in ("shards", "groups", "fields"))
+        if unknown:
+            raise wrong(f"the key(s) {unknown} — it may return 'shards', 'groups' and 'fields'")
+        plan = _Plan()
+        if answer.get("shards") is not None:
+            given = answer["shards"]
+            if not isinstance(given, Mapping) or not given:
+                raise wrong("shards that are not a non-empty mapping of shard name → item ids")
+            planned = set(ctx.item_ids)
+            plan.shards = {}
+            for name, items in given.items():
+                if not isinstance(name, str) or not name.strip() or name != name.strip() or any(
+                    sep in name for sep in (",", "\n")
+                ):
+                    raise wrong(
+                        f"the shard name {name!r} — a shard name is non-empty text without commas, "
+                        "line breaks or surrounding blanks"
+                    )
+                if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)) or not all(
+                    isinstance(item, str) for item in items
+                ):
+                    raise wrong(f"{items!r} for shard {name!r}, not a list of item ids")
+                strangers = [item for item in items if item not in planned]
+                if strangers:
+                    raise wrong(f"item(s) {strangers} for shard {name!r} that this run does not plan")
+                plan.shards[name] = list(items)
+        if answer.get("groups"):
+            groups = answer["groups"]
+            if not isinstance(groups, Mapping):
+                raise wrong("groups that are not a mapping of shard name → label")
+            if plan.shards is None:
+                raise wrong("groups without shards — groups label shards the provider returns")
+            strays = sorted(str(shard) for shard in groups if shard not in plan.shards)
+            if strays:
+                raise wrong(f"groups for shard(s) {strays} it did not return")
+            if not all(isinstance(label, str) for label in groups.values()):
+                raise wrong("a group label that is not text")
+            plan.groups = {str(shard): label for shard, label in groups.items() if label}
+        if answer.get("fields"):
+            given_fields = answer["fields"]
+            if not isinstance(given_fields, Mapping):
+                raise wrong("fields that are not a mapping of field name → text")
+            for name, value in given_fields.items():
+                if not isinstance(name, str) or not name.isidentifier() or name in TEMPLATE_FIELDS \
+                        or name == "shard" or name in self.field_providers:
+                    raise wrong(
+                        f"the field {name!r} — a field it yields is an identifier that is neither a "
+                        "built-in field nor one of field_providers"
+                    )
+                if not isinstance(value, str):
+                    raise wrong(f"{type(value).__name__} for the field {name!r}, not text")
+                plan.fields[name] = value
+        return plan
 
     def _uses_document(self) -> bool:
         return self._uses("spec_json") or self._uses("spec_b64") or self._uses("spec_url")
@@ -383,22 +599,28 @@ class JenkinsRunner(RunnerBase):
                 )
 
     def plan(self, ctx: PlanContext) -> PlanPreview:
-        shards, build_parameters = self._render(ctx, dispatch_id=_AT_DISPATCH, token=_AT_DISPATCH)
+        rendered = self._render(ctx, dispatch_id=_AT_DISPATCH, token=_AT_DISPATCH)
+        shards, build_parameters = rendered.shards, rendered.build_parameters
         shown = {
             name: value if len(value) <= 200 else f"‹{len(value.encode('utf-8'))} bytes›"
             for name, value in build_parameters.items()
         }
         lines = [self._plan_text(shards)]
         lines.extend(f"  {name} = {value}" for name, value in shown.items())
+        items = rendered.shard_items or {}
+        notes = [] if rendered.shard_items is not None else [
+            "the job distributes the items over its shards itself — a preview cannot say "
+            "which item goes where"
+        ]
+        notes.append(
+            "nothing was sent to Jenkins; the token and the dispatch id exist only once "
+            "the run is dispatched"
+        )
         return PlanPreview(
             text="\n".join(lines),
-            shards={shard: [] for shard in shards},
-            notes=(
-                "the job distributes the items over its shards itself — a preview cannot say "
-                "which item goes where",
-                "nothing was sent to Jenkins; the token and the dispatch id exist only once "
-                "the run is dispatched",
-            ),
+            shards={shard: list(items.get(shard, [])) for shard in shards},
+            groups=dict(rendered.groups),
+            notes=tuple(notes),
             data={
                 "job_url": self.job_url,
                 "completion": self.completion,
@@ -418,7 +640,8 @@ class JenkinsRunner(RunnerBase):
 
     def dispatch(self, ctx: DispatchContext) -> None:
         token = (ctx.ingest_token() or "") if self._uses("token") else ""
-        shards, build_parameters = self._render(ctx, dispatch_id=ctx.dispatch_id, token=token)
+        rendered = self._render(ctx, dispatch_id=ctx.dispatch_id, token=token)
+        shards, build_parameters = rendered.shards, rendered.build_parameters
         ctx.raise_if_cancelled()
         try:
             queue_url = self.client.trigger(self.job, build_parameters)
@@ -439,7 +662,11 @@ class JenkinsRunner(RunnerBase):
         links = {"job": self.job_url}
         if queue_url:
             links["queue"] = queue_url
-        ctx.declare(shards, plan=self._plan_text(shards, triggered=True), links=links)
+        ctx.declare(
+            rendered.shard_items if rendered.shard_items is not None else shards,
+            plan=self._plan_text(shards, triggered=True), links=links,
+            groups=rendered.groups or None,
+        )
         if self.completion == "poll":
             self._poll_and_deliver(ctx, queue_url, shards)
 
@@ -464,9 +691,13 @@ class JenkinsRunner(RunnerBase):
             build = self.client.follow(
                 self.job, queue_url, timeout_s=self.timeout_s,
                 poll_interval_s=self.poll_interval_s, check=ctx.raise_if_cancelled,
-                on_build=started,
+                on_build=started, outage_tolerance_s=self.outage_tolerance_s,
             )
             build_url = str(build["url"])
+        except JenkinsQueueCancelled:
+            raise RuntimeError(
+                f"the queued Jenkins build was cancelled before it started: {queue_url}"
+            ) from None
         except JenkinsTimeout as exc:
             raise RuntimeError(
                 f"the Jenkins build did not {exc.what} within timeout_s={self.timeout_s:g}"
@@ -494,7 +725,7 @@ class JenkinsRunner(RunnerBase):
                 continue
             delivered: Path = bundle
             if self.postprocess:
-                changed = _load(self.postprocess, "postprocess")(ctx, shard, bundle)
+                changed = _call(self.postprocess, ctx, shard, bundle)
                 if changed is not None:
                     delivered = Path(changed)
             for file in fetched:

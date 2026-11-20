@@ -27,7 +27,11 @@ Two more ways to drive it, for runners that cannot be tested by waiting for
   local port (``harness.url``, ``harness.api``), for a connector whose
   executor pushes results or progress itself. The address is known before
   the plugins are built: reference it in an entry as
-  ``${env:RUNCOMPOSER_HARNESS_URL}`` (a ``callback_base``, say).
+  ``${env:RUNCOMPOSER_HARNESS_URL}`` (a ``callback_base``, say), or build one
+  from ``${env:RUNCOMPOSER_HARNESS_PORT}``. For an executor in a container,
+  serve on every interface and advertise the name the container reaches the
+  host by: ``ConnectorHarness(serve=True, host="0.0.0.0",
+  advertise_host="host.docker.internal")``.
 """
 
 from __future__ import annotations
@@ -64,6 +68,8 @@ __all__ = ["ConnectorHarness", "DispatchHandle", "HarnessRun", "plugin"]
 #: Set while a serving harness is open: its base URL, for ``${env:…}``
 #: references in the plugin entries it is given.
 HARNESS_URL_VARIABLE = "RUNCOMPOSER_HARNESS_URL"
+#: Set while a serving harness is open: the port it serves on.
+HARNESS_PORT_VARIABLE = "RUNCOMPOSER_HARNESS_PORT"
 
 
 @dataclass
@@ -216,10 +222,18 @@ class ConnectorHarness:
     harness is open (and restores them on close).
 
     ``serve=True`` also serves the HTTP API of this deployment on a free
-    port of 127.0.0.1 (``host=`` for another interface): ``harness.url`` is
-    its base address, ``harness.api`` the API root. The address exists before
-    the plugins are built — an entry refers to it as
-    ``${env:RUNCOMPOSER_HARNESS_URL}``.
+    port of 127.0.0.1 (``host=`` for another interface, ``"0.0.0.0"`` for
+    all): ``harness.url`` is its base address, ``harness.api`` the API root,
+    ``harness.port`` the port. The address exists before the plugins are
+    built — an entry refers to it as ``${env:RUNCOMPOSER_HARNESS_URL}``, or
+    puts a host of its own in front of ``${env:RUNCOMPOSER_HARNESS_PORT}``.
+
+    ``advertise_host`` is the name the *executor* reaches this machine by,
+    when that is not the address the harness listens on — an executor in a
+    container reaches the host as ``host.docker.internal``. ``harness.url``
+    (and the variable) then carry that name; ``harness.local_url`` is always
+    the address this process reaches the server at, for the test's own
+    requests. Without ``advertise_host`` the two are the same.
     """
 
     __test__ = False
@@ -238,8 +252,12 @@ class ConnectorHarness:
         env: Mapping[str, str] | None = None,
         serve: bool = False,
         host: str = "127.0.0.1",
+        advertise_host: str | None = None,
     ):
         self.url: str | None = None
+        #: The address this process reaches the served API at.
+        self.local_url: str | None = None
+        self.port: int | None = None
         self._socket: socket.socket | None = None
         self._server: Any = None
         self._server_thread: threading.Thread | None = None
@@ -250,9 +268,17 @@ class ConnectorHarness:
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._socket.bind((host, 0))
             self._socket.listen(128)
-            shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
-            self.url = f"http://{shown}:{self._socket.getsockname()[1]}"
-            env = {**dict(env or {}), HARNESS_URL_VARIABLE: self.url}
+            self.port = int(self._socket.getsockname()[1])
+            local = "127.0.0.1" if host in ("0.0.0.0", "", "localhost") else host
+            self.local_url = f"http://{local}:{self.port}"
+            self.url = f"http://{advertise_host}:{self.port}" if advertise_host else self.local_url
+            env = {
+                **dict(env or {}),
+                HARNESS_URL_VARIABLE: self.url,
+                HARNESS_PORT_VARIABLE: str(self.port),
+            }
+        elif advertise_host is not None:
+            raise ValueError("advertise_host is the name of a served harness — pass serve=True")
         self._own_directory = directory is None
         self.directory = Path(directory) if directory is not None else Path(
             tempfile.mkdtemp(prefix="runcomposer-harness-")
