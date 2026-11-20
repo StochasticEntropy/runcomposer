@@ -98,8 +98,8 @@ The two reference runners have modes beyond the basics:
 
 **Look before you start.** `runcomposer plan Cart --runner robot-lanes
 --config examples/robot-pool/config.yaml` (or `POST /api/v1/plan`) shows
-what a dispatch would do — which test goes to
-which shard and group, with duration estimates, or the build parameters a
+the plan of a dispatch — every test with the
+shard and group it would land in, with duration estimates, or the build parameters a
 Jenkins trigger would send — and executes, stores and triggers nothing.
 While a run executes, items show as `RUNNING`; an executor elsewhere reports
 progress with its dispatch's token.

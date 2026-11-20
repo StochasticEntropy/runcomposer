@@ -53,8 +53,8 @@ def record_window(info: dict[str, Any]) -> None:
 
 def include_tags(ctx: PlanContext, fields: dict[str, Any]) -> str:
     """A ``field_providers`` entry: the shop's nightly job selects by tag,
-    not by test id — so the selection is translated into the job's own
-    ``INCLUDE`` parameter. A selection the job cannot express that way (a
+    not by test id — so the tags of the selection become the job's
+    ``INCLUDE`` parameter. A selection that cannot be said that way (a
     test without one of the job's feature tags) is refused before anything
     is triggered."""
     tags: list[str] = []

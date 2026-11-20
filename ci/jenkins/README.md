@@ -66,8 +66,8 @@ script, whose steps 1, 2 and 12 start and stop the containers):
    bundle per region with the dispatch's token, the run is `COMPLETE`, and
    its events hold one log line per region that the job pushed through
    `POST /api/v1/runs/{id}/log` while it ran;
-11. **cancel after the queue item is forgotten** — Jenkins forgets a queue
-   item a few minutes after it left the queue; from then on its URL answers
+11. **cancel after the queue item is forgotten** — Jenkins remembers an
+   item that has left its queue for about five minutes; after that its URL answers
    `404`, and only the queue id recorded in the build leads to it. The
    script does not wait minutes: with a build of `runcomposer-consumer`
    holding, it tells Jenkins through its script console to drop the items
@@ -146,8 +146,8 @@ needs, configured rather than coded:
   document travels as `SPEC_B64: "{spec_b64}"` — the exact bytes, gzip +
   base64, one line of ASCII that survives any form field and shell; the job
   decodes it with `base64 -d | gunzip`. (`{spec_json}`, the default, puts the
-  whole document into one build parameter, which is also an environment
-  variable of the build and limited in size; `max_parameter_bytes` refuses
+  whole document into one build parameter — which the build also receives as
+  an environment variable, with that variable's size limit; `max_parameter_bytes` refuses
   such a trigger before it is sent and names this way out.)
   `INCLUDE: "{include}"` is computed by a field provider,
   `field_providers: { include: "shop_job:include_tags" }`: the feature tags

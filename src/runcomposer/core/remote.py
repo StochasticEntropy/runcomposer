@@ -36,7 +36,7 @@ def progress_urls(callback_url: str) -> tuple[str, str]:
 
 class RemoteLiveChannel:
     """A ``LiveChannel`` over HTTP: ``live`` and ``log`` are POSTed to the
-    run's API with the dispatch's ingest token. Picklable (its state is four
+    run's API, authorized by the ingest token of the dispatch. Picklable (its state is four
     strings and a number). ``failures`` counts what could not be pushed."""
 
     def __init__(

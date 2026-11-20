@@ -220,8 +220,8 @@ channel.live("a", sys.argv[2], "PASS", duration_ms=9)
 
 class TestTheFake:
     def test_the_whole_live_stream_is_kept_and_live_now_is_what_a_store_holds(self):
-        """A runner that delivers a shard right after executing it used to
-        end with an empty list: its stream could not be asserted."""
+        """Every status a runner streams stays readable — also for a shard
+        that has delivered meanwhile, whose live status a store drops."""
         ctx = FakeDispatchContext(CART)
         ctx.declare({"a": CART[:2], "b": CART[2:]})
         channel = pickle.dumps(ctx.live_channel()).hex()

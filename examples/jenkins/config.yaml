@@ -2,8 +2,8 @@
 # parameterized Jenkins job, and the job's results come back.
 #
 # Two runner entries for the one plugin, one per completion mode:
-#   - `jenkins` (callback): the job POSTs its bundle to runcomposer's API with
-#     the dispatch's ingest token; runcomposer must be reachable from Jenkins.
+#   - `jenkins` (callback): the job POSTs its bundle to runcomposer's API,
+#     authorized by the ingest token of its dispatch; runcomposer must be reachable from Jenkins.
 #   - `jenkins-poll` (poll): runcomposer follows the queue item to the build,
 #     waits for it, downloads the archived results and delivers them itself.
 #
@@ -80,7 +80,7 @@ runners:
     shards: "{params[regions]}"
     field_providers: { include: "shop_job:include_tags" }
     parameters: &fanout-parameters
-      SPEC_B64: "{spec_b64}"          # gzip + base64 of the exact bytes
+      SPEC_B64: "{spec_b64}"          # the exact document, gzipped, as base64
       REGIONS: "{shards}"
       INCLUDE: "{include}"            # computed from the selection
       DISPATCH_ID: "{dispatch_id}"

@@ -18,7 +18,7 @@ build-parameter name of *your* job to a template. Available fields:
   ``{params[name]}`` (per-run parameters declared under ``run_parameters``);
 - your own: every name under ``field_providers`` — a ``"pkg.mod:callable"``
   called with the context and the fields above, returning the text of the
-  field. It may ``ctx.refuse`` when the job cannot express the run.
+  field. It may ``ctx.refuse`` a run its job has no way to carry out.
 
 A trigger whose parameters exceed ``max_parameter_bytes`` (one value) or
 ``max_request_bytes`` (all of them) is refused before anything is sent.
@@ -371,8 +371,8 @@ class JenkinsRunner(RunnerBase):
                 if size > self.max_parameter_bytes:
                     ctx.refuse(
                         f"jenkins: build parameter {name} would be {size} bytes, more than "
-                        f"max_parameter_bytes ({self.max_parameter_bytes}): a build parameter is "
-                        "also an environment variable of the build" + hint
+                        f"max_parameter_bytes ({self.max_parameter_bytes}): Jenkins hands every build "
+                        "parameter to the build as an environment variable too" + hint
                     )
         if self.max_request_bytes is not None:
             total = len(urllib.parse.urlencode(dict(build_parameters)).encode("utf-8"))

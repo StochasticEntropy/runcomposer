@@ -222,8 +222,8 @@ class LiveStatusListener:
 
 class RemoteLiveStatusListener(LiveStatusListener):
     """:class:`LiveStatusListener` for an execution runcomposer did not
-    start itself — a CI job, a remote agent: it pushes to the API with the
-    dispatch's ingest token instead of writing to a local channel.
+    start itself — a CI job, a remote agent: it pushes to the API, authorized by the
+    ingest token of its dispatch, instead of writing to a local channel.
 
     Use it by name; what it needs comes from the arguments or, left out,
     from the environment::
@@ -593,8 +593,8 @@ _ADDED = re.compile(r"^\*HTML\* (?:Test|Task|Suite) added from merged output\.(?
 class MergeNoiseRemover:
     """Pre-rebot modifier: when outputs of *disjoint* executions are merged,
     every test and suite of a later output is stamped "added from merged
-    output" in place of — or in front of — its own message. For the chunks
-    of one run that is noise. This restores the message each one had; the
+    output" in place of — or in front of — its own message. Between the
+    chunks of a single run that note tells nobody anything. This restores the message each one had; the
     note about a test that really was re-executed is left alone."""
 
     def visit_suite(self, suite: Any) -> None:

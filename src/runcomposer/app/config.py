@@ -262,8 +262,9 @@ class Config:
 
     def resolve_env_path(self, value: Any, where: str) -> Any:
         """:meth:`resolve_path` for a value that may reference the
-        environment: substitute first, anchor second — anchoring is a no-op
-        for an absolute result, so a path taken from a variable stays put."""
+        environment: the reference is resolved before the path is anchored. An
+        absolute value then needs no anchoring, so a path that comes from a
+        variable keeps pointing where the variable says."""
         return self.resolve_path(_resolve_env(value, where))
 
     def _resolve(self, relative: str, where: str = "core") -> Path:

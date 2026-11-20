@@ -558,8 +558,8 @@ class RobotPoolRunner(RunnerBase):
     def _pre_dispatch(
         self, ctx: DispatchContext, plan: _Plan, variables: Mapping[str, str]
     ) -> dict[str, str]:
-        """``pre_dispatch``: preparation in this process, before the hand-off,
-        that knows what is about to run. Each callable gets the context — so
+        """``pre_dispatch``: preparation in this process, once the plan stands
+        and nothing is handed off yet. Each callable gets the context — so
         it can ``ctx.refuse``, ``ctx.log``, keep files in ``ctx.private_dir``
         — and the plan; a mapping it returns is added to the Robot variables
         of every shard."""

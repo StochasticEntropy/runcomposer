@@ -9,7 +9,7 @@ Three things are shown:
    its queue id once the queue item is forgotten, stop and cancel, archived
    artifacts and build-relative URLs, retry, the compressed spec;
 2. the runner *configured* for a job that fans out: several shards, build
-   parameters computed from the run, results read from a URL below the build
+   parameters worked out from what the run selected, results read from a URL below the build
    that is not an archived artifact, a transformation before parsing;
 3. the same *composed* from the client by a small runner that imports
    ``runcomposer.sdk`` and ``runcomposer.sdk.jenkins`` and nothing else.
@@ -94,8 +94,8 @@ class TestTheClient:
         assert info["result"] == "SUCCESS" and info["building"] is False
 
     def test_a_build_is_found_by_its_queue_id_after_the_queue_item_expired(self, jenkins):
-        """Jenkins forgets a queue item a few minutes after it left the
-        queue. The build still says which item it came from."""
+        """Jenkins remembers an item that has left its queue for some minutes
+        only. The build still says which item it came from."""
         client = client_for(jenkins)
         jenkins.add_job(JOB, lambda build: build.stop.wait(30))
         other = client.trigger(JOB, {"N": "somebody else's"})
@@ -297,7 +297,7 @@ class TestTheScenarioByConfiguration:
         assert by_shard == {"eu": [CARDS[0], CARDS[3]], "us": [CARDS[1], CARDS[4]], "apac": [CARDS[2], CARDS[5]]}
 
         # Computed build parameters: the shard list, a field computed from
-        # it, the selection translated into the job's own vocabulary.
+        # it, the tags of the selection as the job's INCLUDE filter.
         (trigger,) = jenkins.triggers()
         assert trigger.form["REGIONS"] == "eu,us,apac" and trigger.form["REGION_COUNT"] == "3"
         assert trigger.form["INCLUDE"] == "Payments-Cards"

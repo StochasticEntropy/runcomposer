@@ -694,7 +694,7 @@ credentials come from the config file only.
 **Options and parameters stay apart.** `ctx.options` holds the options
 written in the runner's config entry, as its constructor received them
 (`${env:…}` resolved), and nothing else; `ctx.parameters` holds the
-validated per-run values, defaults applied. Nothing is overlaid: a per-run
+per-run values after validation, with the declared defaults filled in. Nothing is overlaid: a per-run
 value never appears in `options`, so a parameter cannot shadow the option of
 the same name, and a runner that wants a per-run value reads it from
 `parameters` (tests/test_runner_contract.py, `TestOptionsAndParameters`).
@@ -711,10 +711,10 @@ the same name, and a runner that wants a per-run value reads it from
 | `source` | the catalog as it is now — drift check, name resolution |
 | `history.durations(labels=, last_n=, statuses=)` | mean duration per item id from earlier dispatches; `statuses` restricts it to executions that ended so (§7) |
 | `refuse(reason)` | decline; legal before `declare`, leaves no dispatch |
-| `declare(shards, *, plan="", links=None, spec_sha256=None, groups=None)` | THE hand-off (§4): shard names, or names mapped to the item ids each shard will report; exactly once. `groups` labels shards that belong together (`{shard: label}` — the partition each chunk runs on): results are rolled up per group as well as per shard. `spec_sha256` records the hash of document bytes the runner serialized itself (`export_spec()` records it for the bytes it returns) |
+| `declare(shards, *, plan="", links=None, spec_sha256=None, groups=None)` | THE hand-off (§4): shard names, or names mapped to the item ids each shard will report; exactly once. `groups` labels shards that belong together (`{shard: label}` — the partition each chunk runs on): results get a roll-up of their own, next to the one per shard. `spec_sha256` records the hash of document bytes the runner serialized itself (`export_spec()` records it for the bytes it returns) |
 | `set_link(name, url)` | record or replace one named link for what is only known after the hand-off — the URL of the build a queued job became. Before `declare` it joins the hand-off's links; after it, it is stored (and logged), so a context rebuilt for `cancel` carries it |
 | `live(shard, item_id, status, …)` / `live_channel()` | streamed per-item status — `RUNNING`, then how the item ended (§4); the channel is a **picklable** object with `live` and `log` for worker processes |
-| `delivered_shards()`, `outstanding_shards()` | this dispatch's shards that have delivered — by this runner or by a push from outside — and those still owed, in declaration order. A runner whose executor pushes results itself may find its dispatch already complete |
+| `delivered_shards()`, `outstanding_shards()` | this dispatch's shards that have delivered — by this runner or by a push from outside — and those still owed, in declaration order. A runner whose executor pushes results itself may find the dispatch complete before it is done with it |
 | `parse(bundle, *, format=None)` | native artifacts → correlated verdicts, with the configured parser — for runners that relabel (attempts) before delivering |
 | `deliver(shard, *, verdicts=… \| bundle=…, format=None)` | one shard's results; idempotent by content hash; completion is recomputed after every delivery |
 | `add_artifact(name, path_or_url, *, media_type=None, shard=None, group=None)` | record a file, a **directory** or an `http(s)` link — of the dispatch, of one shard, or of a group of shards. Recording is what makes a local file downloadable (§6.4) |
@@ -732,8 +732,8 @@ lands in the run's event stream (tests/test_runner_contract.py,
 `TestOwnDispatch`, `TestShardGroups`, `TestRunningAndWorkerLogs`).
 
 **Previewing a dispatch.** `plan(ctx: PlanContext) -> PlanPreview` answers
-"what would this dispatch do?" — which item goes to which shard — without
-executing, recording or triggering anything. `PlanContext` is a strict
+"what would this dispatch do?" — every item with the shard it would land in
+— and does nothing else: no execution, no record, no trigger. `PlanContext` is a strict
 subset of `DispatchContext`: `run_id`, `runner_id`, `spec`, `item_ids`,
 `options`, `parameters`, `source`, `history`, `refuse()` and
 `export_spec()` (whose bytes are recorded nowhere). There is no `declare`,
@@ -765,8 +765,8 @@ processes (started with the `spawn` method, one per shard, at most
   partitions being parallel lanes the selection is distributed over,
   balanced by duration. History comes from the store over the last
   `history_depth` dispatches of runs matching `history_selector.labels`,
-  restricted to `history_statuses` when set (`[PASS]`: a failing test often
-  ends early and would distort the balance), seeded durations filling the
+  restricted to `history_statuses` when set (`[PASS]`: a test that fails usually
+  stops short of its normal length and would skew the balance), seeded durations filling the
   gaps (§7); round-robin on a cold start, and the plan says so. One chunk is
   one shard, declared with its item ids and grouped by partition. The
   planner is `plan_chunks` in the SDK, for any runner to reuse.
@@ -855,8 +855,8 @@ password parameter), the work (`{item_ids}` one per line, `{shards}`
 comma-separated, `{params[name]}` for the per-run parameters declared under
 `run_parameters`: a list comma-joined, a `mapping` as `name=value` lines),
 and every name under `field_providers` — a `"pkg.mod:callable"` called as
-`callable(ctx, fields) -> str` that may `ctx.refuse` when the job cannot
-express the run (it is called for a preview too, so it must be free of side
+`callable(ctx, fields) -> str` that may `ctx.refuse` a run the job has no
+way to carry out (it is called for a preview too, so it must be free of side
 effects). Every template is checked at startup against these names. A
 trigger whose parameters exceed `max_parameter_bytes` (one value, default
 128 000) or `max_request_bytes` (all of them, default 1 000 000; `null`
@@ -1149,8 +1149,8 @@ reader, the defused XML reader, lifecycle functions, parameter validation,
 `RemoteLiveChannel` (§5) — plus `load_config` and `Service` for driving
 runcomposer from Python (compose → dispatch → wait → read, in one process).
 
-It is a package with **two toolkits**, the building blocks the reference
-runners are made of:
+It is a package with **two toolkits** — the parts `robot-pool` and `jenkins`
+are assembled from:
 
 - `runcomposer.sdk.robot` — exact-id selection (`ExactSelection`), the
   live listeners (`LiveStatusListener`, and `RemoteLiveStatusListener` for
@@ -1316,8 +1316,8 @@ prose in a title (tests/test_runner_contract.py, `TestRunDetailSemantics`).
 what duration-balanced planning reads (`ctx.history.durations`, §6.2). It is
 the mean over the last N dispatches that delivered, of runs carrying the
 given labels, optionally restricted to executions that ended with given
-statuses (`statuses=("PASS",)`, a runner's `history_statuses`): a failing
-test often ends early and would make its chunk look short. A duration of 0
+statuses (`statuses=("PASS",)`, a runner's `history_statuses`): a test that
+fails usually stops short of its normal length, and its chunk would look short. A duration of 0
 ms means "not known" to the store and to the planner alike, never "instant".
 A fresh store knows nothing, so a deployment that already knows how long its
 tests take can **seed** it: `runcomposer history import FILE [--label k=v]`
@@ -1855,7 +1855,7 @@ as history; `CHANGELOG.md` says what changed.
 | 16 | What a spec's `runner` section may do (0.2) | **Carry declared per-run parameters; nothing else reaches an in-process runner** (§6.2). Rejected: overlaying the whole section on the configured options (0.1) — a document could then set readiness hooks and listeners, i.e. execute code on the machine that runs it. Same reasoning for result formats: names resolved through configuration, never import paths from a document. |
 | 17 | Config: what names a plugin instance (0.2) | **The entry's key is the id; `plugin:` / `module:` select the class** (§8). The API lists and dispatches by that id, so one plugin can be configured several times. Rejected: the key as the plugin id with a single instance each (0.1), and reporting the plugin's own `describe().id`, which is not the name anyone can dispatch to. |
 | 18 | What the manifest snapshot hashes (0.2) | **Ids and tags** — what a selection depends on, and what the Robot source already hashed. Rejected: the whole item (0.1), which made a renamed test or an edited `meta` drift. Consequence: a spec composed by 0.1 against a manifest reads as drifted under 0.2. |
-| 19 | Options and per-run parameters on the context (0.2) | **Apart, never overlaid** (§6.2): `ctx.options` is the config entry, `ctx.parameters` the validated per-run values. Rejected: options overlaid by parameters — a parameter could then shadow an option of the same name, and a runner could not tell what the deployment configured from what a person chose. |
+| 19 | Options and per-run parameters on the context (0.2) | **Apart, never overlaid** (§6.2): `ctx.options` is the config entry, `ctx.parameters` what the run chose, validated. Rejected: options overlaid by parameters — a parameter could then shadow an option of the same name, and a runner could not tell what the deployment configured from what a person chose. |
 | 20 | What the artifact route serves (0.2) | **Only what a runner recorded** — a file, or the tree under a recorded directory — and a never-served `private_dir` for the rest (§6.4). Rejected: serving whatever lies in a dispatch's work directory — every intermediate file, and any credential a hook wrote there, was one guessed URL away. |
 | 21 | A dispatch whose results never come (0.2) | **Opt-in expiry to `FAILED`** (`core.dispatch.awaiting_timeout_s`, §4), the clock restarted by every delivery, late results still taken in. Rejected: finalizing on expiry (an executor that died is a broken execution, not a result), and an expiry on by default (how long a remote job may take is the deployment's knowledge, not the core's). |
 | 22 | The reference runners' parts (0.2) | **Exported as SDK toolkits** (`runcomposer.sdk.robot`, `.jenkins`, §6.6), the reference runners built on them. Rejected: keeping the parts private to the runners — a connector with different needs would restate the worker stop protocol or the Jenkins queue semantics, which is where such details go wrong. |

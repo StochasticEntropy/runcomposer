@@ -139,8 +139,8 @@ def push_live(
 ) -> dict[str, Any]:
     """Live status from an executor runcomposer did not start itself: which
     item is executing now (``RUNNING``) and how items ended, while the build
-    is still under way. Authorized with the dispatch's ingest token, like the
-    results push. Live status is a progress report — shown flagged ``live``,
+    is still under way. Authorized like the results push: by the ingest token of
+    the dispatch. Live status is a progress report — shown flagged ``live``,
     replaced by the next update for the same shard and item, and dropped when
     the shard's results are delivered; it is never a verdict.
 
@@ -162,7 +162,7 @@ def push_log(
 ) -> dict[str, Any]:
     """Log lines from an external executor, appended to the run's event
     stream (``log`` / ``warning`` events with ``source: push``). Authorized
-    with the dispatch's ingest token."""
+    by the ingest token of the dispatch."""
     dispatch = _progress_dispatch(service, run_id, body.dispatch, authorization, x_runcomposer_token)
     result = service.ingestion.push_log(dispatch, [line.model_dump() for line in body.lines])
     return {"dispatch_id": dispatch.dispatch_id, **result}

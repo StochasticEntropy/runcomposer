@@ -14,8 +14,8 @@ state), never on a fixed sleep:
 3. **health** — ``GET /api/v1/runners?refresh=true``: both runner entries
    probe Jenkins and the job.
 4. **callback** — ``POST /api/v1/runs`` dispatching to ``jenkins``: the build
-   runs ``runcomposer-exec`` and POSTs the bundle back with the dispatch's
-   ingest token; the run becomes ``COMPLETE``.
+   runs ``runcomposer-exec`` and POSTs the bundle back, authorized by the ingest
+   token of its dispatch; the run becomes ``COMPLETE``.
 5. **poll** — ``runcomposer run --runner jenkins-poll`` from the command line
    (against the same store): runcomposer follows the queue item to the
    build, downloads the archived results and delivers them.
@@ -35,8 +35,8 @@ state), never on a fixed sleep:
 10. **fan-out, pushing** — the same job pushes each region's bundle itself
     with ``runcomposer-exec --callback --push``, reporting log lines and live
     status through the authenticated progress endpoints while it runs.
-11. **cancel after the queue item is forgotten** — Jenkins drops a queue item
-    a few minutes after it left the queue. Here the server is told to forget
+11. **cancel after the queue item is forgotten** — Jenkins keeps what has left its
+    queue for about five minutes only. Here the server is told to forget
     it now (its script console empties that cache); the queue item's URL
     answers 404, the build is found by the queue id it records, and the
     cancel stops it.

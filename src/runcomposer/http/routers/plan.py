@@ -28,7 +28,7 @@ def plan_selection(body: PlanRequest, service: Service = Depends(service_of)) ->
     The answer always says one of two things: ``plan`` — its text, the shards
     in declaration order with their group, items and estimate, the groups,
     notes — or ``refused: true`` with the ``refusal`` a dispatch would meet
-    (the corpus drifted, the job cannot express the run). A runner that does
+    (the corpus drifted, the job has no way to carry the run out). A runner that does
     not declare the ``plan`` capability is a 400."""
     return plan_json(
         service.plan(

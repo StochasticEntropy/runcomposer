@@ -175,8 +175,8 @@ class FakeDispatchContext:
     hold: the latest status per item of shards that have not delivered),
     ``artifacts``, ``logs``, ``refusal``, ``exported`` and ``tokens``.
 
-    For a runner that needs real catalog items — one that attributes items
-    to suite roots or reads ``Item.meta`` — build the fake from the source:
+    A runner that looks at the catalog itself — where an item comes from,
+    what its ``Item.meta`` holds — needs real items: build the fake from the source,
     :meth:`from_source`.
     """
 
@@ -368,7 +368,7 @@ class FakeDispatchContext:
 
     @property
     def live_updates(self) -> list[LiveStatus]:
-        """Every live status the runner streamed, in order — ``RUNNING``
+        """The live stream as the runner produced it, oldest first — ``RUNNING``
         included, and kept after the shard delivered: the whole stream, for
         asserting what a runner reported while it ran."""
         self._drain_live()

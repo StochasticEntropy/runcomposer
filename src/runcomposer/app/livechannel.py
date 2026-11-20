@@ -3,7 +3,7 @@ any RunStore.
 
 A worker cannot be handed a store: stores are not picklable in general, and a
 third-party one may not be reachable from a child process at all. So the
-channel carries no store. It appends JSON lines to a file in the dispatch's
+channel carries no store. What it writes are JSON lines, appended to a file under the dispatch's
 work directory — one file per writing process, so writers never interleave —
 and the dispatching process tails those files and records what it reads.
 

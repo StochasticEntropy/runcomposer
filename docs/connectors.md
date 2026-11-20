@@ -191,8 +191,8 @@ config entry as written — the options its constructor received, paths
 anchored and `${env:…}` resolved — read-only, and nothing else.
 `ctx.parameters` is what whoever started the run chose: validated, declared
 defaults applied. A parameter never shows up in `ctx.options`, so it cannot
-shadow an option of the same name; a runner that has an option `stages`
-(what exists) and a parameter `stages` (what was chosen) reads each where it
+shadow an option of the same name; a runner with `stages` both as an option
+(what exists) and as a parameter (what was chosen) reads each where it
 lives (`tests/test_runner_contract.py::TestOptionsAndParameters`).
 
 **A document cannot reconfigure your runner.** Of a spec's `runner.<id>`
@@ -206,8 +206,8 @@ configures `jenkins` four times).
 
 ### 3.2 `plan(ctx)` — a preview without side effects
 
-`plan(ctx)` answers "what would a dispatch of this run do?" — which item goes
-to which shard — without executing, recording or triggering anything. It gets
+`plan(ctx)` answers "what would a dispatch of this run do?" — every item with the
+shard it would land in — and does nothing else: no execution, no record, no trigger. It gets
 a `PlanContext`: `run_id`, `runner_id`, `spec`, `item_ids`, `options`,
 `parameters`, `source`, `history`, `refuse(reason)` and `export_spec()`. Each
 of them is a member of `DispatchContext` too, with the same meaning, and
@@ -296,7 +296,7 @@ a run with an unreported item is never `PASS`. `plan` is text shown with the
 dispatch; `links` are named URLs — and how `cancel` finds your executor again
 later, since they are stored as given. `groups` labels shards that belong
 together (`{shard: label}` — the partition each chunk runs on): the run detail
-then rolls results up per group as well as per shard (`groups`: declared and
+then has a roll-up for every group next to the one for every shard (`groups`: declared and
 delivered shards, counts, summary, live status, completion per group)
 (`tests/test_runner_contract.py::TestShardGroups`).
 
@@ -362,8 +362,8 @@ after the hand-off — the URL of the build a queued job became. Set before
 logged), and a context rebuilt for `cancel` carries it.
 `ctx.delivered_shards()` is the set of shards that have delivered — by this
 runner or by a push from outside — and `ctx.outstanding_shards()` the declared
-shards that have not, in declaration order. **A runner may find its dispatch
-already complete** when the executor pushed results itself while `dispatch`
+shards that have not, in declaration order. **The dispatch may be complete
+before the runner is done with it** — when the executor pushed results itself while `dispatch`
 was still running: fetch and deliver what is outstanding, not everything you
 declared (`tests/test_runner_contract.py::TestOwnDispatch`,
 `tests/test_jenkins_toolkit.py::TestShards::test_a_shard_a_job_pushed_itself_is_not_downloaded_again`).
@@ -416,8 +416,8 @@ late still complete it. A serving deployment applies the timeout on its own,
 
 **History.** `ctx.history.durations(labels=…, last_n=…, statuses=…)` gives the
 mean duration per item over the last `last_n` dispatches that delivered;
-`statuses=("PASS",)` counts only executions that ended that way (a failing
-test often ends early and would distort a balance). An execution that
+`statuses=("PASS",)` counts only executions that ended that way (a test that fails
+usually stops short of its normal length, which would skew a balance). An execution that
 reported 0 ms is not counted: 0 means "unknown", to the store and to the
 planner. `plan_chunks(item_ids, n, durations)` from the SDK cuts a
 duration-balanced plan with it: longest first onto the lightest chunk, an
@@ -753,8 +753,8 @@ ctx.deliveries, ctx.shard_groups, ctx.links, ctx.artifacts, ctx.logs, ctx.export
   the fake is touched.
 - **Cancelling.** `ctx.request_cancel()` does what a cancel does.
 
-**A runner that needs real catalog items** — one that attributes items to
-suite roots, or reads `Item.meta` — gets them with
+**A runner that looks at the catalog itself** — where an item comes from,
+what its `Item.meta` holds — needs real items, and gets them with
 `FakeDispatchContext.from_source(source, selection=None, **kwargs)`: the
 planned items are the source's own `Item` objects, `ctx.source` is the source,
 and the document carries its snapshot, so there is no drift. `selection` is
@@ -957,7 +957,7 @@ options in [ADOPTING.md §2](../ADOPTING.md#2-start-with-configuration-not-code)
 |---|---|
 | `partition_mode: each \| split` | `each` (default): the selection runs once *per* chosen partition — the same tests against every environment. `split`: every test runs *once*; the chosen partitions are parallel lanes the selection is distributed over, balanced by duration history |
 | `max_tests_per_chunk: N`, `chunk_shards: true` | a chunk is executed in pieces of at most `N` tests, one after another. With `chunk_shards` every piece is a declared shard of its own, `<lane>-NN`, delivered as soon as it is done instead of merged into one result per chunk; shards are grouped by partition. `chunk_shards` without `max_tests_per_chunk` is a `ConfigError` |
-| `pre_dispatch: ["pkg.mod:callable"]` | called in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`; a mapping it returns is added to the Robot variables of every shard |
+| `pre_dispatch: ["pkg.mod:callable"]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`; a mapping it returns is added to the Robot variables of every shard |
 | `worker_setup: ["pkg.mod:callable"]` | called in each worker process before its first execution as `callable(info)`; `info` is `{shard, partition, run_id, dispatch_id, out_dir, variables}`; a mapping it returns is added to that shard's variables |
 | `run_parameters: [{name, kind, …}]` | further per-run parameters, declared with the fields of `Parameter` — beside the runner's own `partitions` and `allow_drift` |
 | `parameter_variables: {param: VARIABLE}` | a per-run parameter as a Robot variable (a list comma-joined); `"*"` for a `mapping` parameter makes each of its entries a variable |
@@ -1000,7 +1000,7 @@ run end to end by `tests/test_four_ways.py::test_1b_the_pool_configured_as_lanes
 
 | Option | What it does |
 |---|---|
-| `parameters: {NAME: template}` | the build parameters of *your* job. Fields: the document as `{spec_b64}` (gzip + base64 of the exact bytes — one line of ASCII that survives any form or shell; `base64 -d \| gunzip` restores it, `decode_spec` in Python), `{spec_url}` (where the job downloads the exact bytes; needs `callback_base`) or `{spec_json}` (as text — small documents only); `{run_id}`, `{dispatch_id}`, `{title}`, `{labels[key]}`; `{callback_url}`, `{token}`; `{item_ids}` (one per line), `{shards}` (comma-joined), `{params[name]}` (a list comma-joined, a `mapping` as `name=value` lines) |
+| `parameters: {NAME: template}` | the build parameters of *your* job. Fields: the document as `{spec_b64}` (the exact document, gzipped, as base64 — one line of ASCII that survives any form or shell; `base64 -d \| gunzip` restores it, `decode_spec` in Python), `{spec_url}` (where the job downloads the exact bytes; needs `callback_base`) or `{spec_json}` (as text — small documents only); `{run_id}`, `{dispatch_id}`, `{title}`, `{labels[key]}`; `{callback_url}`, `{token}`; `{item_ids}` (one per line), `{shards}` (comma-joined), `{params[name]}` (a list comma-joined, a `mapping` as `name=value` lines) |
 | `shards` | what the build reports separately: a list of names, or a template rendering to a comma- or newline-separated list (`"{params[regions]}"`); default `["1"]`. A template that renders to nothing, or to duplicates, refuses the dispatch |
 | `artifact_paths`, `result_urls` | with `completion: poll`, what is downloaded per shard: archived files matching `artifact_paths` (globs), and paths below the build's URL listed in `result_urls` (`consoleText`, `robot/report/output.xml` — what a publisher serves without archiving it). `{shard}` in either tells several shards' results apart. `artifact_paths` defaults to `["results/*"]` only when no `result_urls` are given. Several shards with `poll` and neither `{shard}` nor a `postprocess` are refused before the trigger |
 | `postprocess: "pkg.mod:callable"` | called as `callable(ctx, shard, directory) -> Path \| None` over what was downloaded for one shard, before parsing; the path it returns is what is delivered, `None` delivers the directory as it is |
@@ -1039,7 +1039,7 @@ per region — with their two callables in
     shards: "{params[regions]}"
     field_providers: { include: "shop_job:include_tags" }
     parameters:
-      SPEC_B64: "{spec_b64}"          # gzip + base64 of the exact bytes
+      SPEC_B64: "{spec_b64}"          # the exact document, gzipped, as base64
       REGIONS: "{shards}"
       INCLUDE: "{include}"            # computed from the selection
       DISPATCH_ID: "{dispatch_id}"
@@ -1061,8 +1061,8 @@ cancel after the queue item was forgotten).
 
 ### 9.2 Compose when configuration is not enough
 
-The toolkits are what the reference runners are made of — `robot-pool` and
-`jenkins` import nothing else of runcomposer
+`robot-pool` and `jenkins` are built from the toolkits and import nothing
+else of runcomposer
 (`tests/test_self_containment.py::test_the_reference_runners_are_built_on_the_toolkits`).
 
 **`runcomposer.sdk.robot`** — Robot Framework is imported inside the functions
@@ -1264,7 +1264,7 @@ delivers are in the reference format ([§4](#resultparser--native-artifacts-in-n
 >   `ctx.parameters` ([§3.1](#31-describe--who-it-is-and-what-a-run-may-choose)).
 > - `FakeDispatchContext.delivered_shards` is a method now,
 >   `delivered_shards()`, beside `outstanding_shards()`.
-> - `FakeDispatchContext.live_updates` keeps the whole stream — `RUNNING`
+> - `live_updates` of the fake context is the complete stream — `RUNNING`
 >   included, and after the shard delivered; what a store holds at the moment
 >   is `live_now` ([§6](#6-the-conformance-kit)).
 > - A `RunStore` implements `seed_durations`, `duration_aggregates(…,

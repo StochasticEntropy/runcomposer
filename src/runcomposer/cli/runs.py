@@ -50,8 +50,8 @@ def register(sub: Any) -> dict[str, Any]:
 
     p_plan = sub.add_parser(
         "plan",
-        help="show what a dispatch would do — which item goes to which shard — without "
-        "executing, storing or triggering anything",
+        help="show the plan a dispatch would follow — every item with the shard it would "
+        "land in — and do nothing else: no execution, nothing stored, nothing triggered",
     )
     add_selection_args(p_plan)
     p_plan.add_argument("--run", dest="run_id", metavar="RUN_ID",

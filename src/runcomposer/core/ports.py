@@ -143,8 +143,8 @@ class History(Protocol):
         """Mean duration in milliseconds per item id, over the last ``last_n``
         dispatches that delivered, of runs carrying all of ``labels``.
         ``statuses`` restricts the mean to executions that ended with one of
-        them (``("PASS",)``: a failing test often ends early and would distort
-        the balance). Executions that reported 0 ms are not counted — 0 means
+        them (``("PASS",)``: a test that fails usually stops short of its normal
+        length and would skew the balance). Executions that reported 0 ms are not counted — 0 means
         "no duration known". An item without any measured duration falls back
         to an imported one (``runcomposer history import``) when there is one.
         Empty on a fresh store."""
@@ -256,8 +256,8 @@ class DispatchContext(Protocol):
         the item ids each shard will report — moves the run to RUNNING and
         stores the plan text and links. Exactly once per dispatch.
         ``groups`` labels shards that belong together (``{shard: label}`` —
-        the partition each chunk runs on): results are rolled up per group as
-        well as per shard. ``spec_sha256`` records the hash of document bytes
+        the partition each chunk runs on): the run detail then has a roll-up for
+        every group next to the one for every shard. ``spec_sha256`` records the hash of document bytes
         the runner serialized and handed out itself (``export_spec`` does it
         for you)."""
         ...
@@ -475,8 +475,9 @@ class Runner(Protocol):
     def describe(self) -> RunnerInfo: ...
 
     def plan(self, ctx: PlanContext) -> PlanPreview:
-        """What a dispatch of ``ctx`` would do — which item goes to which
-        shard — without executing, recording or triggering anything. May
+        """The plan a dispatch of ``ctx`` would follow — every item with the
+        shard it would land in — and nothing else happens: no execution, no
+        record, no trigger. May
         ``ctx.refuse`` for the reasons ``dispatch`` would. Declared by the
         ``plan`` capability."""
         ...
