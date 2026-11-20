@@ -141,3 +141,42 @@ describe("values the server sends", () => {
     }
   });
 });
+
+describe("the built-in runners' own words", () => {
+  // The reference runners describe themselves in English; the UI has the same
+  // words per language, by plugin id. The English text here must be the one
+  // the plugin sends, so the two cannot drift apart unnoticed.
+  const plugins = files(join(PACKAGE, "plugins"), (name) => name.endsWith(".py")).map((path) => readFileSync(path, "utf-8"));
+  const flat = (text: string) => text.replace(/"\s*\n?\s*\+?\s*f?"/g, "").replace(/\s+/g, " ");
+  const described = plugins.flatMap((text) => {
+    const info = /RunnerInfo\(\s*id="([\w-]+)",\s*title="([^"]+)",\s*description=(f?)"([^"]*(?:"\s*\n\s*\+?\s*f?"[^"]*)*)"/.exec(text);
+    if (!info) return [];
+    const parameters = [...text.matchAll(/Parameter\(\s*"(\w+)",[^)]*?label="([^"]+)"/gs)].map((match) => ({ name: match[1]!, label: match[2]! }));
+    return [{ id: info[1]!, title: info[2]!, formatted: info[3] === "f", description: flat(info[4]!), parameters }];
+  });
+
+  it("are found in the plugin sources", () => {
+    expect(described.map((entry) => entry.id).sort()).toEqual(["command", "demo", "jenkins", "robot-pool"]);
+  });
+
+  it("have a title and a description in both languages, the English one as the plugin words it", () => {
+    for (const entry of described) {
+      expect(lookup(en, `builtin.runner.${entry.id}.title`), entry.id).toBe(entry.title);
+      for (const messages of Object.values(LOCALES)) {
+        const node = lookup(messages, `builtin.runner.${entry.id}`) as Record<string, unknown>;
+        expect(Object.keys(node).some((key) => key.startsWith("description")), entry.id).toBe(true);
+      }
+      // A description the plugin formats per configuration has its variants here instead.
+      if (!entry.formatted) expect(lookup(en, `builtin.runner.${entry.id}.description`), entry.id).toBe(entry.description);
+    }
+  });
+
+  it("have a label for every parameter a built-in runner declares itself", () => {
+    for (const entry of described) {
+      for (const parameter of entry.parameters) {
+        expect(lookup(en, `builtin.param.${entry.id}.${parameter.name}.label`), `${entry.id}.${parameter.name}`).toBe(parameter.label);
+        expect(typeof lookup(de, `builtin.param.${entry.id}.${parameter.name}.label`), `${entry.id}.${parameter.name}`).toBe("string");
+      }
+    }
+  });
+});

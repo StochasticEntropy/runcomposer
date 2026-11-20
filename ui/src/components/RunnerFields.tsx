@@ -6,18 +6,52 @@ import { useId, useState } from "react";
 
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { parseLabel } from "../lib/format.ts";
+import { Foreign } from "./ui.tsx";
 import type { Translator } from "../lib/i18n.ts";
 import type { MappingRow, ParamProblem, ParamValues } from "../lib/params.ts";
 import type { HealthCheck, ParameterSpec, RunnerInfo } from "../lib/types.ts";
 
-/** What is wrong with a value, in the viewer's words — a pattern is quoted, so it can be met. */
-export function problemTexts(t: Translator["t"], specs: ParameterSpec[], problems: Record<string, ParamProblem>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(problems).map(([name, problem]) => [
-      name,
-      t(`runner.problem.${problem}`, { pattern: specs.find((spec) => spec.name === name)?.pattern ?? "" }),
-    ]),
-  );
+/** What is wrong with a field: the UI's own sentence, and — when the server
+ * refused the value — the server's words as supporting detail. */
+export interface FieldProblem {
+  text: string;
+  foreign?: string;
+}
+
+/** What is wrong with a value, in the viewer's words. */
+export function problemTexts(t: Translator["t"], problems: Record<string, ParamProblem>): Record<string, FieldProblem> {
+  return Object.fromEntries(Object.entries(problems).map(([name, problem]) => [name, { text: t(`runner.problem.${problem}`) }]));
+}
+
+// The reference runners are part of this product, so the UI has their words
+// in its locale files, by plugin id — with what the server sent as the
+// fallback. Anything else a runner says about itself is the runner's text.
+
+/** A built-in runner's title in the viewer's language; null for any other runner. */
+export function builtinText(i18n: Pick<Translator, "tOr">, plugin: string | undefined, part: string, vars: Record<string, string | number> = {}): string | null {
+  if (!plugin) return null;
+  return i18n.tOr(`builtin.runner.${plugin}.${part}`, "", vars) || null;
+}
+
+/** What a built-in runner does, worded for the way it is configured to get its results back. */
+function builtinDescription(i18n: Pick<Translator, "tOr">, runner: RunnerInfo): string | null {
+  const completion = (runner.capabilities ?? []).find((capability) => capability === "callback" || capability === "poll");
+  return (completion && builtinText(i18n, runner.plugin, `description_${completion}`)) || builtinText(i18n, runner.plugin, "description");
+}
+
+/** A built-in parameter's label or help; null when the runner (or the deployment) declared its own. */
+function builtinParam(i18n: Pick<Translator, "tOr">, plugin: string | undefined, name: string, part: string): string | null {
+  if (!plugin) return null;
+  return i18n.tOr(`builtin.param.${plugin}.${name}.${part}`, "") || null;
+}
+
+/** A built-in runner's health summary, worded from its status and the data it reports. */
+function builtinHealth(i18n: Pick<Translator, "tOr">, runner: RunnerInfo): string | null {
+  const health = runner.health;
+  if (!runner.plugin || !health) return null;
+  const version = health.data.robot_version ?? health.data.version;
+  if (typeof version !== "string" && i18n.tOr(`builtin.health.${runner.plugin}.${health.status}`, "").includes("{version}")) return null;
+  return i18n.tOr(`builtin.health.${runner.plugin}.${health.status}`, "", { version: typeof version === "string" ? version : "" }) || null;
 }
 
 /** The checks a runner reports about itself (`health.data.checks`), if it does. */
@@ -34,7 +68,8 @@ export const runnerUsable = (runner: RunnerInfo | undefined): runner is RunnerIn
 const HEALTH_TONE: Record<string, string> = { ok: "ok", degraded: "warn", down: "danger", unknown: "neutral" };
 
 export function RunnerSelect({ value, onChange }: { value: string | null; onChange: (id: string) => void }) {
-  const { t, tOr } = useI18n();
+  const i18n = useI18n();
+  const { t, tOr } = i18n;
   const { runners, refreshRunners, runnersChecking } = useApp();
   const selectId = useId();
   const statusId = useId();
@@ -65,7 +100,10 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
               : "";
           return (
             <option key={runner.id} value={runner.id} disabled={Boolean(runner.error)}>
-              {runner.title && runner.title !== runner.id ? `${runner.id} — ${runner.title}` : runner.id}
+              {(() => {
+                const title = builtinText(i18n, runner.plugin, "title") ?? runner.title;
+                return title && title !== runner.id ? `${runner.id} — ${title}` : runner.id;
+              })()}
               {suffix}
             </option>
           );
@@ -74,14 +112,16 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
       <div id={statusId} className="runner-status">
         {selected && !selected.error && (
           <>
-            {selected.description && <p className="hint">{selected.description}</p>}
+            {selected.description && (
+              <p className="hint">{builtinDescription(i18n, selected) ?? <Foreign>{selected.description}</Foreign>}</p>
+            )}
             <p className="runner-health">
               {selected.health ? (
                 <>
                   <span className={`badge badge-${HEALTH_TONE[selected.health.status] ?? "neutral"}`}>
                     {tOr(`health.${selected.health.status}`, selected.health.status)}
                   </span>{" "}
-                  <span>{selected.health.detail}</span>
+                  <span>{builtinHealth(i18n, selected) ?? <Foreign>{selected.health.detail}</Foreign>}</span>
                 </>
               ) : (
                 <span className="muted">{t("runner.checking")}</span>
@@ -97,8 +137,10 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
             {healthChecks(selected).map((entry) => (
               <li key={entry.check} data-ok={entry.ok}>
                 <span className={`badge badge-${entry.ok ? "ok" : "danger"}`}>{entry.ok ? t("runner.checkOk") : t("runner.checkFailed")}</span>{" "}
-                <strong>{entry.check}</strong>
-                {entry.detail && <span className="muted"> — {entry.detail}</span>}
+                <Foreign>
+                  <strong>{entry.check}</strong>
+                  {entry.detail && <span className="muted"> — {entry.detail}</span>}
+                </Foreign>
               </li>
             ))}
           </ul>
@@ -112,7 +154,7 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
           <ul className="runner-problems">
             {broken.map((runner) => (
               <li key={runner.id}>
-                <span className="badge badge-danger">{t("runner.unavailable")}</span> <strong>{runner.id}</strong>: {runner.error}
+                <span className="badge badge-danger">{t("runner.unavailable")}</span> <strong>{runner.id}</strong>: <Foreign>{runner.error}</Foreign>
               </li>
             ))}
           </ul>
@@ -127,11 +169,16 @@ interface FormProps {
   values: ParamValues;
   onChange: (values: ParamValues) => void;
   /** name → message, from client-side checks or from the server's refusal. */
-  problems: Record<string, string>;
+  problems: Record<string, FieldProblem>;
+  /** The plugin behind the runner — a built-in one has its labels in the locale files. */
+  plugin?: string;
+  /** For a built-in parameter with two meanings: which one applies (robot-pool's partition mode). */
+  variant?: string;
 }
 
-export function ParameterForm({ specs, values, onChange, problems }: FormProps) {
-  const { t } = useI18n();
+export function ParameterForm({ specs, values, onChange, problems, plugin, variant }: FormProps) {
+  const i18n = useI18n();
+  const { t } = i18n;
   const prefix = useId();
   if (specs.length === 0) return null;
   const set = (name: string, value: unknown) => onChange({ ...values, [name]: value });
@@ -144,11 +191,15 @@ export function ParameterForm({ specs, values, onChange, problems }: FormProps) 
         const helpId = `${fieldId}-help`;
         const errorId = `${fieldId}-error`;
         const problem = problems[spec.name];
-        const described = [spec.help ? helpId : "", problem ? errorId : ""].filter(Boolean).join(" ") || undefined;
+        const patternId = `${fieldId}-pattern`;
+        const described = [spec.help ? helpId : "", spec.pattern ? patternId : "", problem ? errorId : ""].filter(Boolean).join(" ") || undefined;
+        const builtinLabel = builtinParam(i18n, plugin, spec.name, "label");
+        const builtinHelp = (variant && builtinParam(i18n, plugin, spec.name, `help_${variant}`)) || builtinParam(i18n, plugin, spec.name, "help");
         const value = values[spec.name];
         const label = (
           <>
-            {spec.label}
+            {/* A declared label and its help are the deployment's own wording: shown as written. */}
+            {builtinLabel ?? spec.label}
             {spec.required && (
               <>
                 <span className="required" aria-hidden="true" title={t("runner.required")}>
@@ -164,12 +215,23 @@ export function ParameterForm({ specs, values, onChange, problems }: FormProps) 
           <>
             {spec.help && (
               <p className="hint" id={helpId}>
-                {spec.help}
+                {builtinHelp ?? spec.help}
+              </p>
+            )}
+            {spec.pattern && (
+              <p className="hint pattern-hint" id={patternId}>
+                {t("runner.expectedForm")} <code>{spec.pattern}</code>
               </p>
             )}
             {problem && (
               <p className="field-error" id={errorId} role="alert">
-                {problem}
+                {problem.text}
+                {problem.foreign && (
+                  <>
+                    {" "}
+                    <Foreign>{problem.foreign}</Foreign>
+                  </>
+                )}
               </p>
             )}
           </>

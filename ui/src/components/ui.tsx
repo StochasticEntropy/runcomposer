@@ -10,6 +10,24 @@ import { absoluteTime, relativeTime } from "../lib/format.ts";
 import type { Translator } from "../lib/i18n.ts";
 import type { ApiError } from "../lib/request.ts";
 
+// -- text the UI did not write ---------------------------------------------------
+
+// The UI words everything it knows a code or a field for. What reaches it as
+// free text — a connector's description, a runner's plan, a tool's message, the
+// detail of a server error — it cannot translate. Such text is shown as it
+// was written and is marked: `lang="en"` for assistive technology (the
+// reference plugins and the server write English), and — while the UI itself
+// is in another language — set apart visually (styles: `.foreign`).
+export function Foreign({ children, block = false, className = "" }: { children: ReactNode; block?: boolean; className?: string }) {
+  const { t } = useI18n();
+  const Tag = block ? "pre" : "span";
+  return (
+    <Tag lang="en" className={`foreign ${className}`.trim()} title={block ? undefined : t("foreign.hint")}>
+      {children}
+    </Tag>
+  );
+}
+
 // -- errors -----------------------------------------------------------------------
 
 /** An error in the viewer's language: what happened (by the API's stable
@@ -26,7 +44,12 @@ export function ErrorText({ error }: { error: ApiError }) {
   return (
     <>
       <strong>{title}</strong>
-      {detail && detail !== title && <span className="error-detail"> {detail}</span>}
+      {detail && detail !== title && (
+        <>
+          {" "}
+          {error.code === "network" ? <span className="error-detail">{detail}</span> : <Foreign className="error-detail">{detail}</Foreign>}
+        </>
+      )}
     </>
   );
 }

@@ -55,6 +55,9 @@ function convert(ast: FilterAst): EditorNode {
   throw new TypeError("not a filter node");
 }
 
+/** One AST node as an editor node with ids of its own — to add a whole expression as a rule. */
+export const nodeFromAst = (ast: FilterAst): EditorNode => convert(ast);
+
 /** AST → editor tree. The root is always a group, so there is always somewhere to add to. */
 export function fromAst(ast: FilterAst | null): GroupNode {
   if (ast == null) return emptyRoot();

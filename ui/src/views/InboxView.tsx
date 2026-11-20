@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
-import { ConfirmDialog, Dialog, EmptyState, ErrorState, ErrorText, Loading, Notice, TimeAgo } from "../components/ui.tsx";
+import { ConfirmDialog, Dialog, EmptyState, ErrorState, ErrorText, Foreign, Loading, Notice, TimeAgo } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { useResource } from "../hooks/useResource.ts";
 import { asApiError } from "../lib/request.ts";
@@ -159,7 +159,11 @@ export function InboxView() {
                   </td>
                   <td data-label={t("inbox.column.reason")}>
                     <strong>{tOr(`inbox.reason.${entry.reason}`, entry.reason)}</strong>
-                    {entry.detail && <span className="cell-sub">{entry.detail}</span>}
+                    {entry.detail && (
+                      <span className="cell-sub">
+                        <Foreign>{entry.detail}</Foreign>
+                      </span>
+                    )}
                   </td>
                   <td data-label={t("inbox.column.via")}>{tOr(`inbox.transport.${entry.transport}`, entry.transport)}</td>
                   <td data-label={t("inbox.column.claimed")}>

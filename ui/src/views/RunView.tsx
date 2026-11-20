@@ -15,6 +15,7 @@ import {
   EmptyState,
   ErrorState,
   ErrorText,
+  Foreign,
   LabelChips,
   Loading,
   Notice,
@@ -310,7 +311,7 @@ export function RunView({ route }: { route: Route }) {
       {/* A cancel somebody asked for is not an error of the runner. */}
       {latest?.error && run.state !== "CANCELLED" && (
         <Notice tone="error">
-          <strong>{t("run.runnerError")}</strong> <span className="pre-line">{latest.error}</span>
+          <strong>{t("run.runnerError")}</strong> <Foreign className="pre-line">{latest.error}</Foreign>
         </Notice>
       )}
       {run.state === "CANCELLED" && <Notice tone="info">{t("run.cancelledHint")}</Notice>}
@@ -582,7 +583,11 @@ function SelectionTab({ run, shown }: { run: RunDetail; shown: Dispatch | null }
               </FragmentRow>
             ))}
           </dl>
-          {shown.plan && <pre className="plan">{shown.plan}</pre>}
+          {shown.plan && (
+            <Foreign block className="plan">
+              {shown.plan}
+            </Foreign>
+          )}
         </section>
       )}
 
@@ -631,8 +636,11 @@ function FragmentRow({ term, children }: { term: string; children: React.ReactNo
   );
 }
 
-/** What an event says, in a line: the fields people look for, each with its name. */
-function eventSummary(event: RunEvent, i18n: { t: Translator["t"]; tOr: Translator["tOr"] }): string {
+/**
+ * What an event says, in a line: the fields people look for, each with its
+ * name — and, apart from them, what the runner wrote in its own words.
+ */
+function eventSummary(event: RunEvent, i18n: { t: Translator["t"]; tOr: Translator["tOr"] }): { known: string; written: string } {
   const { t, tOr } = i18n;
   const data = event.data;
   const parts: string[] = [];
@@ -643,8 +651,9 @@ function eventSummary(event: RunEvent, i18n: { t: Translator["t"]; tOr: Translat
   if (text(data.completion)) parts.push(tOr(`completion.${text(data.completion)}`, text(data.completion)));
   if (typeof data.planned === "number") parts.push(t("picker.items", { count: data.planned }));
   if (text(data.mode)) parts.push(text(data.mode) === "export" ? t("mode.export") : text(data.mode) === "ingest" ? t("mode.ingest") : text(data.mode));
-  for (const field of ["reason", "message", "error"] as const) if (text(data[field])) parts.push(text(data[field]));
-  return parts.join(" · ");
+  const written: string[] = [];
+  for (const field of ["reason", "message", "error"] as const) if (text(data[field])) written.push(text(data[field]));
+  return { known: parts.join(" · "), written: written.join(" · ") };
 }
 
 function ActivityTab({ run, onRotate }: { run: RunDetail; onRotate: (dispatch: Dispatch) => void }) {
@@ -724,13 +733,20 @@ function ActivityTab({ run, onRotate }: { run: RunDetail; onRotate: (dispatch: D
           <h2>{t("run.activity.events")}</h2>
         </header>
         <ol className="events">
-          {events.map((event) => (
-            <li key={event.seq} data-kind={event.kind}>
-              <time dateTime={event.at}>{absoluteTime(event.at, locale)}</time>
-              <strong>{tOr(`event.${event.kind}`, event.kind)}</strong>
-              <span className="event-data">{eventSummary(event, i18n)}</span>
-            </li>
-          ))}
+          {events.map((event) => {
+            const summary = eventSummary(event, i18n);
+            return (
+              <li key={event.seq} data-kind={event.kind}>
+                <time dateTime={event.at}>{absoluteTime(event.at, locale)}</time>
+                <strong>{tOr(`event.${event.kind}`, event.kind)}</strong>
+                <span className="event-data">
+                  {summary.known}
+                  {summary.known && summary.written ? " · " : ""}
+                  {summary.written && <Foreign>{summary.written}</Foreign>}
+                </span>
+              </li>
+            );
+          })}
         </ol>
       </section>
 

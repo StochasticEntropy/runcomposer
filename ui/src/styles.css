@@ -982,10 +982,24 @@ main {
   grid-area: filter;
 }
 
+/* The preview is as tall as its rows, and at most the window: from under the
+   header down to the run bar, whatever stands above the table. */
 .preview {
   grid-area: preview;
   position: sticky;
   top: calc(var(--header-height) + 14px);
+  display: flex;
+  flex-direction: column;
+  max-height: max(420px, calc(100dvh - var(--header-height) - var(--run-bar-height, 64px) - 42px));
+}
+
+.preview > * {
+  flex: none;
+}
+
+.preview > .preview-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 .run-panel {
@@ -1123,11 +1137,13 @@ main {
   min-width: 0;
 }
 
-.expr-joint {
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
+/* Many rules in one group: they scroll inside it, so the group keeps its place. */
+.expr-rules.is-long {
+  max-height: 15.5rem;
+  overflow-y: auto;
+  padding: 2px;
+  margin: -2px;
+  align-content: flex-start;
 }
 
 .chip {
@@ -1151,6 +1167,31 @@ main {
   box-shadow: 0 0 0 2px var(--danger-bg);
 }
 
+/* Everything is not a rule against anything: it is drawn plainly. */
+.chip.is-everything {
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+
+/* In a chip the switch is small: the word and its box, no frame of its own. */
+.chip .toggle-not {
+  gap: 3px;
+  padding: 0 3px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0.68rem;
+}
+
+.chip .toggle-not .toggle-box {
+  width: 10px;
+  height: 10px;
+}
+
+.chip .toggle-not:hover,
+.chip .toggle-not.is-on {
+  border-color: currentcolor;
+}
+
 .chip.is-editing {
   padding: 0;
   border: 0;
@@ -1168,7 +1209,7 @@ main {
   align-items: baseline;
   gap: 5px;
   min-width: 0;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -1188,13 +1229,13 @@ main {
 
 .chip-remove {
   min-height: 24px;
-  padding: 0 6px;
+  padding: 0 4px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   cursor: pointer;
   flex: none;
 }
@@ -1233,12 +1274,25 @@ main {
   font-weight: 600;
 }
 
+.expr-applied {
+  margin: 0;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
 .expr-sentence {
   margin-top: 8px;
   padding: 6px 9px;
   border-radius: 6px;
   background: var(--panel-2);
   overflow-wrap: anywhere;
+  max-height: 7.4em;
+  overflow-y: auto;
+}
+
+.expr-count {
+  margin: 0;
+  font-size: 0.86rem;
 }
 
 .filter-panel > .field-error,
@@ -1358,8 +1412,105 @@ main {
   align-items: center;
 }
 
-.preset-select {
+.starts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
+}
+
+.preset-select {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.preset-select .input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 0.9rem;
+}
+
+.dialog-body form.saved-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.saved-form .field,
+.saved-form > .input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.saved-list > li > .saved-form {
+  flex: 1 1 auto;
+  align-items: center;
+}
+
+.saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.saved-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.saved-what {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.pattern-hint code {
+  overflow-wrap: anywhere;
+}
+
+/*
+ * What a runner or the server says in its own words is not translated. Where
+ * the page speaks another language than those words, they carry the language
+ * they are in — a small mark in front, the same everywhere.
+ */
+:root:not([lang="en"]) .foreign::before {
+  content: attr(lang);
+  content: attr(lang) / "";
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--muted);
+  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 0.64rem;
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+.passed-shards {
+  margin-top: 10px;
 }
 
 .preset-cards {
@@ -1493,7 +1644,7 @@ main {
 }
 
 .preview-scroll {
-  max-height: max(260px, calc(100dvh - 380px));
+  max-height: none;
 }
 
 .results-scroll {
@@ -1945,7 +2096,7 @@ main {
 }
 
 .verdict-table .col-shard {
-  width: 124px;
+  width: 104px;
 }
 
 .verdict-table .col-attempt {
@@ -1957,7 +2108,15 @@ main {
 }
 
 .verdict-table .col-message {
-  width: 30%;
+  width: 24%;
+}
+
+.verdict-table .col-files {
+  width: 112px;
+}
+
+.verdict-table .col-files a + a {
+  margin-left: 8px;
 }
 
 .verdict-table .col-item .clamp {
@@ -2115,6 +2274,8 @@ main {
 
   .preview {
     position: static;
+    display: block;
+    max-height: none;
   }
 
   .preview-scroll {
@@ -2262,7 +2423,7 @@ main {
     grid-template-columns: max-content minmax(0, 1fr) max-content;
     grid-template-areas:
       "status item item"
-      "shard shard duration"
+      "shard files duration"
       "message message message";
     align-content: center;
     gap: 2px 8px;
@@ -2287,6 +2448,11 @@ main {
   .verdict-table .col-shard {
     grid-area: shard;
     color: var(--muted);
+    font-size: 0.88rem;
+  }
+
+  .verdict-table .col-files {
+    grid-area: files;
     font-size: 0.88rem;
   }
 

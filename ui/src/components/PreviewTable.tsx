@@ -17,7 +17,7 @@ import { isFresh, previewRows, tristate } from "../lib/compose.ts";
 import type { PreviewSort, PreviewState } from "../lib/compose.ts";
 import { naturalCompare } from "../lib/format.ts";
 import type { CatalogItem } from "../lib/types.ts";
-import { ErrorState, Loading, TriCheckbox } from "./ui.tsx";
+import { ErrorState, Foreign, Loading, TriCheckbox } from "./ui.tsx";
 
 interface Props {
   state: PreviewState;
@@ -147,7 +147,7 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
       )}
       {state.result.warnings.length > 0 && fresh && state.result.count > 0 && (
         <p className="notice notice-warn" role="status">
-          {state.result.warnings.join(" · ")}
+          <Foreign>{state.result.warnings.join(" · ")}</Foreign>
         </p>
       )}
 

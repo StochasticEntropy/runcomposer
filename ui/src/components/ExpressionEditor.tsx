@@ -34,11 +34,17 @@ interface Props {
   errorNodeId: string | null;
   /** The label a curated taxonomy node gives a pattern, if any. */
   labelOf: (pattern: string) => string | null;
+  /** The expression as it is being typed, or null while it is not edited as
+   * text. It is the caller's: while a typed text differs from the filter that
+   * is applied, the caller must not run anything. */
+  textDraft: string | null;
+  onTextDraft: (text: string | null) => void;
 }
 
-export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeId, labelOf }: Props) {
+export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeId, labelOf, textDraft, onTextDraft }: Props) {
   const { t } = useI18n();
-  const [textMode, setTextMode] = useState(false);
+  const textMode = textDraft !== null;
+  const applied = formatFilter(toAst(root));
   const [focusGroup, setFocusGroup] = useState<string | null>(null);
   const container = useRef<HTMLDivElement | null>(null);
 
@@ -95,19 +101,26 @@ export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeI
   return (
     <div className="expr" ref={container}>
       {textMode ? (
-        <TextEditor
-          initial={formatFilter(toAst(root))}
-          onApply={(ast) => {
-            onChange(fromAst(ast));
-            setTextMode(false);
-          }}
-          onCancel={() => setTextMode(false)}
-        />
+        <>
+          <TextEditor
+            text={textDraft}
+            onText={onTextDraft}
+            onApply={(ast) => {
+              onChange(fromAst(ast));
+              onTextDraft(null);
+            }}
+            onCancel={() => onTextDraft(null)}
+          />
+          {/* What is typed is not the filter until it is applied: the filter that IS applied stays in view. */}
+          <p className="expr-applied" data-testid="applied-filter">
+            <span className="muted">{t("filter.applied")}</span> {applied ? <code>{applied}</code> : <span className="muted">{t("filter.appliedNone")}</span>}
+          </p>
+        </>
       ) : (
         <>
           <Group node={root} isRoot actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} />
           <div className="expr-tools">
-            <button type="button" className="btn btn-small btn-quiet" onClick={() => setTextMode(true)}>
+            <button type="button" className="btn btn-small btn-quiet" onClick={() => onTextDraft(applied)}>
               {t("filter.editAsText")}
             </button>
             {root.children.length > 0 && (
@@ -146,6 +159,10 @@ interface NodeProps {
   errorNodeId: string | null;
   labelOf: (pattern: string) => string | null;
 }
+
+// A group with more rules than this keeps its height: the rules scroll inside
+// it, and the field that adds the next one stays where it was.
+const LONG_GROUP = 16;
 
 function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf }: NodeProps & { node: GroupNode; isRoot?: boolean }) {
   const { t } = useI18n();
@@ -201,19 +218,16 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
       </div>
 
       {node.children.length > 0 && (
-        <ul className="expr-rules">
-          {node.children.map((child, index) => (
+        <ul className={`expr-rules${node.children.length > LONG_GROUP ? " is-long" : ""}`}>
+          {node.children.map((child) => (
+            // The operator is said once, by the group; the rules are chips that wrap.
             <li key={child.id} className={child.kind === "group" ? "is-group" : undefined}>
-              {index > 0 && (
-                <span className="expr-joint" aria-hidden="true">
-                  {t(`filter.op.${node.op}`)}
-                </span>
-              )}
               <Rule node={child} actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} />
             </li>
           ))}
         </ul>
       )}
+      {node.children.length > LONG_GROUP && <p className="hint expr-count">{t("filter.ruleCount", { count: node.children.length })}</p>}
 
       <form
         className="expr-add"
@@ -305,7 +319,10 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
   }
 
   return (
-    <span className={`chip${node.negated ? " is-negated" : ""}${invalid ? " is-invalid" : ""}`} data-pattern={node.pattern}>
+    <span
+      className={`chip${everything ? " is-everything" : node.negated ? " is-negated" : ""}${invalid ? " is-invalid" : ""}`}
+      data-pattern={everything ? "*" : node.pattern}
+    >
       {node.negated && !everything && (
         <span className="not-mark" aria-hidden="true">
           {t("filter.not")}
@@ -361,19 +378,21 @@ function NotToggle({ on, label, onToggle }: { on: boolean; label: string; onTogg
 }
 
 function TextEditor({
-  initial,
+  text,
+  onText,
   onApply,
   onCancel,
 }: {
-  initial: string;
+  text: string;
+  onText: (text: string) => void;
   onApply: (ast: ReturnType<typeof parseFilter>) => void;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
-  const [text, setText] = useState(initial);
   const [problem, setProblem] = useState<FilterParseError | null>(null);
   const fieldId = useId();
   const errorId = useId();
+  const setText = onText;
 
   const apply = () => {
     try {

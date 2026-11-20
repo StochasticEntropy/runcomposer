@@ -10,7 +10,7 @@ import { useMediaQuery } from "../hooks/usePage.ts";
 import { useVirtual } from "../hooks/useVirtual.ts";
 import { formatDuration, naturalCompare, sumCounts } from "../lib/format.ts";
 import { isActive } from "../lib/types.ts";
-import type { Artifact, RunDetail, ShardSummary, VerdictRow } from "../lib/types.ts";
+import type { Artifact, GroupSummary, RunDetail, ShardSummary, VerdictRow } from "../lib/types.ts";
 import { Dialog, ResultBadge, VerdictBadge, VerdictBar, VerdictCounts } from "./ui.tsx";
 
 const STATUS_RANK: Record<string, number> = { FAIL: 0, ERROR: 1, MISSING: 2, RUNNING: 3, SKIP: 5, PASS: 6 };
@@ -34,6 +34,33 @@ export interface ResultRow extends VerdictRow {
   superseded: boolean;
   /** On a row without a delivered result: what the item reported live before the dispatch ended. */
   seenLive: string | null;
+}
+
+const TROUBLE = ["FAIL", "ERROR", "MISSING"];
+/** A list of more shards than this folds the ones without a failure into one line. */
+const FOLD_SHARDS_ABOVE = 8;
+
+/** Where the eye should go first: 0 something did not pass (or never came), 1 still at work, 2 all well. */
+export function attention(part: { summary: Record<string, number>; done: boolean }, over: boolean): 0 | 1 | 2 {
+  if (TROUBLE.some((status) => (part.summary[status] ?? 0) > 0)) return 0;
+  if (!part.done) return over ? 0 : 1;
+  return 2;
+}
+
+/** Failures first, then what is still running, then the rest — each in natural order of its name. */
+export function byAttention<T>(parts: T[], rankOf: (part: T) => number, nameOf: (part: T) => string): T[] {
+  return [...parts].sort((a, b) => rankOf(a) - rankOf(b) || naturalCompare(nameOf(a), nameOf(b)));
+}
+
+/** The files to offer next to a result: its shard's log and report, by their short names. */
+export function rowFiles(artifacts: Artifact[], shard: string): { label: string; href: string }[] {
+  const linked = artifacts.filter((artifact) => artifact.shard === shard && artifact.href);
+  const readable = linked.filter((artifact) => artifact.media_type === "text/html");
+  return (readable.length > 0 ? readable : linked).slice(0, 2).map((artifact) => ({
+    // "log.html (eu-01)" → "log": the row already says which shard it is.
+    label: artifact.name.replace(/\s*\(.*\)\s*$/, "").replace(/\.html?$/i, ""),
+    href: artifact.href!,
+  }));
 }
 
 /** Counts without RUNNING: an item that is running has no result yet. */
@@ -251,7 +278,41 @@ export function RunResults({ run, query, onQuery }: Props) {
       over={over}
     />
   );
-  const ungrouped = shards.filter((entry) => !(entry.shard in groupOf));
+  // Failures first: the shards and groups that need a look are at the top,
+  // and what passed completely folds away while something else did not.
+  const shardRank = (entry: ShardSummary) => attention({ summary: entry.summary, done: entry.delivered }, over);
+  const groupRank = (entry: GroupSummary) =>
+    attention({ summary: entry.summary, done: entry.declared_shards > 0 && entry.delivered_shards >= entry.declared_shards }, over);
+  const orderedGroups = byAttention(groups, groupRank, (entry) => entry.group);
+  const ungrouped = byAttention(
+    shards.filter((entry) => !(entry.shard in groupOf)),
+    shardRank,
+    (entry) => entry.shard,
+  );
+  const anyTrouble = shards.some((entry) => shardRank(entry) === 0);
+  // Many shards: the ones without a failure share one folded line, so fifty
+  // shards with one failure are one card and one line — not fifty cards.
+  const shardList = (list: ShardSummary[]) => {
+    const fold = list.length > FOLD_SHARDS_ABOVE;
+    const shown = fold ? list.filter((entry) => shardRank(entry) < 2) : list;
+    const passed = fold ? list.filter((entry) => shardRank(entry) === 2) : [];
+    return (
+      <>
+        {shown.length > 0 && <ul className="shard-grid">{shown.map(shardCard)}</ul>}
+        {passed.length > 0 && (
+          <details className="group-shards passed-shards">
+            <summary>{t("run.passedShards", { count: passed.length })}</summary>
+            <ul className="shard-grid">{passed.map(shardCard)}</ul>
+          </details>
+        )}
+      </>
+    );
+  };
+  const filesByShard = useMemo(() => {
+    const byShard = new Map<string, { label: string; href: string }[]>();
+    for (const name of new Set(artifacts.map((artifact) => artifact.shard ?? ""))) if (name) byShard.set(name, rowFiles(artifacts, name));
+    return byShard;
+  }, [artifacts]);
   const links = Object.entries(dispatch?.links ?? {});
 
   if (!dispatch) return <p className="state state-empty">{t("run.neverDispatched")}</p>;
@@ -262,15 +323,21 @@ export function RunResults({ run, query, onQuery }: Props) {
         <section aria-labelledby="groups-title">
           <h2 id="groups-title">{t("run.groups", { count: groups.length })}</h2>
           <ul className="group-list">
-            {groups.map((entry) => {
+            {orderedGroups.map((entry) => {
               const live = over ? {} : reportedOnly(entry.live);
               const merged = { ...entry.summary };
               for (const [status, value] of Object.entries(live)) merged[status] = (merged[status] ?? 0) + value;
               const nowRunning = over ? 0 : (entry.live.RUNNING ?? 0);
-              const members = shards.filter((candidate) => groupOf[candidate.shard] === entry.group);
+              const members = byAttention(
+                shards.filter((candidate) => groupOf[candidate.shard] === entry.group),
+                shardRank,
+                (candidate) => candidate.shard,
+              );
+              // Open when it needs a look; a group that passed stays folded while another did not.
+              const open = anyTrouble ? groupRank(entry) < 2 : members.length <= FOLD_SHARDS_ABOVE;
               const complete = entry.delivered_shards >= entry.declared_shards && entry.declared_shards > 0;
               return (
-                <li key={entry.group} className="group-card" data-group={entry.group}>
+                <li key={entry.group} className="group-card" data-group={entry.group} data-attention={groupRank(entry)}>
                   <div className="shard-head">
                     <h3>{entry.group}</h3>
                     {complete ? (
@@ -289,9 +356,9 @@ export function RunResults({ run, query, onQuery }: Props) {
                   </p>
                   <VerdictCounts counts={merged} />
                   <ArtifactLinks artifacts={groupLevel(entry.group)} />
-                  <details className="group-shards" open={members.length <= 8}>
+                  <details className="group-shards" open={open}>
                     <summary>{t("run.shards", { count: members.length })}</summary>
-                    <ul className="shard-grid">{members.map(shardCard)}</ul>
+                    {shardList(members)}
                   </details>
                 </li>
               );
@@ -303,7 +370,7 @@ export function RunResults({ run, query, onQuery }: Props) {
       {ungrouped.length > 0 && (
         <section aria-labelledby="shards-title">
           <h2 id="shards-title">{t("run.shards", { count: ungrouped.length })}</h2>
-          <ul className="shard-grid">{ungrouped.map(shardCard)}</ul>
+          {shardList(ungrouped)}
         </section>
       )}
 
@@ -406,8 +473,12 @@ export function RunResults({ run, query, onQuery }: Props) {
                 <table className="table verdict-table" aria-rowcount={rows.length + 1}>
                   <thead>
                     <tr aria-rowindex={1}>
-                      <th scope="col">{t("run.column.status")}</th>
-                      <th scope="col">{t("run.column.item")}</th>
+                      <th scope="col" className="col-status">
+                        {t("run.column.status")}
+                      </th>
+                      <th scope="col" className="col-item">
+                        {t("run.column.item")}
+                      </th>
                       <th scope="col" className="col-shard">
                         {t("run.column.shard")}
                       </th>
@@ -420,12 +491,15 @@ export function RunResults({ run, query, onQuery }: Props) {
                       <th scope="col" className="col-message">
                         {t("run.column.message")}
                       </th>
+                      <th scope="col" className="col-files">
+                        {t("run.column.files")}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     {virtual.padTop > 0 && (
                       <tr aria-hidden="true" className="spacer">
-                        <td colSpan={6} style={{ height: virtual.padTop }} />
+                        <td colSpan={7} style={{ height: virtual.padTop }} />
                       </tr>
                     )}
                     {rows.slice(virtual.start, virtual.end).map((row, offset) => (
@@ -463,11 +537,18 @@ export function RunResults({ run, query, onQuery }: Props) {
                             </button>
                           ) : null}
                         </td>
+                        <td className="col-files">
+                          {(filesByShard.get(row.shard) ?? []).map((file) => (
+                            <a key={file.href} href={file.href} target="_blank" rel="noreferrer noopener" aria-label={t("run.fileOf", { file: file.label, item: row.item_id })}>
+                              {file.label}
+                            </a>
+                          ))}
+                        </td>
                       </tr>
                     ))}
                     {virtual.padBottom > 0 && (
                       <tr aria-hidden="true" className="spacer">
-                        <td colSpan={6} style={{ height: virtual.padBottom }} />
+                        <td colSpan={7} style={{ height: virtual.padBottom }} />
                       </tr>
                     )}
                   </tbody>

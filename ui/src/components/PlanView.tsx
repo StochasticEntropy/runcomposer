@@ -8,7 +8,7 @@ import { formatDuration } from "../lib/format.ts";
 import { isCurrent } from "../lib/keyed.ts";
 import type { KeyedState } from "../lib/keyed.ts";
 import type { PlanResult } from "../lib/types.ts";
-import { ErrorState, Loading, Notice } from "./ui.tsx";
+import { ErrorState, Foreign, Loading, Notice } from "./ui.tsx";
 
 interface Props {
   state: KeyedState<PlanResult>;
@@ -27,7 +27,7 @@ export function PlanView({ state, onRetry }: Props) {
     return (
       <div className="plan-view" data-testid="plan" data-refused="true">
         <Notice tone="error">
-          <strong>{t("plan.refused")}</strong> <span className="pre-line">{result.refusal}</span>
+          <strong>{t("plan.refused")}</strong> <Foreign className="pre-line">{result.refusal}</Foreign>
         </Notice>
         <p className="hint">{t("plan.refusedHint")}</p>
       </div>
@@ -50,13 +50,15 @@ export function PlanView({ state, onRetry }: Props) {
 
       {result.warnings.map((warning) => (
         <Notice tone="warn" key={warning}>
-          {warning}
+          <Foreign>{warning}</Foreign>
         </Notice>
       ))}
       {plan.notes.length > 0 && (
         <ul className="plan-notes" aria-label={t("plan.notes")}>
           {plan.notes.map((note) => (
-            <li key={note}>{note}</li>
+            <li key={note}>
+              <Foreign>{note}</Foreign>
+            </li>
           ))}
         </ul>
       )}
@@ -133,7 +135,9 @@ export function PlanView({ state, onRetry }: Props) {
       {plan.text && (
         <details className="plan-text">
           <summary>{t("plan.asText")}</summary>
-          <pre className="plan">{plan.text}</pre>
+          <Foreign block className="plan">
+            {plan.text}
+          </Foreign>
         </details>
       )}
     </div>

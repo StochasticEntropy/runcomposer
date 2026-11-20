@@ -47,6 +47,9 @@ test("the nav shows how many deliveries wait; attach one to its run, discard the
   // Each entry says, in the viewer's language, why it is here — and the server's detail.
   await expect(row(page, "sha-mismatch")).toContainText("does not match the spec bytes");
   await expect(row(page, "bad-bundle")).toContainText("'name' is required");
+  // The reason is the UI's sentence; the detail is the server's own, and marked as such.
+  await expect(row(page, "bad-bundle").locator(".foreign")).toHaveAttribute("lang", "en");
+  await expect(row(page, "bad-bundle").locator(".foreign")).toContainText("'name' is required");
   await expect(row(page, "sha-mismatch")).toContainText(msg("inbox.transport.push"));
 
   // Discard asks first, and Cancel keeps the delivery.

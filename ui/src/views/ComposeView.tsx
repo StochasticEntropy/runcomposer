@@ -6,13 +6,15 @@
 // `from`); all of it lives in session storage, so a reload or a trip to
 // another view brings back exactly what was there.
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ExportDialog } from "../components/ExportDialog.tsx";
 import { ExpressionEditor } from "../components/ExpressionEditor.tsx";
 import { PreviewTable } from "../components/PreviewTable.tsx";
 import { PlanView } from "../components/PlanView.tsx";
+import { SavedSelections } from "../components/SavedSelections.tsx";
 import { LabelsInput, ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "../components/RunnerFields.tsx";
+import type { FieldProblem } from "../components/RunnerFields.tsx";
 import { TagPicker } from "../components/TagPicker.tsx";
 import { CopyButton, Dialog, ErrorState, ErrorText, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
@@ -30,17 +32,19 @@ import {
   previewSelection,
 } from "../lib/compose.ts";
 import type { ComposeLink, PreviewState } from "../lib/compose.ts";
-import { ROOT_ID, addTag, emptyRoot, fromAst, toAstWithPaths } from "../lib/editor.ts";
+import { ROOT_ID, addNode, addTag, emptyRoot, fromAst, nodeFromAst, toAstWithPaths } from "../lib/editor.ts";
 import type { GroupNode } from "../lib/editor.ts";
-import { MATCH_ALL, errorPath, formatFilter, parseFilter } from "../lib/filter.ts";
+import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter } from "../lib/filter.ts";
 import { setFlash } from "../lib/flash.ts";
 import { parseLabel } from "../lib/format.ts";
 import { fromPayload, mergeValues, toPayload, validateValues } from "../lib/params.ts";
 import type { ParamValues } from "../lib/params.ts";
 import { readSession, writeSession } from "../lib/prefs.ts";
+import { loadSaved } from "../lib/saved.ts";
+import type { SavedSelection } from "../lib/saved.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
-import { composeHref, runHref } from "../lib/router.ts";
+import { composeHref, parseHash, runHref } from "../lib/router.ts";
 import type { Route } from "../lib/router.ts";
 import { indexByPattern, isSelectable, orderTree } from "../lib/tagTree.ts";
 import type { Preset, QuickFilter, TaxonomyNode } from "../lib/types.ts";
@@ -56,6 +60,16 @@ interface StoredDraft {
   title: string;
   labels: Record<string, string>;
 }
+
+/** A selection as the URL would say it, as a comparable key — "" for no selection, which is what a bare URL says. */
+function keyOfLink(link: ComposeLink | null): string {
+  if (!link) return "";
+  const query = linkQuery(link);
+  return query.f === null && query.from === null && query.x === null ? "" : JSON.stringify(query);
+}
+
+/** The selection a URL carries, as that key. */
+const urlKeyOf = (query: Record<string, string>): string => keyOfLink(linkFromQuery(query));
 
 function rootFromText(text: string): { root: GroupNode; unreadable: boolean } {
   try {
@@ -85,10 +99,11 @@ function initialDraft(query: Record<string, string>, defaultFilter: string): { d
   return { draft, ...rootFromText(draft.filter) };
 }
 
-/** Ways into a selection: what the deployment configured, then the curated taxonomy. */
+/** Ways into a selection on the empty builder: the curated taxonomy's own nodes. */
 function quickStarts(taxonomy: TaxonomyNode[], configured: QuickFilter[]): QuickFilter[] {
-  const starts: QuickFilter[] = [...configured];
-  const seen = new Set(starts.map((start) => start.text));
+  const starts: QuickFilter[] = [];
+  // What the deployment configured is offered above the filter at all times; no need to repeat it here.
+  const seen = new Set(configured.map((start) => start.text));
   const walk = (nodes: TaxonomyNode[]) => {
     for (const node of nodes) {
       if (starts.length >= 12) return;
@@ -121,10 +136,13 @@ export function ComposeView({ route }: { route: Route }) {
   const [labelDraft, setLabelDraft] = useState("");
 
   const [pickerGroup, setPickerGroup] = useState<string | null>(null);
+  const [planning, setPlanning] = useState(false);
+  // The filter as it is being typed in the text editor; null while it is not open.
+  const [textDraft, setTextDraft] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<ApiError | null>(null);
-  const [paramErrors, setParamErrors] = useState<Record<string, string>>({});
+  const [paramErrors, setParamErrors] = useState<Record<string, FieldProblem>>({});
   const [labelProblem, setLabelProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const submitting = useRef(false);
@@ -205,38 +223,61 @@ export function ComposeView({ route }: { route: Route }) {
 
   // -- URL and session ------------------------------------------------------------------
   const link: ComposeLink = useMemo(() => ({ filter: filterText, excluded: [...excluded], from }), [filterText, excluded, from]);
-  const linkKey = JSON.stringify(linkQuery(link));
+  const linkKey = keyOfLink(link);
   const linkKeyRef = useRef(linkKey);
   useEffect(() => {
     linkKeyRef.current = linkKey;
   });
 
-  // An edit of the filter is a step in the browser's history — Back takes it
-  // back. Ticking items is not (that would be one step per item), and neither
-  // is writing the URL for a state that came FROM the URL.
+  // The builder and the URL follow each other, and two rules keep them from
+  // fighting:
+  //
+  // - `synced` is the URL state the builder's state was derived from, or was
+  //   last written as. The builder writes to the URL only while the URL still
+  //   IS that state. If the URL moved on meanwhile — Back pressed twice before
+  //   the first step was rendered — what the builder holds is derived from an
+  //   older URL, and writing it would overwrite the newer one.
+  // - An edit of the filter is a step in the browser's history (Back takes it
+  //   back); ticking items is not, and neither is writing a state that came
+  //   FROM the URL.
+  const [urlTick, setUrlTick] = useState(0);
+  const synced = useRef(urlKeyOf(route.query));
   const written = useRef<{ filter: string; from: string | null } | null>(null);
   const adopted = useRef(false);
   useEffect(() => {
+    if (urlKeyOf(parseHash(window.location.hash).query) !== synced.current) return;
     const previous = written.current;
     const edited = previous !== null && (previous.filter !== link.filter || previous.from !== link.from);
     written.current = { filter: link.filter, from: link.from };
+    synced.current = keyOfLink(link);
     navigate(composeHref(linkQuery(link)), { replace: !edited || adopted.current });
     adopted.current = false;
-  }, [link]);
+  }, [link, urlTick]);
 
   // Somebody else changed the URL — Back, a pasted link, "load into Compose".
   useEffect(() => {
+    const incomingKey = urlKeyOf(route.query);
+    if (incomingKey === synced.current) return;
+    synced.current = incomingKey;
     const incoming = linkFromQuery(route.query);
-    if (!incoming || JSON.stringify(linkQuery(incoming)) === linkKeyRef.current) return;
+    if (!incoming) {
+      // A bare #/compose: the builder keeps what it holds and says so in the URL.
+      setUrlTick((tick) => tick + 1);
+      return;
+    }
+    // Whatever was typed as text, or open in a dialog, belonged to the selection that was there before.
+    setTextDraft(null);
+    setPickerGroup(null);
+    setExporting(false);
+    setPlanning(false);
+    if (incomingKey === linkKeyRef.current) return;
     adopted.current = true;
+    written.current = { filter: incoming.filter, from: incoming.from };
     const parsed = rootFromText(incoming.filter);
     setRoot(parsed.root);
     setUnreadableLink(parsed.unreadable);
     setExcluded(new Set(incoming.excluded));
     setFrom(incoming.from);
-    // A dialog that was open belongs to the selection that was there before.
-    setPickerGroup(null);
-    setExporting(false);
   }, [route.query]);
 
   useEffect(() => {
@@ -290,6 +331,7 @@ export function ComposeView({ route }: { route: Route }) {
   /** A preset is a complete starting point: selection, runner, its options, title, labels. */
   const applyPreset = (preset: Preset) => {
     setRoot(fromAst(preset.tag_filter));
+    setTextDraft(null);
     setUnreadableLink(false);
     setExcluded(new Set());
     setFrom(null);
@@ -309,6 +351,40 @@ export function ComposeView({ route }: { route: Route }) {
     announce(t("compose.presetApplied", { label: preset.label }));
   };
 
+  // -- selections saved in this browser ---------------------------------------------------------
+  const [saved, setSaved] = useState<SavedSelection[]>(() => loadSaved());
+  const [savedOpen, setSavedOpen] = useState(false);
+  const applySaved = (entry: SavedSelection) => {
+    const parsed = rootFromText(entry.filter);
+    setRoot(parsed.root);
+    setUnreadableLink(parsed.unreadable);
+    setTextDraft(null);
+    setExcluded(new Set(entry.excluded));
+    setFrom(null);
+    setTitle(entry.title);
+    setLabels(entry.labels);
+    setLabelDraft("");
+    setSubmitError(null);
+    setParamErrors({});
+    const wanted = runners.find((candidate) => candidate.id === entry.runner);
+    if (runnerUsable(wanted)) {
+      setRunnerId(wanted.id);
+      setParamsByRunner((current) => ({ ...current, [wanted.id]: mergeValues(wanted.parameters ?? [], entry.params) }));
+    }
+    setNotice(t("saved.applied", { name: entry.name }));
+    announce(t("saved.applied", { name: entry.name }));
+  };
+
+  /** A quick filter: one pattern is one more rule; a whole expression is the filter, or one more group of it. */
+  const applyQuick = (quick: QuickFilter) => {
+    // Text that was being typed belonged to the filter before this one.
+    setTextDraft(null);
+    if (quick.kind === "pattern" && typeof quick.tag_filter === "string") changeRoot(addTag(root, ROOT_ID, quick.tag_filter));
+    else if (emitted.ast === null) changeRoot(fromAst(quick.tag_filter));
+    else changeRoot(addNode(root, ROOT_ID, nodeFromAst(quick.tag_filter)));
+  };
+  const quickFilters = meta.ui.quick_filters ?? [];
+
   const changeRoot = (next: GroupNode) => {
     setRoot(next);
     setUnreadableLink(false);
@@ -316,6 +392,7 @@ export function ComposeView({ route }: { route: Route }) {
   };
 
   const reset = () => {
+    setTextDraft(null);
     setRoot(rootFromText(defaultFilter).root);
     setExcluded(new Set());
     setFrom(null);
@@ -339,7 +416,16 @@ export function ComposeView({ route }: { route: Route }) {
   };
 
   // -- composing ------------------------------------------------------------------------------
-  const defaultTitle = filterError ? "" : filterText ? filterText.slice(0, 80) : pinned ? t("compose.titleFromRun", { title: pinned.title }) : "";
+  // A title nobody typed says what the selection is, in words — never in the wire encoding of anything.
+  const defaultTitle = filterError
+    ? ""
+    : isEverything(emitted.ast)
+      ? t("filter.everything")
+      : filterText
+        ? filterText.slice(0, 80)
+        : pinned
+          ? t("compose.titleFromRun", { title: pinned.title })
+          : "";
 
   /** Everything a run or an export is composed from, or null when the form says no. */
   const collect = (): { selection: NonNullable<ReturnType<typeof dispatchSelection>>; title?: string; labels: Record<string, string> } | null => {
@@ -366,7 +452,7 @@ export function ComposeView({ route }: { route: Route }) {
   const optionsValid = (): boolean => {
     const problems = validateValues(specs, values);
     if (Object.keys(problems).length === 0) return true;
-    setParamErrors(problemTexts(t, specs, problems));
+    setParamErrors(problemTexts(t, problems));
     const first = specs.find((spec) => spec.name in problems)?.name;
     formRef.current?.querySelector<HTMLElement>(`[data-param="${first}"] :is(input, select, textarea)`)?.focus();
     return false;
@@ -376,7 +462,6 @@ export function ComposeView({ route }: { route: Route }) {
   // Asked for (selection, runner, options) as they are when "Plan" is pressed,
   // and keyed by them: should any of them change, the answer on screen is
   // dropped and asked for again — it is never the plan of something else.
-  const [planning, setPlanning] = useState(false);
   const planQuestion = useMemo(() => {
     if (!planning || !fresh || !runnerUsable(runner)) return null;
     const planned = dispatchSelection(emitted.ast, pinned?.ids ?? null, matched, excluded);
@@ -388,7 +473,8 @@ export function ComposeView({ route }: { route: Route }) {
   const canPlan = runnerUsable(runner) && (runner.capabilities ?? []).includes("plan");
 
   const run = async () => {
-    if (submitting.current || !runnerUsable(runner)) return;
+    // Enter in a field asks for a run as well — never for one the bar would refuse.
+    if (submitting.current || !runnerUsable(runner) || blocked !== null) return;
     if (!optionsValid()) return;
     const body = collect();
     if (!body) return;
@@ -413,8 +499,9 @@ export function ComposeView({ route }: { route: Route }) {
       const error = asApiError(caught);
       const parameter = error.extra.parameter;
       if (error.code === "invalid-parameter" && typeof parameter === "string" && specs.some((spec) => spec.name === parameter)) {
+        // The UI's sentence for the refusal, and the server's own words as supporting detail.
         const { title: problemTitle, detail } = describeError(i18n, error);
-        setParamErrors({ [parameter]: `${problemTitle} ${detail}` });
+        setParamErrors({ [parameter]: { text: problemTitle, foreign: detail } });
       } else {
         setSubmitError(error);
       }
@@ -424,20 +511,44 @@ export function ComposeView({ route }: { route: Route }) {
     }
   };
 
-  const blocked = pinnedPending || preview.status === "loading"
-    ? t("compose.blocked.updating")
-    : preview.status === "error"
-      ? t("compose.blocked.error")
-      : preview.status === "idle"
-        ? t("compose.blocked.empty")
-        : selectedCount === 0
-          ? t("compose.blocked.nothing")
-          : null;
+  // What is typed in the text editor is not the filter until it is applied.
+  // While the two differ, the screen shows one thing and a run would start
+  // another — so nothing can be run, planned or exported.
+  const textPending = textDraft !== null && textDraft.trim() !== filterText;
+  const blocked = textPending
+    ? t("compose.blocked.textDraft")
+    : pinnedPending || preview.status === "loading"
+      ? t("compose.blocked.updating")
+      : preview.status === "error"
+        ? filterError
+          ? t("compose.blocked.error")
+          : preview.error?.code === "network"
+            ? t("compose.blocked.network")
+            : t("compose.blocked.failed")
+        : preview.status === "idle"
+          ? t("compose.blocked.empty")
+          : selectedCount === 0
+            ? t("compose.blocked.nothing")
+            : null;
   // Why Run is off beyond the selection itself: there is nothing to run it with.
   const runnerBlocked = usable.length === 0 || runnerUsable(runner) ? null : t("compose.blocked.runner");
   const runBlocked = blocked !== null || usable.length === 0 || runnerBlocked !== null;
   const summaryId = useId();
   const formId = useId();
+
+  // The preview reaches down to the run bar, so it has to know how tall the
+  // bar is — it grows when it wraps or shows an error.
+  const composeRef = useRef<HTMLDivElement | null>(null);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const [compose, bar] = [composeRef.current, barRef.current];
+    if (!compose || !bar || typeof ResizeObserver === "undefined") return;
+    const measure = () => compose.style.setProperty("--run-bar-height", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, []);
   const blockedId = useId();
 
   const starts = useMemo(() => quickStarts(tree, meta.ui.quick_filters ?? []), [tree, meta.ui.quick_filters]);
@@ -508,7 +619,7 @@ export function ComposeView({ route }: { route: Route }) {
   );
 
   return (
-    <div className="compose">
+    <div className="compose" ref={composeRef}>
       <h1 className="sr-only">{t("nav.compose")}</h1>
       <section className="panel filter-panel" aria-labelledby={`${titleId}-filter`}>
         <header className="panel-head">
@@ -523,25 +634,58 @@ export function ComposeView({ route }: { route: Route }) {
           </span>
         </header>
 
-        {presetList.length > 0 && (
-          <label className="field field-inline preset-select">
-            <span>{t("compose.preset")}</span>
-            <select
-              className="input"
-              value=""
-              onChange={(event) => {
-                const chosen = presetList.find((preset) => preset.name === event.target.value);
-                if (chosen) applyPreset(chosen);
-              }}
-            >
-              <option value="">{t("compose.presetChoose")}</option>
-              {presetList.map((preset) => (
-                <option key={preset.name} value={preset.name}>
-                  {preset.label}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="starts">
+          {(presetList.length > 0 || saved.length > 0) && (
+            <label className="field field-inline preset-select">
+              <span>{t("compose.preset")}</span>
+              <select
+                className="input"
+                value=""
+                onChange={(event) => {
+                  const [kind, name] = [event.target.value.slice(0, 1), event.target.value.slice(2)];
+                  const preset = kind === "p" ? presetList.find((entry) => entry.name === name) : undefined;
+                  const own = kind === "s" ? saved.find((entry) => entry.name === name) : undefined;
+                  if (preset) applyPreset(preset);
+                  if (own) applySaved(own);
+                }}
+              >
+                <option value="">{t("compose.presetChoose")}</option>
+                {presetList.length > 0 && (
+                  <optgroup label={t("compose.presetsOfDeployment")}>
+                    {presetList.map((preset) => (
+                      <option key={preset.name} value={`p:${preset.name}`}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {saved.length > 0 && (
+                  <optgroup label={t("saved.inThisBrowser")}>
+                    {saved.map((entry) => (
+                      <option key={entry.name} value={`s:${entry.name}`}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+          )}
+          <button type="button" className="btn btn-small" onClick={() => setSavedOpen(true)}>
+            {t("saved.open")}
+          </button>
+        </div>
+        {quickFilters.length > 0 && (
+          <div className="quick-filters" role="group" aria-label={t("compose.quickFilters")}>
+            <span className="muted" aria-hidden="true">
+              {t("compose.quickFilters")}
+            </span>
+            {quickFilters.map((quick) => (
+              <button key={quick.text} type="button" className="btn btn-small" title={quick.kind === "expression" ? quick.text : undefined} onClick={() => applyQuick(quick)}>
+                {quick.label}
+              </button>
+            ))}
+          </div>
         )}
 
         {unreadableLink && (
@@ -562,6 +706,8 @@ export function ComposeView({ route }: { route: Route }) {
           tagListId={tagListId}
           errorNodeId={errorNodeId}
           labelOf={labelOf}
+          textDraft={textDraft}
+          onTextDraft={setTextDraft}
         />
         <datalist id={tagListId}>
           {(tags.data?.tags ?? []).map((entry) => (
@@ -572,7 +718,8 @@ export function ComposeView({ route }: { route: Route }) {
         </datalist>
 
         {/* One tag is its own sentence; anything more is also shown as text. */}
-        {filterText && typeof emitted.ast !== "string" && (
+        {/* While the text editor is open it says itself what is in effect. */}
+        {textDraft === null && filterText && typeof emitted.ast !== "string" && (
           <p className="expr-sentence">
             <span className="sr-only">{t("filter.asText")}: </span>
             <code data-testid="filter-text">{filterText}</code>
@@ -638,7 +785,14 @@ export function ComposeView({ route }: { route: Route }) {
               setSubmitError(null);
             }}
           />
-          <ParameterForm specs={specs} values={values} onChange={setValues} problems={paramErrors} />
+          <ParameterForm
+            specs={specs}
+            values={values}
+            onChange={setValues}
+            problems={paramErrors}
+            plugin={runner?.plugin}
+            variant={typeof runner?.health?.data.partition_mode === "string" ? runner.health.data.partition_mode : undefined}
+          />
 
           <div className="field">
             <label className="field-label" htmlFor={titleId}>
@@ -660,7 +814,7 @@ export function ComposeView({ route }: { route: Route }) {
       </section>
 
       {/* The run bar: always in reach, whatever is scrolled — what would run, with what, and the actions. */}
-      <div className="run-bar" role="group" aria-label={t("compose.runBar")}>
+      <div className="run-bar" ref={barRef} role="group" aria-label={t("compose.runBar")}>
         {submitError && (
           <div className="run-bar-error">
             <Notice tone="error" onDismiss={() => setSubmitError(null)}>
@@ -670,7 +824,7 @@ export function ComposeView({ route }: { route: Route }) {
         )}
         <div className="run-bar-info">
           <p className="run-summary" data-testid="run-summary" id={summaryId}>
-            {fresh && preview.result
+            {fresh && preview.result && !textPending
               ? t("compose.summary", { selected: selectedCount, matched: preview.result.count, total: preview.result.total })
               : (blocked ?? "")}
           </p>
@@ -752,6 +906,27 @@ export function ComposeView({ route }: { route: Route }) {
         ) : (
           <PickerUnavailable error={taxonomy.error} onRetry={() => void taxonomy.reload()} onClose={() => setPickerGroup(null)} />
         ))}
+
+      {savedOpen && (
+        <SavedSelections
+          saved={saved}
+          onSaved={setSaved}
+          currentFilter={filterText}
+          current={() => ({
+            filter: filterText,
+            excluded: [...excluded],
+            runner: runnerId,
+            params: runnerId ? values : {},
+            title,
+            labels,
+          })}
+          onUse={(entry) => {
+            applySaved(entry);
+            setSavedOpen(false);
+          }}
+          onClose={() => setSavedOpen(false)}
+        />
+      )}
 
       {exporting && (
         <ExportDialog

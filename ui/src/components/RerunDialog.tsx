@@ -14,6 +14,7 @@ import type { ApiError } from "../lib/request.ts";
 import type { DispatchResponse, RunDetail } from "../lib/types.ts";
 import { PlanView } from "./PlanView.tsx";
 import { ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "./RunnerFields.tsx";
+import type { FieldProblem } from "./RunnerFields.tsx";
 import { Dialog, ErrorText, Notice, describeError } from "./ui.tsx";
 
 interface Props {
@@ -38,7 +39,7 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     // Same runner as last time: start from what it was given then.
     return latest && runnerId === latest.mode ? fromPayload(specs, latest.parameters) : initialValues(specs);
   }, [edited, runnerId, latest, specs]);
-  const [problems, setProblems] = useState<Record<string, string>>({});
+  const [problems, setProblems] = useState<Record<string, FieldProblem>>({});
   const [title, setTitle] = useState("");
   const [planning, setPlanning] = useState(false);
   const titleId = useId();
@@ -50,7 +51,7 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     if (inFlight.current || !runnerUsable(runner)) return;
     const found = validateValues(specs, values);
     if (Object.keys(found).length > 0) {
-      setProblems(problemTexts(t, specs, found));
+      setProblems(problemTexts(t, found));
       return;
     }
     inFlight.current = true;
@@ -71,7 +72,7 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
       const parameter = failure.extra.parameter;
       if (failure.code === "invalid-parameter" && typeof parameter === "string" && specs.some((spec) => spec.name === parameter)) {
         const { title, detail } = describeError(i18n, failure);
-        setProblems({ [parameter]: `${title} ${detail}` });
+        setProblems({ [parameter]: { text: title, foreign: detail } });
       } else {
         setError(failure);
       }
@@ -175,6 +176,8 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
             setProblems({});
           }}
           problems={problems}
+          plugin={runner?.plugin}
+          variant={typeof runner?.health?.data.partition_mode === "string" ? runner.health.data.partition_mode : undefined}
         />
         {canPlan && (
           <div className="rerun-plan">

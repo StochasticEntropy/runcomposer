@@ -205,7 +205,13 @@
     },
     "negateAll": "NICHT: den ganzen Filter verneinen",
     "pickForGroup": "Tags für diese Gruppe auswählen…",
-    "addGroupInGroup": "Gruppe in dieser Gruppe hinzufügen"
+    "addGroupInGroup": "Gruppe in dieser Gruppe hinzufügen",
+    "applied": "Zurzeit gilt:",
+    "appliedNone": "kein Filter",
+    "ruleCount": {
+      "one": "{count} Regel in dieser Gruppe.",
+      "other": "{count} Regeln in dieser Gruppe — die Liste lässt sich rollen."
+    }
   },
   "picker": {
     "title": "Tags auswählen",
@@ -316,10 +322,13 @@
     "countChanged": "Der Katalog hat sich seit der Vorschau geändert: {count} geplant, {expected} wurden angezeigt.",
     "blocked": {
       "updating": "Die Vorschau wird aktualisiert…",
-      "error": "Die Vorschau ist veraltet — zuerst den Fehler beheben.",
+      "error": "Der Filter oder eine Option hat einen Fehler — erst beheben.",
       "empty": "Noch nichts ausgewählt.",
       "nothing": "Kein Eintrag ist ausgewählt.",
-      "runner": "Einen Runner wählen."
+      "runner": "Einen Runner wählen.",
+      "textDraft": "Der Filtertext ist noch nicht übernommen — übernehmen oder zurück zum Baukasten.",
+      "network": "Der Server ist nicht erreichbar — Verbindung prüfen und die Vorschau erneut laden.",
+      "failed": "Die Vorschau konnte nicht aktualisiert werden — erneut versuchen."
     },
     "reset": "Neu beginnen",
     "reloadCatalog": "Katalog neu laden",
@@ -354,7 +363,9 @@
     "presetApplied": "Vorlage „{label}“ übernommen: Auswahl, Runner, Optionen, Titel und Labels.",
     "presetWithoutRunner": "Vorlage „{label}“ übernommen. Ihr Runner {runner} ist hier nicht verfügbar; einen anderen wählen.",
     "usePreset": "Verwenden",
-    "usePresetNamed": "Vorlage {label} verwenden"
+    "usePresetNamed": "Vorlage {label} verwenden",
+    "quickFilters": "Schnellfilter",
+    "presetsOfDeployment": "Vorlagen dieser Installation"
   },
   "runner": {
     "label": "Runner",
@@ -370,7 +381,7 @@
       "required": "Diese Angabe ist erforderlich.",
       "integer": "Eine ganze Zahl eingeben.",
       "choice": "Einen der aufgeführten Werte wählen.",
-      "pattern": "Das entspricht nicht der geforderten Form: {pattern}",
+      "pattern": "Das hat nicht die Form, die dieses Feld erwartet.",
       "duplicate": "Jede Zeile braucht einen Namen, und jeden Namen nur einmal.",
       "line": "Das muss eine einzelne Zeile sein."
     },
@@ -383,7 +394,8 @@
     "mappingKeyOf": "{label}, Name {number}",
     "mappingValueOf": "{label}, Wert {number}",
     "mappingRemoveOf": "Zeile {number} von {label} entfernen",
-    "mappingAdd": "Zeile hinzufügen"
+    "mappingAdd": "Zeile hinzufügen",
+    "expectedForm": "Erwartete Form:"
   },
   "labels": {
     "label": "Labels",
@@ -464,7 +476,7 @@
     "actions": "Aktionen für diesen Lauf",
     "cancel": "Lauf abbrechen",
     "cancelTitle": "Diesen Lauf abbrechen?",
-    "cancelExplain": "Einträge, die noch nicht begonnen haben, werden nicht ausgeführt. Was schon fertig ist, behält sein Ergebnis.",
+    "cancelExplain": "Der Runner wird aufgefordert anzuhalten. Bereits gelieferte Ergebnisse bleiben erhalten. Was nur live gemeldet wurde, zählt nicht als Ergebnis: Diese Einträge erscheinen als fehlend, mit ihrem zuletzt live gemeldeten Status daneben.",
     "cancelConfirm": "Lauf abbrechen",
     "cancelForce": "Sofort schließen, ohne auf das Anhalten des Runners zu warten",
     "cancelRequested": "Der Abbruch ist angefordert — der Runner hält gerade an.",
@@ -545,7 +557,8 @@
       "shard": "Shard",
       "attempt": "Versuch",
       "duration": "Dauer",
-      "message": "Meldung"
+      "message": "Meldung",
+      "files": "Dateien"
     },
     "selection": {
       "title": "Auswahl",
@@ -606,7 +619,12 @@
     },
     "lastLiveRunning": "lief gerade, als der Lauf endete",
     "artifactDirectory": "Ein Verzeichnis mit Dateien; seine Dateien sind aus den Berichten oben verlinkt.",
-    "rerunOf": "Wiederholung von"
+    "rerunOf": "Wiederholung von",
+    "passedShards": {
+      "one": "{count} Shard ohne Fehlschlag",
+      "other": "{count} Shards ohne Fehlschlag"
+    },
+    "fileOf": "{file} des Shards, der {item} ausgeführt hat"
   },
   "rerun": {
     "titleAll": "Erneut ausführen",
@@ -716,5 +734,86 @@
     "show": "Plan anzeigen",
     "hide": "Plan ausblenden",
     "fixOptions": "Die Optionen oben korrigieren, um den Plan zu sehen."
+  },
+  "saved": {
+    "title": "Gespeicherte Auswahlen",
+    "where": "Gespeicherte Auswahlen liegen nur in diesem Browser: Niemand sonst sieht sie, und ein anderer Browser oder ein anderes Gerät hat sie nicht. Auswahlen für alle sind die Vorlagen der Installation (ui.presets in ihrer Konfiguration).",
+    "name": "Name",
+    "save": "Auswahl speichern",
+    "replace": "Gespeicherte ersetzen",
+    "whatIsSaved": "Mitgespeichert werden der Runner, seine Optionen, der Titel, die Labels und die abgewählten Einträge. Der Filter:",
+    "nothingToSave": "Es gibt noch keinen Filter — erst einen bauen, dann hier speichern.",
+    "failed": "Dieser Browser hat die Auswahl nicht gespeichert — sein Speicher ist abgeschaltet oder voll.",
+    "list": "In diesem Browser",
+    "empty": "In diesem Browser ist noch nichts gespeichert.",
+    "newName": "Neuer Name für {name}",
+    "rename": "Umbenennen",
+    "nameTaken": "Eine andere gespeicherte Auswahl heißt schon so.",
+    "deleteAsk": "„{name}“ löschen?",
+    "delete": "Löschen",
+    "keep": "Behalten",
+    "useNamed": "Gespeicherte Auswahl {name} verwenden",
+    "renameNamed": "Gespeicherte Auswahl {name} umbenennen",
+    "deleteNamed": "Gespeicherte Auswahl {name} löschen",
+    "applied": "Gespeicherte Auswahl „{name}“ geladen.",
+    "open": "Auswahl speichern…",
+    "inThisBrowser": "In diesem Browser gespeichert"
+  },
+  "foreign": {
+    "hint": "In den Worten des Runners oder des Servers — nicht übersetzt."
+  },
+  "builtin": {
+    "runner": {
+      "demo": {
+        "title": "Demo (simuliert)",
+        "description": "Simuliert eine Ausführung: Kein Test läuft, die Ergebnisse werden aus einem Startwert abgeleitet."
+      },
+      "command": {
+        "title": "Kommando",
+        "description": "Führt je Shard ein konfiguriertes Kommando auf dieser Maschine aus."
+      },
+      "robot-pool": {
+        "title": "Robot Framework (lokaler Pool)",
+        "description": "Führt Robot Framework auf dieser Maschine in Arbeitsprozessen aus."
+      },
+      "jenkins": {
+        "title": "Jenkins",
+        "description_callback": "Startet den konfigurierten Jenkins-Job; die Ergebnisse kommen per Callback zurück.",
+        "description_poll": "Startet den konfigurierten Jenkins-Job; die Ergebnisse werden durch Abfragen des Builds geholt."
+      }
+    },
+    "param": {
+      "demo": {
+        "seed": {
+          "label": "Startwert",
+          "help": "Gleicher Startwert, gleiche simulierte Ergebnisse; ein anderer lässt Ergebnisse kippen."
+        }
+      },
+      "robot-pool": {
+        "partitions": {
+          "label": "Partitionen",
+          "help_each": "Die Auswahl läuft einmal je gewählter Partition.",
+          "help_split": "Die Auswahl wird auf die gewählten Partitionen verteilt (jeder Test läuft einmal)."
+        },
+        "allow_drift": {
+          "label": "Abweichung zulassen",
+          "help": "Hat sich der Katalog seit dem Zusammenstellen geändert, läuft, was es noch gibt, statt abzulehnen."
+        }
+      }
+    },
+    "health": {
+      "demo": {
+        "ok": "simuliert — immer verfügbar"
+      },
+      "command": {
+        "ok": "Kommando konfiguriert"
+      },
+      "robot-pool": {
+        "ok": "Robot Framework {version}"
+      },
+      "jenkins": {
+        "ok": "Jenkins {version}"
+      }
+    }
   }
 }
