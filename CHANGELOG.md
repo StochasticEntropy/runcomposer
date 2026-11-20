@@ -422,7 +422,11 @@ run-time dependencies.
   another view loses nothing. An edit of the filter is a step in the
   browser's history.
 - One filter editor over the run spec's filter grammar: rules, groups, NOT as
-  a labelled switch, and the same expression as text. The third-party filter
+  a labelled switch, and the same expression as text. Rules are chips that
+  wrap, with the operator said once per group; a long group scrolls inside
+  itself. "Every item" is one plain rule, written `*` in text and links.
+  While text is typed and not applied, the filter in effect stays in view
+  and nothing can be run, planned or exported. The third-party filter
   widget is gone.
 - The tag picker shows item counts, says what applying will add and remove
   and how many items result; unticking a tag removes it.
@@ -440,13 +444,21 @@ run-time dependencies.
   Unhealthy runners are listed with the reason, and a runner's own health
   checks one by one.
 - A deployment's presets fill selection, runner, options, title and labels;
-  its default filter is where a new selection starts; a quick filter may be a
-  whole expression.
+  its default filter is where a new selection starts; quick filters are
+  always at hand, and one may be a whole expression.
+- "Save selection…" keeps what Compose holds — filter, unticked items,
+  runner, options, title, labels — under a name, listed next to the presets;
+  use, rename, delete. Saved selections are per browser (`localStorage`),
+  not on the server and not shared; a selection for everybody is a preset in
+  `ui.presets`.
 - The Run, Plan and Export actions sit in a bar that stays in reach at any
   scroll position and width.
 - A run's page follows it live — progress per shard and, where the runner
   declares groups, per group; what is running right now; cancel — and shows
-  failures first with durations, attempts and each shard's log and report.
+  failures first with durations, attempts and each shard's log and report:
+  groups and shards with a failure lead, then those still running; with many
+  shards, those without a failure fold into one line; every result row links
+  to the log and report of its own shard.
   After a cancel a missing item says what it was doing when the run stopped.
   Run again, re-run what did not pass (optionally under a new title, with a
   link back to the source run), load the selection back into the builder,
@@ -456,11 +468,27 @@ run-time dependencies.
   can be downloaded as CTRF.
 - The inbox names runs by title, asks before discarding and has a count in
   the navigation.
-- English and German throughout, including states, results and error codes.
+- English and German throughout, including states, results, error codes and
+  the reference runners' own titles, descriptions, options and health. The
+  page starts in the viewer's choice, else the browser's language, else the
+  deployment's default, and `<html lang>` says which.
   Keyboard operation of the main flow, phone-sized screens, light and dark.
 - Browser end-to-end tests (`npm run e2e`) drive the built UI against real
   servers; unit and component tests run under vitest; `npm run lint` is
   eslint plus the TypeScript check.
+
+Known limits of the UI:
+
+- Sentences a runner, a tool or the server writes at run time — an error's
+  detail, a health reason, a plan's notes and text, a refusal — are not
+  translated: the UI has never seen them and will not guess. They are shown
+  as written, carry `lang="en"`, and are marked as such while the page is in
+  another language. A plugin that writes another language than English is
+  mislabelled by that; runners do not declare the language they write.
+- A parameter's label and help, presets and quick filters are the
+  deployment's own wording and are shown as written in every language.
+- `*` for "every item" is the UI's spelling. The run spec says it as
+  `{"not": "regex:^$"}`, which is what the API receives and returns.
 
 API additions that came with it:
 

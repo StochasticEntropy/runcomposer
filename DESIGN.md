@@ -1652,21 +1652,49 @@ cannot carry. The dialog is the non-technical layer over the same
 neither is a degraded version of the other:
 
 1. **i18n** — every literal in locale files; `en` + `de` shipped; locale date
-   sugar lives here.
+   sugar lives here. The page starts in the language the viewer chose
+   before, else in the first language their browser asks for that there are
+   texts in, else in `core.locale_default`; `<html lang>` always says which.
+   The UI words whatever reaches it as a code, an enum or a field — states,
+   results, error codes, inbox reasons, a value that does not have its
+   declared `pattern` — and the reference runners' own titles, descriptions,
+   parameter labels and healthy-state summaries, by plugin id, with the
+   server's text as the fallback. **What it cannot word it does not
+   pretend to:** a sentence a runner, a tool or the server wrote at run time
+   (an error's detail, a health reason, a plan's notes and text, a refusal)
+   is shown as written, carries `lang="en"` — the server and the reference
+   plugins write English — and, while the page is in another language, a
+   small mark in front, the same everywhere. Translating it would mean
+   guessing at text the UI has never seen; leaving it unmarked would let it
+   pass for a gap in the translation. Names and data are not marked: tags,
+   item names, test messages, and what a deployment declares itself — a
+   parameter's label and help, a preset, a quick filter — are its own
+   wording, shown as written.
 2. **Config-driven environment** — whatever the deployment puts under `ui:` is
    served from `/api/v1/ui-config`, never hardcoded (§8). The UI reads
-   `quick_filters` as starting points of a selection (one pattern is added
-   as a rule, a whole expression becomes the filter), starts a new selection
+   `quick_filters` — always at hand next to the presets, not only on an
+   empty builder (one pattern is one more rule; a whole expression becomes
+   the filter, or one more group of the filter that is there) — starts a new selection
    from `default_filter` — only when the URL carries no selection and the
    session has no draft to come back to — and offers `presets` (read from
    `GET /api/v1/presets`), each of which fills selection, runner, the
-   runner's options, title and labels. `examples` is `[planned]`, so a key
+   runner's options, title and labels. Next to them, under a heading of
+   their own, are the **selections a person saved** ("Save selection…":
+   filter, unticked items, runner, options, title, labels under a name; use,
+   rename, delete). Those live in the browser's `localStorage` — per browser
+   and origin, never on the server, not shared and not exported; a browser
+   that stores nothing says so and loses nothing else. What everybody should
+   find is a preset in `ui.presets`. `examples` is `[planned]`, so a key
    the UI does not yet read is served and silently ignored. Partitions are
    not a UI setting: they are the `partitions` parameter a runner declares,
    chosen in the runner form.
 3. **Runner-aware run bar** — what would run, with which runner, and the
    actions Plan / Export / Run, in a bar that stays in reach at any scroll
-   position and width; runs list shows dispatch mode + lifecycle state incl.
+   position and width. The actions are for the filter in effect and nothing
+   else: while the expression is being typed as text and differs from it,
+   they are off, the filter in effect stays in view, and the bar says why —
+   as it says that the server cannot be reached when that is the reason.
+   Runs list shows dispatch mode + lifecycle state incl.
    `AWAITING_RESULTS`; an inbox view for unmatched (quarantined) deliveries.
 
 **What the UI covers of the 0.2 API.** Four hash routes — `#/compose`,
@@ -1689,7 +1717,10 @@ run: the lifecycle states and statuses 0.2 added (`FAILED`, `CANCELLED`,
 `RUNNING` live status per item (listed and counted as running, never as a
 result), the roll-up per shard and — where the runner declared groups — per
 group, with artifact links (a recorded directory is listed, not linked),
-`last_live` on a `MISSING` row after a cancel, cancel, rerun (all, or what
+`last_live` on a `MISSING` row after a cancel — what needs a look first:
+groups and shards with a failure, then those still running, the rest folded
+into one line once there are many, and each result row linking to the log
+and report of its own shard — cancel, rerun (all, or what
 did not pass, optionally with a title; the new run links back through
 `rerun_of`), a plan for the stored run (`POST /runs/{id}/plan`) and delete.
 Inbox: attach, promote, discard.
@@ -1704,7 +1735,9 @@ what depends on getting it exactly right: an expression editor over the run
 spec's own filter grammar (a rule is a chip, a group a box with its
 operator, NOT a switch on either, and the same expression can be typed as
 text — the grammar of §3.1 rather than a widget's model translated through
-an adapter); dialogs on the native `<dialog>` element (focus trap,
+an adapter; the one spelling of its own is `*` for "every item", which
+the grammar can only say as the negation of a pattern nothing matches —
+that is what is sent, and the UI never shows it); dialogs on the native `<dialog>` element (focus trap,
 `Escape`, return of focus); and its own windowing for long lists, so the
 resolved tag tree — which grows with the catalog — the selection preview and
 the run's results keep only the rows in view in the DOM. Vite builds it
