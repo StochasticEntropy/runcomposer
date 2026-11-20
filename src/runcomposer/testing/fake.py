@@ -126,6 +126,9 @@ class _PlanView:
         self.source = ctx.source
         self.history = ctx.history
 
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        return self._ctx.connector_settings(name)
+
     def refuse(self, reason: str) -> NoReturn:
         raise DispatchRefused(reason)
 
@@ -168,6 +171,8 @@ class FakeDispatchContext:
       run composed for that runner in runcomposer. Ignored with ``spec``.
     - ``workdir`` — default: a temporary directory removed by :meth:`close`.
     - ``tokens`` — ``False`` for a deployment with ingest tokens disabled.
+    - ``connectors`` — ``{name: settings}``, what ``ctx.connector_settings(name)``
+      answers (the deployment's ``connectors:`` section).
 
     What the runner did is in ``declared``, ``shard_items``, ``shard_groups``,
     ``plan``, ``links``, ``spec_sha256``, ``deliveries``, ``live_updates``
@@ -199,6 +204,7 @@ class FakeDispatchContext:
         parsers: Mapping[str, Any] | None = None,
         expect_format: str | None = None,
         tokens: bool = True,
+        connectors: Mapping[str, Mapping[str, Any]] | None = None,
     ):
         #: Whether the expected format may still follow the runner's own.
         self._format_adoptable = spec is None and expect_format is None
@@ -233,6 +239,7 @@ class FakeDispatchContext:
         self._parsers = dict(parsers or {})
         self._expect_format = _expected_format(self._document) or expect_format
         self._tokens_enabled = tokens
+        self._connectors = {str(name): dict(value) for name, value in (connectors or {}).items()}
         self._own_workdir = workdir is None
         self._workdir: Path | None = Path(workdir).resolve() if workdir is not None else None
         self._order = HandoffOrder(self.dispatch_id)
@@ -298,6 +305,11 @@ class FakeDispatchContext:
             node = parse_filter(selection)
             items = [item for item in items if node.matches(item.tags)]
         return cls(items=items, source=source, **kwargs)
+
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        """``connectors=`` of the constructor, by name — what a deployment's
+        ``connectors:`` section holds in runcomposer."""
+        return MappingProxyType(dict(self._connectors.get(str(name), {})))
 
     # -- the hand-off ----------------------------------------------------------------
 

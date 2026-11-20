@@ -22,6 +22,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Generic, TypeVar, overload
 
 import yaml
@@ -256,6 +257,12 @@ class Service:
                     )
                 self._runners[runner_id] = self.config.build(spec)
             return self._runners[runner_id]
+
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        """``connectors.<name>`` as a plugin or a configured callable reads
+        it: ``${env:…}`` resolved, read-only, empty when absent."""
+        raw = self.config.connector_settings(str(name))
+        return MappingProxyType(_resolve_env(raw, f"connectors.{name}"))
 
     def runner_options(self, runner_id: str) -> dict[str, Any]:
         """The runner's configured options as its constructor received them."""

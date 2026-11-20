@@ -158,6 +158,9 @@ class _PlanContext:
             self._source = self._service.catalog.fresh() if self._fresh else self._service.catalog
         return self._source
 
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        return self._service.connector_settings(name)
+
     def refuse(self, reason: str) -> NoReturn:
         raise DispatchRefused(reason)
 
@@ -261,6 +264,9 @@ class _Context:
     @property
     def declared(self) -> bool:
         return self._order.declared
+
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        return self._service.connector_settings(name)
 
     def refuse(self, reason: str) -> NoReturn:
         self._order.refuse(reason)

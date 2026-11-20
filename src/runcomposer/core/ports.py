@@ -185,6 +185,13 @@ class PlanContext(Protocol):
     source: TestSource
     history: History
 
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        """The deployment's ``connectors.<name>`` mapping (``${env:…}``
+        resolved), read-only; empty when the deployment has none. It is how
+        a callable named in a runner's configuration — a hook, a provider —
+        reads the settings of the connector package it belongs to."""
+        ...
+
     def refuse(self, reason: str) -> NoReturn:
         """Say that this dispatch would be refused, and why."""
         ...
@@ -237,6 +244,13 @@ class DispatchContext(Protocol):
     #: The catalog as it is *now* — for the drift check and name resolution.
     source: TestSource
     history: History
+
+    def connector_settings(self, name: str) -> Mapping[str, Any]:
+        """The deployment's ``connectors.<name>`` mapping (``${env:…}``
+        resolved), read-only; empty when the deployment has none. It is how
+        a callable named in a runner's configuration — a hook, a provider —
+        reads the settings of the connector package it belongs to."""
+        ...
 
     def refuse(self, reason: str) -> NoReturn:
         """Decline the dispatch (raises ``DispatchRefused``). Legal only

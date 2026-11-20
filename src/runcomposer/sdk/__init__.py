@@ -127,7 +127,7 @@ from runcomposer.core.ports import (
     TestSource,
     contract_members,
 )
-from runcomposer.core.registry import load_import_path
+from runcomposer.core.registry import ConfiguredCall, configured_calls, load_import_path
 from runcomposer.core.remote import RemoteLiveChannel
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
@@ -155,6 +155,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "Configurable",
+    "ConfiguredCall",
     "Conflict",
     "DeliveryRecord",
     "DispatchCancelled",
@@ -209,6 +210,7 @@ __all__ = [
     "bundle_hash",
     "canonical_json",
     "completion_of",
+    "configured_calls",
     "contract_members",
     "corpus_drifted",
     "effective_verdicts",
