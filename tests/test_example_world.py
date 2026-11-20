@@ -7,7 +7,7 @@ it. So these guards are built from *structure*: wherever the repository
 spells something tag-shaped, the tag must exist in the bundled demo corpus.
 Anything else fails without ever being named here.
 
-Two shapes are checked:
+Shapes checked, each over every tracked text file it can occur in:
 
 1. **Tag literals in the UI's test files** (quoted strings, comments
    included): every bare word, `prefix:` and `regex:` pattern must match the
@@ -16,6 +16,20 @@ Two shapes are checked:
    docs: the operands of an uppercase `AND` / `OR` / `NOT` are tags by
    construction, so each capitalised operand must be a demo tag (or a
    one-letter metavariable such as `A`).
+3. **Tags wherever data spells them** — `tags:` lists in JSON/YAML,
+   Robot `[Tags]` lines (in suites and in suites embedded in tests), and
+   `tags` / `tag_filter` values in Python: each must be made of the example
+   world's words.
+4. **Hosts** — every host a URL or an e-mail address names is a reserved
+   example name (`*.example`, `*.invalid`, `*.test`), a local address, or a
+   piece of this project's own public infrastructure.
+5. **Ticket keys** — every token shaped like `SHOP-1200` has a prefix of the example
+   world (`SHOP-1200`) or of a standard (`ISO-8601`, `UTF-8`).
+
+No list of forbidden names exists here, and none may be added: something
+from outside fails because it is not of this world, not because it was
+foreseen. What the example world may say beyond the bundled corpus is
+`INVENTED_WORDS` below — words invented for examples and tests.
 """
 
 from __future__ import annotations
@@ -44,10 +58,20 @@ def demo_tags() -> set[str]:
     return {tag for item in corpus["items"] for tag in item["tags"]}
 
 
+#: Words the example world uses beyond the bundled corpus — invented for the
+#: example suites and for tests. Adding one is a statement that it was
+#: invented here and not borrowed from anybody's real suite.
+INVENTED_WORDS = {
+    "account", "orders", "profile", "basics", "slow", "lane", "var", "check",
+    "returns", "loose", "oops", "no", "such", "tag", "anywhere",
+}
+
+
 def demo_vocabulary() -> set[str]:
     """Every word the example world is made of: tag components, taxonomy
     labels, item names and hierarchy segments of the bundled corpus —
-    case-folded. A tag invented for a test must be assembled from these."""
+    case-folded — plus ``INVENTED_WORDS``. A tag invented for a test must be
+    assembled from these."""
     corpus = json.loads(
         (resources.files("runcomposer.demo") / "corpus.json").read_text(encoding="utf-8")
     )
@@ -57,7 +81,23 @@ def demo_vocabulary() -> set[str]:
         for text in (*item["tags"], item.get("name", ""), *item.get("hierarchy", ())):
             words.update(re.findall(r"[A-Za-z]+", text))
     words.update(re.findall(r"label:\s*([A-Za-z]+)", taxonomy))
-    return {word.casefold() for word in words}
+    return {word.casefold() for word in words} | INVENTED_WORDS
+
+
+def word_parts(text: str) -> list[str]:
+    """The words of a tag or a pattern: split at anything not a letter or a
+    digit and at lowercase→uppercase steps (``SlowLane`` → slow, lane)."""
+    parts: list[str] = []
+    for run in re.findall(r"[A-Za-z0-9]+", text):
+        parts.extend(re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+", run))
+    return parts
+
+
+def of_this_world(part: str, vocabulary: set[str]) -> bool:
+    part = part.casefold()
+    if part.isdigit() or part in vocabulary:
+        return True
+    return len(part) >= 3 and any(word.startswith(part) for word in vocabulary)
 
 
 def tracked_text_files() -> list[Path]:
@@ -103,7 +143,13 @@ def pattern_is_of_the_demo_world(value: str, tags: set[str]) -> bool | None:
             compiled = re.compile(value[len("regex:"):])
         except re.error:
             return None  # a deliberately broken expression is a grammar test
-        return any(compiled.search(tag) for tag in tags)
+        if any(compiled.search(tag) for tag in tags):
+            return True
+        # A pattern that matches nothing (a test of the empty selection) is
+        # still of this world when its words are.
+        words = [w for w in word_parts(value[len("regex:"):]) if len(w) > 1]
+        vocabulary = demo_vocabulary()
+        return bool(words) and all(of_this_world(w, vocabulary) for w in words)
     if not re.fullmatch(r"[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*", value):
         return None  # not shaped like a tag of this world or any other
     if len(value) == 1 or value.casefold() in folded:
@@ -112,14 +158,7 @@ def pattern_is_of_the_demo_world(value: str, tags: set[str]) -> bool | None:
     # is (a stem of) a word the bundled corpus uses — `Checkout-Cart` is, a
     # word out of somebody's real suite is not.
     vocabulary = demo_vocabulary()
-
-    def of_this_world(part: str) -> bool:
-        part = part.casefold()
-        if part.isdigit() or part in vocabulary:
-            return True
-        return len(part) >= 3 and any(word.startswith(part) for word in vocabulary)
-
-    return all(of_this_world(part) for part in value.split("-"))
+    return all(of_this_world(part, vocabulary) for part in word_parts(value))
 
 
 def test_pattern_classifier_checks_bare_prefix_and_regex_literals():
@@ -248,3 +287,194 @@ def test_a_foreign_expression_in_a_comment_would_be_caught():
         if pattern_is_of_the_demo_world(operand, tags) is False
     }
     assert foreign == {"Warehouse", "Forklift", "Pallet"}
+
+
+
+# -- 3. tags wherever data spells them ---------------------------------------------
+
+_ROBOT_TAGS = re.compile(r"\[Tags\]((?:[ \t]+[^\s\\]+)+)")
+
+
+def tags_in_data(data: object) -> list[str]:
+    """`tags:` list entries and string `tag_filter:` values, at any depth."""
+    found: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "tags" and isinstance(value, (list, tuple)):
+                found.extend(str(tag) for tag in value)
+            elif key == "tag_filter" and isinstance(value, str):
+                found.append(value)
+            found.extend(tags_in_data(value))
+    elif isinstance(data, list):
+        for value in data:
+            found.extend(tags_in_data(value))
+    return found
+
+
+def tags_in_python(source: str) -> list[str]:
+    """String constants given as ``tags`` / ``tag_filter`` — dict entries and
+    keyword arguments — except the operator of a filter node (``op``)."""
+    import ast
+
+    found: list[str] = []
+
+    def strings(node: ast.AST) -> None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            found.append(node.value)
+        elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            for element in node.elts:
+                strings(element)
+        elif isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if not (isinstance(key, ast.Constant) and key.value == "op"):
+                    strings(value)
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value in ("tags", "tag_filter"):
+                    strings(value)
+        elif isinstance(node, ast.keyword) and node.arg in ("tags", "tag_filter"):
+            strings(node.value)
+    return found
+
+
+def spelled_tags(path: Path, text: str) -> list[str]:
+    import yaml
+
+    found = [tag for match in _ROBOT_TAGS.finditer(text) for tag in match.group(1).split()]
+    try:
+        if path.suffix == ".json":
+            found += tags_in_data(json.loads(text))
+        elif path.suffix in (".yaml", ".yml"):
+            for document in yaml.safe_load_all(text):
+                found += tags_in_data(document)
+        elif path.suffix == ".py":
+            found += tags_in_python(text)
+    except (ValueError, yaml.YAMLError, SyntaxError):
+        pass  # not data (a template, a deliberately broken fixture)
+    return found
+
+
+def test_the_tag_scanners_find_tags_in_each_shape():
+    assert spelled_tags(Path("x.robot"), "    [Tags]    Cart    Smoke\n") == ["Cart", "Smoke"]
+    assert spelled_tags(Path("x.yaml"), "checks: [{id: a, tags: [Cart, Auth]}]\n") == ["Cart", "Auth"]
+    assert spelled_tags(Path("x.json"), '{"items": [{"id": "a", "tags": ["Payments"]}]}') == ["Payments"]
+    assert spelled_tags(Path("x.py"), (
+        "Item(id='a', tags=('Cart', 'Smoke'))\n"
+        "compose({'tag_filter': {'op': 'AND', 'items': ['Auth', {'not': 'Smoke'}]}})\n"
+    )) == ["Cart", "Smoke", "Auth", "Smoke"]
+
+
+def test_tags_in_examples_tests_and_fixtures_are_of_the_example_world():
+    tags = demo_tags()
+    suspects: dict[str, set[str]] = {}
+    for path in tracked_text_files():
+        name = path.relative_to(REPO).as_posix()
+        if name in _NOT_EXAMPLE_DATA:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for tag in spelled_tags(path, text):
+            if pattern_is_of_the_demo_world(tag.strip(), tags) is False:
+                suspects.setdefault(name, set()).add(tag)
+    assert not suspects, (
+        "tags that are not made of the example world's words (DESIGN.md §12; invent new "
+        f"words deliberately via INVENTED_WORDS): { {k: sorted(v) for k, v in suspects.items()} }"
+    )
+
+
+def test_a_foreign_tag_in_a_suite_would_be_caught():
+    tags = demo_tags()
+    suite = "*** Test Cases ***\nPick\n    [Tags]    Cart    " + "Fork" + "lift-Pallet\n"
+    foreign = [t for t in spelled_tags(Path("x.robot"), suite) if pattern_is_of_the_demo_world(t, tags) is False]
+    assert foreign == ["Forklift-Pallet"]
+
+
+# -- 4. hosts ---------------------------------------------------------------------------
+
+#: This project's own public infrastructure, and the public standards and
+#: services its pages and files link to. Nobody's example data.
+PROJECT_HOSTS = {
+    "github.com", "users.noreply.github.com", "stochasticentropy.github.io", "img.shields.io",
+    "pypi.org", "json-schema.org", "www.w3.org", "fonts.googleapis.com", "fonts.gstatic.com",
+}
+#: The only GitHub account this repository links to: its own.
+PROJECT_OWNER = "StochasticEntropy"
+_URL_HOST = re.compile(r"https?://([A-Za-z0-9.-]+)(/[A-Za-z0-9_.-]+)?")
+_MAIL_HOST = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
+
+
+def host_is_of_the_example_world(host: str, path: str = "") -> bool:
+    host = host.lower().rstrip(".")
+    if host in ("localhost", "host.docker.internal") or re.fullmatch(r"[0-9.]+", host):
+        return True
+    if host.endswith((".example", ".invalid", ".test", ".localhost")) or host in ("example.com", "example.org", "example.net"):
+        return True
+    if host == "github.com" and path:
+        return path.strip("/").split("/")[0] == PROJECT_OWNER
+    return host in PROJECT_HOSTS
+
+
+def hosts_in(text: str) -> list[tuple[str, str]]:
+    found = [(m.group(1), m.group(2) or "") for m in _URL_HOST.finditer(text)]
+    found += [(m.group(1), "") for m in _MAIL_HOST.finditer(text)]
+    return found
+
+
+def test_the_host_classifier():
+    assert host_is_of_the_example_world("ci.shop.example")
+    assert host_is_of_the_example_world("guest.example.invalid")
+    assert host_is_of_the_example_world("127.0.0.1") and host_is_of_the_example_world("localhost")
+    assert host_is_of_the_example_world("github.com", f"/{PROJECT_OWNER}/runcomposer")
+    assert not host_is_of_the_example_world("github.com", "/somebody-else/tool")
+    assert not host_is_of_the_example_world("ci." + "warehouse-co" + ".com")
+    assert hosts_in("see https://ci.shop.example/job/7 or ops@chat.shop.example") == [
+        ("ci.shop.example", "/job"), ("chat.shop.example", "")
+    ]
+
+
+def test_every_host_in_the_tracked_tree_is_of_the_example_world():
+    suspects: dict[str, set[str]] = {}
+    for path in tracked_text_files():
+        name = path.relative_to(REPO).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for host, url_path in hosts_in(text):
+            if not host_is_of_the_example_world(host, url_path):
+                suspects.setdefault(name, set()).add(host + url_path)
+    assert not suspects, (
+        "hosts outside the example world — use a reserved name (*.example, *.invalid): "
+        f"{ {k: sorted(v) for k, v in suspects.items()} }"
+    )
+
+
+# -- 5. ticket keys -------------------------------------------------------------------
+
+_TICKET_KEY = re.compile(r"(?<![\w-])([A-Z][A-Z0-9]{1,9})-[0-9]+(?![\w])")
+#: Standards whose names are spelled like a ticket key.
+STANDARD_PREFIXES = {"ISO", "UTF", "SHA", "RFC", "PEP", "CVE"}
+
+
+def test_every_ticket_key_shaped_token_is_of_the_example_world():
+    vocabulary = demo_vocabulary()
+    suspects: dict[str, set[str]] = {}
+    for path in tracked_text_files():
+        name = path.relative_to(REPO).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for match in _TICKET_KEY.finditer(text):
+            prefix = match.group(1)
+            if prefix in STANDARD_PREFIXES or of_this_world(prefix, vocabulary):
+                continue
+            suspects.setdefault(name, set()).add(match.group(0))
+    assert not suspects, (
+        f"ticket-key-shaped tokens outside the example world (SHOP-1200 is of it): "
+        f"{ {k: sorted(v) for k, v in suspects.items()} }"
+    )

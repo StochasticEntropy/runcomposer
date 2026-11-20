@@ -19,7 +19,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-PRODUCTS = [{"sku": "BOOK-1", "title": "A Field Guide to Carts"}, {"sku": "MUG-2", "title": "Checkout Mug"}]
+PRODUCTS = [{"sku": "CATALOG-7", "title": "A Field Guide to Carts"}, {"sku": "CART-2", "title": "Checkout Mug"}]
 
 
 def make_server(port: int = 0, *, broken: tuple[str, ...] = ()) -> ThreadingHTTPServer:

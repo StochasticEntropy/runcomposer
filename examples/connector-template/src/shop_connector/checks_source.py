@@ -4,7 +4,7 @@
 checks:
   - id: shop.cart.add          # the item id — any stable string you choose
     tags: [Cart, Smoke]
-    path: /cart/add?sku=BOOK-1
+    path: /cart/add?sku=CATALOG-7
     method: POST               # default GET
     expect_status: 200         # default 200
     expect_text: added         # optional: the body must contain it

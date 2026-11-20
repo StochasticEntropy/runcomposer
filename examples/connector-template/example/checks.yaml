@@ -8,11 +8,11 @@ checks:
   - id: shop.catalog.lists-products
     tags: [Catalog, Regression]
     path: /catalog
-    expect_text: BOOK-1
+    expect_text: CATALOG-7
   - id: shop.cart.add
     tags: [Cart, Smoke]
     method: POST
-    path: /cart/add?sku=BOOK-1
+    path: /cart/add?sku=CATALOG-7
     expect_text: added
   - id: shop.checkout.page
     tags: [Checkout, Regression]

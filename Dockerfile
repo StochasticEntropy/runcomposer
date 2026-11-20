@@ -8,9 +8,14 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-# Runtime state (sqlite store, artifacts) lives under /data; mount a volume
-# to persist it. The container config is the built-in default unless /data
-# has a config.yaml.
+# The process does not run as root. Runtime state (sqlite store, artifacts,
+# the demo workspace) lives under /data, owned by that user; mount a volume
+# there to persist it. The container config is the built-in default unless
+# /data has a config.yaml.
+RUN useradd --create-home --uid 10001 --user-group runcomposer \
+    && mkdir -p /data \
+    && chown runcomposer:runcomposer /data
+USER runcomposer
 WORKDIR /data
 EXPOSE 8100
 
