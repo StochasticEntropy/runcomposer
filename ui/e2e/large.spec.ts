@@ -1,9 +1,33 @@
 // Thousands of items: the preview, the picker and a run's results render the
 // rows in view, not the rows there are.
 
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { addRule, currentRunId, expect, expectPreview, msg, runButton, test } from "./fixtures.ts";
 
 test.use({ config: "large" });
+
+test("reloading the catalog picks up a corpus that changed on disk", async ({ page, open, server }) => {
+  await open("#/compose?f=Smoke");
+  await expectPreview(page, 750, 3000);
+  // Somebody edits the corpus: three tests are left.
+  const items = [1, 2, 3].map((number, index) => ({
+    id: `Shop.Cart.Core.T000${number}`,
+    name: `Cart check ${number}`,
+    tags: ["Cart", index === 0 ? "Smoke" : "Regression"],
+    hierarchy: ["Shop", "Cart", "Core"],
+  }));
+  writeFileSync(join(server.directory, "corpus.json"), JSON.stringify({ items }));
+  await page.getByRole("button", { name: msg("compose.reloadCatalog") }).click();
+  await expect(page.getByText(msg("compose.catalogReloaded", { count: 3 }))).toBeVisible();
+  // The preview, and the tags offered, are those of the new corpus.
+  await expectPreview(page, 1, 3);
+  await page.getByRole("button", { name: msg("filter.pick") }).click();
+  const dialog = page.getByRole("dialog", { name: msg("picker.title") });
+  await expect(dialog.getByRole("treeitem", { name: /^Smoke/ })).toContainText(msg("picker.items", { count: 1 }));
+  await expect(dialog.getByRole("treeitem", { name: /^Payments/ })).toHaveCount(0);
+});
 
 test("3,000 items: preview, picker and results stay small in the DOM and usable", async ({ page, open, api }) => {
   await open();

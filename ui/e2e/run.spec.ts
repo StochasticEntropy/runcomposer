@@ -247,6 +247,21 @@ test("run a whole run again: a second dispatch of the same run", async ({ page, 
   expect((await api.get<{ dispatch_count: number }>(`/runs/${first.id}`)).dispatch_count).toBe(2);
 });
 
+test("a run that was only composed is dispatched from its own page", async ({ page, open, api }) => {
+  const composed = await api.compose({ selection: { tag_filter: "Auth-SSO" }, title: "Anmeldung, noch nicht gestartet" });
+  await open(`#/runs/${composed.id}`);
+  await expect(status(page)).toContainText(msg("runState.COMPOSED"));
+  await expect(page.getByText(msg("run.composedHint"))).toBeVisible();
+  await expect(page.getByText(msg("run.neverDispatched"))).toBeVisible();
+  await page.getByRole("button", { name: msg("run.dispatch") }).click();
+  const dialog = page.getByRole("dialog", { name: msg("rerun.titleFirst") });
+  await dialog.getByRole("combobox", { name: msg("runner.label") }).selectOption("demo");
+  await dialog.getByRole("textbox", { name: "Seed" }).fill("a");
+  await dialog.getByRole("button", { name: msg("compose.run", { count: 3 }) }).click();
+  await expect(status(page)).toContainText(msg("completion.PASS"));
+  expect((await api.run(composed.id)).state).toBe("COMPLETE");
+});
+
 test("load a run's selection back into the builder", async ({ page, open, api }) => {
   const ast = { op: "AND", items: ["Payments", { not: "prefix:Quarantine-" }] };
   const plain = await api.finishedRun(ast, "a", { title: "Zahlungen ohne Quarantäne" });

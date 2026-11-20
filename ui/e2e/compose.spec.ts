@@ -182,6 +182,24 @@ test("an invalid pattern marks its rule, makes the preview stale and blocks the 
   await expect(runButton(page, 17)).toBeEnabled();
 });
 
+test("when the server cannot be reached the preview says so, keeps nothing runnable, and recovers", async ({ page, open }) => {
+  await open("#/compose?f=Payments");
+  await expectPreview(page, 17, 60);
+  await page.route("**/api/v1/selection/compile", (route) => route.abort("connectionrefused"));
+  await addRule(page, "Smoke");
+  const alert = page.locator(".preview").getByRole("alert");
+  await expect(alert).toContainText(msg("error.code.network"));
+  // The 17 rows of the last answer are still shown — as old, and not runnable.
+  await expect(page.locator(".preview-scroll")).toHaveClass(/is-stale/);
+  await expect(page.getByTestId("run-summary")).toHaveText(msg("compose.blocked.error"));
+  await expect(page.getByRole("button", { name: msg("compose.run", { count: 0 }) })).toBeDisabled();
+
+  await page.unroute("**/api/v1/selection/compile");
+  await alert.getByRole("button", { name: msg("action.retry") }).click();
+  await expectPreview(page, 4, 60);
+  await expect(runButton(page, 4)).toBeEnabled();
+});
+
 test("emptying the filter right after an edit leaves nothing loading", async ({ page, open }) => {
   await open();
   // Answers are slow, so the filter is emptied while the first request is still out.

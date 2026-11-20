@@ -903,10 +903,6 @@ main {
   background: var(--warn-solid);
 }
 
-.seg-running {
-  background: var(--running-solid);
-}
-
 .verdict-counts {
   display: inline-flex;
   flex-wrap: wrap;
@@ -925,10 +921,6 @@ main {
 
 .count-warn {
   color: var(--warn);
-}
-
-.count-running {
-  color: var(--running);
 }
 
 .count-neutral {
