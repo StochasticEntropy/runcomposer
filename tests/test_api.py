@@ -754,6 +754,29 @@ class TestRunDetail:
         assert_error(client.get(f"{API}/runs/{run_id}/spec", params={"format": "toml"}), 400, "invalid-request")
 
 
+class TestResultsExport:
+    def test_the_results_as_a_ctrf_download(self, make_client):
+        """What `runcomposer export --format ctrf` writes, over HTTP."""
+        client, service = make_client()
+        run_id = finished_run(service, "Auth-SSO", "b", title="Anmeldung prüfen")  # 2 FAIL, 1 PASS
+        response = client.get(f"{API}/runs/{run_id}/export")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert f'filename="results-{run_id}.ctrf.json"' in response.headers["content-disposition"]
+        document = response.json()
+        assert document == service.export_ctrf(run_id)
+        summary = document["results"]["summary"]
+        assert (summary["tests"], summary["passed"], summary["failed"]) == (3, 1, 2)
+        assert {test["name"] for test in document["results"]["tests"]} == set(SSO)
+        assert client.get(f"{API}/runs/{run_id}/export", params={"format": "ctrf"}).json() == document
+
+    def test_an_unknown_format_or_run_is_refused(self, make_client):
+        client, service = make_client()
+        run_id = finished_run(service)
+        assert_error(client.get(f"{API}/runs/{run_id}/export", params={"format": "junit"}), 400, "invalid-request")
+        assert_error(client.get(f"{API}/runs/01NOPE/export"), 404, "unknown-run")
+
+
 # -- what a client asks first ------------------------------------------------------------------
 
 
