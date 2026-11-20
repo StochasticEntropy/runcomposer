@@ -1,0 +1,403 @@
+"""``runcomposer.testing`` — what the kit gained with the grown runner
+contract: the plan and group rules of the checks, the fake's whole live
+stream and its view of "now", a fake over a real catalog, and a harness that
+dispatches in the background or serves the API."""
+
+from __future__ import annotations
+
+import os
+import pickle
+import subprocess
+import sys
+import threading
+import urllib.error
+import urllib.request
+from typing import Any
+
+import pytest
+
+from runcomposer.plugins.sqlite_store import SqliteRunStore
+from runcomposer.sdk import (
+    DispatchContext,
+    Item,
+    PlanContext,
+    PlanPreview,
+    RunnerBase,
+    RunnerInfo,
+    Verdict,
+)
+from runcomposer.testing import (
+    ConnectorHarness,
+    DispatchHandle,
+    FakeDispatchContext,
+    ListSource,
+    check_runner,
+    check_store,
+)
+
+CART = ["Shop.Cart.Core.T001", "Shop.Cart.Core.T002", "Shop.Cart.Core.T003"]
+HERE = "tests.test_kit_additions"
+
+
+def rule_of(error: pytest.ExceptionInfo[AssertionError]) -> str:
+    return str(error.value).split("]", 1)[0].lstrip("[")
+
+
+# -- check_runner: the plan rules ------------------------------------------------------
+
+
+class _Planner(RunnerBase):
+    shards = ("eu", "us")
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="planner", capabilities=("plan",))
+
+    def split(self, ctx: PlanContext) -> dict[str, list[str]]:
+        return {"eu": list(ctx.item_ids[::2]), "us": list(ctx.item_ids[1::2])}
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return PlanPreview(text="two regions", shards=self.split(ctx), groups={"eu": "emea", "us": "amer"})
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        shards = self.split(ctx)
+        ctx.declare(shards, groups={"eu": "emea", "us": "amer"})
+        for shard, items in shards.items():
+            ctx.deliver(shard, verdicts=[Verdict(item, "PASS") for item in items])
+
+
+class PlannerThatDeclares(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        ctx.declare(["eu"])  # type: ignore[attr-defined]
+        return super().plan(ctx)
+
+
+class PlannerThatLogs(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        ctx.log("planning")  # type: ignore[attr-defined]
+        return super().plan(ctx)
+
+
+class PlannerPreviewingOtherShards(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return PlanPreview(text="one lane", shards={"all": list(ctx.item_ids)})
+
+
+class PlannerListingStrangers(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return PlanPreview(shards={"eu": ["Shop.Not.Planned"], "us": []})
+
+
+class PlannerLabellingUnknownShards(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return PlanPreview(shards=self.split(ctx), groups={"apac": "apac"})
+
+
+class PlannerThatRaises(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        raise KeyError("region_map")
+
+
+class PlannerReturningText(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return "two regions"  # type: ignore[return-value]
+
+
+class PlannerRefusingWhatItThenRuns(_Planner):
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        ctx.refuse("the regions are closed")
+
+
+class NoPlanCapability(_Planner):
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="quiet")
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        raise AssertionError("a runner that does not declare `plan` is not asked for one")
+
+
+class TestThePlanRules:
+    def test_a_well_behaved_planner_passes_and_its_groups_are_recorded(self):
+        ctx = check_runner(_Planner(), expect="complete")
+        assert ctx.shard_groups == {"eu": "emea", "us": "amer"}
+
+    @pytest.mark.parametrize(
+        ("runner", "rule", "says"),
+        [
+            (PlannerThatDeclares, "runner.plan-is-read-only", "no declare, deliver, artifacts, token or work directory"),
+            (PlannerThatLogs, "runner.plan-is-read-only", "reached for something a preview does not have"),
+            (PlannerPreviewingOtherShards, "runner.plan-matches-dispatch",
+             "previewed the shards ['all'], the dispatch declared ['eu', 'us']"),
+            (PlannerListingStrangers, "runner.plan", "lists item(s) that were not planned: ['Shop.Not.Planned']"),
+            (PlannerLabellingUnknownShards, "runner.plan", "labels shard(s) the preview does not list: ['apac']"),
+            (PlannerThatRaises, "runner.plan", "plan() raised KeyError: 'region_map'"),
+            (PlannerReturningText, "runner.plan", "plan() must return a PlanPreview, got str"),
+        ],
+    )
+    def test_each_broken_planner_is_caught_with_its_rule_named(self, runner, rule, says):
+        with pytest.raises(AssertionError) as caught:
+            check_runner(runner())
+        assert rule_of(caught) == rule and says in str(caught.value)
+
+    def test_a_plan_may_refuse_and_a_runner_without_the_capability_is_not_asked(self):
+        check_runner(PlannerRefusingWhatItThenRuns(), expect="complete")
+        check_runner(NoPlanCapability(), expect="complete")
+
+
+# -- check_store: groups, RUNNING, statuses, seeds -----------------------------------------
+
+
+def make_sqlite() -> SqliteRunStore:
+    return SqliteRunStore(":memory:")
+
+
+def wrapped(**overrides: Any):
+    """A sqlite store with some methods replaced — a store broken in one way."""
+
+    def make() -> Any:
+        store = make_sqlite()
+        for name, replacement in overrides.items():
+            setattr(store, name, replacement.__get__(store))
+        return store
+
+    return make
+
+
+def _dropping_groups(self: Any, dispatch_id: str, **changes: Any) -> Any:
+    changes.pop("shard_groups", None)
+    return type(self).update_dispatch(self, dispatch_id, **changes)
+
+
+def _refusing_running(self: Any, run_id: str, dispatch_id: str, shard: str, verdict: Any) -> None:
+    if verdict.status == "RUNNING":
+        return
+    type(self).record_live_verdict(self, run_id, dispatch_id, shard, verdict)
+
+
+def _ignoring_statuses(self: Any, *, labels: Any = None, last_n: int = 5, statuses: Any = None) -> dict:
+    return type(self).duration_aggregates(self, labels=labels, last_n=last_n)
+
+
+def _forgetting_seeds(self: Any, durations: Any, *, labels: Any = None) -> int:
+    return len(durations)
+
+
+def _dropping_artifact_groups(self: Any, run_id: str, dispatch_id: Any, **fields: Any) -> None:
+    fields["group"] = None
+    type(self).add_artifact_ref(self, run_id, dispatch_id, **fields)
+
+
+class TestTheStoreRules:
+    def test_the_reference_store_passes(self):
+        check_store(make_sqlite)
+
+    @pytest.mark.parametrize(
+        ("overrides", "rule"),
+        [
+            ({"update_dispatch": _dropping_groups}, "store.shard-groups"),
+            ({"record_live_verdict": _refusing_running}, "store.live-running"),
+            ({"duration_aggregates": _ignoring_statuses}, "store.duration-statuses"),
+            ({"seed_durations": _forgetting_seeds}, "store.duration-seeds"),
+            ({"add_artifact_ref": _dropping_artifact_groups}, "store.artifacts"),
+        ],
+    )
+    def test_each_store_that_falls_short_is_caught_with_its_rule_named(self, overrides, rule):
+        with pytest.raises(AssertionError) as caught:
+            check_store(wrapped(**overrides))
+        assert rule_of(caught) == rule
+
+
+# -- FakeDispatchContext ----------------------------------------------------------------
+
+_WORKER = """
+import pickle, sys
+channel = pickle.loads(bytes.fromhex(sys.argv[1]))
+channel.live("a", sys.argv[2], "RUNNING")
+channel.log("worker: started")
+channel.live("a", sys.argv[2], "PASS", duration_ms=9)
+"""
+
+
+class TestTheFake:
+    def test_the_whole_live_stream_is_kept_and_live_now_is_what_a_store_holds(self):
+        """A runner that delivers a shard right after executing it used to
+        end with an empty list: its stream could not be asserted."""
+        ctx = FakeDispatchContext(CART)
+        ctx.declare({"a": CART[:2], "b": CART[2:]})
+        channel = pickle.dumps(ctx.live_channel()).hex()
+        subprocess.run([sys.executable, "-c", _WORKER, channel, CART[0]], check=True, timeout=60)
+        ctx.live("a", CART[1], "RUNNING")
+        ctx.live("b", CART[2], "RUNNING")
+        ctx.live("b", "Shop.Not.Planned", "RUNNING")
+        ctx.live("b", CART[2], "EXPLODED")
+        assert [(s.shard, s.item_id, s.status) for s in ctx.live_now] == [
+            ("a", CART[0], "PASS"), ("a", CART[1], "RUNNING"), ("b", CART[2], "RUNNING"),
+        ]
+        ctx.deliver("a", verdicts=[Verdict(CART[0], "PASS"), Verdict(CART[1], "PASS")])
+        assert [(s.shard, s.item_id, s.status) for s in ctx.live_now] == [("b", CART[2], "RUNNING")]
+        assert [(s.shard, s.item_id, s.status) for s in ctx.live_updates] == [
+            ("a", CART[0], "RUNNING"), ("a", CART[0], "PASS"), ("a", CART[1], "RUNNING"), ("b", CART[2], "RUNNING"),
+        ]
+        assert ("info", "worker: started") in ctx.logs
+        ctx.close()
+
+    def test_options_and_parameters_are_apart_as_in_runcomposer(self):
+        ctx = FakeDispatchContext(CART, options={"stages": ["eu", "us"], "retries": 1}, parameters={"stages": ["eu"]})
+        assert dict(ctx.options) == {"stages": ["eu", "us"], "retries": 1}
+        assert dict(ctx.parameters) == {"stages": ["eu"]}
+        assert ctx.spec["runner"]["runner"] == {"stages": ["eu"]}
+
+    def test_groups_links_and_the_private_directory(self):
+        ctx = FakeDispatchContext(CART)
+        ctx.set_link("ticket", "https://desk.shop.example/t/1")
+        with pytest.raises(ValueError, match="groups names shard"):
+            ctx.declare(["a"], groups={"b": "x"})
+        ctx.declare(["a", "b"], links={"queue": "https://ci.shop.example/queue/item/7/"}, groups={"a": "eu", "b": "eu"})
+        ctx.set_link("build", "https://ci.shop.example/job/nightly/42")
+        assert ctx.shard_groups == {"a": "eu", "b": "eu"}
+        assert dict(ctx.links) == {
+            "ticket": "https://desk.shop.example/t/1",
+            "queue": "https://ci.shop.example/queue/item/7/",
+            "build": "https://ci.shop.example/job/nightly/42",
+        }
+        private, work = ctx.private_dir, ctx.workdir
+        assert private.is_dir() and private != work and work not in private.parents
+        ctx.add_artifact("log (eu)", work / "eu.html", group="eu")
+        assert (ctx.artifacts[0].group, ctx.artifacts[0].shard) == ("eu", None)
+        assert ctx.delivered_shards() == set() and ctx.outstanding_shards() == ["a", "b"]
+        ctx.deliver("b", verdicts=[Verdict(CART[0], "PASS")])
+        assert ctx.delivered_shards() == {"b"} and ctx.outstanding_shards() == ["a"] and ctx.outstanding == ["a"]
+        ctx.close()
+        assert not private.exists() and not work.exists()
+
+    def test_a_preview_is_given_a_plan_context_and_records_a_refusal(self):
+        ctx = FakeDispatchContext(CART)
+        preview = ctx.preview(_Planner())
+        assert preview.shards == {"eu": [CART[0], CART[2]], "us": [CART[1]]}
+        assert not ctx.is_declared and ctx.refusal is None
+        assert ctx.preview(PlannerRefusingWhatItThenRuns()) is None and ctx.refusal == "the regions are closed"
+        with pytest.raises(AttributeError, match="declare"):
+            ctx.preview(PlannerThatDeclares())
+
+    def test_from_source_gives_a_runner_the_real_catalog(self):
+        """A runner that reads ``Item.meta`` or attributes items to where
+        they came from needs the source's own items, not bare ids."""
+        items = [
+            Item("shop.cart.add", tags=("Cart", "Smoke"), meta={"path": "/cart", "method": "POST"}),
+            Item("shop.cart.remove", tags=("Cart",), meta={"path": "/cart/1", "method": "DELETE"}),
+            Item("shop.checkout.pay", tags=("Checkout", "Smoke"), meta={"path": "/pay", "method": "POST"}),
+        ]
+        source = ListSource(items)
+        everything = FakeDispatchContext.from_source(source)
+        assert everything.item_ids == ("shop.cart.add", "shop.cart.remove", "shop.checkout.pay")
+        assert everything.source is source
+        smoke = FakeDispatchContext.from_source(source, "Smoke", parameters={"region": "eu"})
+        assert smoke.item_ids == ("shop.cart.add", "shop.checkout.pay") and dict(smoke.parameters) == {"region": "eu"}
+        expression = FakeDispatchContext.from_source(source, {"op": "AND", "items": ["Cart", {"not": "Smoke"}]})
+        assert expression.item_ids == ("shop.cart.remove",)
+        picked = FakeDispatchContext.from_source(source, ["shop.checkout.pay", "shop.cart.add"])
+        assert picked.item_ids == ("shop.checkout.pay", "shop.cart.add")
+        assert {i.id: i.meta["method"] for i in picked.source.items()}["shop.cart.remove"] == "DELETE"
+        assert picked.spec["source"]["snapshot"] == source.snapshot(), "no drift between the document and the source"
+        with pytest.raises(ValueError, match="the source has no item"):
+            FakeDispatchContext.from_source(source, ["shop.cart.gone"])
+
+
+# -- ConnectorHarness: in the background, and served ---------------------------------------
+
+GATES: dict[str, threading.Event] = {}
+
+
+class GatedRunner(RunnerBase):
+    """Declares, streams one RUNNING, then waits for its gate (or a cancel)."""
+
+    def __init__(self, gate: str = "gate", callback_base: str = ""):
+        self.gate, self.callback_base = gate, callback_base
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="gated", capabilities=("cancel", "live_status", "plan"))
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        return PlanPreview(text="one shard", shards={"1": list(ctx.item_ids)})
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        if ctx.parameters.get("refuse"):
+            ctx.refuse("not today")
+        ctx.declare({"1": list(ctx.item_ids)}, links={"callback": self.callback_base or "none"})
+        ctx.live("1", ctx.item_ids[0], "RUNNING")
+        while not GATES[self.gate].wait(0.01):
+            ctx.raise_if_cancelled()
+        ctx.deliver("1", verdicts=[Verdict(item, "PASS") for item in ctx.item_ids])
+
+
+def gated(name: str, **options: Any) -> dict[str, Any]:
+    GATES[name] = threading.Event()
+    return {"gated": {"module": f"{HERE}:GatedRunner", "gate": name, **options}}
+
+
+class TestTheHarnessInTheBackground:
+    def test_start_returns_a_handle_to_wait_on_a_condition_then_let_it_end(self):
+        with ConnectorHarness(runners=gated("end")) as harness:
+            handle = harness.start("Cart", runner="gated")
+            assert isinstance(handle, DispatchHandle) and not handle.done
+            mid = handle.wait_until(lambda run: any(s.status == "RUNNING" for s in run.live), timeout=30)
+            assert mid.state == "RUNNING" and mid.links == {"callback": "none"}
+            assert mid.dispatch.dispatch_id == handle.dispatch_id and mid.verdicts == []
+            GATES["end"].set()
+            done = handle.wait(timeout=30)
+            assert handle.done and (done.state, done.completion) == ("COMPLETE", "PASS") and done.live == []
+
+    def test_cancel_through_the_handle(self):
+        with ConnectorHarness(runners=gated("cancel")) as harness:
+            handle = harness.start("Cart", runner="gated")
+            handle.wait_until(lambda run: run.live, timeout=30)
+            assert handle.cancel().cancel_requested
+            assert handle.wait(timeout=30).state == "CANCELLED"
+
+    def test_a_condition_that_is_never_met_fails_saying_where_the_run_stood(self):
+        with ConnectorHarness(runners=gated("never")) as harness:
+            handle = harness.start("Cart", runner="gated")
+            with pytest.raises(AssertionError) as caught:
+                handle.wait_until(lambda run: "build" in run.links, timeout=0.5)
+            message = str(caught.value)
+            assert "was not met within 0.5s" in message and "is RUNNING, runner still executing" in message
+            assert "run.running" in message
+            handle.cancel()
+            handle.wait(timeout=30)
+
+    def test_a_refusal_ends_the_wait_at_once_and_a_stored_run_can_be_started(self):
+        with ConnectorHarness(runners=gated("refuse")) as harness:
+            run_id = harness.compose("Cart", runner="gated")
+            handle = harness.start(runner="gated", run_id=run_id, parameters=None)
+            GATES["refuse"].set()
+            assert handle.wait(timeout=30).state == "COMPLETE" and handle.refusal is None
+            assert harness.plan(runner="gated", run_id=run_id).preview.shards["1"]
+            assert harness.plan("Cart", runner="gated").preview.text == "one shard"
+
+
+class TestTheServingHarness:
+    def test_the_api_is_reachable_and_its_address_is_known_to_the_plugins(self):
+        before = os.environ.get("RUNCOMPOSER_HARNESS_URL")
+        with ConnectorHarness(
+            runners=gated("served", callback_base="${env:RUNCOMPOSER_HARNESS_URL}"), serve=True
+        ) as harness:
+            assert harness.url.startswith("http://127.0.0.1:") and harness.api == f"{harness.url}/api/v1"
+            assert harness.service.runner("gated").callback_base == harness.url
+            with urllib.request.urlopen(f"{harness.api}/health", timeout=10) as response:
+                assert response.status == 200
+            handle = harness.start("Cart", runner="gated")
+            handle.wait_until(lambda run: run.live, timeout=30)
+            import json
+
+            with urllib.request.urlopen(f"{harness.api}/runs/{handle.run_id}", timeout=10) as response:
+                detail = json.loads(response.read())
+            assert detail["state"] == "RUNNING" and detail["live_summary"] == {"1": {"RUNNING": 1}}
+            GATES["served"].set()
+            handle.wait(timeout=30)
+            address = harness.url
+        assert os.environ.get("RUNCOMPOSER_HARNESS_URL") == before
+        with pytest.raises((urllib.error.URLError, ConnectionError, OSError)):
+            urllib.request.urlopen(f"{address}/api/v1/health", timeout=2)
+
+    def test_a_harness_that_does_not_serve_has_no_address(self):
+        with ConnectorHarness() as harness:
+            assert harness.url is None and harness.api is None

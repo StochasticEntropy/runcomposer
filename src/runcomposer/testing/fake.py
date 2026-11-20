@@ -338,6 +338,14 @@ class FakeDispatchContext:
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
     ) -> None:
+        # What worker processes wrote before this call comes first: the
+        # stream reads in the order things happened.
+        self._drain_live()
+        self._record_live(shard, item_id, status, duration_ms, message)
+
+    def _record_live(
+        self, shard: str, item_id: str, status: str, duration_ms: int = 0, message: str = ""
+    ) -> None:
         if status not in LIVE_STATUSES or item_id not in self.item_ids:
             return  # best-effort, as in runcomposer: live status never invents an item
         with self._lock:
@@ -396,10 +404,9 @@ class FakeDispatchContext:
                 self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
                 continue
             try:
-                self.live(
+                self._record_live(
                     str(entry["shard"]), str(entry["item_id"]), str(entry["status"]),
-                    duration_ms=int(entry.get("duration_ms") or 0),
-                    message=str(entry.get("message") or ""),
+                    int(entry.get("duration_ms") or 0), str(entry.get("message") or ""),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
