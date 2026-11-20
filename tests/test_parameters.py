@@ -23,12 +23,75 @@ DECLARED = (
 
 
 class TestDeclaration:
-    def test_the_five_kinds(self):
-        assert PARAMETER_KINDS == ("string", "integer", "boolean", "choice", "multi_choice")
+    def test_the_seven_kinds(self):
+        assert PARAMETER_KINDS == (
+            "string", "text", "integer", "boolean", "choice", "multi_choice", "mapping",
+        )
 
     def test_an_unknown_kind_is_refused_at_declaration(self):
         with pytest.raises(ValueError, match="kind must be one of"):
-            Parameter("seed", kind="text")
+            Parameter("seed", kind="float")
+
+    def test_a_pattern_must_be_a_regular_expression_and_fit_the_kind(self):
+        with pytest.raises(ValueError, match=r"parameter 'sku': pattern '\[' is not a regular expression"):
+            Parameter("sku", pattern="[")
+        with pytest.raises(ValueError, match="'pattern' applies to the kinds"):
+            Parameter("retries", kind="integer", pattern=r"\d+")
+
+
+class TestTextMappingAndPattern:
+    """The kinds beyond the scalar ones, and validation by pattern — all of
+    it checked when the run is requested, with the parameter named."""
+
+    DECLARED = (
+        Parameter("release_notes", kind="text"),
+        Parameter("variables", kind="mapping", pattern=r"[^\n]*"),
+        Parameter("coupon", pattern=r"[A-Z]{4}\d{2}"),
+        Parameter("headers", kind="mapping", default={"X-Shop-Region": "eu"}),
+    )
+
+    def test_text_takes_several_lines_and_a_string_does_not(self):
+        accepted = validate_parameters(self.DECLARED, {"release_notes": "line one\nline two"})
+        assert accepted["release_notes"] == "line one\nline two"
+        with pytest.raises(InvalidParameter, match="parameter 'coupon' must be a single line") as caught:
+            validate_parameters(self.DECLARED, {"coupon": "SAVE10\nSAVE20"})
+        assert caught.value.parameter == "coupon"
+
+    def test_a_mapping_is_names_to_strings_and_comes_back_as_a_dict(self):
+        accepted = validate_parameters(self.DECLARED, {"variables": {"BROWSER": "firefox", "LOCALE": "de"}})
+        assert accepted["variables"] == {"BROWSER": "firefox", "LOCALE": "de"}
+        assert accepted["headers"] == {"X-Shop-Region": "eu"}, "a mapping default applies like any other"
+
+    @pytest.mark.parametrize("value", ["BROWSER=firefox", ["BROWSER"], {"RETRIES": 3}, {"": "x"}, {1: "x"}])
+    def test_anything_else_is_refused_naming_the_parameter(self, value):
+        with pytest.raises(InvalidParameter, match="parameter 'variables' must be a mapping of names to strings") as caught:
+            validate_parameters(self.DECLARED, {"variables": value})
+        assert caught.value.parameter == "variables"
+
+    def test_a_pattern_must_match_the_whole_value(self):
+        assert validate_parameters(self.DECLARED, {"coupon": "SAVE10"})["coupon"] == "SAVE10"
+        with pytest.raises(InvalidParameter, match=r"parameter 'coupon': 'SAVE100' does not match the pattern") as caught:
+            validate_parameters(self.DECLARED, {"coupon": "SAVE100"})
+        assert caught.value.parameter == "coupon"
+
+    def test_a_mapping_pattern_is_checked_per_value_and_names_the_key(self):
+        with pytest.raises(InvalidParameter, match=r"parameter 'variables'\['NOTE'\]: 'two\\nlines' does not match") as caught:
+            validate_parameters(self.DECLARED, {"variables": {"BROWSER": "firefox", "NOTE": "two\nlines"}})
+        assert caught.value.parameter == "variables"
+
+    def test_from_config_takes_the_kinds_and_the_pattern_and_checks_the_default(self):
+        (variables, coupon) = parameters_from_config(
+            [
+                {"name": "variables", "kind": "mapping", "default": {"BROWSER": "firefox"}},
+                {"name": "coupon", "pattern": "[A-Z]+", "default": "SAVE"},
+            ],
+            "runner: parameters",
+        )
+        assert (variables.kind, variables.default, coupon.pattern) == ("mapping", {"BROWSER": "firefox"}, "[A-Z]+")
+        with pytest.raises(ConfigError, match=r"parameters\[0\]: parameter 'coupon': 'save' does not match"):
+            parameters_from_config([{"name": "coupon", "pattern": "[A-Z]+", "default": "save"}], "runner: parameters")
+        with pytest.raises(ConfigError, match=r"parameters\[0\]: parameter 'coupon': pattern '\(' is not a regular"):
+            parameters_from_config([{"name": "coupon", "pattern": "("}], "runner: parameters")
 
 
 class TestAcceptedValues:
@@ -146,4 +209,4 @@ class TestFromConfig:
 
     def test_an_unknown_kind_is_a_config_error_naming_the_entry(self):
         with pytest.raises(ConfigError, match=r"parameters\[0\]: parameter 'seed': kind must be"):
-            parameters_from_config([{"name": "seed", "kind": "text"}], "runner: parameters")
+            parameters_from_config([{"name": "seed", "kind": "float"}], "runner: parameters")

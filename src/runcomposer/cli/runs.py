@@ -1,5 +1,5 @@
-"""Running and reading runs: run · dispatch · cancel · rerun · watch · show ·
-runs · finalize · delete · export · export-spec."""
+"""Running and reading runs: plan · run · dispatch · cancel · rerun · watch ·
+show · runs · finalize · delete · export · export-spec."""
 
 from __future__ import annotations
 
@@ -48,6 +48,21 @@ def register(sub: Any) -> dict[str, Any]:
     add_json_arg(p_run)
     add_config_arg(p_run)
 
+    p_plan = sub.add_parser(
+        "plan",
+        help="show what a dispatch would do — which item goes to which shard — without "
+        "executing, storing or triggering anything",
+    )
+    add_selection_args(p_plan)
+    p_plan.add_argument("--run", dest="run_id", metavar="RUN_ID",
+                        help="plan this stored run instead of a selection")
+    p_plan.add_argument("--runner", required=True, help="configured runner id")
+    add_param_args(p_plan)
+    p_plan.add_argument("--items", action="store_true",
+                        help="list every item under its shard (default: counts only)")
+    add_json_arg(p_plan)
+    add_config_arg(p_plan)
+
     p_dispatch = sub.add_parser(
         "dispatch", help="dispatch a runspec file, or a stored run, to a configured runner"
     )
@@ -66,6 +81,8 @@ def register(sub: Any) -> dict[str, Any]:
                          help="all: a new dispatch of the same run. failed: a new run composed "
                          "from what did not pass (FAIL, ERROR, MISSING)")
     p_rerun.add_argument("--runner", help="runner id (default: the one the run last used)")
+    p_rerun.add_argument("--title", help="title of the run a --scope failed rerun composes "
+                         "(default: the source run's title)")
     add_param_args(p_rerun)
     add_wait_args(p_rerun)
     add_json_arg(p_rerun)
@@ -143,6 +160,7 @@ def register(sub: Any) -> dict[str, Any]:
     add_config_arg(p_export_spec)
 
     return {
+        "plan": cmd_plan,
         "run": cmd_run,
         "dispatch": cmd_dispatch,
         "rerun": cmd_rerun,
@@ -212,17 +230,73 @@ def _finish(service: Service, run_id: str, outcome: Outcome, args: argparse.Name
 def _print_shards(detail: dict[str, Any]) -> None:
     """The per-shard roll-up, plus what belongs to no shard: items nobody
     reported (when the runner declared no per-shard plan) and live status."""
+    for group in detail.get("groups") or ():
+        status = group["completion"] or (
+            f"{group['delivered_shards']}/{group['declared_shards']} shard(s) delivered"
+        )
+        print(f"  group {group['group']}: {status} — {counts_text(group['summary'])}")
+    groups = detail.get("shard_groups") or {}
     for shard in detail["shards"]:
         if shard["shard"]:
             status = shard["completion"] or ("delivered" if shard["delivered"] else "outstanding")
-            print(f"  shard {shard['shard']}: {status} — {counts_text(shard['summary'])}")
+            where = f" [{groups[shard['shard']]}]" if shard["shard"] in groups else ""
+            print(f"  shard {shard['shard']}{where}: {status} — {counts_text(shard['summary'])}")
         elif shard["summary"]:
             print(f"  reported by no shard: {counts_text(shard['summary'])}")
+    running = sum(counts.get("RUNNING", 0) for counts in (detail.get("live_summary") or {}).values())
+    if running and detail["state"] == "RUNNING":
+        print(f"  running now: {running} item(s)")
     live = sum(1 for verdict in detail["verdicts"] if verdict["live"])
     if live and detail["state"] == "RUNNING":
         print(f"  live: {live} item(s) reported so far by shards still executing")
     elif live:
         print(f"  last live status of shards that never delivered: {live} item(s)")
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Exit 0 with a plan, 1 when the dispatch would be refused."""
+    from runcomposer.app.views import plan_json
+
+    if args.run_id and (args.filter or args.item_ids or args.from_history):
+        print("error: give a selection or --run, not both", file=sys.stderr)
+        return EXIT_USAGE
+    with service_for(args) as service:
+        if args.run_id:
+            outcome = service.plan(args.runner, run_id=args.run_id, parameters=parse_params(args.param))
+        else:
+            outcome = service.plan(
+                args.runner, selection=selection_data(args), parameters=parse_params(args.param)
+            )
+    answer = plan_json(outcome)
+    if args.as_json:
+        emit_json(answer)
+        return EXIT_NO if answer["refused"] else EXIT_OK
+    for warning in answer["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    target = f"run {answer['run_id']}" if answer["run_id"] else "this selection"
+    print(f"plan for {target} on runner {answer['runner']}: {answer['item_count']} item(s); "
+          f"parameters {answer['parameters'] or '{}'}")
+    if answer["refused"]:
+        print(f"would be refused: {answer['refusal']}")
+        return EXIT_NO
+    plan = answer["plan"]
+    for line in plan["text"].splitlines():
+        print(f"  {line}")
+    for group in plan["groups"]:
+        estimate = f", est {group['estimate_ms'] / 1000:.1f}s" if group["estimate_ms"] else ""
+        print(f"group {group['group']}: {len(group['shards'])} shard(s), {group['count']} item(s){estimate}")
+    for shard in plan["shards"]:
+        where = f" [{shard['group']}]" if shard["group"] else ""
+        estimate = f", est {shard['estimate_ms'] / 1000:.1f}s" if shard["estimate_ms"] else ""
+        count = f"{shard['count']} item(s)" if shard["count"] else "items decided by the executor"
+        print(f"shard {shard['shard']}{where}: {count}{estimate}")
+        if args.items:
+            for item_id in shard["item_ids"]:
+                print(f"    {item_id}")
+    for note in plan["notes"]:
+        print(f"note: {note}")
+    print("nothing was executed, stored or triggered")
+    return EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -286,6 +360,7 @@ def cmd_rerun(args: argparse.Namespace) -> int:
             runner_id=args.runner,
             parameters=parse_params(args.param),
             foreground=True,
+            title=args.title,
         )
         if target != args.run_id:
             print(f"rerun of {args.run_id}: composed run {target}", file=sys.stderr)

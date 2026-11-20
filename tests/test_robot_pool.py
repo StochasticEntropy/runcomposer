@@ -536,7 +536,12 @@ class TestArtifacts:
         )
         assert detail["completion"] == "FAIL" and detail["verdict_summary"] == {"PASS": 4, "FAIL": 1}
         artifacts = {a["name"]: a for a in detail["artifacts"]}
-        assert set(artifacts) == {"log.html (default)", "report.html (default)", "output.xml (default)"}
+        assert set(artifacts) == {
+            "log.html (default)", "report.html (default)", "output.xml (default)", "files (default)",
+        }
+        # The shard's directory is recorded too: what a log refers to (a
+        # screenshot next to it) is served; it is not itself a document.
+        assert (artifacts.pop("files (default)")["kind"], ) == ("directory",)
         for artifact in artifacts.values():
             assert artifact["kind"] == "local" and artifact["shard"] == "default"
             assert artifact["href"].startswith(f"/artifacts/{run_id}/{detail['dispatch_id']}/default/")
@@ -558,7 +563,9 @@ class TestArtifacts:
         root = shop_suite(tmp_path, FIVE_TESTS, name="cart.robot")
         service = pool_service(make_service, root, max_workers=1, log=False, report=False)
         run = execute(service, "Cart")
-        assert [a["name"] for a in service.artifacts.list(run.id)] == ["output.xml (default)"]
+        assert [a["name"] for a in service.artifacts.list(run.id)] == [
+            "output.xml (default)", "files (default)",
+        ]
         shard = workdir(service, run) / "default"
         assert (shard / "output.xml").is_file()
         assert not (shard / "log.html").exists() and not (shard / "report.html").exists()
@@ -599,7 +606,7 @@ class TestMaxTestsPerChunk:
         assert merged["Shop.Cart.Cart Rejects A Negative Quantity"][0] == "FAIL"
         assert (shard / "log.html").is_file() and (shard / "report.html").is_file()
         assert [a["name"] for a in service.artifacts.list(run.id)] == [
-            "log.html (default)", "report.html (default)", "output.xml (default)",
+            "log.html (default)", "report.html (default)", "output.xml (default)", "files (default)",
         ]
 
     def test_without_the_bound_a_shard_is_one_execution(self, make_service, tmp_path):
@@ -674,7 +681,7 @@ class TestWorkerSetup:
         shard = workdir(service, run) / "default"
         record = json.loads((shard / "worker-setup.json").read_text(encoding="utf-8"))
         assert record["pid"] != os.getpid()  # in the worker, not here
-        assert record["process_name"] == "robot-pool-default"
+        assert record["process_name"] == "runcomposer-shard-default"
         # The pool uses the `spawn` start method: nothing of this process's
         # state is inherited (a fork from a server's worker thread would).
         assert record["inherited_parent_state"] is False
@@ -857,18 +864,25 @@ class TestLiveStatus:
         run_id = compose(service, "Checkout", runner_id=RUNNER)
         outcome = service.dispatch(run_id, RUNNER)
 
-        live = wait_until(
-            lambda: service.store.live_verdicts(run_id, outcome.dispatch_id),
-            what="a live verdict from the executing shard",
-        )
-        assert [(v.item_id, v.status, v.shard) for v in live] == [(QUICK, "PASS", "default")]
+        def quick_done_slow_running():
+            rows = service.store.live_verdicts(run_id, outcome.dispatch_id)
+            return rows if {(v.item_id, v.status) for v in rows} == {(QUICK, "PASS"), (SLOW, "RUNNING")} else None
+
+        live = wait_until(quick_done_slow_running, what="the quick test passed and the slow one running")
+        # A test is RUNNING from its start and carries its status once it ended.
+        assert {(v.item_id, v.status, v.shard) for v in live} == {
+            (QUICK, "PASS", "default"), (SLOW, "RUNNING", "default"),
+        }
         mid = run_detail(service, service.require_run(run_id))
         assert mid["state"] == "RUNNING"
         assert mid["shards"] == [
             {"shard": "default", "declared": True, "delivered": False, "count": 0,
              "summary": {}, "completion": None}
         ]
-        assert [(v["item_id"], v["live"]) for v in mid["verdicts"]] == [(QUICK, True)]
+        assert mid["live_summary"] == {"default": {"PASS": 1, "RUNNING": 1}}
+        assert sorted((v["item_id"], v["status"], v["live"]) for v in mid["verdicts"]) == [
+            (QUICK, "PASS", True), (SLOW, "RUNNING", True),
+        ]
         assert service.store.verdicts_for(run_id) == []  # live status is not a result
 
         done = service.wait(run_id, timeout=60)
@@ -884,7 +898,12 @@ class TestLiveStatus:
         run = execute(service, "Cart")
         assert run.state == "COMPLETE"
         assert len(service.store.verdicts_for(run.id)) == 5
-        assert not (workdir(service, run) / ".live").exists()  # no channel was ever opened
+        # The channel carries the workers' log lines either way; what the
+        # option turns off is the per-test status.
+        assert service.store.live_verdicts(run.id, run.latest_dispatch.dispatch_id) == []
+        lines = [line for file in (workdir(service, run) / ".live").glob("*.jsonl")
+                 for line in file.read_text(encoding="utf-8").splitlines()]
+        assert all('"log"' in line for line in lines)
 
     def test_the_listener_reports_through_the_file_live_channel(self, tmp_path):
         """The listener needs no store: it writes to the picklable channel the
@@ -892,12 +911,13 @@ class TestLiveStatus:
         import pickle
 
         from runcomposer.app.livechannel import FileLiveChannel, LiveTail
-        from runcomposer.plugins.robot_listener import LiveStatusListener
+        from runcomposer.sdk.robot import LiveStatusListener
 
         channel = pickle.loads(pickle.dumps(FileLiveChannel(str(tmp_path))))
         listener = LiveStatusListener(channel, "env1-1")
         tail = LiveTail(tmp_path)
         assert list(tail.read()) == []
+        listener.start_test(None, SimpleNamespace(longname=QUICK))
         listener.end_test(
             None, SimpleNamespace(longname=QUICK, status="PASS", elapsedtime=12, message="")
         )
@@ -905,6 +925,7 @@ class TestLiveStatus:
             None, SimpleNamespace(longname=SLOW, status="NOT RUN", elapsedtime=0, message="skipped")
         )
         assert list(tail.read()) == [
+            {"shard": "env1-1", "item_id": QUICK, "status": "RUNNING", "duration_ms": 0, "message": ""},
             {"shard": "env1-1", "item_id": QUICK, "status": "PASS", "duration_ms": 12, "message": ""},
             {"shard": "env1-1", "item_id": SLOW, "status": "SKIP", "duration_ms": 0, "message": "skipped"},
         ]
@@ -983,7 +1004,7 @@ class TestCancel:
         assert time.monotonic() - started < 40
         assert (run.state, run.completion) == ("FAILED", None)
         dispatch = run.latest_dispatch
-        assert "exceeded shard_timeout_s=4" in dispatch.error and "1 of 2 shard(s)" in dispatch.error
+        assert "exceeded the shard timeout of 4s" in dispatch.error and "1 of 2 shard(s)" in dispatch.error
         # Partial results are kept: the finished shard's verdict is there.
         assert [(v.item_id, v.status) for v in service.store.verdicts_for(run.id)] == [(QUICK, "PASS")]
         assert dict(dispatch.summary) == {"PASS": 1, "MISSING": 1}

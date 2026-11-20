@@ -665,6 +665,7 @@ class TestRunDetail:
         assert (body["state"], body["completion"], body["dispatch_id"]) == ("COMPLETE", "FAIL", outcome.dispatch_id)
         assert len(body["verdicts"]) == 3
         assert set(body["verdicts"][0]) == {"item_id", "status", "duration_ms", "message", "shard", "attempt", "live"}
+        assert (body["shard_groups"], body["groups"], body["live_summary"], body["rerun_of"]) == ({}, [], {}, None)
         failing = [row for row in body["verdicts"] if row["status"] == "FAIL"]
         assert len(failing) == 2 and failing[0]["duration_ms"] > 0 and failing[0]["message"]
         assert {row["shard"] for row in body["verdicts"]} == {"1"}
@@ -674,12 +675,12 @@ class TestRunDetail:
         assert body["artifacts"] == [
             {
                 "name": "log.html (1)", "media_type": "text/html", "dispatch_id": outcome.dispatch_id,
-                "shard": "1", "url_or_path": str(log), "kind": "local",
+                "shard": "1", "group": None, "url_or_path": str(log), "kind": "local",
                 "href": f"/artifacts/{run_id}/{outcome.dispatch_id}/1/log.html",
             },
             {
                 "name": "Build", "media_type": "text/html", "dispatch_id": outcome.dispatch_id,
-                "shard": None, "url_or_path": "https://ci.shop.example/job/7/", "kind": "url",
+                "shard": None, "group": None, "url_or_path": "https://ci.shop.example/job/7/", "kind": "url",
                 "href": "https://ci.shop.example/job/7/",
             },
         ]
@@ -811,7 +812,7 @@ class TestMeta:
         assert body["catalog"]["snapshot"].startswith("sha256:") and body["catalog"]["sources"] == ["demo-corpus"]
         assert body["taxonomy"] == {"configured": False}
         assert body["ingestion"] == {"tokens": "required", "inbox": False}
-        assert body["ui"] == {"quick_filters": ["Smoke", "Regression"]}
+        assert body["ui"] == {"quick_filters": [{"label": "Smoke", "filter": "Smoke", "tag_filter": "Smoke", "text": "Smoke", "kind": "pattern"}, {"label": "Regression", "filter": "Regression", "tag_filter": "Regression", "text": "Regression", "kind": "pattern"}]}
         assert "COMPLETE" in body["states"] and "INCOMPLETE" in body["completions"]
         (runner,) = body["runners"]
         assert (runner["id"], runner["plugin"]) == ("demo", "demo")
@@ -819,7 +820,7 @@ class TestMeta:
         assert runner["parameters"] == [
             {
                 "name": "seed", "kind": "string", "label": "Seed", "default": "demo", "choices": [],
-                "required": False,
+                "required": False, "pattern": None,
                 "help": "Same seed, same simulated verdicts; change it to see results flip.",
             }
         ]
@@ -837,7 +838,9 @@ class TestMeta:
 
     def test_ui_config(self, make_client):
         client, _service = make_client(ui={"quick_filters": ["Smoke"]})
-        assert client.get(f"{API}/ui-config").json() == {"locale_default": "en", "quick_filters": ["Smoke"]}
+        assert client.get(f"{API}/ui-config").json() == {
+            "locale_default": "en", "quick_filters": [{"label": "Smoke", "filter": "Smoke", "tag_filter": "Smoke", "text": "Smoke", "kind": "pattern"}],
+        }
 
     def test_runners_are_listed_under_their_config_key_with_cached_health(self, gated):
         """The id a runner is dispatched by is the key it is configured
@@ -1413,6 +1416,57 @@ class TestArtifactRoute:
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["referrer-policy"] == "no-referrer"
 
+    def test_only_recorded_artifacts_are_served(self, with_artifact):
+        """A file is downloadable because a runner recorded it — not because
+        it lies in the artifact directory. What a runner merely wrote into
+        its work directory (a scratch file, a backup, a credential a tool
+        left behind) answers exactly like a file that does not exist."""
+        client, service, run_id, tmp_path = with_artifact
+        workdir = tmp_path / "artifacts" / run_id / "dispatch-1"
+        (workdir / "env1" / "environment.bak").write_text("SHOP_API_KEY=k-123456", encoding="utf-8")
+        (workdir / ".live").mkdir()
+        (workdir / ".live" / "live-1.jsonl").write_text("{}", encoding="utf-8")
+        for unrecorded in ("env1/environment.bak", ".live/live-1.jsonl"):
+            response = client.get(f"/artifacts/{run_id}/dispatch-1/{unrecorded}")
+            assert_error(response, 404, "unknown-artifact")
+            assert "k-123456" not in response.text
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/env1/output.xml").status_code == 200
+        # Recording it is what makes it servable.
+        service.store.add_artifact_ref(
+            run_id, None, name="environment", media_type="text/plain",
+            url_or_path=str(workdir / "env1" / "environment.bak"),
+        )
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/env1/environment.bak").status_code == 200
+
+    def test_a_recorded_directory_makes_its_tree_servable_and_nothing_beside_it(self, with_artifact):
+        """A report refers to files next to it (screenshots): a runner
+        records the directory, and what lies under it is served."""
+        client, service, run_id, tmp_path = with_artifact
+        workdir = tmp_path / "artifacts" / run_id / "dispatch-1"
+        shots = workdir / "env2" / "screenshots"
+        shots.mkdir(parents=True)
+        (shots / "checkout.png").write_bytes(b"\x89PNG")
+        (workdir / "notes.txt").write_text("beside, not inside", encoding="utf-8")
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/env2/screenshots/checkout.png").status_code == 404
+        service.store.add_artifact_ref(
+            run_id, None, name="files (env2)", media_type="inode/directory", url_or_path=str(workdir / "env2")
+        )
+        served = client.get(f"/artifacts/{run_id}/dispatch-1/env2/screenshots/checkout.png")
+        assert served.status_code == 200 and served.content == b"\x89PNG"
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/notes.txt").status_code == 404
+        listed = {a["name"]: a for a in client.get(f"{API}/runs/{run_id}").json()["artifacts"]}
+        assert (listed["files (env2)"]["kind"], listed["files (env2)"]["href"]) == ("directory", None)
+
+    def test_a_file_recorded_by_another_run_is_not_served_from_this_runs_directory(self, with_artifact):
+        client, service, run_id, tmp_path = with_artifact
+        other = compose(service, "Auth-SSO")
+        stray = tmp_path / "artifacts" / run_id / "dispatch-1" / "stray.txt"
+        stray.write_text("x", encoding="utf-8")
+        service.store.add_artifact_ref(other, None, name="stray", media_type="text/plain", url_or_path=str(stray))
+        assert client.get(f"/artifacts/{run_id}/dispatch-1/stray.txt").status_code == 404
+        (entry,) = client.get(f"{API}/runs/{other}").json()["artifacts"]
+        assert (entry["kind"], entry["href"]) == ("external-path", None)
+
     @pytest.mark.parametrize(
         "attack",
         ["../../../../etc/passwd", "..%2f..%2f..%2fetc%2fpasswd", "run/dispatch/../../../secret.txt", "%2e%2e/secret.txt"],
@@ -1437,8 +1491,14 @@ class TestArtifactRoute:
 
     @posix_only
     def test_a_miss_and_a_refusal_are_indistinguishable_in_status_and_code(self, with_artifact):
-        client, _service, _run_id, _tmp = with_artifact
-        miss = assert_error(client.get("/artifacts/gone/away/output.xml"), 404, "unknown-artifact")
+        client, service, run_id, _tmp = with_artifact
+        gone = _tmp / "artifacts" / run_id / "dispatch-1" / "away" / "output.xml"
+        service.store.add_artifact_ref(
+            run_id, None, name="output.xml", media_type="application/xml", url_or_path=str(gone)
+        )
+        miss = assert_error(
+            client.get(f"/artifacts/{run_id}/dispatch-1/away/output.xml"), 404, "unknown-artifact"
+        )
         assert "retention" in miss["detail"], "a recorded file that is gone names the likely cause"
         (tmp_path := _tmp / "artifacts" / "link").symlink_to(_tmp / "secret.txt")
         refusal = assert_error(client.get("/artifacts/link"), 404, "unknown-artifact")

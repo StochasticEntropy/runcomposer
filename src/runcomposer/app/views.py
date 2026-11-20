@@ -17,10 +17,12 @@ from runcomposer.core.model import (
     DeliveryRecord,
     DispatchRecord,
     Item,
+    LiveStatus,
     RunEvent,
     RunRecord,
     Verdict,
 )
+from runcomposer.core.ports import PlanPreview
 from runcomposer.core.timeutil import epoch_ms
 
 from .ingestion import IngestReport, expected_format
@@ -33,6 +35,7 @@ __all__ = [
     "event_json",
     "ingest_json",
     "item_json",
+    "plan_json",
     "run_detail",
     "run_row",
     "verdict_json",
@@ -55,6 +58,10 @@ def dispatch_json(dispatch: DispatchRecord) -> dict[str, Any]:
         "mode": dispatch.mode,
         "state": dispatch.state,
         "created_at": dispatch.created_at,
+        # Seconds from the dispatch's start to its completion; None while it
+        # has not completed.
+        "duration_s": _duration_s(dispatch),
+        "shard_groups": dict(dispatch.shard_groups),
         "shards": list(dispatch.shards),
         "declared_shards": dispatch.declared_shards,
         "completion": dispatch.completion,
@@ -92,7 +99,13 @@ def event_json(event: RunEvent) -> dict[str, Any]:
     }
 
 
-def verdict_json(verdict: Verdict, *, live: bool = False) -> dict[str, Any]:
+def _duration_s(dispatch: DispatchRecord | None) -> int | None:
+    if dispatch is None or not dispatch.completed_at:
+        return None
+    return max(0, (epoch_ms(dispatch.completed_at) - epoch_ms(dispatch.created_at)) // 1000)
+
+
+def verdict_json(verdict: Verdict | LiveStatus, *, live: bool = False) -> dict[str, Any]:
     return {
         "item_id": verdict.item_id,
         "status": verdict.status,
@@ -118,12 +131,12 @@ def ingest_json(report: IngestReport) -> dict[str, Any]:
 
 
 def run_row(run: RunRecord) -> dict[str, Any]:
-    """One run as a list shows it — complete without further requests."""
+    """One run as a list shows it — complete without further requests.
+    ``duration_s`` describes the latest dispatch, like every other headline
+    field (state, completion, counts): a run dispatched again a week later
+    did not take a week. Each entry of ``dispatches`` carries its own."""
     latest = run.latest_dispatch
-    first = run.dispatches[0] if run.dispatches else None
-    duration_s = None
-    if first is not None and run.completed_at:
-        duration_s = max(0, (epoch_ms(run.completed_at) - epoch_ms(first.created_at)) // 1000)
+    duration_s = _duration_s(latest)
     return {
         "id": run.id,
         "title": run.title,
@@ -150,9 +163,31 @@ def verdict_rows(service: Service, dispatch: DispatchRecord | None, run_id: str)
         return []
     rows = [verdict_json(verdict) for verdict in service.ledger.scored_verdicts(dispatch)]
     delivered = {row["shard"] for row in rows if row["status"] != "MISSING"}
-    for verdict in service.store.live_verdicts(run_id, dispatch.dispatch_id):
-        if verdict.shard not in delivered:
-            rows.append(verdict_json(verdict, live=True))
+    streamed = service.store.live_verdicts(run_id, dispatch.dispatch_id)
+    # A MISSING verdict says "nothing was delivered for this item" — which is
+    # also true of an item that was seen passing live in a shard that was
+    # cancelled before it delivered. What was last streamed about such an
+    # item is stated next to its verdict (`last_live`), so that nobody has to
+    # match rows up to tell "never started" from "ran, result not delivered".
+    by_shard = {(status.shard, status.item_id): status for status in streamed}
+    by_item = {status.item_id: status for status in streamed}
+    for row in rows:
+        if row["status"] != "MISSING":
+            continue
+        seen = (
+            by_shard.get((row["shard"], row["item_id"]))
+            if row["shard"]
+            else by_item.get(row["item_id"])
+        )
+        row["last_live"] = (
+            {"status": seen.status, "duration_ms": seen.duration_ms, "message": seen.message,
+             "shard": seen.shard}
+            if seen is not None
+            else None
+        )
+    for status in streamed:
+        if status.shard not in delivered:
+            rows.append(verdict_json(status, live=True))
     return rows
 
 
@@ -211,6 +246,14 @@ def run_detail(
             "dispatch_id": dispatch.dispatch_id if dispatch else None,
             "verdicts": rows,
             "shards": shard_summaries(dispatch, rows, delivered),
+            # Beside the per-shard roll-up: which group each shard belongs to,
+            # the roll-up per group, and what is streaming right now.
+            "shard_groups": dict(dispatch.shard_groups) if dispatch else {},
+            "groups": group_summaries(dispatch, rows, delivered),
+            "live_summary": live_summary(rows),
+            # For a run composed by `rerun` with scope `failed`: the run it
+            # was derived from. (Scope `all` re-dispatches the same run.)
+            "rerun_of": _rerun_of(run, selection),
             "artifacts": service.artifacts.list(run.id),
             "events": [event_json(event) for event in events],
             "last_event_seq": events[-1].seq if events else 0,
@@ -224,3 +267,134 @@ def run_detail(
         }
     )
     return data
+
+
+# -- shard groups, live counts, plans ------------------------------------------------
+
+
+def _live_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    return counts
+
+
+def live_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """What is streaming from shards that have not delivered, as counts per
+    shard and live status — ``{"staging-01": {"RUNNING": 1, "PASS": 4}}``.
+    A shard that streams nothing is not listed."""
+    by_shard: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if row["live"]:
+            by_shard.setdefault(row["shard"], []).append(row)
+    return {shard: _live_counts(streaming) for shard, streaming in by_shard.items()}
+
+
+def group_summaries(
+    dispatch: DispatchRecord | None, rows: Sequence[Mapping[str, Any]], delivered: set[str]
+) -> list[dict[str, Any]]:
+    """The roll-up per shard group — one entry per label a runner gave with
+    ``declare(groups=…)``, in the order the labels first appear: which
+    shards it holds, how many delivered, counts and a completion over all of
+    them (``None`` until every shard of the group delivered). Empty for a
+    dispatch that grouped nothing."""
+    if dispatch is None or not dispatch.shard_groups:
+        return []
+    members: dict[str, list[str]] = {}
+    for shard in dispatch.shards:
+        label = dispatch.shard_groups.get(shard)
+        if label is not None:
+            members.setdefault(label, []).append(shard)
+    summaries = []
+    for label, shards in members.items():
+        own = [row for row in rows if row["shard"] in shards]
+        verdicts = [
+            Verdict(row["item_id"], row["status"], attempt=row["attempt"], shard=row["shard"])
+            for row in own
+            if not row["live"]
+        ]
+        done = [shard for shard in shards if shard in delivered]
+        planned = [dispatch.shard_items.get(shard) for shard in shards]
+        summaries.append(
+            {
+                "group": label,
+                "shards": shards,
+                "declared_shards": len(shards),
+                "delivered_shards": len(done),
+                "planned": (
+                    sum(len(items) for items in planned if items is not None)
+                    if all(items is not None for items in planned)
+                    else None
+                ),
+                "count": len(lifecycle.effective_verdicts(verdicts)),
+                "summary": lifecycle.summarize(verdicts),
+                "live": _live_counts([row for row in own if row["live"]]),
+                "completion": (
+                    lifecycle.completion_of(verdicts) if len(done) == len(shards) else None
+                ),
+            }
+        )
+    return summaries
+
+
+def _rerun_of(run: RunRecord, selection: Mapping[str, Any]) -> dict[str, Any] | None:
+    if run.origin != "rerun":
+        return None
+    for entry in selection.get("derived_from") or ():
+        if isinstance(entry, Mapping) and entry.get("resolved_run_id"):
+            return {"run_id": str(entry["resolved_run_id"]), "scope": "failed"}
+    return None
+
+
+def plan_json(outcome: Any) -> dict[str, Any]:
+    """A plan request's answer (``PlanOutcome``): ``plan`` is set, or
+    ``refused`` is true and ``refusal`` says why. Shards come as a list, in
+    the order the dispatch would declare them, each with its group, its
+    items and — where history allows — an estimate; groups as their own
+    roll-up."""
+    preview: PlanPreview | None = outcome.preview
+    plan: dict[str, Any] | None = None
+    if preview is not None:
+        shards: list[dict[str, Any]] = [
+            {
+                "shard": shard,
+                "group": preview.groups.get(shard),
+                "count": len(items),
+                "item_ids": list(items),
+                "estimate_ms": preview.estimates_ms.get(shard),
+            }
+            for shard, items in preview.shards.items()
+        ]
+        labels: dict[str, list[dict[str, Any]]] = {}
+        for entry in shards:
+            if entry["group"] is not None:
+                labels.setdefault(entry["group"], []).append(entry)
+        plan = {
+            "text": preview.text,
+            "shards": shards,
+            "groups": [
+                {
+                    "group": label,
+                    "shards": [entry["shard"] for entry in entries],
+                    "count": sum(entry["count"] for entry in entries),
+                    "estimate_ms": (
+                        sum(entry["estimate_ms"] for entry in entries)
+                        if all(entry["estimate_ms"] is not None for entry in entries)
+                        else None
+                    ),
+                }
+                for label, entries in labels.items()
+            ],
+            "notes": list(preview.notes),
+            "data": dict(preview.data),
+        }
+    return {
+        "runner": outcome.runner_id,
+        "run_id": outcome.run_id,
+        "item_count": len(outcome.item_ids),
+        "parameters": dict(outcome.parameters),
+        "refused": outcome.refusal is not None,
+        "refusal": outcome.refusal,
+        "plan": plan,
+        "warnings": list(outcome.warnings),
+    }

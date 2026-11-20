@@ -26,6 +26,7 @@ from typing import Any, Generic, TypeVar, overload
 
 import yaml
 
+from runcomposer.core import events as kinds
 from runcomposer.core import lifecycle
 from runcomposer.core.errors import (
     ConfigError,
@@ -37,6 +38,7 @@ from runcomposer.core.errors import (
     UnknownRunner,
 )
 from runcomposer.core.model import DispatchRecord, RunPage, RunRecord
+from runcomposer.core.parameters import Parameter, validate_parameters
 from runcomposer.core.ports import Health, RunnerInfo
 from runcomposer.core.registry import installed_plugins
 from runcomposer.core.taxonomy import TaxonomyError, resolve_taxonomy, validate_taxonomy
@@ -46,7 +48,7 @@ from .artifacts import Artifacts
 from .catalog import Catalog
 from .compose import Composer, ComposeResult, ExportResult, Preview
 from .config import Config, _resolve_env, redact
-from .dispatching import DispatchManager, Outcome
+from .dispatching import DispatchManager, Outcome, PlanOutcome
 from .eventbus import EventBus, ObserverBinding
 from .housekeeping import collect_garbage, remove_run_artifacts
 from .ingestion import Ingestion, IngestReport, QuarantineReport
@@ -54,7 +56,7 @@ from .ledger import Ledger
 from .quarantine import Quarantine
 from .recovery import recover
 
-__all__ = ["Service"]
+__all__ = ["Service", "parameter_json"]
 
 log = logging.getLogger("runcomposer.service")
 
@@ -89,6 +91,20 @@ class _part(Generic[_T]):
         return parts[self._name]
 
 _HEALTH_TTL_S = 30.0
+
+
+def parameter_json(parameter: Parameter) -> dict[str, Any]:
+    """One per-run parameter as a client renders a form field from it."""
+    return {
+        "name": parameter.name,
+        "kind": parameter.kind,
+        "label": parameter.label or parameter.name,
+        "help": parameter.help,
+        "default": parameter.default,
+        "choices": list(parameter.choices),
+        "required": parameter.required,
+        "pattern": parameter.pattern,
+    }
 
 
 class Service:
@@ -190,6 +206,26 @@ class Service:
             self.ingestion.parser(spec.key)
         _ = self.bus
         self.taxonomy()
+        self._check_presets()
+
+    def _check_presets(self) -> None:
+        """A preset that names a runner must name a configured one, with
+        parameters that runner accepts — or the UI offers a start that the
+        API then refuses."""
+        for index, preset in enumerate(self.config.ui.get("presets") or ()):
+            runner_id = preset.get("runner")
+            if runner_id is None:
+                continue
+            where = f"ui.presets[{index}] ({preset['name']!r})"
+            if runner_id not in self.config.runner_ids():
+                raise ConfigError(
+                    f"{where}: runner {runner_id!r} is not configured under 'runners:' "
+                    f"(configured: {self.config.runner_ids() or 'none'})"
+                )
+            try:
+                validate_parameters(self.runner(runner_id).describe().parameters, preset["parameters"])
+            except InvalidRequest as exc:
+                raise ConfigError(f"{where}: {exc}") from None
 
     def recover(self) -> list[DispatchRecord]:
         """Mark dispatches a dead process left executing as STALE."""
@@ -265,18 +301,7 @@ class Service:
                     "description": info.description,
                     "capabilities": list(info.capabilities),
                     "result_format": info.result_format,
-                    "parameters": [
-                        {
-                            "name": p.name,
-                            "kind": p.kind,
-                            "label": p.label or p.name,
-                            "help": p.help,
-                            "default": p.default,
-                            "choices": list(p.choices),
-                            "required": p.required,
-                        }
-                        for p in info.parameters
-                    ],
+                    "parameters": [parameter_json(p) for p in info.parameters],
                 }
             )
             if health:
@@ -385,6 +410,125 @@ class Service:
     def cancel(self, run_id: str, *, force: bool = False) -> DispatchRecord:
         return self.dispatcher.cancel(run_id, force=force)
 
+    def plan(
+        self,
+        runner_id: str,
+        *,
+        run_id: str | None = None,
+        selection: Mapping[str, Any] | None = None,
+        parameters: Mapping[str, Any] | None = None,
+        title: str = "Plan preview",
+        labels: Mapping[str, str] | None = None,
+    ) -> PlanOutcome:
+        """What a dispatch to ``runner_id`` would do — for a stored run
+        (``run_id``) or for a selection that is not stored and will not be
+        (``selection``). Nothing is persisted, executed or triggered. For a
+        stored run, ``parameters=None`` means the ones its document carries."""
+        if (run_id is None) == (selection is None):
+            raise InvalidRequest("a plan is for a stored run or for a selection — give one of them")
+        info = self.runner(runner_id).describe()
+        if run_id is not None:
+            self.require_run(run_id)
+            return self.dispatcher.plan(
+                runner_id, self.require_spec(run_id), parameters, run_id=run_id
+            )
+        assert selection is not None
+        self.catalog.refresh()
+        document = self.build_spec_document(
+            selection, title=title, labels=labels, expect_format=info.result_format
+        )
+        outcome = self.dispatcher.plan(runner_id, document.spec, dict(parameters or {}))
+        outcome.warnings = [*document.warnings, *outcome.warnings]
+        return outcome
+
+    def expire_awaiting(self, *, now_ms: int | None = None) -> list[DispatchRecord]:
+        """Close dispatches that have waited for results longer than
+        ``core.dispatch.awaiting_timeout_s`` (DESIGN.md §4): they become
+        ``FAILED`` with a ``run.failed`` event saying so and naming the
+        shards that never delivered. What was delivered is kept, and results
+        that still arrive may complete the dispatch — exactly as for any
+        other failed dispatch. Nothing happens while the option is unset.
+
+        The clock starts when the dispatch began to wait and restarts with
+        every delivery: a job that reports shard after shard is not expired
+        between two of them."""
+        timeout = self.config.dispatch.get("awaiting_timeout_s")
+        if not timeout:
+            return []
+        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        waiting: list[RunRecord] = []
+        offset = 0
+        while True:
+            page = self.store.list_runs(state="AWAITING_RESULTS", limit=200, offset=offset)
+            waiting.extend(page.runs)
+            offset += len(page.runs)
+            if not page.runs or offset >= page.total:
+                break
+        expired: list[DispatchRecord] = []
+        for run in waiting:
+            dispatch = run.latest_dispatch
+            if dispatch is None or dispatch.state != "AWAITING_RESULTS":
+                continue
+            since = epoch_ms(dispatch.created_at) or 0
+            for event in self.store.latest_events(run.id, limit=500):
+                if event.dispatch_id == dispatch.dispatch_id and event.kind in (
+                    kinds.RUN_AWAITING, kinds.DELIVERY_RECORDED
+                ):
+                    since = max(since, epoch_ms(event.at) or 0)
+            waited_s = (now - since) / 1000.0
+            if waited_s < float(timeout):
+                continue
+            outstanding = lifecycle.outstanding_shards(
+                dispatch.shards, self.store.delivered_shards(run.id, dispatch.dispatch_id)
+            )
+            expired.append(
+                self.ledger.move(
+                    dispatch.dispatch_id,
+                    "FAILED",
+                    error=(
+                        f"expired: no results for {waited_s:.0f}s, longer than "
+                        f"core.dispatch.awaiting_timeout_s ({float(timeout):g}s) — "
+                        f"outstanding shard(s): {outstanding or 'none'}. Results that still "
+                        "arrive are taken in and may complete it"
+                    ),
+                    extra={
+                        "expired": True,
+                        "waited_s": round(waited_s, 1),
+                        "awaiting_timeout_s": float(timeout),
+                        "outstanding_shards": outstanding,
+                    },
+                )
+            )
+            log.warning("dispatch %s of run %s expired while awaiting results",
+                        dispatch.dispatch_id, run.id)
+        return expired
+
+    def import_durations(
+        self, durations: Mapping[str, float], *, labels: Mapping[str, str] | None = None
+    ) -> dict[str, Any]:
+        """Seed the duration history (``runcomposer history import``): every
+        name is resolved through the catalog; what it does not know is
+        reported, not stored. Seeds answer only for items no execution has
+        measured yet."""
+        resolved: dict[str, float] = {}
+        unknown: list[str] = []
+        zero = 0
+        for name, duration in durations.items():
+            item_id = self.catalog.resolve(str(name))
+            if item_id is None:
+                unknown.append(str(name))
+            elif float(duration) <= 0:
+                zero += 1
+            else:
+                resolved[item_id] = float(duration)
+        stored = int(self.store.seed_durations(resolved, labels=dict(labels or {}) or None))
+        return {
+            "imported": stored,
+            "unknown": sorted(unknown),
+            "without_duration": zero,
+            "labels": dict(labels or {}),
+        }
+
     def rerun(
         self,
         run_id: str,
@@ -393,11 +537,15 @@ class Service:
         runner_id: str | None = None,
         parameters: Mapping[str, Any] | None = None,
         foreground: bool = False,
+        title: str | None = None,
     ) -> tuple[str, Outcome]:
         """``all``: a new dispatch of the same run. ``failed``: a new run
         composed from what did not pass (FAIL, ERROR, MISSING) in this one —
-        with ``derived_from`` provenance — and dispatched. Returns the id of
-        the run that was dispatched and the outcome handle."""
+        with ``derived_from`` provenance and origin ``rerun`` — and
+        dispatched. Its title is ``title``, else the source run's: that it is
+        a rerun is data (origin, ``derived_from``), not prose in a title.
+        Returns the id of the run that was dispatched and the outcome
+        handle."""
         run = self.require_run(run_id)
         latest = run.latest_dispatch
         previous = latest.mode if latest and latest.mode not in ("export", "ingest") else None
@@ -416,7 +564,7 @@ class Service:
             raise RunActive(f"run {run_id} is {run.state} — its failures are not known yet")
         composed = self.compose_run(
             {"history": f"failed+error+missing@run:{run_id}"},
-            title=f"Rerun of failures: {run.title}",
+            title=title or run.title,
             labels=dict(run.labels),
             origin="rerun",
             runner_id=runner,
@@ -539,7 +687,7 @@ class Service:
         if latest is not None and latest.state in ("DISPATCHED", "RUNNING") and latest.owner:
             raise RunActive(f"run {run_id} is {latest.state} — cancel it before deleting it")
         self.store.delete_run(run_id)
-        remove_run_artifacts(self.config.artifact_dir, run_id)
+        remove_run_artifacts(self.config.artifact_dir, run_id, self.config.private_dir)
         log.info("run %s deleted", run_id)
 
     def gc(self) -> dict[str, Any]:

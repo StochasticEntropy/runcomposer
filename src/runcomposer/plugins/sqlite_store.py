@@ -31,6 +31,7 @@ from runcomposer.sdk import (
     ArtifactRef,
     DeliveryRecord,
     DispatchRecord,
+    LiveStatus,
     RunActive,
     RunEvent,
     RunPage,
@@ -50,7 +51,7 @@ from runcomposer.sdk import (
 __all__ = ["SCHEMA_VERSION", "SqliteRunStore"]
 
 #: Bumped with every schema change; see ``_migrate``.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _BUSY_TIMEOUT_MS = 30_000
 
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
     state TEXT NOT NULL DEFAULT 'AWAITING_RESULTS',
     shards TEXT NOT NULL DEFAULT '[]',
     shard_items TEXT NOT NULL DEFAULT '{}',
+    shard_groups TEXT NOT NULL DEFAULT '{}',
     error TEXT NOT NULL DEFAULT '',
     plan TEXT NOT NULL DEFAULT '',
     links TEXT NOT NULL DEFAULT '{}',
@@ -139,7 +141,15 @@ CREATE TABLE IF NOT EXISTS artifact_refs (
     name TEXT NOT NULL,
     media_type TEXT NOT NULL DEFAULT '',
     url_or_path TEXT NOT NULL,
-    shard TEXT
+    shard TEXT,
+    shard_group TEXT
+);
+CREATE TABLE IF NOT EXISTS duration_seeds (
+    item_id TEXT NOT NULL,
+    labels TEXT NOT NULL DEFAULT '{}',
+    duration_ms REAL NOT NULL,
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (item_id, labels)
 );
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_tokens_run ON ingest_tokens(run_id)
 """
 
 #: Columns ``update_dispatch`` may set, and how each value is stored.
-_JSON_COLUMNS = ("shards", "shard_items", "links", "summary", "parameters")
+_JSON_COLUMNS = ("shards", "shard_items", "shard_groups", "links", "summary", "parameters")
 _PLAIN_COLUMNS = ("state", "spec_sha256", "error", "plan", "completion", "completed_at", "owner")
 
 
@@ -295,6 +305,9 @@ class SqliteRunStore(StoreBase):
         for statement in _SCHEMA.split(";"):
             if statement.strip():
                 conn.execute(statement)
+        # Columns added after a table first existed (schema 3: shard groups).
+        _add_columns(conn, "dispatches", {"shard_groups": "TEXT NOT NULL DEFAULT '{}'"})
+        _add_columns(conn, "artifact_refs", {"shard_group": "TEXT"})
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- runs & specs ----------------------------------------------------------
@@ -670,7 +683,7 @@ class SqliteRunStore(StoreBase):
         return self._verdict_rows("verdicts", run_id, dispatch_id, shard)
 
     def record_live_verdict(
-        self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict
+        self, run_id: str, dispatch_id: str, shard: str, verdict: LiveStatus
     ) -> None:
         with self._write() as conn:
             conn.execute(
@@ -691,8 +704,23 @@ class SqliteRunStore(StoreBase):
                 ),
             )
 
-    def live_verdicts(self, run_id: str, dispatch_id: str) -> list[Verdict]:
-        return self._verdict_rows("live_verdicts", run_id, dispatch_id, None)
+    def live_verdicts(self, run_id: str, dispatch_id: str) -> list[LiveStatus]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM live_verdicts WHERE run_id = ? AND dispatch_id = ? ORDER BY rowid",
+                (run_id, dispatch_id),
+            ).fetchall()
+        return [
+            LiveStatus(
+                item_id=row["item_id"],
+                status=row["status"],
+                duration_ms=row["duration_ms"],
+                message=row["message"],
+                attempt=row["attempt"],
+                shard=row["shard"],
+            )
+            for row in rows
+        ]
 
     def _verdict_rows(
         self, table: str, run_id: str, dispatch_id: str | None, shard: str | None
@@ -710,39 +738,84 @@ class SqliteRunStore(StoreBase):
         return [_verdict(row) for row in rows]
 
     def duration_aggregates(
-        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        last_n: int = 5,
+        statuses: Sequence[str] | None = None,
     ) -> dict[str, float]:
         """Mean duration per item id over the last N dispatches that
         delivered, of runs matching the label selector. A run's *current*
-        state is irrelevant — a re-dispatch must still see its own history."""
+        state is irrelevant — a re-dispatch must still see its own history.
+        Items nothing was measured for answer with their seeded duration."""
+
+        def carries(stored: str) -> bool:
+            have = json.loads(stored)
+            return not labels or all(have.get(k) == v for k, v in labels.items())
+
         with self._read() as conn:
+            seeds: dict[str, list[float]] = {}
+            for row in conn.execute("SELECT item_id, labels, duration_ms FROM duration_seeds"):
+                if carries(row["labels"]):
+                    seeds.setdefault(row["item_id"], []).append(float(row["duration_ms"]))
+            measured: dict[str, float] = {}
             run_ids = [
                 row["id"]
                 for row in conn.execute("SELECT id, labels FROM runs").fetchall()
-                if not labels
-                or all(json.loads(row["labels"]).get(k) == v for k, v in labels.items())
+                if carries(row["labels"])
             ]
-            if not run_ids:
-                return {}
-            marks = ",".join("?" for _ in run_ids)
-            dispatch_ids = [
-                row["dispatch_id"]
-                for row in conn.execute(
-                    f"SELECT d.dispatch_id FROM dispatches d WHERE d.run_id IN ({marks})"
-                    " AND EXISTS (SELECT 1 FROM deliveries dv WHERE dv.dispatch_id = d.dispatch_id)"
-                    " ORDER BY d.rowid DESC LIMIT ?",
-                    (*run_ids, max(0, int(last_n))),
+            dispatch_ids: list[str] = []
+            if run_ids:
+                marks = ",".join("?" for _ in run_ids)
+                dispatch_ids = [
+                    row["dispatch_id"]
+                    for row in conn.execute(
+                        f"SELECT d.dispatch_id FROM dispatches d WHERE d.run_id IN ({marks})"
+                        " AND EXISTS (SELECT 1 FROM deliveries dv"
+                        " WHERE dv.dispatch_id = d.dispatch_id)"
+                        " ORDER BY d.rowid DESC LIMIT ?",
+                        (*run_ids, max(0, int(last_n))),
+                    ).fetchall()
+                ]
+            if dispatch_ids:
+                marks = ",".join("?" for _ in dispatch_ids)
+                params: list[Any] = list(dispatch_ids)
+                only = ""
+                if statuses is not None:
+                    wanted = [str(status) for status in statuses]
+                    only = f" AND status IN ({','.join('?' for _ in wanted)})"
+                    params += wanted
+                rows = conn.execute(
+                    f"SELECT item_id, AVG(duration_ms) AS avg_ms FROM verdicts"
+                    f" WHERE dispatch_id IN ({marks}) AND duration_ms > 0{only} GROUP BY item_id",
+                    params,
                 ).fetchall()
-            ]
-            if not dispatch_ids:
-                return {}
-            marks = ",".join("?" for _ in dispatch_ids)
-            rows = conn.execute(
-                f"SELECT item_id, AVG(duration_ms) AS avg_ms FROM verdicts"
-                f" WHERE dispatch_id IN ({marks}) AND duration_ms > 0 GROUP BY item_id",
-                dispatch_ids,
-            ).fetchall()
-        return {row["item_id"]: float(row["avg_ms"]) for row in rows}
+                measured = {row["item_id"]: float(row["avg_ms"]) for row in rows}
+        fallback = {
+            item_id: sum(values) / len(values)
+            for item_id, values in seeds.items()
+            if item_id not in measured
+        }
+        return {**fallback, **measured}
+
+    def seed_durations(
+        self, durations: Mapping[str, float], *, labels: Mapping[str, str] | None = None
+    ) -> int:
+        scope = json.dumps(dict(labels or {}), ensure_ascii=False, sort_keys=True)
+        now = utc_now()
+        stored = 0
+        with self._write() as conn:
+            for item_id, duration in durations.items():
+                if float(duration) <= 0:
+                    continue  # 0 means "no duration known" — nothing to seed
+                conn.execute(
+                    "INSERT INTO duration_seeds (item_id, labels, duration_ms, imported_at)"
+                    " VALUES (?, ?, ?, ?) ON CONFLICT(item_id, labels) DO UPDATE SET"
+                    " duration_ms = excluded.duration_ms, imported_at = excluded.imported_at",
+                    (str(item_id), scope, float(duration), now),
+                )
+                stored += 1
+        return stored
 
     # -- artifacts ------------------------------------------------------------------
 
@@ -755,13 +828,14 @@ class SqliteRunStore(StoreBase):
         media_type: str,
         url_or_path: str,
         shard: str | None = None,
+        group: str | None = None,
     ) -> None:
         with self._write() as conn:
             _require_run(conn, run_id)
             conn.execute(
                 "INSERT INTO artifact_refs (run_id, dispatch_id, name, media_type, url_or_path,"
-                " shard) VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, dispatch_id, name, media_type, url_or_path, shard),
+                " shard, shard_group) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (run_id, dispatch_id, name, media_type, url_or_path, shard, group),
             )
 
     def artifact_refs(self, run_id: str, dispatch_id: str | None = None) -> list[ArtifactRef]:
@@ -780,6 +854,7 @@ class SqliteRunStore(StoreBase):
                 media_type=row["media_type"],
                 url_or_path=row["url_or_path"],
                 shard=row["shard"],
+                group=row["shard_group"],
             )
             for row in rows
         ]
@@ -900,6 +975,7 @@ def _dispatch_record(row: sqlite3.Row) -> DispatchRecord:
         shard_items={
             shard: tuple(items) for shard, items in json.loads(row["shard_items"]).items()
         },
+        shard_groups=json.loads(row["shard_groups"]),
         spec_sha256=row["spec_sha256"],
         error=row["error"],
         plan=row["plan"],

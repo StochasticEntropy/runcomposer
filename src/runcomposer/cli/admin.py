@@ -34,10 +34,38 @@ def register(sub: Any) -> dict[str, Any]:
         help="check a deployment: config, plugins (distribution + version), runner health, "
         "taxonomy drift",
     )
+    p_doctor.add_argument("-v", "--details", action="store_true",
+                          help="also print every runner's health data (what its checks found) "
+                          "— the same data --json and the API carry")
     add_json_arg(p_doctor)
     add_config_arg(p_doctor)
 
     return {"demo": cmd_demo, "serve": cmd_serve, "doctor": cmd_doctor}
+
+
+def _data_lines(data: Any, indent: str = "") -> list[str]:
+    """A runner's health ``data`` as indented ``key: value`` lines — the
+    structure is the runner's own, so this renders whatever it holds. A list
+    of ``{check, ok, detail}`` entries reads as a checklist."""
+    lines: list[str] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, (dict, list)) and value:
+                lines.append(f"{indent}{key}:")
+                lines.extend(_data_lines(value, indent + "  "))
+            else:
+                lines.append(f"{indent}{key}: {value}")
+    elif isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict) and "check" in entry and "ok" in entry:
+                mark = "ok  " if entry["ok"] else "FAIL"
+                detail = f" — {entry['detail']}" if entry.get("detail") else ""
+                lines.append(f"{indent}[{mark}] {entry['check']}{detail}")
+            elif isinstance(entry, (dict, list)):
+                lines.extend(_data_lines(entry, indent + "- "))
+            else:
+                lines.append(f"{indent}- {entry}")
+    return lines
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -150,6 +178,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             health = runner["health"]
             print(f"  {runner['id']} ({runner['plugin']}): {health['status']}"
                   + (f" — {health['detail']}" if health["detail"] else ""))
+            if args.details or args.verbose:
+                for line in _data_lines(health.get("data") or {}):
+                    print(f"      {line}")
             for parameter in runner["parameters"]:
                 choices = f" {parameter['choices']}" if parameter["choices"] else ""
                 print(f"      --param {parameter['name']}=<{parameter['kind']}>{choices}"

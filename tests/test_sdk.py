@@ -1,7 +1,9 @@
 """runcomposer.sdk — THE connector surface (DESIGN.md §1).
 
 Everything a connector package or an embedding script may import from
-runcomposer is one module. These tests pin that surface: what is in it, that
+runcomposer is one package: ``runcomposer.sdk`` and its two toolkits,
+``runcomposer.sdk.robot`` and ``runcomposer.sdk.jenkins``. These tests pin
+that surface: what is in it, that
 it is cheap to import in a worker process, that the reference plugins really
 have the members the protocols name, and that a whole run can be driven with
 nothing but SDK imports.
@@ -27,16 +29,16 @@ from .conftest import write_config
 PUBLIC_NAMES = {
     # protocols, and what runcomposer hands to a runner
     "TestSource", "Runner", "ResultParser", "RunStore", "RunObserver", "Configurable",
-    "DispatchContext", "LiveChannel", "History", "contract_members",
+    "DispatchContext", "PlanContext", "LiveChannel", "History", "contract_members",
     # base classes: the defaults for every optional member
     "PluginBase", "SourceBase", "RunnerBase", "ParserBase", "StoreBase", "ObserverBase",
     # records
     "Item", "Verdict", "ParsedVerdict", "RunRecord", "DispatchRecord", "DeliveryRecord",
     "ArtifactRef", "RunEvent", "RunPage", "RunnerInfo", "Parameter", "Health", "ChunkPlan",
-    "Selection",
+    "Selection", "LiveStatus", "PlanPreview",
     # vocabulary
     "RUN_STATES", "ACTIVE_STATES", "TERMINAL_STATES", "COMPLETIONS", "VERDICT_STATUSES",
-    "REPORTABLE_STATUSES", "LIFECYCLE_KINDS", "MARKER_FILENAME", "SPEC_VERSION",
+    "REPORTABLE_STATUSES", "LIVE_STATUSES", "LIFECYCLE_KINDS", "MARKER_FILENAME", "SPEC_VERSION",
     # errors
     "RunComposerError", "InvalidRequest", "InvalidParameter", "UnknownRunner", "ParseError",
     "NotFound", "UnknownRun", "Conflict", "RunActive", "InvalidTransition", "SpecConflict",
@@ -48,11 +50,25 @@ PUBLIC_NAMES = {
     "read_marker", "forbid_dtd", "parse_xml", "completion_of", "effective_verdicts",
     "missing_verdicts", "outstanding_shards", "summarize", "new_ulid", "utc_now", "parse_time",
     "normalize_time", "epoch_ms", "parse_filter", "format_filter", "load_document",
-    "validate_document", "validate_parameters", "parameters_from_config",
+    "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
+    "RemoteLiveChannel",
     # embedding
     "Service", "load_config", "Config",
 }
 EMBEDDING = {"Service", "load_config", "Config"}
+
+#: The toolkits, frozen the same way: what the reference `robot-pool` and
+#: `jenkins` runners are built from, and what a connector composes.
+ROBOT_TOOLKIT = {
+    "ExactSelection", "attribute_roots",
+    "LiveStatusListener", "RemoteLiveStatusListener",
+    "Execution", "ShardPayload", "ShardOutput", "ShardResult", "ShardOutcome",
+    "run_shard", "read_shard_result", "supervise", "stop_worker", "RESULT_FILE", "STOP_FILE",
+    "collect_verdicts", "deliver_shard", "merge_outputs", "MergeNoiseRemover", "robot_version",
+}
+JENKINS_TOOLKIT = {
+    "JenkinsClient", "JenkinsError", "JenkinsTimeout", "encode_spec", "decode_spec", "queue_id_of",
+}
 
 
 class TestSurface:
@@ -104,6 +120,19 @@ class TestSurface:
     def test_the_test_source_protocol_is_not_collected_as_a_test(self):
         assert sdk.TestSource.__test__ is False
 
+    def test_the_toolkits_export_exactly_their_frozen_names(self):
+        import runcomposer.sdk.jenkins as jenkins_toolkit
+        import runcomposer.sdk.robot as robot_toolkit
+
+        for module, frozen in ((robot_toolkit, ROBOT_TOOLKIT), (jenkins_toolkit, JENKINS_TOOLKIT)):
+            exported = set(module.__all__)
+            assert exported == frozen, (
+                f"{module.__name__}: removed {sorted(frozen - exported)}, added "
+                f"{sorted(exported - frozen)} — update the frozen list here and CHANGELOG.md"
+            )
+            for name in module.__all__:
+                assert getattr(module, name) is not None, name
+
 
 class TestLazyEmbedding:
     """A worker process running a plugin imports the SDK; it must not pay for
@@ -132,6 +161,29 @@ class TestLazyEmbedding:
                                   "pydantic"))
         }
         assert not heavy, sorted(heavy)
+
+    def test_importing_the_sdk_loads_neither_toolkit_nor_robot_framework(self):
+        loaded = self.modules_after(
+            "import runcomposer.sdk\n"
+            "assert not [m for m in sys.modules if m == 'robot' or m.startswith('robot.')]\n"
+            "assert 'runcomposer.sdk.robot' not in sys.modules\n"
+            "assert 'runcomposer.sdk.jenkins' not in sys.modules"
+        )
+        assert "runcomposer.sdk" in loaded
+
+    def test_the_robot_toolkit_and_the_runner_built_on_it_import_without_robot_framework(self):
+        """Robot Framework is loaded when something is executed — not when
+        the toolkit, or the runner built on it, is imported: a deployment
+        without the extra still starts, describes the runner and reports its
+        health."""
+        self.modules_after(
+            "import runcomposer.sdk.robot, runcomposer.sdk.jenkins, runcomposer.plugins.robot_pool\n"
+            "assert not [m for m in sys.modules if m == 'robot' or m.startswith('robot.')], "
+            "'importing the toolkit loaded Robot Framework'\n"
+            "from runcomposer.sdk.robot import ExactSelection, ShardPayload, LiveStatusListener\n"
+            "ExactSelection(['Shop.Cart.Add Item'])\n"
+            "assert not [m for m in sys.modules if m == 'robot' or m.startswith('robot.')]"
+        )
 
     def test_a_plugin_module_does_not_drag_the_app_layer_in(self):
         loaded = self.modules_after("import runcomposer.plugins.robot_pool, runcomposer.plugins.sqlite_store")
@@ -228,7 +280,11 @@ class TestReferencePluginsFitTheProtocols:
         self.assert_fits(_Context, sdk.DispatchContext)
         attributes = set(sdk.DispatchContext.__annotations__)
         assert {"run_id", "dispatch_id", "runner_id", "spec", "item_ids", "options",
-                "parameters", "links", "workdir", "source", "history"} == attributes
+                "parameters", "links", "workdir", "private_dir", "source", "history"} == attributes
+        # A plan context is a strict subset of a dispatch context: one
+        # planning function serves both.
+        assert set(sdk.PlanContext.__annotations__) < attributes
+        assert set(protocol_methods(sdk.PlanContext)) < set(protocol_methods(sdk.DispatchContext))
         assert isinstance(_Context.cancelled, property)
 
 

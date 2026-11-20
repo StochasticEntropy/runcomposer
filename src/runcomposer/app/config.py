@@ -26,7 +26,10 @@ side effects), so a typo cannot survive until the first dispatch.
 **One path base.** Every relative path resolves against the config file's
 directory. The core does that for its own keys; a plugin declares which of
 its options are paths (``PATH_OPTIONS``), or resolves them itself
-(``resolve_config_paths``) when the rule has exceptions.
+(``resolve_config_paths``) when the rule has exceptions. A path may come from
+the environment: ``${env:…}`` is substituted *before* the path is anchored,
+so ``root: ${env:SHOP_CHECKOUT}/tests`` with an absolute value stays where
+the variable points.
 
 **The contract is checked, not guessed.** Every plugin class must provide the
 members of ``Configurable`` (``OPTIONS``, ``resolve_config_paths``) and every
@@ -60,6 +63,7 @@ from typing import Any
 import yaml
 
 from runcomposer.core.errors import ConfigError, PluginError
+from runcomposer.core.filter import FilterError, format_filter, parse_filter, to_data
 from runcomposer.core.ports import (
     Configurable,
     ResultParser,
@@ -89,6 +93,7 @@ _KNOWN_CORE_KEYS = {
     "ingestion",
     "dispatch",
     "locale_default",
+    "private_dir",
 }
 _KNOWN_TOP_LEVEL = (
     "core",
@@ -130,7 +135,7 @@ _DEFAULT_INGESTION = {
     "settle_s": None,
 }
 _DEFAULT_RETENTION = {"max_age_days": 90, "max_runs": None}
-_DEFAULT_DISPATCH = {"max_concurrent": 2, "handoff_wait_s": 2.0}
+_DEFAULT_DISPATCH = {"max_concurrent": 2, "handoff_wait_s": 2.0, "awaiting_timeout_s": None}
 
 #: What a missing config file means. Spelled as configuration, so the
 #: zero-config mode is one more config and not a set of special cases.
@@ -150,8 +155,13 @@ class PluginSpec:
     section: str
     key: str
     cls: Any
-    #: Options as written in the file (paths resolved, secrets NOT resolved).
+    #: Options as written in the file (paths resolved, secrets NOT resolved —
+    #: except inside a path option, where the reference is substituted before
+    #: the path is anchored).
     options: Mapping[str, Any] = field(default_factory=dict)
+    #: The entry exactly as written: where the ``${env:…}`` references are
+    #: that say which values must be blanked out of recorded text.
+    written: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def where(self) -> str:
@@ -208,7 +218,15 @@ class Config:
 
     @property
     def ui(self) -> dict[str, Any]:
-        return self.data.get("ui") or {}
+        """The ``ui:`` section as a client reads it: every key verbatim,
+        except the three that carry selections — ``quick_filters``,
+        ``default_filter`` and ``presets`` — which are validated against the
+        filter grammar and served in one normalized shape (see
+        :func:`ui_selections`)."""
+        section = self.data.get("ui") or {}
+        if not isinstance(section, Mapping):
+            raise ConfigError("'ui' must be a mapping")
+        return {**section, **ui_selections(section)}
 
     def connector_settings(self, name: str) -> dict[str, Any]:
         """A connector package's own settings: the ``connectors.<name>``
@@ -242,8 +260,14 @@ class Config:
             return value
         return str(self.base_dir / value)
 
-    def _resolve(self, relative: str) -> Path:
-        return Path(self.resolve_path(relative))
+    def resolve_env_path(self, value: Any, where: str) -> Any:
+        """:meth:`resolve_path` for a value that may reference the
+        environment: substitute first, anchor second — anchoring is a no-op
+        for an absolute result, so a path taken from a variable stays put."""
+        return self.resolve_path(_resolve_env(value, where))
+
+    def _resolve(self, relative: str, where: str = "core") -> Path:
+        return Path(self.resolve_env_path(relative, where))
 
     @property
     def inbox_dir(self) -> Path | None:
@@ -257,7 +281,14 @@ class Config:
 
     @property
     def artifact_dir(self) -> Path:
-        return self._resolve(self.core.get("artifact_dir") or "artifacts")
+        return self._resolve(self.core.get("artifact_dir") or "artifacts", "core.artifact_dir")
+
+    @property
+    def private_dir(self) -> Path:
+        """Where a runner keeps files of a dispatch that must never be
+        downloadable (``ctx.private_dir``): outside the artifact directory,
+        so nothing in it can be served."""
+        return self._resolve(self.core.get("private_dir") or "private", "core.private_dir")
 
     # -- plugin sections -----------------------------------------------------
 
@@ -296,7 +327,11 @@ class Config:
             _require_members(cls, Configurable, f"{section}.{key}", section)
             specs.append(
                 PluginSpec(
-                    section=section, key=str(key), cls=cls, options=self._anchor(cls, options)
+                    section=section,
+                    key=str(key),
+                    cls=cls,
+                    options=self._anchor(cls, options, f"{section}.{key}"),
+                    written=dict(options),
                 )
             )
         return specs
@@ -307,9 +342,12 @@ class Config:
                 return spec
         return None
 
-    def _anchor(self, cls: Any, options: dict[str, Any]) -> dict[str, Any]:
-        """Resolve the options a plugin declares as paths (§8)."""
-        resolved = cls.resolve_config_paths(dict(options), self.resolve_path)
+    def _anchor(self, cls: Any, options: dict[str, Any], where: str) -> dict[str, Any]:
+        """Resolve the options a plugin declares as paths (§8) — environment
+        references inside them first, so that the anchoring sees the path."""
+        resolved = cls.resolve_config_paths(
+            dict(options), lambda value: self.resolve_env_path(value, where)
+        )
         if not isinstance(resolved, dict):
             raise ConfigError(
                 f"{_name(cls)}.resolve_config_paths must return a dict "
@@ -323,7 +361,7 @@ class Config:
         :class:`ConfigError` naming the entry."""
         check_options(spec)
         options = {name: _resolve_env(value, spec.where) for name, value in spec.options.items()}
-        secrets = _env_values(spec.options)
+        secrets = _env_values(spec.written or spec.options)
         connector = spec.cls.CONNECTOR
         if connector is not None:
             raw = self.connector_settings(str(connector))
@@ -539,6 +577,97 @@ def _env_values(value: Any) -> set[str]:
     return found
 
 
+# -- the ui section: selections a deployment offers ----------------------------------
+
+_PRESET_KEYS = ("name", "label", "description", "filter", "runner", "parameters", "title", "labels")
+
+
+def _selection_entry(raw: Any, where: str) -> dict[str, Any]:
+    """One configured filter — a pattern string or a whole expression — as
+    ``{tag_filter, text, kind}``: the expression in the grammar a run spec
+    uses, a one-line rendering of it, and whether it is a single pattern."""
+    try:
+        node = parse_filter(raw, where)
+    except FilterError as exc:
+        raise ConfigError(str(exc)) from None
+    return {
+        "tag_filter": to_data(node),
+        "text": format_filter(node),
+        "kind": "pattern" if isinstance(raw, str) else "expression",
+    }
+
+
+def ui_selections(section: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and normalize the selections of a ``ui:`` section.
+
+    - ``quick_filters``: ``[{label, filter}]`` — ``filter`` is one pattern
+      (``Checkout``, ``prefix:Payments-``) or a full filter expression
+      (``{op: AND, items: […]}``, ``{not: …}``); a bare string is short for
+      a pattern labelled with itself. Served as ``{label, filter}`` with
+      ``filter`` as written plus ``tag_filter`` / ``text`` / ``kind``.
+    - ``default_filter``: the expression a new selection starts from.
+    - ``presets``: named, complete starting points — ``name`` and ``filter``,
+      optionally ``label``, ``description``, ``title``, ``labels``, and a
+      ``runner`` with its per-run ``parameters``.
+    """
+    result: dict[str, Any] = {}
+    quick = section.get("quick_filters")
+    if quick is not None:
+        if not isinstance(quick, list):
+            raise ConfigError("ui.quick_filters must be a list of {label, filter} entries")
+        entries = []
+        for index, entry in enumerate(quick):
+            where = f"ui.quick_filters[{index}]"
+            if isinstance(entry, str):
+                entry = {"label": entry, "filter": entry}
+            if not isinstance(entry, Mapping) or "filter" not in entry:
+                raise ConfigError(f"{where} must be a mapping with a 'filter' (and a 'label')")
+            normalized = _selection_entry(entry["filter"], f"{where}.filter")
+            entries.append(
+                {**entry, "label": str(entry.get("label") or normalized["text"]), **normalized}
+            )
+        result["quick_filters"] = entries
+    default = section.get("default_filter")
+    if default is not None:
+        result["default_filter"] = _selection_entry(default, "ui.default_filter")
+    presets = section.get("presets")
+    if presets is not None:
+        if not isinstance(presets, list):
+            raise ConfigError("ui.presets must be a list of {name, filter, …} entries")
+        seen: set[str] = set()
+        entries = []
+        for index, entry in enumerate(presets):
+            where = f"ui.presets[{index}]"
+            if not isinstance(entry, Mapping) or not entry.get("name") or "filter" not in entry:
+                raise ConfigError(f"{where} must be a mapping with a 'name' and a 'filter'")
+            unknown = sorted(set(entry) - set(_PRESET_KEYS))
+            if unknown:
+                raise ConfigError(f"{where} has unknown key(s) {unknown} (known: {list(_PRESET_KEYS)})")
+            name = str(entry["name"])
+            if name in seen:
+                raise ConfigError(f"{where}: preset name {name!r} is used twice")
+            seen.add(name)
+            for key in ("parameters", "labels"):
+                if entry.get(key) is not None and not isinstance(entry[key], Mapping):
+                    raise ConfigError(f"{where}.{key} must be a mapping")
+            if entry.get("parameters") and not entry.get("runner"):
+                raise ConfigError(f"{where}: 'parameters' need a 'runner' to belong to")
+            entries.append(
+                {
+                    "name": name,
+                    "label": str(entry.get("label") or name),
+                    "description": str(entry.get("description") or ""),
+                    **_selection_entry(entry["filter"], f"{where}.filter"),
+                    "runner": str(entry["runner"]) if entry.get("runner") else None,
+                    "parameters": dict(entry.get("parameters") or {}),
+                    "title": str(entry.get("title") or entry.get("label") or name),
+                    "labels": {str(k): str(v) for k, v in (entry.get("labels") or {}).items()},
+                }
+            )
+        result["presets"] = entries
+    return result
+
+
 # -- loading ----------------------------------------------------------------------
 
 
@@ -598,7 +727,25 @@ def _check_core_values(config: Config, file_path: Path) -> None:
                 f"{file_path}: core.retention.{key} must be a non-negative number or null "
                 f"(null = no limit), got {value!r}"
             )
+    try:
+        _ = config.ui
+    except ConfigError as exc:
+        raise ConfigError(f"{file_path}: {exc}") from None
+    artifact_dir, private_dir = config.artifact_dir.resolve(), config.private_dir.resolve()
+    if private_dir == artifact_dir or artifact_dir in private_dir.parents:
+        raise ConfigError(
+            f"{file_path}: core.private_dir ({private_dir}) must lie outside core.artifact_dir "
+            f"({artifact_dir}) — what is inside the artifact directory can be served"
+        )
     dispatch = config.dispatch
+    expiry = dispatch.get("awaiting_timeout_s")
+    if expiry is not None and (
+        isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or expiry <= 0
+    ):
+        raise ConfigError(
+            f"{file_path}: core.dispatch.awaiting_timeout_s must be a positive number of "
+            f"seconds or null (null = wait until someone finalizes or cancels), got {expiry!r}"
+        )
     concurrent = dispatch.get("max_concurrent")
     if isinstance(concurrent, bool) or not isinstance(concurrent, int) or concurrent < 1:
         raise ConfigError(

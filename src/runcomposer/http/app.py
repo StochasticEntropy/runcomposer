@@ -17,11 +17,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from runcomposer import __version__
 from runcomposer.app.config import Config
+from runcomposer.app.expiry import AwaitingExpiry
 from runcomposer.app.inbox import InboxWatcher
 from runcomposer.app.service import Service
 
 from .errors import install_error_handlers
-from .routers import files, ingestion, meta, runs, selection
+from .routers import files, ingestion, meta, plan, runs, selection
 
 __all__ = ["create_app"]
 
@@ -50,9 +51,14 @@ def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
                 settle_s=config.ingestion.get("settle_s"),
             )
             watcher.start()
+        # Dispatches left waiting for results longer than the deployment
+        # allows are closed here (§4) — only when the option is set.
+        expiry = AwaitingExpiry(service)
+        expiry.start()
         try:
             yield
         finally:
+            expiry.stop()
             if watcher is not None:
                 watcher.stop()
             service.close()
@@ -65,7 +71,7 @@ def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
             CORSMiddleware, allow_origins=cors, allow_methods=["*"], allow_headers=["*"]
         )
     install_error_handlers(app)
-    for module in (meta, selection, runs, ingestion, files):
+    for module in (meta, selection, plan, runs, ingestion, files):
         app.include_router(module.router)
     files.mount_ui(app)
     return app

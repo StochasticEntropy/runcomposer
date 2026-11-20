@@ -1147,13 +1147,21 @@ class TestHealth:
     def test_ok_with_the_server_s_version(self, make_service, jenkins):
         health = jenkins_service(make_service, jenkins).runner_health(RUNNER, refresh=True)
         assert health.status == "ok"
-        assert FakeJenkins.VERSION in health.detail and health.data == {"version": FakeJenkins.VERSION}
+        assert FakeJenkins.VERSION in health.detail and health.data["version"] == FakeJenkins.VERSION
+        # What each check found, for `doctor -v` and a runner card.
+        assert [(c["check"], c["ok"]) for c in health.data["checks"]] == [
+            ("server reachable", True), (f"job {JOB!r} readable", True),
+        ]
+        assert health.data["job_url"].endswith(f"/job/{JOB}") and health.data["completion"] == "callback"
 
     def test_degraded_when_the_job_is_not_there(self, make_service, jenkins):
         service = jenkins_service(make_service, jenkins, job="shop-renamed-away")
         health = service.runner_health(RUNNER, refresh=True)
         assert health.status == "degraded" and "shop-renamed-away" in health.detail
-        assert health.data == {"version": FakeJenkins.VERSION}
+        assert health.data["version"] == FakeJenkins.VERSION
+        assert [(c["check"], c["ok"]) for c in health.data["checks"]] == [
+            ("server reachable", True), ("job 'shop-renamed-away' readable", False),
+        ]
 
     def test_down_when_unreachable_and_it_does_not_take_long_to_say_so(self, make_service):
         service = jenkins_service(
@@ -1168,4 +1176,5 @@ class TestHealth:
         )
         (listed,) = client.get("/api/v1/runners?refresh=true").json()
         assert listed["id"] == RUNNER and listed["health"]["status"] == "ok"
-        assert listed["health"]["data"] == {"version": FakeJenkins.VERSION}
+        assert listed["health"]["data"]["version"] == FakeJenkins.VERSION
+        assert all(check["ok"] for check in listed["health"]["data"]["checks"])

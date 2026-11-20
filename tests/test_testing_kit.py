@@ -70,7 +70,8 @@ CART = ["Shop.Cart.Core.T001", "Shop.Cart.Core.T002", "Shop.Cart.Core.T003"]
 #: The kit's public names, frozen like runcomposer.sdk's (tests/test_sdk.py).
 KIT_NAMES = {
     "check_source", "check_runner", "check_parser", "check_store", "check_observer",
-    "ConnectorHarness", "HarnessRun", "FakeDispatchContext", "FakeHistory", "ListSource",
+    "ConnectorHarness", "HarnessRun", "DispatchHandle", "FakeDispatchContext", "FakeHistory",
+    "ListSource",
     "Delivery", "DEFAULT_ITEM_IDS", "sample_events", "xml_with_dtd",
 }
 
@@ -835,11 +836,15 @@ class TestFakeRecords:
         assert ctx.plan == "two shards" and dict(ctx.links) == {"build": "https://ci.shop.example/1/"}
         assert ctx.outstanding == ["b"] and ctx.summary() == {"PASS": 2}
         assert [d.outcome for d in ctx.deliveries] == ["new", "duplicate", "replaced"]
-        assert ctx.live_updates == []  # replaced by shard a's delivery
+        # The whole stream stays readable after the shard delivered; what a
+        # store would hold at this moment is `live_now`.
+        assert [(v.shard, v.item_id, v.status) for v in ctx.live_updates] == [("a", CART[0], "PASS")]
+        assert ctx.live_now == []  # replaced by shard a's delivery
+        assert ctx.delivered_shards() == {"a"} and ctx.outstanding_shards() == ["b"]
         assert ctx.artifacts[0].media_type == "text/html" and ctx.artifacts[0].shard == "a"
         assert ("info", "halfway") in ctx.logs
         assert ctx.spec_sha256 and ctx.exported and json.loads(ctx.exported)["run"]["id"] == ctx.run_id
-        assert ctx.history.calls == [{"labels": {"suite": "nightly"}, "last_n": 5}]
+        assert ctx.history.calls == [{"labels": {"suite": "nightly"}, "last_n": 5, "statuses": None}]
         ctx.close()
 
     def test_live_status_from_a_worker_process_arrives(self, tmp_path):

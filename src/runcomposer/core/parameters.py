@@ -9,6 +9,7 @@ executed on.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -17,13 +18,28 @@ from .errors import ConfigError, InvalidParameter
 
 __all__ = ["PARAMETER_KINDS", "Parameter", "parameters_from_config", "validate_parameters"]
 
-PARAMETER_KINDS = ("string", "integer", "boolean", "choice", "multi_choice")
+PARAMETER_KINDS = (
+    "string", "text", "integer", "boolean", "choice", "multi_choice", "mapping",
+)
+#: The kinds an optional ``pattern`` applies to.
+_PATTERN_KINDS = ("string", "text", "mapping")
 
 
 @dataclass(frozen=True)
 class Parameter:
-    """One per-run option. ``choices`` applies to ``choice`` and
-    ``multi_choice``; a ``multi_choice`` value is a list."""
+    """One per-run option.
+
+    Kinds: ``string`` (one line), ``text`` (several lines — a form renders a
+    text area), ``integer``, ``boolean``, ``choice`` and ``multi_choice``
+    (drawn from ``choices``; a ``multi_choice`` value is a list) and
+    ``mapping`` (string → string — name/value pairs such as extra variables
+    of a test framework).
+
+    ``pattern`` is an optional regular expression the whole value must match
+    (``re.fullmatch``): the value of a ``string``, the whole of a ``text``,
+    every *value* of a ``mapping``. It is checked when the run is requested —
+    not inside the runner — and the error names the parameter.
+    """
 
     name: str
     kind: str = "string"
@@ -32,12 +48,26 @@ class Parameter:
     default: Any = None
     choices: tuple[str, ...] = ()
     required: bool = False
+    pattern: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in PARAMETER_KINDS:
             raise ValueError(
                 f"parameter {self.name!r}: kind must be one of {PARAMETER_KINDS}, got {self.kind!r}"
             )
+        if self.pattern is not None:
+            if self.kind not in _PATTERN_KINDS:
+                raise ValueError(
+                    f"parameter {self.name!r}: 'pattern' applies to the kinds {_PATTERN_KINDS}, "
+                    f"not to {self.kind!r}"
+                )
+            try:
+                re.compile(self.pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"parameter {self.name!r}: pattern {self.pattern!r} is not a regular "
+                    f"expression ({exc})"
+                ) from None
 
     def check(self, value: Any) -> Any:
         """Return the accepted value, or raise :class:`InvalidParameter`
@@ -51,6 +81,22 @@ class Parameter:
         if self.kind == "string":
             if not isinstance(value, str):
                 raise bad("a string")
+            if "\n" in value or "\r" in value:
+                raise bad("a single line (kind 'text' takes several)")
+            self._match(value)
+        elif self.kind == "text":
+            if not isinstance(value, str):
+                raise bad("text")
+            self._match(value)
+        elif self.kind == "mapping":
+            if not isinstance(value, Mapping) or not all(
+                isinstance(key, str) and key and isinstance(entry, str)
+                for key, entry in value.items()
+            ):
+                raise bad("a mapping of names to strings")
+            for key, entry in value.items():
+                self._match(entry, f"[{key!r}]")
+            return dict(value)
         elif self.kind == "integer":
             if isinstance(value, bool) or not isinstance(value, int):
                 raise bad("an integer")
@@ -69,6 +115,14 @@ class Parameter:
                 raise bad(f"a list drawn from {list(self.choices)}")
             return list(value)
         return value
+
+    def _match(self, value: str, where: str = "") -> None:
+        if self.pattern is not None and re.fullmatch(self.pattern, value) is None:
+            raise InvalidParameter(
+                f"parameter {self.name!r}{where}: {value!r} does not match the pattern "
+                f"{self.pattern!r}",
+                parameter=self.name,
+            )
 
 
 def validate_parameters(
@@ -100,7 +154,7 @@ def validate_parameters(
     return accepted
 
 
-_PARAMETER_KEYS = ("name", "kind", "label", "help", "default", "choices", "required")
+_PARAMETER_KEYS = ("name", "kind", "label", "help", "default", "choices", "required", "pattern")
 
 
 def parameters_from_config(raw: Sequence[Any] | None, where: str) -> tuple[Parameter, ...]:
@@ -126,8 +180,11 @@ def parameters_from_config(raw: Sequence[Any] | None, where: str) -> tuple[Param
                     default=entry.get("default"),
                     choices=tuple(str(choice) for choice in entry.get("choices") or ()),
                     required=bool(entry.get("required", False)),
+                    pattern=None if entry.get("pattern") is None else str(entry["pattern"]),
                 )
             )
-        except ValueError as exc:
+            if entry.get("default") is not None:
+                parameters[-1].check(entry["default"])
+        except (ValueError, InvalidParameter) as exc:
             raise ConfigError(f"{where}[{index}]: {exc}") from None
     return tuple(parameters)

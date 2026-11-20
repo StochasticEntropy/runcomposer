@@ -58,6 +58,7 @@ _INGEST_STATUS = {
     "sha-mismatch": 409,
     "marker-conflict": 409,
     "dispatch-cancelled": 409,
+    "nothing-planned": 409,
 }
 
 

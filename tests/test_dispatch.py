@@ -742,7 +742,9 @@ class TestParameters:
         service.dispatch(run_id, "fake", {"partition": "env2", "retries": 2}, foreground=True)
 
         assert seen["parameters"] == {"partition": "env2", "retries": 2}
-        assert seen["options"]["partition"] == "env2" and seen["options"]["retries"] == 2
+        # Options are the configured ones and nothing else: a per-run value
+        # never shows up among them (so it cannot shadow one).
+        assert "partition" not in seen["options"] and "retries" not in seen["options"]
         assert seen["options"]["fixed"] == "from-config"
         spec = service.require_spec(run_id)
         assert spec["runner"]["fake"] == {"partition": "env2", "retries": 2}
@@ -1056,7 +1058,8 @@ import pickle, sys
 channel = pickle.loads(bytes.fromhex(sys.argv[1]))
 channel.live("1", sys.argv[2], "PASS", duration_ms=321, message="from a worker process")
 channel.live("1", "Shop.Not.Planned", "PASS")
-channel.live("1", sys.argv[3], "RUNNING")
+channel.live("1", sys.argv[3], "EXPLODED")
+channel.log("the worker is done", "warning")
 """
 
 
@@ -1429,7 +1432,9 @@ class TestRerun:
         rerun = service.require_run(target)
         assert (rerun.state, rerun.completion) == ("COMPLETE", "PASS")
         assert rerun.origin == "rerun" and dict(rerun.labels) == {"suite": "nightly"}
-        assert rerun.title == "Rerun of failures: Test run"
+        # The title is the source run's: that this is a rerun is data, not prose.
+        assert rerun.title == "Test run"
+        assert run_detail(service, rerun)["rerun_of"] == {"run_id": run_id, "scope": "failed"}
         spec = service.require_spec(target)
         assert spec["selection"]["materialized"]["item_ids"] == [
             "Shop.Auth.Login.T002",

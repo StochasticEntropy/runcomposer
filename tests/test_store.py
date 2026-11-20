@@ -941,7 +941,7 @@ class TestDatabase:
         }
         assert tables == {
             "runs", "specs", "dispatches", "dispatch_specs", "ingest_tokens", "deliveries",
-            "verdicts", "live_verdicts", "artifact_refs", "events",
+            "verdicts", "live_verdicts", "artifact_refs", "events", "duration_seeds",
         }
         columns = {
             row[1] for table in tables for row in conn.execute(f"PRAGMA table_info({table})")

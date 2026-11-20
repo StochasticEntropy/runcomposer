@@ -101,6 +101,7 @@ class Ledger:
         shard_items: Mapping[str, Sequence[str]],
         plan: str,
         links: Mapping[str, str],
+        groups: Mapping[str, str] | None = None,
     ) -> DispatchRecord:
         """The hand-off: shard set known, execution begins."""
         with self._lock:
@@ -114,10 +115,14 @@ class Ledger:
                 state=lifecycle.advance(current.state, "RUNNING"),
                 shards=list(shards),
                 shard_items=shard_items,
+                shard_groups=dict(groups or {}),
                 plan=plan,
                 links=links,
             )
-            self._publish(dispatch, extra={"shards": list(shards), "plan": plan})
+            extra: dict[str, Any] = {"shards": list(shards), "plan": plan}
+            if groups:
+                extra["groups"] = dict(groups)
+            self._publish(dispatch, extra=extra)
             return dispatch
 
     def move(

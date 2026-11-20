@@ -7,12 +7,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "LIVE_STATUSES",
     "REPORTABLE_STATUSES",
     "VERDICT_STATUSES",
     "ArtifactRef",
     "DeliveryRecord",
     "DispatchRecord",
     "Item",
+    "LiveStatus",
     "RunEvent",
     "RunPage",
     "RunRecord",
@@ -25,6 +27,10 @@ REPORTABLE_STATUSES = ("PASS", "FAIL", "SKIP", "ERROR")
 #: that was planned and never came back (DESIGN.md §4). It is never stored and
 #: a parser or a push that claims it is refused.
 VERDICT_STATUSES = (*REPORTABLE_STATUSES, "MISSING")
+#: What may be streamed about an item *while its shard executes*: that it is
+#: executing now (``RUNNING``), or how it ended. ``RUNNING`` exists here only
+#: — it is never delivered, never stored as a verdict and never scored.
+LIVE_STATUSES = ("RUNNING", *REPORTABLE_STATUSES)
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,26 @@ class Verdict:
 
 
 @dataclass(frozen=True)
+class LiveStatus:
+    """What is known about one item while its shard is still executing
+    (DESIGN.md §6.2): ``RUNNING``, or the status it ended with. Kept apart
+    from verdicts on purpose — a live status is a progress report, replaced
+    per (shard, item) by the next one and dropped when the shard delivers.
+    ``duration_ms`` is 0 for an item that is still running."""
+
+    item_id: str
+    status: str
+    duration_ms: int = 0
+    message: str = ""
+    attempt: int = 1
+    shard: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in LIVE_STATUSES:
+            raise ValueError(f"live status must be one of {LIVE_STATUSES}, got {self.status!r}")
+
+
+@dataclass(frozen=True)
 class DispatchRecord:
     """One hand-off to an executor (DESIGN.md §4), and the unit the lifecycle
     is tracked on.
@@ -80,7 +106,9 @@ class DispatchRecord:
     run nothing was dispatched for). ``shards`` is the declared shard *set* —
     completion is computed against these names, never against a count — and
     ``shard_items`` optionally says which items each shard was planned to
-    report. ``spec_sha256`` is the hash of the exact document bytes handed
+    report. ``shard_groups`` optionally labels shards that belong together
+    (the partition a chunk ran on, say): a display and roll-up grouping that
+    decides nothing. ``spec_sha256`` is the hash of the exact document bytes handed
     out — the marker verification anchor (§5).
     """
 
@@ -91,6 +119,7 @@ class DispatchRecord:
     created_at: str
     shards: tuple[str, ...] = ()
     shard_items: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    shard_groups: Mapping[str, str] = field(default_factory=dict)
     spec_sha256: str | None = None
     error: str = ""
     plan: str = ""
@@ -133,7 +162,9 @@ class ArtifactRef:
     that passes through untouched and is never fetched — or a filesystem path
     written by whatever executed the run. Which of the two it is, and whether
     a local path is servable, is decided by the app layer against the
-    configured artifact directory; the core records the string.
+    configured artifact directory; the core records the string. An artifact
+    belongs to the dispatch as a whole, to one ``shard``, or to a ``group``
+    of shards (one log covering every chunk of a partition).
     """
 
     run_id: str
@@ -142,6 +173,7 @@ class ArtifactRef:
     media_type: str
     url_or_path: str
     shard: str | None = None
+    group: str | None = None
 
 
 @dataclass(frozen=True)

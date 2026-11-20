@@ -1,4 +1,5 @@
-"""Live status out of worker processes (DESIGN.md §6.2), for any RunStore.
+"""Live status and log lines out of worker processes (DESIGN.md §6.2), for
+any RunStore.
 
 A worker cannot be handed a store: stores are not picklable in general, and a
 third-party one may not be reachable from a child process at all. So the
@@ -39,6 +40,13 @@ class FileLiveChannel:
             },
             ensure_ascii=False,
         )
+        self._append(line)
+
+    def log(self, message: str, level: str = "info") -> None:
+        """A line for the run's event stream, from a worker process."""
+        self._append(json.dumps({"log": str(message), "level": str(level)}, ensure_ascii=False))
+
+    def _append(self, line: str) -> None:
         path = os.path.join(self.directory, f"live-{os.getpid()}.jsonl")
         # Opened per line: the line is on disk when this returns, and a worker
         # that is killed mid-run has lost nothing it reported.

@@ -16,8 +16,12 @@ __all__ = [
     "CompileRequest",
     "ComposeRequest",
     "DispatchRequest",
+    "LivePush",
+    "LogPush",
+    "PlanRequest",
     "PromoteRequest",
     "RerunRequest",
+    "RunPlanRequest",
     "SpecPreviewRequest",
 ]
 
@@ -93,6 +97,57 @@ class RerunRequest(_Body):
     scope: Literal["all", "failed"] = "all"
     runner: str | None = Field(default=None, min_length=1)
     parameters: dict[str, Any] | None = None
+    #: Title of the run a ``failed`` rerun composes; default: the source
+    #: run's title. (That it is a rerun, and of what, is data in the answer
+    #: and in the new run — not something to read out of a title.)
+    title: str | None = Field(default=None, min_length=1)
+
+
+class PlanRequest(_Body):
+    """A plan preview for a selection that is not stored."""
+
+    selection: dict[str, Any]
+    runner: str = Field(min_length=1)
+    parameters: dict[str, Any] | None = None
+    title: str = "Plan preview"
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
+class RunPlanRequest(_Body):
+    """A plan preview for a stored run. ``parameters`` left out means the
+    ones the run's document carries for the runner."""
+
+    runner: str = Field(min_length=1)
+    parameters: dict[str, Any] | None = None
+
+
+class _LiveUpdate(_Body):
+    shard: str = Field(min_length=1)
+    item_id: str = Field(min_length=1)
+    #: ``RUNNING`` while the item executes, then how it ended.
+    status: str
+    duration_ms: int = Field(default=0, ge=0)
+    message: str = ""
+
+
+class LivePush(_Body):
+    """Live status pushed by an external executor (the dispatch's ingest
+    token authorizes it)."""
+
+    dispatch: str | None = Field(default=None, min_length=1)
+    updates: list[_LiveUpdate] = Field(min_length=1, max_length=1000)
+
+
+class _LogLine(_Body):
+    message: str
+    level: Literal["debug", "info", "warning", "error"] = "info"
+
+
+class LogPush(_Body):
+    """Log lines pushed by an external executor for the run's event stream."""
+
+    dispatch: str | None = Field(default=None, min_length=1)
+    lines: list[_LogLine] = Field(min_length=1, max_length=500)
 
 
 class AttachRequest(_Body):

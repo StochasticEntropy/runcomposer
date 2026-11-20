@@ -22,7 +22,7 @@ from runcomposer.core.errors import (
 )
 
 from ..errors import error_body, status_of
-from ..models import AttachRequest, PromoteRequest
+from ..models import AttachRequest, LivePush, LogPush, PromoteRequest
 from . import service_of
 
 router = APIRouter(prefix="/api/v1", tags=["ingestion"])
@@ -105,6 +105,67 @@ def push_results(
         return ingest_json(result)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _progress_dispatch(
+    service: Service,
+    run_id: str,
+    named: str | None,
+    authorization: str | None,
+    x_runcomposer_token: str | None,
+) -> Any:
+    """Authorize a progress push exactly as a results push is authorized —
+    the run, then the token, before anything else — and name its dispatch."""
+    service.require_run(run_id)
+    token = x_runcomposer_token
+    if token is None and authorization and authorization.lower().startswith("bearer "):
+        token = authorization[len("bearer "):].strip()
+    bound = service.ingestion.authorize_push(run_id, token)
+    if bound and named and named != bound:
+        raise Forbidden(
+            f"this token belongs to dispatch {bound}, not to {named} — "
+            "a dispatch's token reports for that dispatch only"
+        )
+    return service.ingestion.progress_dispatch(run_id, named or bound)
+
+
+@router.post("/runs/{run_id}/live")
+def push_live(
+    run_id: str,
+    body: LivePush,
+    authorization: str | None = Header(None),
+    x_runcomposer_token: str | None = Header(None),
+    service: Service = Depends(service_of),
+) -> dict[str, Any]:
+    """Live status from an executor runcomposer did not start itself: which
+    item is executing now (``RUNNING``) and how items ended, while the build
+    is still under way. Authorized with the dispatch's ingest token, like the
+    results push. Live status is a progress report — shown flagged ``live``,
+    replaced by the next update for the same shard and item, and dropped when
+    the shard's results are delivered; it is never a verdict.
+
+    Answers ``{dispatch_id, accepted, ignored, reason}``: an update for an
+    item the run did not plan or a shard that has delivered is ignored, and
+    so is everything once the dispatch is over (``reason`` says so)."""
+    dispatch = _progress_dispatch(service, run_id, body.dispatch, authorization, x_runcomposer_token)
+    result = service.ingestion.push_live(dispatch, [update.model_dump() for update in body.updates])
+    return {"dispatch_id": dispatch.dispatch_id, **result}
+
+
+@router.post("/runs/{run_id}/log")
+def push_log(
+    run_id: str,
+    body: LogPush,
+    authorization: str | None = Header(None),
+    x_runcomposer_token: str | None = Header(None),
+    service: Service = Depends(service_of),
+) -> dict[str, Any]:
+    """Log lines from an external executor, appended to the run's event
+    stream (``log`` / ``warning`` events with ``source: push``). Authorized
+    with the dispatch's ingest token."""
+    dispatch = _progress_dispatch(service, run_id, body.dispatch, authorization, x_runcomposer_token)
+    result = service.ingestion.push_log(dispatch, [line.model_dump() for line in body.lines])
+    return {"dispatch_id": dispatch.dispatch_id, **result}
 
 
 # -- quarantine (§4, §5) ------------------------------------------------------

@@ -50,15 +50,16 @@ from runcomposer.core.handoff import (
     HandoffOrder,
     check_delivery_args,
     check_reportable,
+    normalize_groups,
     normalize_shards,
 )
 from runcomposer.core.hashing import bundle_hash, sha256_hex
 from runcomposer.core.ids import new_ulid
-from runcomposer.core.lifecycle import ACTIVE_STATES
+from runcomposer.core.lifecycle import ACTIVE_STATES, outstanding_shards
 from runcomposer.core.marker import read_marker
-from runcomposer.core.model import REPORTABLE_STATUSES, DispatchRecord, Verdict
+from runcomposer.core.model import LIVE_STATUSES, DispatchRecord, LiveStatus, Verdict
 from runcomposer.core.parameters import validate_parameters
-from runcomposer.core.ports import RunnerInfo
+from runcomposer.core.ports import PlanPreview, RunnerInfo
 
 from .ingestion import expected_format
 from .livechannel import FileLiveChannel, LiveTail
@@ -66,7 +67,14 @@ from .livechannel import FileLiveChannel, LiveTail
 if TYPE_CHECKING:
     from .service import Service
 
-__all__ = ["DispatchManager", "Outcome", "owner_identity", "parse_owner"]
+__all__ = [
+    "DispatchManager",
+    "Outcome",
+    "PlanOutcome",
+    "owner_identity",
+    "parse_owner",
+    "spec_bytes",
+]
 
 log = logging.getLogger("runcomposer.dispatch")
 
@@ -92,14 +100,89 @@ def parse_owner(owner: str) -> tuple[str, int]:
         return owner, -1
 
 
+def spec_bytes(document: Mapping[str, Any]) -> bytes:
+    """A spec document as the exact bytes a dispatch hands out."""
+    return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 class _History:
     def __init__(self, store: Any):
         self._store = store
 
     def durations(
-        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        last_n: int = 5,
+        statuses: Sequence[str] | None = None,
     ) -> dict[str, float]:
-        return dict(self._store.duration_aggregates(labels=labels, last_n=last_n))
+        return dict(
+            self._store.duration_aggregates(labels=labels, last_n=last_n, statuses=statuses)
+        )
+
+
+class _PlanContext:
+    """The real ``PlanContext``: the input of a dispatch, nothing to act
+    with. It has no store to write to — a preview cannot record anything."""
+
+    def __init__(
+        self,
+        service: Service,
+        *,
+        runner_id: str,
+        spec: Mapping[str, Any],
+        options: Mapping[str, Any],
+        parameters: Mapping[str, Any],
+        fresh_source: bool = True,
+    ):
+        self._document = copy.deepcopy(dict(spec))
+        self.spec: Mapping[str, Any] = MappingProxyType(self._document)
+        self.run_id = str((self._document.get("run") or {}).get("id") or "")
+        self.runner_id = runner_id
+        materialized = (self._document.get("selection") or {}).get("materialized") or {}
+        self.item_ids: tuple[str, ...] = tuple(materialized.get("item_ids") or ())
+        self.options: Mapping[str, Any] = MappingProxyType(dict(options))
+        self.parameters: Mapping[str, Any] = MappingProxyType(dict(parameters))
+        self.history = _History(service.store)
+        self._service = service
+        self._fresh = fresh_source
+        self._source: Any = None
+
+    @property
+    def source(self) -> Any:
+        if self._source is None:
+            self._source = self._service.catalog.fresh() if self._fresh else self._service.catalog
+        return self._source
+
+    def refuse(self, reason: str) -> NoReturn:
+        raise DispatchRefused(reason)
+
+    def export_spec(self) -> bytes:
+        return spec_bytes(self._document)
+
+
+class PlanOutcome:
+    """What a plan request established: the preview, or why the dispatch
+    would be refused — never both."""
+
+    def __init__(
+        self,
+        *,
+        runner_id: str,
+        run_id: str | None,
+        item_ids: Sequence[str],
+        parameters: Mapping[str, Any],
+        preview: PlanPreview | None,
+        refusal: str | None,
+        warnings: Sequence[str] = (),
+    ):
+        self.runner_id = runner_id
+        self.run_id = run_id
+        self.item_ids = tuple(item_ids)
+        self.parameters = dict(parameters)
+        self.preview = preview
+        self.refusal = refusal
+        self.warnings = list(warnings)
 
 
 class _Context:
@@ -124,11 +207,14 @@ class _Context:
         self.item_ids: tuple[str, ...] = tuple(materialized.get("item_ids") or ())
         self._planned = frozenset(self.item_ids)
         self.parameters: Mapping[str, Any] = MappingProxyType(dict(parameters))
-        self.options: Mapping[str, Any] = MappingProxyType({**options, **parameters})
+        # Configured options only: a per-run value never shadows an option.
+        self.options: Mapping[str, Any] = MappingProxyType(dict(options))
         self.history = _History(service.store)
         self._order = HandoffOrder(dispatch.dispatch_id, declared=dispatch.state != "DISPATCHED")
-        self.links: Mapping[str, str] = dict(dispatch.links)
+        self._links: dict[str, str] = dict(dispatch.links)
+        self.links: Mapping[str, str] = MappingProxyType(self._links)
         self._shards: tuple[str, ...] = dispatch.shards
+        self._private_dir: Path | None = None
         self._cancel = threading.Event()
         self._cancel_checked = 0.0
         self._workdir: Path | None = None
@@ -154,6 +240,14 @@ class _Context:
         return self._workdir
 
     @property
+    def private_dir(self) -> Path:
+        if self._private_dir is None:
+            path = self._service.config.private_dir / self.run_id / self.dispatch_id
+            path.mkdir(parents=True, exist_ok=True)
+            self._private_dir = path.resolve()
+        return self._private_dir
+
+    @property
     def source(self) -> Any:
         if self._source is None:
             self._source = self._service.catalog.fresh()
@@ -175,33 +269,59 @@ class _Context:
         plan: str = "",
         links: Mapping[str, str] | None = None,
         spec_sha256: str | None = None,
+        groups: Mapping[str, str] | None = None,
     ) -> None:
         self._order.before_declare()
         names, shard_items = normalize_shards(shards)
+        shard_groups = normalize_groups(groups, names)
+        with self._lock:
+            # Links set before the hand-off are part of it.
+            self._links.update({str(k): str(v) for k, v in (links or {}).items()})
+            recorded = dict(self._links)
         self._service.ledger.declare(
-            self.dispatch_id, shards=names, shard_items=shard_items, plan=plan, links=links or {}
+            self.dispatch_id, shards=names, shard_items=shard_items, plan=plan, links=recorded,
+            groups=shard_groups,
         )
         if spec_sha256:
             # The runner handed out bytes it serialized itself.
             self._service.store.update_dispatch(self.dispatch_id, spec_sha256=spec_sha256)
         self._shards = tuple(names)
-        self.links = dict(links or {})
         self._order.declared = True
         self.handoff.set()
+
+    def set_link(self, name: str, url: str) -> None:
+        with self._lock:
+            self._links[str(name)] = str(url)
+            recorded = dict(self._links)
+        if not self._order.declared:
+            return  # recorded with the hand-off
+        self._service.store.update_dispatch(self.dispatch_id, links=recorded)
+        self._service.bus.emit(
+            self.run_id,
+            kinds.LOG,
+            dispatch_id=self.dispatch_id,
+            data={"message": f"link {name}: {url}", "level": "info", "link": {str(name): str(url)}},
+        )
+
+    def delivered_shards(self) -> set[str]:
+        return set(self._service.store.delivered_shards(self.run_id, self.dispatch_id))
+
+    def outstanding_shards(self) -> list[str]:
+        return outstanding_shards(self._shards, self.delivered_shards())
 
     # -- results ---------------------------------------------------------------------
 
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
     ) -> None:
-        if status not in REPORTABLE_STATUSES or item_id not in self._planned:
+        if status not in LIVE_STATUSES or item_id not in self._planned:
             return  # live status is best-effort; it never invents an item
         try:
             self._service.store.record_live_verdict(
                 self.run_id,
                 self.dispatch_id,
                 str(shard),
-                Verdict(item_id, status, int(duration_ms), str(message)),
+                LiveStatus(item_id, status, int(duration_ms), str(message), shard=str(shard)),
             )
         except Exception:
             log.warning("live status could not be recorded", exc_info=True)
@@ -226,6 +346,9 @@ class _Context:
         if self._tail is None:
             return
         for entry in self._tail.read():
+            if "log" in entry:
+                self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
+                continue
             try:
                 self.live(
                     str(entry["shard"]),
@@ -301,6 +424,7 @@ class _Context:
         *,
         media_type: str | None = None,
         shard: str | None = None,
+        group: str | None = None,
     ) -> None:
         target = str(path_or_url)
         guessed = media_type or mimetypes.guess_type(target)[0] or "application/octet-stream"
@@ -311,6 +435,7 @@ class _Context:
             media_type=guessed,
             url_or_path=target,
             shard=shard,
+            group=group,
         )
 
     def log(self, message: str, level: str = "info") -> None:
@@ -327,9 +452,7 @@ class _Context:
     def export_spec(self) -> bytes:
         with self._lock:
             if self._spec_bytes is None:
-                content = (json.dumps(self._document, indent=2, ensure_ascii=False) + "\n").encode(
-                    "utf-8"
-                )
+                content = spec_bytes(self._document)
                 store = self._service.store
                 store.set_dispatch_spec(self.dispatch_id, content, "application/json")
                 store.update_dispatch(self.dispatch_id, spec_sha256=sha256_hex(content))
@@ -427,15 +550,29 @@ class DispatchManager:
         if spec is None or run is None:
             raise UnknownRun(run_id)
         self._refuse_if_in_flight(run_id)
-        runner = service.runner(runner_id)
+        runner, info, accepted, warnings = self._accept(
+            runner_id, spec, parameters, document if document is not None else spec
+        )
+        return runner, info, spec, accepted, warnings
+
+    def _accept(
+        self,
+        runner_id: str,
+        spec: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None,
+        carrier: Mapping[str, Any],
+    ) -> tuple[Any, RunnerInfo, dict[str, Any], list[str]]:
+        """The runner, and the per-run parameters it accepts for ``spec`` —
+        the part of a dispatch request a plan request shares."""
+        runner = self._service.runner(runner_id)
         info: RunnerInfo = runner.describe()
         materialized = (spec.get("selection") or {}).get("materialized") or {}
         if not materialized.get("item_ids"):
+            run_id = (spec.get("run") or {}).get("id")
             raise InvalidRequest(
                 f"run {run_id} has an empty materialized selection — there is nothing to execute"
             )
         declared = {parameter.name for parameter in info.parameters}
-        carrier = document if document is not None else spec
         section = (carrier.get("runner") or {}).get(runner_id)
         section = dict(section) if isinstance(section, Mapping) else {}
         warnings: list[str] = []
@@ -453,7 +590,71 @@ class DispatchManager:
         else:
             values = dict(parameters)
         accepted = validate_parameters(info.parameters, values)
-        return runner, info, spec, accepted, warnings
+        return runner, info, accepted, warnings
+
+    # -- previewing -----------------------------------------------------------------
+
+    def plan(
+        self,
+        runner_id: str,
+        spec: Mapping[str, Any],
+        parameters: Mapping[str, Any] | None = None,
+        *,
+        run_id: str | None = None,
+    ) -> PlanOutcome:
+        """Ask a runner what a dispatch of ``spec`` would do (``Runner.plan``).
+        Nothing is recorded: no dispatch, no event, no token, no directory.
+        ``run_id`` says the document is a stored run's; a refusal — the
+        runner's own, or its failing — is part of the answer, not an error."""
+        service = self._service
+        runner, info, accepted, warnings = self._accept(runner_id, spec, parameters, spec)
+        if "plan" not in info.capabilities:
+            raise InvalidRequest(
+                f"runner {runner_id!r} does not offer a plan preview (it does not declare the "
+                "'plan' capability)"
+            )
+        document = dict(spec)
+        document["runner"] = {**(spec.get("runner") or {}), runner_id: dict(accepted)}
+        ctx = _PlanContext(
+            service,
+            runner_id=runner_id,
+            spec=document,
+            options=service.runner_options(runner_id),
+            parameters=accepted,
+        )
+        preview: PlanPreview | None = None
+        refusal: str | None = None
+        try:
+            answer = runner.plan(ctx)
+            if not isinstance(answer, PlanPreview):
+                raise TypeError(
+                    f"plan() must return a PlanPreview, got {type(answer).__name__}"
+                )
+            preview = PlanPreview(
+                text=str(service.redact(answer.text)),
+                shards={str(k): [str(i) for i in v] for k, v in answer.shards.items()},
+                groups={str(k): str(v) for k, v in answer.groups.items()},
+                estimates_ms={str(k): float(v) for k, v in answer.estimates_ms.items()},
+                notes=tuple(str(service.redact(note)) for note in answer.notes),
+                data=service.redact(dict(answer.data)),
+            )
+        except DispatchRefused as exc:
+            refusal = str(service.redact(str(exc)))
+        except Exception as exc:
+            log.error(
+                "runner %r raised while planning\n%s", runner_id,
+                service.redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))),
+            )
+            refusal = str(service.redact(f"{type(exc).__name__}: {exc}"))
+        return PlanOutcome(
+            runner_id=runner_id,
+            run_id=run_id,
+            item_ids=ctx.item_ids,
+            parameters=accepted,
+            preview=preview,
+            refusal=refusal,
+            warnings=warnings,
+        )
 
     def _refuse_if_in_flight(self, run_id: str) -> None:
         run = self._service.store.get_run(run_id)

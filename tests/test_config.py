@@ -234,7 +234,10 @@ ui:
         assert config.api["port"] == 9000
         assert config.api["host"] == "127.0.0.1"  # defaults merged
         assert config.locale_default == "de"
-        assert config.ui == {"quick_filters": ["Payments"]}
+        assert config.ui == {"quick_filters": [
+            {"label": "Payments", "filter": "Payments", "tag_filter": "Payments", "text": "Payments",
+             "kind": "pattern"},
+        ]}
         assert isinstance(config.build(config.store_spec()), SqliteRunStore)
 
     def test_missing_explicit_config_fails(self):
@@ -324,7 +327,9 @@ class TestCoreValues:
             load(tmp_path, {"core": {"retention": {key: value}}})
 
     def test_dispatch_defaults(self, tmp_path):
-        assert load(tmp_path, {}).dispatch == {"max_concurrent": 2, "handoff_wait_s": 2.0}
+        assert load(tmp_path, {}).dispatch == {
+            "max_concurrent": 2, "handoff_wait_s": 2.0, "awaiting_timeout_s": None,
+        }
 
     @pytest.mark.parametrize("value", [0, -2, "two", 1.5, True, None])
     def test_max_concurrent_must_be_a_positive_integer(self, tmp_path, value):

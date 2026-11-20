@@ -1,9 +1,18 @@
 """runcomposer.sdk — THE connector surface.
 
-Everything a connector package may import from runcomposer is here, and a
-connector imports from nowhere else in the package: the reference plugins in
-``runcomposer.plugins`` are held to exactly that rule by a guard test, which
-is the proof that this surface is sufficient.
+Everything a connector package may import from runcomposer is here — this
+module, and its two toolkits ``runcomposer.sdk.robot`` and
+``runcomposer.sdk.jenkins`` — and a connector imports from nowhere else in
+the package: the reference plugins in ``runcomposer.plugins`` are held to
+exactly that rule by a guard test, which is the proof that this surface is
+sufficient.
+
+The toolkits are the building blocks the reference ``robot-pool`` and
+``jenkins`` runners are made of (exact-id selection, the live listener, the
+shard worker and its supervisor; the Jenkins HTTP client), exported so that a
+connector with needs of its own composes them instead of restating them.
+Importing this module loads neither of them, and neither loads Robot
+Framework until something is executed.
 
 Stability: the names in ``__all__`` keep their meaning within a minor line
 (0.2.x). Additions happen in minor releases; a removal or a changed signature
@@ -22,12 +31,16 @@ What is here, by role:
   ``resolve_config_paths`` for configuration. A plugin need not derive from
   them, but must then provide every member itself — startup refuses one
   that does not, naming what is missing.
-- **Records** — ``Item``, ``Verdict``, ``ParsedVerdict``, ``RunRecord``,
-  ``DispatchRecord``, ``DeliveryRecord``, ``ArtifactRef``, ``RunEvent``,
-  ``RunPage``, ``RunnerInfo``, ``Parameter``, ``Health``.
+- **Records** — ``Item``, ``Verdict``, ``LiveStatus``, ``ParsedVerdict``,
+  ``RunRecord``, ``DispatchRecord``, ``DeliveryRecord``, ``ArtifactRef``,
+  ``RunEvent``, ``RunPage``, ``RunnerInfo``, ``Parameter``, ``Health``,
+  ``PlanPreview``.
 - **Errors** — the taxonomy of ``runcomposer.core.errors``.
 - **Helpers** — the chunk planner, content hashes, the marker reader, the
-  defused XML reader, lifecycle functions, ids and timestamps.
+  defused XML reader, lifecycle functions, ids and timestamps,
+  ``load_import_path`` (for a plugin's own ``"pkg.mod:callable"`` options)
+  and ``RemoteLiveChannel`` (live status and log lines pushed to the API by
+  an executor that runs elsewhere).
 - **Embedding** — ``load_config`` and ``Service``, for driving runcomposer
   from a Python program instead of through the CLI or the HTTP API.
 """
@@ -75,12 +88,14 @@ from runcomposer.core.lifecycle import (
 )
 from runcomposer.core.marker import MARKER_FILENAME, read_marker
 from runcomposer.core.model import (
+    LIVE_STATUSES,
     REPORTABLE_STATUSES,
     VERDICT_STATUSES,
     ArtifactRef,
     DeliveryRecord,
     DispatchRecord,
     Item,
+    LiveStatus,
     RunEvent,
     RunPage,
     RunRecord,
@@ -97,6 +112,8 @@ from runcomposer.core.ports import (
     ObserverBase,
     ParsedVerdict,
     ParserBase,
+    PlanContext,
+    PlanPreview,
     PluginBase,
     ResultParser,
     Runner,
@@ -109,6 +126,8 @@ from runcomposer.core.ports import (
     TestSource,
     contract_members,
 )
+from runcomposer.core.registry import load_import_path
+from runcomposer.core.remote import RemoteLiveChannel
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
 from runcomposer.core.timeutil import epoch_ms, normalize_time, parse_time, utc_now
@@ -122,6 +141,7 @@ __all__ = [
     "ACTIVE_STATES",
     "COMPLETIONS",
     "LIFECYCLE_KINDS",
+    "LIVE_STATUSES",
     "MARKER_FILENAME",
     "REPORTABLE_STATUSES",
     "RUN_STATES",
@@ -150,6 +170,7 @@ __all__ = [
     "InvalidTransition",
     "Item",
     "LiveChannel",
+    "LiveStatus",
     "NotFound",
     "ObserverBase",
     "Parameter",
@@ -157,8 +178,11 @@ __all__ = [
     "ParsedVerdict",
     "ParserBase",
     "PayloadTooLarge",
+    "PlanContext",
+    "PlanPreview",
     "PluginBase",
     "PluginError",
+    "RemoteLiveChannel",
     "ResultParser",
     "RunActive",
     "RunComposerError",
@@ -191,6 +215,7 @@ __all__ = [
     "format_filter",
     "load_config",
     "load_document",
+    "load_import_path",
     "missing_verdicts",
     "new_ulid",
     "normalize_time",

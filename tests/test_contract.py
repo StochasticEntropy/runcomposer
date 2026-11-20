@@ -130,7 +130,7 @@ class TestStartupChecksTheContract:
         assert "TestSource contract" in message and "runcomposer.sdk.SourceBase" in message
 
     def test_a_runner_without_cancel_is_refused(self, tmp_path):
-        with pytest.raises(ConfigError, match=r"runners\.bare: RunnerWithoutCancel does not provide \['cancel'\]"):
+        with pytest.raises(ConfigError, match=r"runners\.bare: RunnerWithoutCancel does not provide \['plan', 'cancel'\]"):
             self.build(tmp_path, runners={"bare": {"module": f"{HERE}:RunnerWithoutCancel"}})
 
     def test_a_class_without_the_configuration_members_is_refused_before_it_is_built(self, tmp_path):
@@ -161,7 +161,7 @@ class TestStartupChecksTheContract:
 
 class TestTheContractIsData:
     def test_each_role_lists_its_members(self):
-        assert contract_members(Runner) == ("describe", "dispatch", "cancel", "health")
+        assert contract_members(Runner) == ("describe", "plan", "dispatch", "cancel", "health")
         assert set(contract_members(TestSource)) == {
             "provider_id", "items", "snapshot", "resolve", "fingerprint", "duplicate_ids",
         }

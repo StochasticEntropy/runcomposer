@@ -29,12 +29,13 @@ from runcomposer.core.errors import (
 )
 from runcomposer.core.events import LIFECYCLE_KINDS, LOG, WARNING
 from runcomposer.core.lifecycle import ACTIVE_STATES
-from runcomposer.core.model import REPORTABLE_STATUSES, Item, RunEvent, Verdict
+from runcomposer.core.model import REPORTABLE_STATUSES, Item, LiveStatus, RunEvent, Verdict
 from runcomposer.core.parameters import PARAMETER_KINDS, Parameter, validate_parameters
 from runcomposer.core.ports import (
     Configurable,
     Health,
     ParsedVerdict,
+    PlanPreview,
     ResultParser,
     Runner,
     RunnerInfo,
@@ -323,6 +324,7 @@ def check_runner(
     ctx = ctx if ctx is not None else FakeDispatchContext(DEFAULT_ITEM_IDS)
     if info.result_format:
         ctx.adopt_result_format(info.result_format)
+    preview = _check_plan(runner, ctx) if "plan" in info.capabilities else None
     outcome: dict[str, Any] = {}
     delivered_before_cancel = 0
 
@@ -396,6 +398,13 @@ def check_runner(
         )
     if ctx.is_declared:
         _check_declared(ctx)
+        if preview is not None:
+            _require(
+                set(preview.shards) == set(ctx.declared or ()),
+                "runner.plan-matches-dispatch",
+                f"plan() previewed the shards {sorted(preview.shards)}, the dispatch declared "
+                f"{sorted(ctx.declared or ())} — a preview shows what the dispatch does",
+            )
         if ended == "complete" and not allow_missing:
             _check_reported(ctx)
     if expect is not None:
@@ -451,6 +460,45 @@ def _is_order_error(error: RuntimeError) -> bool:
         or "deliver() before declare()" in text
         or "refused after the hand-off" in text
     )
+
+
+def _check_plan(runner: Any, ctx: FakeDispatchContext) -> PlanPreview | None:
+    """A runner that declares the ``plan`` capability: its preview is a
+    well-formed ``PlanPreview`` and leaves no trace — nothing declared,
+    delivered, recorded, exported or logged. ``None`` when the plan refuses
+    (a dispatch of the same context is then expected to be refused too)."""
+    before = (len(ctx.deliveries), len(ctx.artifacts), len(ctx.logs), len(ctx.tokens), ctx.exported)
+    refusal = ctx.refusal
+    try:
+        preview = ctx.preview(runner)
+    except AttributeError as exc:
+        raise _fail(
+            "runner.plan-is-read-only",
+            f"plan() reached for something a preview does not have: {exc} — it gets a "
+            "PlanContext (no declare, deliver, artifacts, token or work directory)",
+        ) from exc
+    except Exception as exc:
+        raise _fail("runner.plan", f"plan() raised {type(exc).__name__}: {exc}") from exc
+    after = (len(ctx.deliveries), len(ctx.artifacts), len(ctx.logs), len(ctx.tokens), ctx.exported)
+    _require(
+        not ctx.is_declared and after == before,
+        "runner.plan-is-read-only", "plan() declared, delivered or recorded something",
+    )
+    if preview is None:
+        ctx.refusal = refusal  # the dispatch below says for itself why it refuses
+        return None
+    _require(isinstance(preview.text, str), "runner.plan", "PlanPreview.text must be a string")
+    planned = set(ctx.item_ids)
+    for shard, items in preview.shards.items():
+        _require(isinstance(shard, str) and bool(shard), "runner.plan",
+                 f"a previewed shard name must be a non-empty string, got {shard!r}")
+        stray = [item for item in items if item not in planned]
+        _require(not stray, "runner.plan",
+                 f"previewed shard {shard!r} lists item(s) that were not planned: {stray[:3]}")
+    stray_groups = sorted(set(preview.groups) - set(preview.shards))
+    _require(not stray_groups, "runner.plan",
+             f"PlanPreview.groups labels shard(s) the preview does not list: {stray_groups}")
+    return preview
 
 
 def _check_info(info: Any) -> None:
@@ -663,8 +711,11 @@ def _check_dispatches(store: Any) -> None:
                     "add_dispatch(exclusive=True) must raise RunActive while the run's latest dispatch is in "
                     f"one of {ACTIVE_STATES}")
     updated = store.update_dispatch("01KITD1", state="RUNNING", shards=["a", "b"], shard_items={"a": [DEFAULT_ITEM_IDS[0]]},
+                                    shard_groups={"a": "staging", "b": "staging"},
                                     plan="two shards", links={"build": "https://ci.shop.example/job/7/"},
                                     error="", spec_sha256="sha256:00")
+    _require(dict(updated.shard_groups) == {"a": "staging", "b": "staging"}, "store.shard-groups",
+             f"update_dispatch(shard_groups=…) must be kept and read back: {updated.shard_groups!r}")
     _require(updated.shards == ("a", "b") and dict(updated.links) == {"build": "https://ci.shop.example/job/7/"}
              and updated.plan == "two shards" and tuple(updated.shard_items["a"]) == (DEFAULT_ITEM_IDS[0],),
              rule, f"update_dispatch did not keep what it was given: {updated!r}")
@@ -732,9 +783,13 @@ def _check_live_and_artifacts(store: Any) -> None:
     run = store.create_run(_spec("01KITRUNF00000000000000000"), origin="kit")
     store.add_dispatch(run.id, dispatch_id="01KITF1", mode="demo", state="RUNNING")
     t1, t2, _t3 = DEFAULT_ITEM_IDS
-    store.record_live_verdict(run.id, "01KITF1", "1", Verdict(t1, "FAIL", 5))
-    store.record_live_verdict(run.id, "01KITF1", "1", Verdict(t1, "PASS", 7))
-    store.record_live_verdict(run.id, "01KITF1", "2", Verdict(t2, "PASS", 3))
+    store.record_live_verdict(run.id, "01KITF1", "1", LiveStatus(t1, "RUNNING"))
+    running = [(v.shard, v.item_id, v.status) for v in store.live_verdicts(run.id, "01KITF1")]
+    _require(running == [("1", t1, "RUNNING")], "store.live-running",
+             f"a RUNNING live status is kept and read back as a LiveStatus: {running}")
+    store.record_live_verdict(run.id, "01KITF1", "1", LiveStatus(t1, "FAIL", 5))
+    store.record_live_verdict(run.id, "01KITF1", "1", LiveStatus(t1, "PASS", 7))
+    store.record_live_verdict(run.id, "01KITF1", "2", LiveStatus(t2, "PASS", 3))
     live = sorted((v.shard, v.item_id, v.status) for v in store.live_verdicts(run.id, "01KITF1"))
     _require(live == [("1", t1, "PASS"), ("2", t2, "PASS")], "store.live-replaced",
              f"live status is replaced per (shard, item): {live}")
@@ -745,10 +800,14 @@ def _check_live_and_artifacts(store: Any) -> None:
              "store.live-apart", "live status is kept apart from delivered verdicts")
     store.add_artifact_ref(run.id, "01KITF1", name="log.html", media_type="text/html", url_or_path="01KITF1/1/log.html", shard="1")
     store.add_artifact_ref(run.id, None, name="Build", media_type="text/html", url_or_path="https://ci.shop.example/job/7/")
+    store.add_artifact_ref(run.id, "01KITF1", name="staging log", media_type="text/html",
+                           url_or_path="01KITF1/staging.html", group="staging")
     refs = store.artifact_refs(run.id)
-    _require([(r.name, r.dispatch_id, r.shard) for r in refs] == [("log.html", "01KITF1", "1"), ("Build", None, None)],
-             "store.artifacts", f"artifact_refs: {refs}")
-    _require([r.name for r in store.artifact_refs(run.id, "01KITF1")] == ["log.html"], "store.artifacts",
+    _require([(r.name, r.dispatch_id, r.shard, r.group) for r in refs]
+             == [("log.html", "01KITF1", "1", None), ("Build", None, None, None),
+                 ("staging log", "01KITF1", None, "staging")],
+             "store.artifacts", f"artifact_refs (name, dispatch, shard, group): {refs}")
+    _require([r.name for r in store.artifact_refs(run.id, "01KITF1")] == ["log.html", "staging log"], "store.artifacts",
              "artifact_refs filters by dispatch")
     store.delete_run(run.id)
 
@@ -777,7 +836,7 @@ def _check_events(store: Any) -> None:
 
 
 def _check_history(store: Any) -> None:
-    t1, t2, _t3 = DEFAULT_ITEM_IDS
+    t1, t2, t3 = DEFAULT_ITEM_IDS
     older = store.create_run(_spec("01KITRUNI00000000000000000", labels={"suite": "nightly"}), origin="kit")
     newer = store.create_run(_spec("01KITRUNJ00000000000000000", labels={"suite": "adhoc"}), origin="kit")
     for run, completed_at, durations in ((older, "2026-07-07T11:00:00Z", (100, 300)), (newer, "2026-07-07T12:00:00Z", (200, 500))):
@@ -798,6 +857,19 @@ def _check_history(store: Any) -> None:
              f"mean duration per item over the last dispatches: {means}")
     _require(store.duration_aggregates(labels={"suite": "nightly"}).get(t1) == 100, "store.duration-aggregates",
              "labels scope the aggregates")
+    passed = store.duration_aggregates(last_n=5, statuses=("PASS",))
+    _require(passed == {t1: 150}, "store.duration-statuses",
+             f"statuses restricts the mean to executions that ended with one of them: {passed}")
+    stored = store.seed_durations({t1: 9000, t3: 700, t2: 0}, labels={"suite": "nightly"})
+    seeded = store.duration_aggregates(labels={"suite": "nightly"})
+    _require(stored == 2 and seeded.get(t3) == 700 and seeded.get(t1) == 100, "store.duration-seeds",
+             "a seeded duration answers for an item nothing was measured for, never over a "
+             f"measurement, and 0 is not a duration: stored {stored}, {seeded}")
+    _require(t3 not in store.duration_aggregates(labels={"suite": "adhoc"}), "store.duration-seeds",
+             "a seed's labels scope it like a run's labels scope its history")
+    store.seed_durations({t3: 900}, labels={"suite": "nightly"})
+    _require(store.duration_aggregates(labels={"suite": "nightly"}).get(t3) == 900, "store.duration-seeds",
+             "importing an item again under the same labels replaces its seed")
     _require(store.list_runs(state="COMPLETE").total == 2, "store.list-state", "list_runs filters by headline state")
     store.delete_run(older.id)
     store.delete_run(newer.id)

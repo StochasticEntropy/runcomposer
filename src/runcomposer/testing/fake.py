@@ -34,19 +34,21 @@ from typing import Any, NoReturn
 
 from runcomposer.app.livechannel import FileLiveChannel, LiveTail
 from runcomposer.core.errors import DispatchCancelled, DispatchRefused
+from runcomposer.core.filter import parse_filter
 from runcomposer.core.handoff import (
     HandoffOrder,
     check_delivery_args,
     check_reportable,
     correlate,
+    normalize_groups,
     normalize_shards,
 )
 from runcomposer.core.hashing import bundle_hash, canonical_json, sha256_hex, verdicts_hash
 from runcomposer.core.ids import new_ulid
 from runcomposer.core.lifecycle import effective_verdicts, summarize
 from runcomposer.core.marker import read_marker
-from runcomposer.core.model import REPORTABLE_STATUSES, ArtifactRef, Item, Verdict
-from runcomposer.core.ports import SourceBase
+from runcomposer.core.model import LIVE_STATUSES, ArtifactRef, Item, LiveStatus, Verdict
+from runcomposer.core.ports import PlanPreview, SourceBase
 from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
@@ -91,10 +93,43 @@ class FakeHistory:
         self.calls: list[dict[str, Any]] = []
 
     def durations(
-        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        last_n: int = 5,
+        statuses: Sequence[str] | None = None,
     ) -> dict[str, float]:
-        self.calls.append({"labels": dict(labels or {}), "last_n": last_n})
+        self.calls.append(
+            {
+                "labels": dict(labels or {}),
+                "last_n": last_n,
+                "statuses": None if statuses is None else tuple(statuses),
+            }
+        )
         return dict(self._durations)
+
+
+class _PlanView:
+    """What ``Runner.plan`` receives from the fake: the members of
+    ``PlanContext`` and nothing else — a runner that reaches for ``declare``
+    or ``deliver`` in its plan fails here as it would in runcomposer."""
+
+    def __init__(self, ctx: FakeDispatchContext):
+        self._ctx = ctx
+        self.run_id = ctx.run_id
+        self.runner_id = ctx.runner_id
+        self.spec = ctx.spec
+        self.item_ids = ctx.item_ids
+        self.options = ctx.options
+        self.parameters = ctx.parameters
+        self.source = ctx.source
+        self.history = ctx.history
+
+    def refuse(self, reason: str) -> NoReturn:
+        raise DispatchRefused(reason)
+
+    def export_spec(self) -> bytes:
+        return self._ctx.spec_bytes()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -116,8 +151,9 @@ class FakeDispatchContext:
     - ``item_ids`` or ``items`` — the planned set (``items`` also gives the
       catalog its tags); or a whole ``spec`` document, whose materialized ids
       are then the planned set.
-    - ``options`` / ``parameters`` — what a runner reads; ``options`` is the
-      configured options overlaid by ``parameters``, as in runcomposer.
+    - ``options`` / ``parameters`` — what a runner reads: its configured
+      options, and the per-run parameters, each on its own as in runcomposer
+      (a parameter never shows up in ``options``).
     - ``source`` — a TestSource for drift checks and name resolution
       (default: a :class:`ListSource` over the items).
     - ``durations`` — what ``history.durations`` answers.
@@ -132,9 +168,15 @@ class FakeDispatchContext:
     - ``workdir`` — default: a temporary directory removed by :meth:`close`.
     - ``tokens`` — ``False`` for a deployment with ingest tokens disabled.
 
-    What the runner did is in ``declared``, ``shard_items``, ``plan``,
-    ``links``, ``spec_sha256``, ``deliveries``, ``live_updates``,
+    What the runner did is in ``declared``, ``shard_items``, ``shard_groups``,
+    ``plan``, ``links``, ``spec_sha256``, ``deliveries``, ``live_updates``
+    (everything it streamed, in order) and ``live_now`` (what a store would
+    hold: the latest status per item of shards that have not delivered),
     ``artifacts``, ``logs``, ``refusal``, ``exported`` and ``tokens``.
+
+    For a runner that needs real catalog items — one that attributes items
+    to suite roots or reads ``Item.meta`` — build the fake from the source:
+    :meth:`from_source`.
     """
 
     __test__ = False
@@ -167,9 +209,7 @@ class FakeDispatchContext:
             items = [Item(id=str(item_id)) for item_id in item_ids]
         self.source: Any = source if source is not None else ListSource(items)
         self.parameters: Mapping[str, Any] = MappingProxyType(dict(parameters or {}))
-        self.options: Mapping[str, Any] = MappingProxyType(
-            {**dict(options or {}), **dict(parameters or {})}
-        )
+        self.options: Mapping[str, Any] = MappingProxyType(dict(options or {}))
         self.runner_id = runner_id
         if spec is None:
             spec = build_spec(
@@ -200,11 +240,14 @@ class FakeDispatchContext:
         # -- what the runner did ------------------------------------------------
         self.declared: tuple[str, ...] | None = None
         self.shard_items: dict[str, list[str]] = {}
+        self.shard_groups: dict[str, str] = {}
         self.plan: str = ""
-        self.links: Mapping[str, str] = {}
+        self._links: dict[str, str] = {}
+        self.links: Mapping[str, str] = MappingProxyType(self._links)
         self.spec_sha256: str | None = None
         self.deliveries: list[Delivery] = []
-        self._live: list[Verdict] = []
+        self._live: list[LiveStatus] = []
+        self._private_dir: Path | None = None
         self.artifacts: list[ArtifactRef] = []
         self.logs: list[tuple[str, str]] = []
         self.refusal: str | None = None
@@ -222,6 +265,38 @@ class FakeDispatchContext:
             self._workdir.mkdir(parents=True, exist_ok=True)
             return self._workdir
 
+    @property
+    def private_dir(self) -> Path:
+        """A directory of its own beside the work directory, as in
+        runcomposer: nothing in it is ever an artifact."""
+        with self._lock:
+            if self._private_dir is None:
+                self._private_dir = Path(tempfile.mkdtemp(prefix="runcomposer-fake-private-")).resolve()
+            self._private_dir.mkdir(parents=True, exist_ok=True)
+            return self._private_dir
+
+    @classmethod
+    def from_source(
+        cls, source: Any, selection: Any = None, **kwargs: Any
+    ) -> FakeDispatchContext:
+        """A fake over a real catalog: the planned items are the source's own
+        ``Item`` objects (tags, hierarchy, ``meta``) and ``ctx.source`` is the
+        source. ``selection`` picks them — ``None`` for all, a tag-filter
+        expression (``"Checkout"``, ``{"op": "AND", …}``) or a list of item
+        ids. Everything else is passed on to the constructor."""
+        items = list(source.items())
+        if isinstance(selection, (list, tuple)):
+            wanted = [str(item_id) for item_id in selection]
+            by_id = {item.id: item for item in items}
+            unknown = [item_id for item_id in wanted if item_id not in by_id]
+            if unknown:
+                raise ValueError(f"the source has no item(s) {unknown}")
+            items = [by_id[item_id] for item_id in wanted]
+        elif selection is not None:
+            node = parse_filter(selection)
+            items = [item for item in items if node.matches(item.tags)]
+        return cls(items=items, source=source, **kwargs)
+
     # -- the hand-off ----------------------------------------------------------------
 
     def refuse(self, reason: str) -> NoReturn:
@@ -236,17 +311,23 @@ class FakeDispatchContext:
         plan: str = "",
         links: Mapping[str, str] | None = None,
         spec_sha256: str | None = None,
+        groups: Mapping[str, str] | None = None,
     ) -> None:
         with self._lock:
             self._order.before_declare()
             names, shard_items = normalize_shards(shards)
+            self.shard_groups = normalize_groups(groups, names)
             self.declared = tuple(names)
             self.shard_items = shard_items
             self.plan = str(plan)
-            self.links = dict(links or {})
+            self._links.update({str(k): str(v) for k, v in (links or {}).items()})
             if spec_sha256:
                 self.spec_sha256 = spec_sha256
             self._order.declared = True
+
+    def set_link(self, name: str, url: str) -> None:
+        with self._lock:
+            self._links[str(name)] = str(url)
 
     @property
     def is_declared(self) -> bool:
@@ -257,17 +338,17 @@ class FakeDispatchContext:
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
     ) -> None:
-        if status not in REPORTABLE_STATUSES or item_id not in self.item_ids:
+        if status not in LIVE_STATUSES or item_id not in self.item_ids:
             return  # best-effort, as in runcomposer: live status never invents an item
         with self._lock:
             self._live.append(
-                Verdict(item_id, status, int(duration_ms), str(message), shard=str(shard))
+                LiveStatus(item_id, status, int(duration_ms), str(message), shard=str(shard))
             )
 
     def live_channel(self) -> FileLiveChannel:
         """A picklable channel for worker processes — the same file
         transport runcomposer uses; what workers write shows up in
-        :attr:`live_updates`."""
+        :attr:`live_updates` and (their log lines) in :attr:`logs`."""
         with self._lock:
             directory = self.workdir / ".live"
             directory.mkdir(exist_ok=True)
@@ -276,16 +357,44 @@ class FakeDispatchContext:
             return FileLiveChannel(str(directory))
 
     @property
-    def live_updates(self) -> list[Verdict]:
-        """Every live status the runner streamed, in order (shard set)."""
+    def live_updates(self) -> list[LiveStatus]:
+        """Every live status the runner streamed, in order — ``RUNNING``
+        included, and kept after the shard delivered: the whole stream, for
+        asserting what a runner reported while it ran."""
         self._drain_live()
         with self._lock:
             return list(self._live)
+
+    @property
+    def live_now(self) -> list[LiveStatus]:
+        """The live status as a store holds it at this moment: the latest
+        entry per (shard, item), and nothing for shards that have delivered
+        (a delivery replaces a shard's live status)."""
+        self._drain_live()
+        with self._lock:
+            delivered = {delivery.shard for delivery in self.deliveries}
+            latest: dict[tuple[str, str], LiveStatus] = {}
+            for status in self._live:
+                if status.shard not in delivered:
+                    latest[(status.shard, status.item_id)] = status
+            return list(latest.values())
+
+    def delivered_shards(self) -> set[str]:
+        with self._lock:
+            return {delivery.shard for delivery in self.deliveries}
+
+    def outstanding_shards(self) -> list[str]:
+        """Declared shards nothing was delivered for, in declaration order."""
+        delivered = self.delivered_shards()
+        return [shard for shard in (self.declared or ()) if shard not in delivered]
 
     def _drain_live(self) -> None:
         if self._tail is None:
             return
         for entry in self._tail.read():
+            if "log" in entry:
+                self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
+                continue
             try:
                 self.live(
                     str(entry["shard"]), str(entry["item_id"]), str(entry["status"]),
@@ -350,8 +459,6 @@ class FakeDispatchContext:
                 outcome = "replaced"
             labelled = tuple(dataclasses.replace(v, shard=shard) for v in delivered)
             self.deliveries.append(Delivery(shard, outcome, content_hash, format_id, labelled))
-            # A delivery replaces the shard's live status, as in runcomposer.
-            self._live = [v for v in self._live if v.shard != shard]
             return outcome
 
     def _check_marker(self, bundle: Path) -> None:
@@ -380,12 +487,13 @@ class FakeDispatchContext:
         *,
         media_type: str | None = None,
         shard: str | None = None,
+        group: str | None = None,
     ) -> None:
         target = str(path_or_url)
         guessed = media_type or mimetypes.guess_type(target)[0] or "application/octet-stream"
         with self._lock:
             self.artifacts.append(
-                ArtifactRef(self.run_id, self.dispatch_id, name, guessed, target, shard)
+                ArtifactRef(self.run_id, self.dispatch_id, name, guessed, target, shard, group)
             )
 
     def log(self, message: str, level: str = "info") -> None:
@@ -394,12 +502,15 @@ class FakeDispatchContext:
 
     # -- for external executors -------------------------------------------------------------
 
+    def spec_bytes(self) -> bytes:
+        """The document as the bytes ``export_spec`` hands out — without
+        recording that they were."""
+        return (json.dumps(self._document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
     def export_spec(self) -> bytes:
         with self._lock:
             if self.exported is None:
-                self.exported = (
-                    json.dumps(self._document, indent=2, ensure_ascii=False) + "\n"
-                ).encode("utf-8")
+                self.exported = self.spec_bytes()
                 self.spec_sha256 = sha256_hex(self.exported)
             return self.exported
 
@@ -432,13 +543,10 @@ class FakeDispatchContext:
         return self.refusal is not None and not self._order.declared
 
     @property
-    def delivered_shards(self) -> set[str]:
-        return {d.shard for d in self.deliveries}
-
-    @property
     def outstanding(self) -> list[str]:
-        """Declared shards nothing was delivered for."""
-        return [shard for shard in (self.declared or ()) if shard not in self.delivered_shards]
+        """Declared shards nothing was delivered for (``outstanding_shards()``
+        as an attribute, for assertions)."""
+        return self.outstanding_shards()
 
     @property
     def verdicts(self) -> list[Verdict]:
@@ -467,6 +575,23 @@ class FakeDispatchContext:
         results = self._document.setdefault("results", {})
         results["expect"] = [{"format": format_id}]
 
+    def preview(self, runner: Any) -> PlanPreview | None:
+        """Call ``runner.plan`` the way runcomposer does — with a context
+        that has the members of ``PlanContext`` only — and return its
+        preview; ``None`` when the plan refuses (the reason is then in
+        ``refusal``). Nothing of the fake is touched by a preview."""
+        result_format = runner.describe().result_format
+        if result_format:
+            self.adopt_result_format(result_format)
+        try:
+            answer = runner.plan(_PlanView(self))
+        except DispatchRefused as exc:
+            self.refusal = str(exc)
+            return None
+        if not isinstance(answer, PlanPreview):
+            raise TypeError(f"plan() must return a PlanPreview, got {type(answer).__name__}")
+        return answer
+
     def run(self, runner: Any) -> str:
         """Call ``runner.dispatch(self)`` and say how it ended, the way the
         dispatch manager would: ``refused`` (it refused, or raised, before
@@ -494,6 +619,8 @@ class FakeDispatchContext:
         """Remove the temporary work directory (if this fake made it)."""
         if self._own_workdir and self._workdir is not None:
             shutil.rmtree(self._workdir, ignore_errors=True)
+        if self._private_dir is not None:
+            shutil.rmtree(self._private_dir, ignore_errors=True)
 
     def __enter__(self) -> FakeDispatchContext:
         return self

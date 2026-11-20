@@ -39,6 +39,8 @@ from runcomposer.sdk import (
     ConfigError,
     DispatchContext,
     Health,
+    PlanContext,
+    PlanPreview,
     RunnerBase,
     RunnerInfo,
     Verdict,
@@ -108,7 +110,7 @@ class CommandRunner(RunnerBase):
             id="command",
             title="Command",
             description="Runs a configured command per shard on this machine.",
-            capabilities=("cancel",) + (("shards",) if self.shards > 1 else ()),
+            capabilities=("cancel", "plan") + (("shards",) if self.shards > 1 else ()),
             parameters=self.parameters,
             result_format=self.format,
         )
@@ -120,7 +122,18 @@ class CommandRunner(RunnerBase):
 
     # -- dispatch ---------------------------------------------------------------------
 
-    def dispatch(self, ctx: DispatchContext) -> None:
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        shards, skips, text, estimates = self._plan(ctx)
+        declared = dict(shards)
+        if skips:
+            declared["drift"] = [verdict.item_id for verdict in skips]
+        return PlanPreview(text=text, shards=declared, estimates_ms=estimates)
+
+    def _plan(
+        self, ctx: PlanContext
+    ) -> tuple[dict[str, list[str]], list[Verdict], str, dict[str, float]]:
+        """``(shards, drift skips, plan text, estimates)`` — what the preview
+        shows and the dispatch does."""
         if self.cwd and not Path(self.cwd).is_dir():
             ctx.refuse(f"working directory not found: {self.cwd}")
         item_ids = list(ctx.item_ids)
@@ -141,16 +154,25 @@ class CommandRunner(RunnerBase):
         durations = ctx.history.durations(labels=self.history_labels or None, last_n=self.history_depth)
         plan = plan_chunks(item_ids, self.shards, durations)
         shards = {str(index): list(chunk) for index, chunk in enumerate(plan.chunks, start=1)}
+        text = (
+            f"command runner: {len(item_ids)} item(s) in {len(shards)} shard(s), "
+            f"max_parallel={self.max_parallel}\n" + plan.describe()
+        )
+        estimates = {
+            str(index): estimate
+            for index, estimate in enumerate(plan.estimates_ms, start=1)
+            if estimate
+        }
+        return shards, skips, text, estimates
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        shards, skips, text, _estimates = self._plan(ctx)
         declared = dict(shards)
         if skips:
             declared["drift"] = [verdict.item_id for verdict in skips]
         spec_file = ctx.workdir / "spec.json"
         spec_file.write_bytes(ctx.export_spec())
-        ctx.declare(
-            declared,
-            plan=f"command runner: {len(item_ids)} item(s) in {len(shards)} shard(s), "
-            f"max_parallel={self.max_parallel}\n" + plan.describe(),
-        )
+        ctx.declare(declared, plan=text)
         if skips:
             ctx.deliver("drift", verdicts=skips, format=self.format)
 
@@ -211,7 +233,12 @@ class CommandRunner(RunnerBase):
         for name, value in values.items():
             env[f"RUNCOMPOSER_{name.upper()}"] = value
         for name, value in ctx.parameters.items():
-            rendered = ",".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
+            if isinstance(value, (list, tuple)):
+                rendered = ",".join(map(str, value))
+            elif isinstance(value, Mapping):  # a `mapping` parameter: name=value lines
+                rendered = "\n".join(f"{key}={entry}" for key, entry in value.items())
+            else:
+                rendered = str(value)
             env[f"RUNCOMPOSER_PARAM_{name.upper()}"] = rendered
         command: str | list[str]
         if isinstance(self.command, str):

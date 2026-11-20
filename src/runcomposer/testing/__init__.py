@@ -44,12 +44,13 @@ from .checks import (
     xml_with_dtd,
 )
 from .fake import Delivery, FakeDispatchContext, FakeHistory, ListSource
-from .harness import ConnectorHarness, HarnessRun
+from .harness import ConnectorHarness, DispatchHandle, HarnessRun
 
 __all__ = [
     "DEFAULT_ITEM_IDS",
     "ConnectorHarness",
     "Delivery",
+    "DispatchHandle",
     "FakeDispatchContext",
     "FakeHistory",
     "HarnessRun",

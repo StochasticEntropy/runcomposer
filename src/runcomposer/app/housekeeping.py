@@ -23,12 +23,16 @@ __all__ = ["collect_garbage", "remove_run_artifacts"]
 _RUN_DIR = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")  # a ULID — the only names gc sweeps
 
 
-def remove_run_artifacts(artifact_dir: Path, run_id: str) -> bool:
-    target = artifact_dir / run_id
-    if _RUN_DIR.fullmatch(run_id) and target.is_dir():
-        shutil.rmtree(target, ignore_errors=True)
-        return True
-    return False
+def remove_run_artifacts(artifact_dir: Path, run_id: str, private_dir: Path | None = None) -> bool:
+    """Remove a run's directory under the artifact root — and, with
+    ``private_dir``, what its dispatches kept in their private directories."""
+    removed = False
+    for base in (artifact_dir, private_dir):
+        target = base / run_id if base is not None else None
+        if target is not None and _RUN_DIR.fullmatch(run_id) and target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            removed = removed or base is artifact_dir
+    return removed
 
 
 def collect_garbage(service: Service) -> dict[str, Any]:
@@ -57,15 +61,21 @@ def collect_garbage(service: Service) -> dict[str, Any]:
     removed = service.store.prune_runs(before=cutoff_iso, max_runs=retention.get("max_runs"))
     report["runs_removed"] = removed
     artifact_dir = config.artifact_dir
+    private_dir = config.private_dir
     for run_id in removed:
-        report["artifact_dirs_removed"] += int(remove_run_artifacts(artifact_dir, run_id))
-    if artifact_dir.is_dir():
-        for child in artifact_dir.iterdir():
+        report["artifact_dirs_removed"] += int(
+            remove_run_artifacts(artifact_dir, run_id, private_dir)
+        )
+    for base in (artifact_dir, private_dir):
+        if not base.is_dir():
+            continue
+        for child in base.iterdir():
             if (
                 child.is_dir()
                 and _RUN_DIR.fullmatch(child.name)
                 and service.store.get_run(child.name) is None
             ):
                 shutil.rmtree(child, ignore_errors=True)
-                report["artifact_dirs_removed"] += 1
+                report["artifact_dirs_removed"] += int(base is artifact_dir)
+    report["expired_dispatches"] = [d.dispatch_id for d in service.expire_awaiting()]
     return report

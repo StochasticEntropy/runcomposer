@@ -58,7 +58,26 @@ def meta(service: Service = Depends(service_of)) -> dict[str, Any]:
 
 @router.get("/ui-config")
 def ui_config(service: Service = Depends(service_of)) -> dict[str, Any]:
+    """The deployment's ``ui:`` section. Every key is served as configured,
+    except the selections, which are validated at startup and served
+    normalized: each of ``quick_filters`` and ``presets``, and
+    ``default_filter``, carries ``tag_filter`` (the expression, in the
+    grammar ``selection.tag_filter`` takes), ``text`` (one line to show) and
+    ``kind`` (``pattern`` for a single pattern, ``expression`` otherwise)."""
     return {"locale_default": service.config.locale_default, **service.config.ui}
+
+
+@router.get("/presets")
+def presets(service: Service = Depends(service_of)) -> dict[str, Any]:
+    """The named starting points this deployment configured under
+    ``ui.presets``: a filter, and optionally a title, labels, and a runner
+    with its per-run parameters — everything ``POST /runs`` needs."""
+    ui = service.config.ui
+    return {
+        "presets": list(ui.get("presets") or []),
+        "default_filter": ui.get("default_filter"),
+        "quick_filters": list(ui.get("quick_filters") or []),
+    }
 
 
 @router.get("/runners")

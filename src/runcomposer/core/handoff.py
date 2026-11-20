@@ -18,7 +18,14 @@ from typing import Any, NoReturn
 from .errors import DispatchRefused, IngestError, ParseError
 from .model import REPORTABLE_STATUSES, Verdict
 
-__all__ = ["HandoffOrder", "check_delivery_args", "check_reportable", "correlate", "normalize_shards"]
+__all__ = [
+    "HandoffOrder",
+    "check_delivery_args",
+    "check_reportable",
+    "correlate",
+    "normalize_groups",
+    "normalize_shards",
+]
 
 
 class HandoffOrder:
@@ -65,6 +72,21 @@ def normalize_shards(
     if len(set(names)) != len(names):
         raise ValueError(f"shard names must be distinct, got {names}")
     return names, shard_items
+
+
+def normalize_groups(
+    groups: Mapping[str, str] | None, names: Sequence[str]
+) -> dict[str, str]:
+    """``declare``'s ``groups`` as ``{shard: label}`` over declared shards
+    only — a label for a shard that is not declared is a mistake."""
+    if not groups:
+        return {}
+    if not isinstance(groups, Mapping):
+        raise TypeError("declare(groups=…) takes a mapping of shard name → group label")
+    unknown = sorted(str(shard) for shard in groups if str(shard) not in set(names))
+    if unknown:
+        raise ValueError(f"groups names shard(s) that are not declared: {unknown}")
+    return {str(shard): str(label) for shard, label in groups.items() if str(label)}
 
 
 def check_delivery_args(verdicts: object, bundle: object) -> None:

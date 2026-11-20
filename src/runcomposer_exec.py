@@ -33,6 +33,15 @@ an accepted code (--ok-exit-codes, default 0). A command that failed leaves
 no marker — a half-written bundle is then never mistaken for a result. If
 your framework exits non-zero when tests fail, say which codes still mean
 "the results are valid": --ok-exit-codes 0-249.
+
+Talking back (optional): with --callback URL — the run's results URL, as a
+runner hands it out — the consumer reports while it works, authorized by the
+dispatch's ingest token (--token, or the environment variable
+RUNCOMPOSER_INGEST_TOKEN): log lines for the run's event stream, and with
+--simulate the live status of every item (RUNNING, then how it ended). With
+--push it also uploads the finished bundle to that URL, so no other
+transport is needed. Progress is best-effort: a report that cannot be
+delivered is dropped and the execution goes on; a failed --push is an error.
 """
 
 from __future__ import annotations
@@ -44,6 +53,9 @@ import os
 import random
 import subprocess
 import sys
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 
 MARKER_FILENAME = "runcomposer_run.json"
@@ -105,6 +117,91 @@ def simulate(item_ids: list[str], seed: str) -> list[dict]:
             verdict = {"name": item_id, "status": "PASS", "duration_ms": duration_ms}
         verdicts.append(verdict)
     return verdicts
+
+
+class Progress:
+    """Reports to a runcomposer API while the execution is under way: live
+    status per item (``POST …/live``) and log lines (``POST …/log``). With no
+    callback URL every call is a no-op."""
+
+    def __init__(self, callback: str | None, token: str | None, dispatch: str | None, shard: str | None):
+        base = (callback or "").rstrip("/")
+        for suffix in ("/results", "/live", "/log"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        self.base = base
+        self.token = token
+        self.dispatch = dispatch
+        self.shard = shard or "1"
+        self.failures = 0
+
+    def _post(self, path: str, body: dict) -> None:
+        if not self.base:
+            return
+        if self.dispatch:
+            body["dispatch"] = self.dispatch
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-Runcomposer-Token"] = self.token
+        request = urllib.request.Request(
+            self.base + path, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                response.read()
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            self.failures += 1
+            if self.failures == 1:  # say it once; progress never stops the execution
+                print(f"runcomposer-exec: progress could not be reported ({exc})", file=sys.stderr)
+
+    def live(self, item_id: str, status: str, duration_ms: int = 0, message: str = "") -> None:
+        self._post("/live", {"updates": [{"shard": self.shard, "item_id": item_id, "status": status,
+                                          "duration_ms": duration_ms, "message": message}]})
+
+    def log(self, message: str, level: str = "info") -> None:
+        self._post("/log", {"lines": [{"message": message, "level": level}]})
+
+    def push_bundle(self, out_dir: Path) -> int:
+        """Upload every file of the bundle directory as one multipart POST to
+        the results endpoint. Returns the HTTP status (0 when the server
+        could not be reached)."""
+        boundary = "runcomposer-" + uuid.uuid4().hex
+        parts: list[bytes] = []
+
+        def field(name: str, value: str) -> None:
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+            )
+
+        for file in sorted(path for path in out_dir.iterdir() if path.is_file()):
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="files"; '
+                f'filename="{file.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
+                + file.read_bytes() + b"\r\n"
+            )
+        if self.dispatch:
+            field("dispatch", self.dispatch)
+        field("shard", self.shard)
+        parts.append(f"--{boundary}--\r\n".encode())
+        headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+        if self.token:
+            headers["X-Runcomposer-Token"] = self.token
+        request = urllib.request.Request(
+            self.base + "/results", data=b"".join(parts), headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                print(f"runcomposer-exec: bundle pushed: {response.read().decode('utf-8', 'replace')}",
+                      file=sys.stderr)
+                return int(response.status)
+        except urllib.error.HTTPError as exc:
+            print(f"runcomposer-exec: the push was refused ({exc.code}): "
+                  f"{exc.read().decode('utf-8', 'replace')}", file=sys.stderr)
+            return int(exc.code)
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"runcomposer-exec: the push failed: {exc}", file=sys.stderr)
+            return 0
 
 
 PLACEHOLDERS = ("ids_file", "run_id", "out_dir")
@@ -170,8 +267,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ok-exit-codes", default="0", metavar="CODES",
                         help="exit codes of --command after which the bundle is complete and "
                         "the marker is written, e.g. '0', '0,1' or '0-249' (default: 0)")
+    parser.add_argument("--callback", default=None, metavar="URL",
+                        help="the run's results URL (…/api/v1/runs/<id>/results): report log "
+                        "lines — and with --simulate live status per item — while executing")
+    parser.add_argument("--token", default=None,
+                        help="the dispatch's ingest token for --callback/--push (default: the "
+                        "environment variable RUNCOMPOSER_INGEST_TOKEN)")
+    parser.add_argument("--push", action="store_true",
+                        help="upload the finished bundle to --callback (exit 4 if refused)")
     args = parser.parse_args(argv)
     ok_codes = parse_exit_codes(args.ok_exit_codes)
+    if args.push and not args.callback:
+        raise SystemExit("error: --push needs --callback (where to push)")
+    progress = Progress(
+        args.callback, args.token or os.environ.get("RUNCOMPOSER_INGEST_TOKEN"),
+        args.dispatch, args.shard,
+    )
 
     spec_path = Path(args.spec)
     spec, spec_sha256 = load_spec(spec_path)
@@ -184,8 +295,13 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     exit_code = 0
+    progress.log(f"runcomposer-exec: shard {progress.shard}: {len(item_ids)} item(s) to execute")
     if args.simulate:
         verdicts = simulate(item_ids, args.seed)
+        for verdict in verdicts:
+            progress.live(verdict["name"], "RUNNING")
+            progress.live(verdict["name"], verdict["status"], verdict["duration_ms"],
+                          verdict.get("message", ""))
         results = {"format": RESULTS_FORMAT, "run_id": run_id, "verdicts": verdicts}
         (out_dir / "results.json").write_text(
             json.dumps(results, indent=2) + "\n", encoding="utf-8"
@@ -197,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"runcomposer-exec: simulated {len(verdicts)} items ({summary})", file=sys.stderr)
     else:
         exit_code = run_command(args.command, item_ids, run_id, out_dir)
+        progress.log(f"runcomposer-exec: shard {progress.shard}: the command exited {exit_code}",
+                     "info" if exit_code in ok_codes else "error")
         if exit_code not in ok_codes:
             # No marker: the marker says "this bundle is complete", and a
             # failed execution cannot say that.
@@ -222,6 +340,10 @@ def main(argv: list[str] | None = None) -> int:
     pending.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
     os.replace(pending, out_dir / MARKER_FILENAME)
     print(f"runcomposer-exec: bundle ready at {out_dir} (marker: {MARKER_FILENAME})", file=sys.stderr)
+    if args.push:
+        status = progress.push_bundle(out_dir)
+        if not 200 <= status < 300:
+            return 4
     return 0
 
 

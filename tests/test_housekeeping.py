@@ -126,6 +126,7 @@ class TestRetention:
             "quarantine_removed": [],
             "inbox_processed_removed": 0,
             "artifact_dirs_removed": 0,
+            "expired_dispatches": [],
             "runs_removed": [],
         }
         assert not service.config.artifact_dir.exists()  # gc creates nothing
@@ -420,5 +421,6 @@ class TestGcCommand:
             "quarantine_removed": [],
             "inbox_processed_removed": 0,
             "artifact_dirs_removed": 0,
+            "expired_dispatches": [],
             "runs_removed": [],
         }

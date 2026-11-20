@@ -7,9 +7,13 @@ the vocabulary the core is allowed.
    anti-leak litmus test: a "generic" core that quietly authors deployment-
    or framework-specific behaviour is how such a tool becomes un-releasable.
 2. **A connector sees the SDK and nothing else.** Every reference plugin
-   imports from the ``runcomposer`` package only ``runcomposer.sdk`` — the
+   imports from the ``runcomposer`` package only ``runcomposer.sdk`` and its
+   toolkits (``runcomposer.sdk.robot``, ``runcomposer.sdk.jenkins``) — the
    same surface a connector outside this repository has. That the reference
    set can be written against it is the proof that the surface is sufficient.
+3. **The toolkits are connector code too.** They are built from
+   ``runcomposer.sdk`` alone: what they export could have been written
+   outside this repository.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ import runcomposer.core
 PACKAGE_DIR = Path(runcomposer.__file__).parent
 CORE_DIR = Path(runcomposer.core.__file__).parent
 PLUGINS_DIR = PACKAGE_DIR / "plugins"
+SDK_DIR = PACKAGE_DIR / "sdk"
 DEMO_DIR = PACKAGE_DIR / "demo"
 
 # Vocabulary that must never appear in core code (case-insensitive): the
@@ -91,7 +96,9 @@ def outside_the_sdk(imports: list[tuple[str, int]], allowed_prefixes: tuple[str,
     for name, line in imports:
         if name != "runcomposer" and not name.startswith("runcomposer."):
             continue
-        if name == "runcomposer.sdk" or name.startswith(allowed_prefixes):
+        if name == "runcomposer.sdk" or name.startswith("runcomposer.sdk."):
+            continue  # the SDK and its toolkits
+        if name.startswith(allowed_prefixes):
             continue
         offending.append(f"line {line}: {name}")
     return offending
@@ -168,26 +175,23 @@ def test_there_are_plugins_to_check():
     names = {path.name for path in plugin_files()}
     assert {
         "sqlite_store.py", "manifest_source.py", "robot_source.py",
-        "demo_runner.py", "robot_pool.py", "robot_listener.py", "jenkins.py",
+        "demo_runner.py", "robot_pool.py", "jenkins.py",
         "command_runner.py", "observers.py", "verdicts_parser.py", "junit_parser.py",
         "robot_output_parser.py",
     } <= names
 
 
-#: The one sibling import among the reference plugins, and why it is one:
-#: the live-status listener is the worker-side half of ``robot-pool``. Robot
-#: Framework loads a listener by import path inside the worker process, so it
-#: is a module of its own — but it is that connector's code, not another
-#: plugin's. Every other plugin module imports nothing of runcomposer but the
-#: SDK (the demo corpus source lives in ``manifest_source`` for that reason).
-SIBLING_IMPORTS = {"robot_pool.py": {"runcomposer.plugins.robot_listener"}}
+#: Sibling imports among the reference plugins that are allowed: none. What
+#: two plugins share — and what the worker-side half of a runner needs —
+#: lives in the SDK's toolkits, where a connector can use it too.
+SIBLING_IMPORTS: dict[str, set[str]] = {}
 
 
 def test_plugins_import_only_the_sdk_from_runcomposer():
     """Everything of runcomposer a plugin uses comes through
-    ``runcomposer.sdk`` — including imports made inside a function, which is
-    where a worker process would hide one — and plugins do not import each
-    other, except for the one justified case above."""
+    ``runcomposer.sdk`` or one of its toolkits — including imports made
+    inside a function, which is where a worker process would hide one — and
+    plugins do not import each other."""
     offending = {}
     for path in plugin_files():
         imports = [
@@ -225,6 +229,7 @@ def test_the_import_scanner_sees_function_level_and_relative_imports():
     hidden in a function and resolves relative ones."""
     source = (
         "from runcomposer.sdk import Verdict\n"
+        "from runcomposer.sdk.robot import supervise\n"
         "from . import manifest_source\n"
         "from .robot_listener import LiveStatusListener\n"
         "from .. import sdk\n"
@@ -237,6 +242,7 @@ def test_the_import_scanner_sees_function_level_and_relative_imports():
     found = imports_of(source, ["runcomposer", "plugins"])
     assert [name for name, _line in found] == [
         "runcomposer.sdk",
+        "runcomposer.sdk.robot",
         "runcomposer.plugins",
         "runcomposer.plugins.robot_listener",
         "runcomposer",
@@ -246,10 +252,10 @@ def test_the_import_scanner_sees_function_level_and_relative_imports():
         "runcomposer.core",
     ]
     assert outside_the_sdk(found, ("runcomposer.plugins",)) == [
-        "line 4: runcomposer",
-        "line 6: runcomposer.core.model",
-        "line 7: runcomposer.app.service",
-        "line 9: runcomposer.core",
+        "line 5: runcomposer",
+        "line 7: runcomposer.core.model",
+        "line 8: runcomposer.app.service",
+        "line 10: runcomposer.core",
     ]
 
 
@@ -265,7 +271,7 @@ def test_the_sdk_is_built_from_the_core_at_import_time():
     """At module level ``runcomposer.sdk`` pulls in the core only; the
     embedding names are resolved on first use (tests/test_sdk.py shows the
     behaviour — this pins the structure)."""
-    tree = ast.parse((PACKAGE_DIR / "sdk.py").read_text(encoding="utf-8"))
+    tree = ast.parse((SDK_DIR / "__init__.py").read_text(encoding="utf-8"))
     checked = 0
     for node in tree.body:  # module-level statements only
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("runcomposer"):
@@ -274,3 +280,56 @@ def test_the_sdk_is_built_from_the_core_at_import_time():
                 f"sdk.py:{node.lineno} imports {node.module!r} at module level"
             )
     assert checked > 10
+
+
+# -- rule 3: the toolkits are built from the SDK alone --------------------------------
+
+
+def toolkit_files() -> list[Path]:
+    return sorted(path for path in SDK_DIR.glob("*.py") if path.name != "__init__.py")
+
+
+def test_the_sdk_has_exactly_its_two_toolkits():
+    assert [path.name for path in toolkit_files()] == ["jenkins.py", "robot.py"]
+
+
+def test_the_toolkits_import_only_the_sdk_from_runcomposer():
+    """A toolkit is what a reference runner is made of, offered to every
+    connector — so it is held to the connector's rule: of runcomposer it
+    imports ``runcomposer.sdk`` and nothing below or beside it."""
+    for path in toolkit_files():
+        names = {name for name, _line in imported_modules(path) if name.startswith("runcomposer")}
+        assert names <= {"runcomposer.sdk"}, f"sdk/{path.name} imports {sorted(names)}"
+        text = path.read_text(encoding="utf-8")
+        for layer in ("runcomposer.core", "runcomposer.app", "runcomposer.http", "runcomposer.plugins"):
+            assert layer not in text, f"sdk/{path.name} names {layer!r}"
+
+
+def test_the_robot_toolkit_imports_robot_framework_only_inside_functions():
+    """Module level stays free of the framework: importing the toolkit — and
+    the runner built on it — works where Robot Framework is not installed."""
+    tree = ast.parse((SDK_DIR / "robot.py").read_text(encoding="utf-8"))
+    at_module_level = [
+        node for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and any(
+            name == "robot" or name.startswith("robot.")
+            for name in (
+                [alias.name for alias in node.names] if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+        )
+    ]
+    assert at_module_level == []
+
+
+def test_the_reference_runners_are_built_on_the_toolkits():
+    """The proof that a toolkit suffices: the runner it came out of uses it
+    and carries none of the machinery itself."""
+    pool = {name for name, _line in imported_modules(PLUGINS_DIR / "robot_pool.py")}
+    jenkins = {name for name, _line in imported_modules(PLUGINS_DIR / "jenkins.py")}
+    assert "runcomposer.sdk.robot" in pool and "runcomposer.sdk.jenkins" in jenkins
+    # No process handling and no Robot import of its own in the pool runner …
+    assert not {"multiprocessing", "robot", "robot.api"} & pool
+    # … and no HTTP of its own in the Jenkins runner.
+    assert not {"urllib.request", "http.cookiejar", "ssl", "base64"} & jenkins

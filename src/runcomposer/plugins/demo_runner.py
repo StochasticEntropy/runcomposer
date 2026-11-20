@@ -20,7 +20,16 @@ import hashlib
 import random
 import time
 
-from runcomposer.sdk import DispatchContext, Health, Parameter, RunnerBase, RunnerInfo, Verdict
+from runcomposer.sdk import (
+    DispatchContext,
+    Health,
+    Parameter,
+    PlanContext,
+    PlanPreview,
+    RunnerBase,
+    RunnerInfo,
+    Verdict,
+)
 
 __all__ = ["DemoRunner"]
 
@@ -38,7 +47,7 @@ class DemoRunner(RunnerBase):
             id="demo",
             title="Demo (simulated)",
             description="Simulates an execution: no test is run, verdicts are derived from a seed.",
-            capabilities=("simulated", "live_status", "cancel"),
+            capabilities=("simulated", "live_status", "cancel", "plan"),
             parameters=(
                 Parameter(
                     "seed",
@@ -54,15 +63,31 @@ class DemoRunner(RunnerBase):
     def health(self) -> Health:
         return Health(status="ok", detail="simulated — always available")
 
-    def dispatch(self, ctx: DispatchContext) -> None:
-        seed = str(ctx.options.get("seed") or self.seed)
-        ctx.declare(
-            {"1": list(ctx.item_ids)},
-            plan=f"demo runner: simulating {len(ctx.item_ids)} item(s) with seed {seed!r}",
+    def _seed(self, ctx: PlanContext) -> str:
+        return str(ctx.parameters.get("seed") or self.seed)
+
+    def _plan_text(self, ctx: PlanContext) -> str:
+        return (
+            f"demo runner: simulating {len(ctx.item_ids)} item(s) with seed {self._seed(ctx)!r}"
         )
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        seed = self._seed(ctx)
+        verdicts = [fake_verdict(item_id, seed) for item_id in ctx.item_ids]
+        return PlanPreview(
+            text=self._plan_text(ctx),
+            shards={"1": list(ctx.item_ids)},
+            estimates_ms={"1": float(sum(v.duration_ms for v in verdicts))},
+            notes=("simulated: no test would be executed",),
+        )
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        seed = self._seed(ctx)
+        ctx.declare({"1": list(ctx.item_ids)}, plan=self._plan_text(ctx))
         verdicts = []
         for item_id in ctx.item_ids:
             if self.delay_s:
+                ctx.live("1", item_id, "RUNNING")
                 deadline = time.monotonic() + self.delay_s
                 while time.monotonic() < deadline:
                     ctx.raise_if_cancelled()

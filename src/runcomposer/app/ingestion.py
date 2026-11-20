@@ -28,17 +28,19 @@ from runcomposer.core import events as kinds
 from runcomposer.core.errors import (
     AuthRequired,
     ConfigError,
+    Conflict,
     Forbidden,
     IngestError,
+    InvalidRequest,
     ParseError,
     PluginError,
     UnknownRun,
 )
-from runcomposer.core.handoff import correlate
+from runcomposer.core.handoff import check_reportable, correlate
 from runcomposer.core.hashing import bundle_hash, sha256_hex, verdicts_hash
 from runcomposer.core.lifecycle import ACTIVE_STATES
 from runcomposer.core.marker import read_marker
-from runcomposer.core.model import DispatchRecord, RunRecord, Verdict
+from runcomposer.core.model import LIVE_STATUSES, DispatchRecord, LiveStatus, RunRecord, Verdict
 from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
@@ -249,6 +251,9 @@ class Ingestion:
                 f"dispatch {dispatch.dispatch_id} was cancelled — results for it are not taken in",
                 reason="dispatch-cancelled",
             )
+        # Whoever brings them: only what an executor can report is a result
+        # (a live `RUNNING`, a derived `MISSING` never get in here).
+        verdicts = check_reportable(verdicts)
         notes = warnings if warnings is not None else []
         if shard not in dispatch.shards:
             notes.append(
@@ -401,6 +406,17 @@ class Ingestion:
         warnings: list[str] = []
         verdicts, parse_warnings = self.parse(bundle, format_id)
         warnings.extend(parse_warnings)
+        planned = set(self._service.ledger.planned_ids(run_id))
+        if not any(verdict.item_id in planned for verdict in verdicts):
+            # Binding this bundle would record nothing of the run and still
+            # close it. An attach that cannot contribute a single planned
+            # result changes nothing: it is refused, the entry stays.
+            raise IngestError(
+                f"none of the {len(verdicts)} result(s) in this delivery is for an item run "
+                f"{run_id} planned — attaching it would record nothing of that run and close "
+                "it as INCOMPLETE. It was not attached; the run is unchanged",
+                reason="nothing-planned",
+            )
         dispatch = run.latest_dispatch
         if dispatch is None:
             dispatch = self._service.ledger.open(
@@ -490,6 +506,74 @@ class Ingestion:
             completion=after.completion,
             warnings=warnings,
         )
+
+    # -- progress pushed from outside (§5) ---------------------------------------------------
+
+    def progress_dispatch(self, run_id: str, dispatch_id: str | None) -> DispatchRecord:
+        """The dispatch a progress push is for: the one named (or the one its
+        token is bound to), else the run's dispatch in flight."""
+        run: RunRecord | None = self._service.store.get_run(run_id)
+        if run is None:
+            raise UnknownRun(run_id)
+        dispatch = self._resolve_dispatch(run, dispatch_id)
+        if dispatch is None:
+            raise Conflict(f"run {run_id} has no dispatch to report progress for")
+        return dispatch
+
+    def push_live(
+        self, dispatch: DispatchRecord, updates: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Record live status an external executor pushed. The same rules as
+        a runner's ``ctx.live``, stated in the answer instead of silently: a
+        status outside ``LIVE_STATUSES`` refuses the request; an item the run
+        did not plan, a shard that has delivered and a dispatch that is over
+        are ignored and counted."""
+        for update in updates:
+            if update["status"] not in LIVE_STATUSES:
+                raise InvalidRequest(
+                    f"live status must be one of {list(LIVE_STATUSES)}, got {update['status']!r} "
+                    f"(item {update['item_id']!r})"
+                )
+        store = self._service.store
+        if dispatch.state not in ACTIVE_STATES:
+            return {"accepted": 0, "ignored": len(updates),
+                    "reason": f"dispatch {dispatch.dispatch_id} is {dispatch.state}"}
+        planned = set(self._service.ledger.planned_ids(dispatch.run_id))
+        delivered = store.delivered_shards(dispatch.run_id, dispatch.dispatch_id)
+        accepted = 0
+        for update in updates:
+            if update["item_id"] not in planned or update["shard"] in delivered:
+                continue
+            store.record_live_verdict(
+                dispatch.run_id,
+                dispatch.dispatch_id,
+                str(update["shard"]),
+                LiveStatus(
+                    str(update["item_id"]),
+                    str(update["status"]),
+                    int(update.get("duration_ms") or 0),
+                    str(update.get("message") or ""),
+                    shard=str(update["shard"]),
+                ),
+            )
+            accepted += 1
+        return {"accepted": accepted, "ignored": len(updates) - accepted, "reason": None}
+
+    def push_log(
+        self, dispatch: DispatchRecord, lines: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        """Append log lines an external executor pushed to the run's event
+        stream — as ``log`` events (``warning`` for the levels warning and
+        error), marked ``source: push``."""
+        for line in lines:
+            level = str(line.get("level") or "info")
+            self._service.bus.emit(
+                dispatch.run_id,
+                kinds.WARNING if level in ("warning", "error") else kinds.LOG,
+                dispatch_id=dispatch.dispatch_id,
+                data={"message": str(line["message"])[:8000], "level": level, "source": "push"},
+            )
+        return {"accepted": len(lines)}
 
     # -- the ingest token (§5 security floor) -------------------------------------------
 

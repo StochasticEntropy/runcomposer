@@ -310,7 +310,8 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
     composes a new run from what did not pass and dispatches that. ``run`` in
     the answer is the run that was dispatched."""
     target, outcome = service.rerun(
-        run_id, scope=body.scope, runner_id=body.runner, parameters=body.parameters
+        run_id, scope=body.scope, runner_id=body.runner, parameters=body.parameters,
+        title=body.title,
     )
     handed_off = service.dispatcher.wait_handoff(
         outcome, float(service.config.dispatch["handoff_wait_s"])
@@ -325,6 +326,7 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
     return {
         "handoff": _handoff(handed_off),
         "source_run_id": run_id,
+        "rerun_of": {"run_id": run_id, "scope": body.scope},
         "dispatch": dispatch_json(dispatch) if dispatch else None,
         "run": run_row(service.require_run(target)),
     }

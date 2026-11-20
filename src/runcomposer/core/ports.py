@@ -20,6 +20,7 @@ from .model import (
     ArtifactRef,
     DispatchRecord,
     Item,
+    LiveStatus,
     RunEvent,
     RunPage,
     RunRecord,
@@ -36,6 +37,8 @@ __all__ = [
     "ObserverBase",
     "ParsedVerdict",
     "ParserBase",
+    "PlanContext",
+    "PlanPreview",
     "PluginBase",
     "ResultParser",
     "RunObserver",
@@ -61,9 +64,10 @@ class RunnerInfo:
     ``id`` names the plugin; the id a deployment dispatches to is the key the
     runner is configured under (one plugin may be configured several times).
     ``capabilities`` are flags a client may branch on — the ones with meaning
-    to runcomposer are ``live_status``, ``partitions``, ``cancel``,
-    ``external_delivery`` (results arrive by ingestion after ``dispatch``
-    returns) and ``simulated`` (no test is really executed). ``parameters``
+    to runcomposer are ``live_status``, ``partitions``, ``cancel``, ``plan``
+    (``Runner.plan`` answers with a real preview), ``external_delivery``
+    (results arrive by ingestion after ``dispatch`` returns) and ``simulated``
+    (no test is really executed). ``parameters``
     are the per-run options the runner accepts from whoever starts a run.
     ``result_format`` is the ResultParser format id of what it produces, when
     that is fixed.
@@ -101,6 +105,28 @@ class ParsedVerdict:
     attempt: int = 1
 
 
+@dataclass(frozen=True)
+class PlanPreview:
+    """A runner's answer to "what would this dispatch do?" (``Runner.plan``).
+
+    ``text`` is the plan as people read it — the same text a dispatch records.
+    ``shards`` maps every shard the dispatch would declare to the item ids it
+    would report (an empty list when the runner does not decide that itself:
+    a remote job that distributes on its own). ``groups`` labels shards that
+    belong together, as ``declare(groups=…)`` does; ``estimates_ms`` gives a
+    duration estimate per shard where history allows one; ``notes`` are
+    things worth knowing before starting (what a preview cannot check, a
+    cold start); ``data`` is runner-defined and shown verbatim.
+    """
+
+    text: str = ""
+    shards: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    groups: Mapping[str, str] = field(default_factory=dict)
+    estimates_ms: Mapping[str, float] = field(default_factory=dict)
+    notes: tuple[str, ...] = ()
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+
 # -- what runcomposer gives a runner ---------------------------------------------
 
 
@@ -108,22 +134,65 @@ class History(Protocol):
     """Read access to what earlier runs established."""
 
     def durations(
-        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        last_n: int = 5,
+        statuses: Sequence[str] | None = None,
     ) -> dict[str, float]:
         """Mean duration in milliseconds per item id, over the last ``last_n``
-        dispatches that delivered, of runs carrying all of ``labels``. Empty
-        on a fresh store."""
+        dispatches that delivered, of runs carrying all of ``labels``.
+        ``statuses`` restricts the mean to executions that ended with one of
+        them (``("PASS",)``: a failing test often ends early and would distort
+        the balance). Executions that reported 0 ms are not counted — 0 means
+        "no duration known". An item without any measured duration falls back
+        to an imported one (``runcomposer history import``) when there is one.
+        Empty on a fresh store."""
         ...
 
 
 class LiveChannel(Protocol):
-    """A picklable handle for streaming live status out of a worker process.
-    Works with any RunStore: it carries no store, only a place to write that
-    the dispatching process reads."""
+    """A picklable handle for streaming out of a worker process: live status
+    per item, and log lines for the run's event stream. Works with any
+    RunStore: it carries no store, only a place to write that the dispatching
+    process reads."""
 
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
     ) -> None: ...
+
+    def log(self, message: str, level: str = "info") -> None:
+        """The worker-side counterpart of ``DispatchContext.log``."""
+        ...
+
+
+class PlanContext(Protocol):
+    """What a runner gets to *preview* a dispatch (``Runner.plan``): the
+    input of a dispatch and nothing to act with. There is no ``declare``, no
+    ``deliver``, no artifact, no token and no work directory here — a preview
+    records nothing and executes nothing.
+
+    Every member is also a member of :class:`DispatchContext`, with the same
+    meaning, so one planning function serves ``plan`` and ``dispatch``.
+    """
+
+    run_id: str
+    runner_id: str
+    spec: Mapping[str, Any]
+    item_ids: tuple[str, ...]
+    options: Mapping[str, Any]
+    parameters: Mapping[str, Any]
+    source: TestSource
+    history: History
+
+    def refuse(self, reason: str) -> NoReturn:
+        """Say that this dispatch would be refused, and why."""
+        ...
+
+    def export_spec(self) -> bytes:
+        """The document as the bytes a dispatch would hand out. In a preview
+        nothing is recorded for them."""
+        ...
 
 
 class DispatchContext(Protocol):
@@ -146,18 +215,25 @@ class DispatchContext(Protocol):
     spec: Mapping[str, Any]
     #: ``selection.materialized.item_ids`` — the authoritative executed set.
     item_ids: tuple[str, ...]
-    #: Configured options overlaid by the validated per-run parameters. A
-    #: document cannot override anything the runner did not declare as a
-    #: parameter.
+    #: The options of the runner's config entry, as its constructor received
+    #: them — and nothing else. A per-run value never appears here, so a
+    #: parameter cannot shadow an option of the same name.
     options: Mapping[str, Any]
-    #: The validated per-run parameters on their own.
+    #: The validated per-run parameters (defaults applied): what whoever
+    #: started the run chose. A document cannot set anything the runner did
+    #: not declare as a parameter.
     parameters: Mapping[str, Any]
-    #: The links given to ``declare`` (empty before it) — what ``cancel``
-    #: finds its executor by.
+    #: The links given to ``declare`` and set with ``set_link`` — what
+    #: ``cancel`` finds its executor by.
     links: Mapping[str, str]
     #: A directory for this dispatch under the artifact root, already created.
-    #: Files written here are servable as artifacts.
+    #: A file written here is served only once it was recorded with
+    #: ``add_artifact``.
     workdir: Path
+    #: A directory for this dispatch that is never served, whatever is
+    #: recorded: for files that must not be downloadable. Created on first
+    #: use, removed with the run.
+    private_dir: Path
     #: The catalog as it is *now* — for the drift check and name resolution.
     source: TestSource
     history: History
@@ -174,22 +250,48 @@ class DispatchContext(Protocol):
         plan: str = "",
         links: Mapping[str, str] | None = None,
         spec_sha256: str | None = None,
+        groups: Mapping[str, str] | None = None,
     ) -> None:
         """THE hand-off. Records the shard set — names, or names mapped to
         the item ids each shard will report — moves the run to RUNNING and
         stores the plan text and links. Exactly once per dispatch.
-        ``spec_sha256`` records the hash of document bytes the runner
-        serialized and handed out itself (``export_spec`` does it for you)."""
+        ``groups`` labels shards that belong together (``{shard: label}`` —
+        the partition each chunk runs on): results are rolled up per group as
+        well as per shard. ``spec_sha256`` records the hash of document bytes
+        the runner serialized and handed out itself (``export_spec`` does it
+        for you)."""
+        ...
+
+    def set_link(self, name: str, url: str) -> None:
+        """Record (or replace) one named link of the dispatch — for what is
+        only known after the hand-off, such as the URL of the build a queued
+        job became. Stored like the links given to ``declare``: a context
+        rebuilt for ``cancel`` carries it."""
         ...
 
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
     ) -> None:
-        """Stream one item's status while the shard is still executing."""
+        """Stream one item's status while the shard is still executing:
+        ``RUNNING`` when it starts, then how it ended. Best-effort — an item
+        that was not planned or a status outside ``LIVE_STATUSES`` is
+        ignored."""
         ...
 
     def live_channel(self) -> LiveChannel:
-        """The same call as a picklable object for worker processes."""
+        """``live`` and ``log`` as a picklable object for worker processes."""
+        ...
+
+    def delivered_shards(self) -> set[str]:
+        """The shards of this dispatch that have delivered — by this runner
+        or by a push from outside."""
+        ...
+
+    def outstanding_shards(self) -> list[str]:
+        """Declared shards nothing was delivered for yet, in declaration
+        order. Empty once the dispatch is complete — which, when an executor
+        pushes results itself, may be the case while ``dispatch`` is still
+        running."""
         ...
 
     def parse(self, bundle: str | Path, *, format: str | None = None) -> list[Verdict]:
@@ -221,7 +323,14 @@ class DispatchContext(Protocol):
         *,
         media_type: str | None = None,
         shard: str | None = None,
-    ) -> None: ...
+        group: str | None = None,
+    ) -> None:
+        """Record a file, a directory or an ``http(s)`` link as an artifact
+        of the dispatch — optionally of one ``shard``, or of a ``group`` of
+        shards. Recording is what makes a local file downloadable: only
+        recorded files (and files under a recorded directory) inside the
+        artifact root are served."""
+        ...
 
     def log(self, message: str, level: str = "info") -> None:
         """Append a line to the run's event stream."""
@@ -359,11 +468,18 @@ class Runner(Protocol):
 
     One instance is built per configured runner id and may be asked to
     dispatch several runs at once: everything that belongs to one dispatch
-    lives on its context, never on the runner. ``cancel`` and ``health``
-    have defaults in :class:`RunnerBase`.
+    lives on its context, never on the runner. ``plan``, ``cancel`` and
+    ``health`` have defaults in :class:`RunnerBase`.
     """
 
     def describe(self) -> RunnerInfo: ...
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        """What a dispatch of ``ctx`` would do — which item goes to which
+        shard — without executing, recording or triggering anything. May
+        ``ctx.refuse`` for the reasons ``dispatch`` would. Declared by the
+        ``plan`` capability."""
+        ...
 
     def dispatch(self, ctx: DispatchContext) -> None:
         """Prepare, ``ctx.declare``, execute or hand off, ``ctx.deliver``.
@@ -387,6 +503,14 @@ class RunnerBase(PluginBase):
 
     def describe(self) -> RunnerInfo:
         raise NotImplementedError
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        """No preview of its own: says so. A runner that can tell overrides
+        this and declares the ``plan`` capability."""
+        return PlanPreview(
+            text=f"runner {ctx.runner_id!r} offers no plan preview — "
+            f"{len(ctx.item_ids)} item(s) would be handed to it"
+        )
 
     def dispatch(self, ctx: DispatchContext) -> None:
         raise NotImplementedError
@@ -515,9 +639,9 @@ class RunStore(Protocol):
         ...
 
     def update_dispatch(self, dispatch_id: str, **changes: Any) -> DispatchRecord:
-        """Set any of: ``state``, ``shards``, ``shard_items``, ``spec_sha256``,
-        ``error``, ``plan``, ``links``, ``completion``, ``completed_at``,
-        ``summary``, ``owner``, ``cancel_requested``."""
+        """Set any of: ``state``, ``shards``, ``shard_items``, ``shard_groups``,
+        ``spec_sha256``, ``error``, ``plan``, ``links``, ``completion``,
+        ``completed_at``, ``summary``, ``owner``, ``cancel_requested``."""
         ...
 
     def get_dispatch(self, dispatch_id: str) -> DispatchRecord | None: ...
@@ -576,18 +700,38 @@ class RunStore(Protocol):
         ...
 
     def record_live_verdict(
-        self, run_id: str, dispatch_id: str, shard: str, verdict: Verdict
+        self, run_id: str, dispatch_id: str, shard: str, verdict: LiveStatus
     ) -> None:
-        """Status streamed while a shard executes — kept apart from delivered
-        verdicts, replaced per (shard, item), cleared by the shard's
-        delivery."""
+        """Status streamed while a shard executes (``RUNNING`` included) —
+        kept apart from delivered verdicts, replaced per (shard, item),
+        cleared by the shard's delivery."""
         ...
 
-    def live_verdicts(self, run_id: str, dispatch_id: str) -> list[Verdict]: ...
+    def live_verdicts(self, run_id: str, dispatch_id: str) -> list[LiveStatus]: ...
 
     def duration_aggregates(
-        self, *, labels: Mapping[str, str] | None = None, last_n: int = 5
-    ) -> dict[str, float]: ...
+        self,
+        *,
+        labels: Mapping[str, str] | None = None,
+        last_n: int = 5,
+        statuses: Sequence[str] | None = None,
+    ) -> dict[str, float]:
+        """Mean duration per item id over the last ``last_n`` dispatches that
+        delivered, of runs carrying all of ``labels`` — over verdicts with a
+        duration above 0 and, with ``statuses``, one of those statuses. An
+        item nothing was measured for falls back to its seeded duration."""
+        ...
+
+    def seed_durations(
+        self, durations: Mapping[str, float], *, labels: Mapping[str, str] | None = None
+    ) -> int:
+        """Keep imported durations (milliseconds per item id) as the
+        fallback ``duration_aggregates`` answers with for items it has no
+        measurement for. ``labels`` scope a seed like a run's labels scope
+        its history: it answers queries selecting a subset of them. Importing
+        an item again under the same labels replaces its seed. Returns how
+        many were stored."""
+        ...
 
     # -- artifacts ----------------------------------------------------------------
 
@@ -600,6 +744,7 @@ class RunStore(Protocol):
         media_type: str,
         url_or_path: str,
         shard: str | None = None,
+        group: str | None = None,
     ) -> None: ...
 
     def artifact_refs(self, run_id: str, dispatch_id: str | None = None) -> list[ArtifactRef]: ...
