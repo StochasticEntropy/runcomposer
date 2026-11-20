@@ -176,7 +176,13 @@ export function RunView({ route }: { route: Route }) {
   }
 
   const latest = run.dispatches[run.dispatches.length - 1] ?? null;
-  const source = run.selection.derived_from[0];
+  // What this run is a re-run of: the relation the server records (`rerun_of`),
+  // named by the title the selection's provenance carries for that run.
+  const provenance = run.selection.derived_from.find((entry) => entry.resolved_run_id);
+  const rerunId = run.rerun_of?.run_id ?? (run.origin === "rerun" ? provenance?.resolved_run_id : undefined);
+  const rerunSource = rerunId
+    ? { id: rerunId, title: (provenance?.resolved_run_id === rerunId && provenance.resolved_run_title) || rerunId }
+    : null;
   const handedOut = latest !== null && latest.spec_sha256 !== null && isActive(latest.state) ? latest : null;
   const shown = run.dispatches.find((entry) => entry.dispatch_id === run.dispatch_id) ?? null;
   const active = isActive(run.state);
@@ -231,14 +237,16 @@ export function RunView({ route }: { route: Route }) {
             <dt>{t("run.origin")}</dt>
             <dd>
               {tOr(`origin.${run.origin}`, run.origin)}
-              {source?.resolved_run_id && (
-                <>
-                  {" "}
-                  {t("run.originOf")} <a href={runHref(source.resolved_run_id)}>{source.resolved_run_title || source.resolved_run_id}</a>
-                </>
-              )}
             </dd>
           </div>
+          {rerunSource && (
+            <div data-testid="rerun-of">
+              <dt>{t("run.rerunOf")}</dt>
+              <dd>
+                <a href={runHref(rerunSource.id)}>{rerunSource.title}</a>
+              </dd>
+            </div>
+          )}
           {Object.keys(run.labels).length > 0 && (
             <div>
               <dt>{t("labels.label")}</dt>
@@ -332,6 +340,11 @@ export function RunView({ route }: { route: Route }) {
               {t("progress.label", { done: progress.done, total: progress.planned })}
             </strong>
             <VerdictCounts counts={progress.counts} />
+            {progress.running > 0 && (
+              <span className="count-running" data-testid="run-running">
+                {t("run.nowRunning", { count: progress.running })}
+              </span>
+            )}
           </div>
           <VerdictBar counts={progress.counts} planned={progress.planned} active={shown ? isActive(shown.state) : false} />
         </section>
@@ -370,7 +383,7 @@ export function RunView({ route }: { route: Route }) {
       {tab === "results" && (
         <RunResults
           run={run}
-          query={{ status: route.query.status, shard: route.query.shard, q: route.query.q }}
+          query={{ status: route.query.status, group: route.query.group, shard: route.query.shard, q: route.query.q }}
           onQuery={(changes) => navigate(runHref(run.id, { d: dispatchParam, ...route.query, tab: null, ...changes }), { replace: true })}
         />
       )}

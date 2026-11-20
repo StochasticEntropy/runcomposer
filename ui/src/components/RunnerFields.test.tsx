@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { initialValues } from "../lib/params.ts";
 import type { ParameterSpec, RunnerInfo } from "../lib/types.ts";
-import { renderWithI18n } from "../test/render.tsx";
-import { LabelsInput, ParameterForm, RunnerSelect } from "./RunnerFields.tsx";
+import { renderWithI18n, translator } from "../test/render.tsx";
+import { LabelsInput, ParameterForm, RunnerSelect, healthChecks, problemTexts } from "./RunnerFields.tsx";
 
 afterEach(cleanup);
 
@@ -80,6 +80,36 @@ describe("the parameter form", () => {
   });
 });
 
+describe("text and mapping parameters", () => {
+  const specs = [
+    spec("notes", "text", { label: "Release notes" }),
+    spec("variables", "mapping", { label: "Extra variables", default: { locale: "de" } }),
+  ];
+
+  it("a text is a multi-line field; a mapping is rows of name and value that can be added and removed", () => {
+    const onChange = vi.fn();
+    const values = initialValues(specs);
+    renderWithI18n(<ParameterForm specs={specs} values={values} onChange={onChange} problems={{}} />);
+    expect(screen.getByRole("textbox", { name: "Release notes" })).toBeInstanceOf(HTMLTextAreaElement);
+    const group = screen.getByRole("group", { name: "Extra variables" });
+    expect((screen.getByRole("textbox", { name: "Extra variables, name 1" }) as HTMLInputElement).value).toBe("locale");
+    fireEvent.change(screen.getByRole("textbox", { name: "Extra variables, value 1" }), { target: { value: "en" } });
+    expect(onChange).toHaveBeenLastCalledWith({ ...values, variables: [{ key: "locale", value: "en" }] });
+    fireEvent.click(screen.getByRole("button", { name: "Add a row" }));
+    expect(onChange).toHaveBeenLastCalledWith({ ...values, variables: [{ key: "locale", value: "de" }, { key: "", value: "" }] });
+    fireEvent.click(screen.getByRole("button", { name: "Remove row 1 of Extra variables" }));
+    expect(onChange).toHaveBeenLastCalledWith({ ...values, variables: [] });
+    expect(group.querySelectorAll(".mapping-row")).toHaveLength(1);
+  });
+
+  it("says which form a value must have", () => {
+    const patterned = [spec("build", "string", { label: "Build number", pattern: "\\d{4}\\.\\d{1,2}" })];
+    expect(problemTexts(translator.t, patterned, { build: "pattern" })).toEqual({
+      build: "This does not match the required form: \\d{4}\\.\\d{1,2}",
+    });
+  });
+});
+
 describe("the runner select", () => {
   const runners: RunnerInfo[] = [
     { id: "demo", title: "Demo (simulated)", description: "Simulates.", parameters: [], health: { status: "ok", detail: "always available", data: {} } },
@@ -107,6 +137,34 @@ describe("the runner select", () => {
     expect(screen.getByText(/reports a problem/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     expect(app.refreshRunners).toHaveBeenCalledWith(true);
+  });
+
+  it("shows what a runner checked about itself, check by check", () => {
+    const checked: RunnerInfo[] = [
+      {
+        id: "nightly-ci",
+        title: "Nightly job",
+        parameters: [],
+        health: {
+          status: "degraded",
+          detail: "job not readable",
+          data: {
+            checks: [
+              { check: "server reachable", ok: true, detail: "version 2" },
+              { check: "job readable", ok: false, detail: "404 Not Found" },
+            ],
+          },
+        },
+      },
+    ];
+    renderWithI18n(<RunnerSelect value="nightly-ci" onChange={() => undefined} />, { ...app, runners: checked });
+    const items = screen.getByRole("list", { name: "What this runner checked" }).querySelectorAll("li");
+    expect([...items].map((item) => [item.getAttribute("data-ok"), item.textContent])).toEqual([
+      ["true", "ok server reachable — version 2"],
+      ["false", "failed job readable — 404 Not Found"],
+    ]);
+    expect(healthChecks(checked[0])).toHaveLength(2);
+    expect(healthChecks({ id: "demo", health: { status: "ok", detail: "", data: {} } })).toEqual([]);
   });
 
   it("says so when no runner is configured", () => {

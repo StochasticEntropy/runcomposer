@@ -32,7 +32,8 @@
     "done": "Done",
     "refresh": "Refresh",
     "reload": "Reload the page",
-    "retry": "Try again"
+    "retry": "Try again",
+    "remove": "Remove"
   },
   "state": {
     "loading": "Loading…"
@@ -79,7 +80,8 @@
       "config-error": "The server's configuration is not valid.",
       "plugin-error": "A plugin could not be loaded.",
       "store-error": "The run store reported an error.",
-      "internal-error": "The server ran into an internal error."
+      "internal-error": "The server ran into an internal error.",
+      "nothing-planned": "Nothing in the delivery is for an item of this run."
     }
   },
   "runState": {
@@ -103,7 +105,8 @@
     "FAIL": "failed",
     "ERROR": "error",
     "SKIP": "skipped",
-    "MISSING": "missing"
+    "MISSING": "missing",
+    "RUNNING": "running"
   },
   "health": {
     "ok": "available",
@@ -167,11 +170,11 @@
       "OR": "any of these (OR)"
     },
     "combine": "How the rules of this group combine",
-    "negateGroup": "Negate this group",
-    "negateRule": "Negate {pattern}",
+    "negateGroup": "NOT: negate this group",
+    "negateRule": "NOT: negate {pattern}",
     "removeRule": "Remove {pattern}",
     "editPattern": "Edit {pattern}",
-    "removeGroup": "Remove this group",
+    "removeGroup": "Remove group",
     "ungroup": "Ungroup",
     "add": "Add",
     "addTag": "Add a tag or pattern",
@@ -200,7 +203,7 @@
       "unterminated-quote": "Position {position}: this quote is never closed.",
       "needs-quotes": "Position {position}: put a pattern that contains parentheses or quotes in quotes — \"{token}…\"."
     },
-    "negateAll": "Negate the whole filter",
+    "negateAll": "NOT: negate the whole filter",
     "pickForGroup": "Pick tags for this group…",
     "addGroupInGroup": "Add a group inside this group"
   },
@@ -339,9 +342,19 @@
       "catalog": "The catalog has {items} items and {tags} tags.",
       "loaded": "Read",
       "starts": "Build a filter, or start from one of these:",
-      "all": "Select all {count} items"
+      "all": "Select all {count} items",
+      "presets": "Or start from a preset — a selection with its runner and options:"
     },
-    "loadedFrom": "Loaded from “{title}”: its selection, runner, options and labels."
+    "loadedFrom": "Loaded from “{title}”: its selection, runner, options and labels.",
+    "runBar": "Run this selection",
+    "withRunner": "with {runner}",
+    "plan": "Plan",
+    "preset": "Preset",
+    "presetChoose": "Start from a preset…",
+    "presetApplied": "Preset “{label}” applied: selection, runner, options, title and labels.",
+    "presetWithoutRunner": "Preset “{label}” applied. Its runner {runner} is not available here; choose another.",
+    "usePreset": "Use",
+    "usePresetNamed": "Use the preset {label}"
   },
   "runner": {
     "label": "Runner",
@@ -356,9 +369,21 @@
     "problem": {
       "required": "This is required.",
       "integer": "Enter a whole number.",
-      "choice": "Choose one of the listed values."
+      "choice": "Choose one of the listed values.",
+      "pattern": "This does not match the required form: {pattern}",
+      "duplicate": "Every row needs a name, and each name only once.",
+      "line": "This must be a single line."
     },
-    "unhealthyHint": "This runner reports a problem. A run started on it may fail."
+    "unhealthyHint": "This runner reports a problem. A run started on it may fail.",
+    "checks": "What this runner checked",
+    "checkOk": "ok",
+    "checkFailed": "failed",
+    "mappingKey": "name",
+    "mappingValue": "value",
+    "mappingKeyOf": "{label}, name {number}",
+    "mappingValueOf": "{label}, value {number}",
+    "mappingRemoveOf": "Remove row {number} of {label}",
+    "mappingAdd": "Add a row"
   },
   "labels": {
     "label": "Labels",
@@ -503,7 +528,8 @@
       "failed": "Failed",
       "missing": "Missing",
       "skipped": "Skipped",
-      "passed": "Passed"
+      "passed": "Passed",
+      "running": "Running"
     },
     "searchVerdicts": "Search items and messages",
     "live": "live, not delivered yet",
@@ -556,17 +582,31 @@
     "rotateExplain": "The current token stops working at once. Whoever sends the results needs the new one.",
     "rotateConfirm": "Create new token",
     "rotateDone": "New ingest token",
-    "originOf": "in",
     "shardNothing": "no results",
     "showDetails": "Details of {item}",
-    "seenLive": "last seen live: {status}",
+    "seenLive": "last reported live: {status}",
     "cancelledHint": "This run was cancelled. Shards that had not delivered count as missing, whatever they reported live.",
     "downloadDocument": "Download the handed-out document",
     "cancelKeep": "Keep it running",
     "resultCount": {
       "one": "{count} result",
       "other": "{count} results"
-    }
+    },
+    "group": "Group",
+    "allGroups": "All groups",
+    "groups": {
+      "one": "{count} group",
+      "other": "{count} groups"
+    },
+    "groupShards": "{done} of {total} shards delivered",
+    "groupIncomplete": "incomplete",
+    "nowRunning": {
+      "one": "{count} running",
+      "other": "{count} running"
+    },
+    "lastLiveRunning": "was running when the run stopped",
+    "artifactDirectory": "A directory of files; its files are linked from the reports above.",
+    "rerunOf": "Re-run of"
   },
   "rerun": {
     "titleAll": "Run again",
@@ -584,7 +624,9 @@
     "startedNew": {
       "one": "Re-running {count} item of “{title}”.",
       "other": "Re-running {count} items of “{title}”."
-    }
+    },
+    "title": "Title of the new run",
+    "titleHint": "Left empty, the new run keeps the title of this one."
   },
   "inbox": {
     "title": "Inbox",
@@ -621,7 +663,8 @@
       "sha-mismatch": "Belongs to a different run document",
       "marker-conflict": "Names a different run than it was sent to",
       "bad-bundle": "Could not be read",
-      "dispatch-cancelled": "Its dispatch was cancelled"
+      "dispatch-cancelled": "Its dispatch was cancelled",
+      "nothing-planned": "Holds nothing for the run it names"
     },
     "transport": {
       "push": "upload",
@@ -637,5 +680,41 @@
     },
     "nothingRecorded": "Nothing was recorded: no result in the delivery matched an item of the run. Look at the run before relying on it.",
     "runIdHint": "Choose a run from the list, or paste its ID."
+  },
+  "plan": {
+    "title": "Plan: what this run would do",
+    "intro": {
+      "one": "{count} item with the runner {runner}. Nothing is started by looking.",
+      "other": "{count} items with the runner {runner}. Nothing is started by looking."
+    },
+    "loading": "Asking the runner for its plan…",
+    "refused": "The runner would refuse this run:",
+    "refusedHint": "Starting it now would end the same way. Nothing was started.",
+    "none": "The runner gave no plan.",
+    "summary": {
+      "one": "{count} item",
+      "other": "{count} items"
+    },
+    "inShards": {
+      "one": "in {count} shard",
+      "other": "in {count} shards"
+    },
+    "inGroups": {
+      "one": "of {count} group",
+      "other": "of {count} groups"
+    },
+    "estimated": "estimated {duration} of execution",
+    "notes": "Notes of the runner",
+    "groups": "The plan per group",
+    "shards": "The plan per shard",
+    "column": {
+      "shards": "Shards",
+      "items": "Items",
+      "estimate": "Estimate"
+    },
+    "asText": "The plan in the runner's words",
+    "show": "Show the plan",
+    "hide": "Hide the plan",
+    "fixOptions": "Fix the options above to see the plan."
   }
 }

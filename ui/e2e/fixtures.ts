@@ -70,10 +70,12 @@ const SCRIPTED = {
   ],
   parameters: [
     { name: "environment", kind: "choice", label: "Target environment", choices: ["staging", "preview"], required: true, help: "Where the shop under test runs." },
-    { name: "build", kind: "string", label: "Build number", required: true },
+    { name: "build", kind: "string", label: "Build number", required: true, pattern: "\\d{4}\\.\\d{1,2}", help: "Year and month, like 2026.11." },
     { name: "retries", kind: "integer", label: "Retry count", default: 0 },
     { name: "headless", kind: "boolean", label: "Run headless", default: true },
     { name: "browsers", kind: "multi_choice", label: "Browsers to use", choices: ["chromium", "firefox", "webkit"], default: ["chromium"] },
+    { name: "notes", kind: "text", label: "Release notes", help: "Free text handed to the job." },
+    { name: "variables", kind: "mapping", label: "Extra variables", pattern: "[a-z0-9-]+", default: { locale: "de" } },
   ],
 };
 
@@ -92,6 +94,46 @@ export const CONFIGS = {
       scripted: SCRIPTED,
       strict: { plugin: "robot-pool", suite_root: ROBOT_SHOP, pre_run_hooks: ["exit 3"] },
       offline: { plugin: "robot-pool", suite_root: "no-such-directory" },
+      // Refuses already when asked for a plan: its working directory is not there.
+      closed: { plugin: "command", format: "runcomposer-verdicts", command: "true", cwd: "no-such-directory" },
+      // A runner that declares nothing — in particular no `plan` capability.
+      plain: { module: "tests.test_api:RefusingRunner" },
+    },
+  },
+  // The demo corpus as a deployment sets it up for its testers: quick filters
+  // (one of them a whole expression), a default filter, and presets.
+  presets: {
+    store: STORE,
+    runners: { demo: {}, scripted: SCRIPTED },
+    ui: {
+      quick_filters: [
+        "Smoke",
+        { label: "Shop front without quarantine", filter: { op: "AND", items: [{ op: "OR", items: ["Catalog", "Cart"] }, { not: "prefix:Quarantine-" }] } },
+      ],
+      default_filter: { op: "AND", items: ["Smoke", { not: "prefix:Quarantine-" }] },
+      presets: [
+        {
+          name: "nightly",
+          label: "Nightly regression",
+          description: "Everything tagged Regression, on staging.",
+          filter: { op: "AND", items: ["Regression", { not: "prefix:Quarantine-" }] },
+          runner: "scripted",
+          parameters: { environment: "staging", build: "2026.11", retries: 2, headless: false, browsers: ["firefox"], variables: { locale: "en" } },
+          title: "Nightly regression",
+          labels: { suite: "nightly", env: "staging" },
+        },
+        { name: "payments", label: "Payments check", filter: "Payments", runner: "demo", parameters: { seed: "a" } },
+      ],
+    },
+  },
+  // A CI job as a runner: its health is a list of checks against a Jenkins —
+  // here the stand-in runcomposer ships for connector tests. `ci-nightly`
+  // names a job that exists, `ci-missing` one that does not.
+  ci: {
+    store: STORE,
+    runners: {
+      "ci-nightly": { plugin: "jenkins", base_url: "${env:E2E_JENKINS_URL}", job: "shop-nightly", completion: "poll" },
+      "ci-missing": { plugin: "jenkins", base_url: "${env:E2E_JENKINS_URL}", job: "shop-weekly", completion: "poll" },
     },
   },
   // Real Robot Framework over the example suite, fanned out over two partitions.
@@ -99,7 +141,22 @@ export const CONFIGS = {
     store: STORE,
     core: { artifact_dir: "artifacts", taxonomy_file: DEMO_TAXONOMY },
     sources: { robotframework: { root: ROBOT_SHOP } },
-    runners: { "robot-pool": { suite_root: ROBOT_SHOP, partitions: ["chromium", "firefox"], max_workers: 2 } },
+    runners: {
+      "robot-pool": { suite_root: ROBOT_SHOP, partitions: ["chromium", "firefox"], max_workers: 2 },
+      // The same suite distributed over two lanes, two tests per execution,
+      // every execution a shard of its own, grouped by lane.
+      "robot-lanes": {
+        plugin: "robot-pool",
+        suite_root: ROBOT_SHOP,
+        max_workers: 2,
+        partitions: ["eu", "us"],
+        partition_mode: "split",
+        max_tests_per_chunk: 2,
+        chunk_shards: true,
+        run_parameters: [{ name: "variables", kind: "mapping", label: "Extra variables" }],
+        parameter_variables: { variables: "*" },
+      },
+    },
   },
   // The server's default language is German.
   german: { store: STORE, core: { locale_default: "de" }, runners: { demo: {} } },
@@ -143,6 +200,8 @@ function freePort(): Promise<number> {
 
 export class Server {
   readonly api: string;
+  /** Other processes this deployment needs; stopped with it. */
+  helpers: ChildProcess[] = [];
   private logText = "";
 
   private constructor(
@@ -165,11 +224,15 @@ export class Server {
     writeFileSync(join(directory, "config.yaml"), JSON.stringify(CONFIGS[config], null, 2));
     if (config === "large") writeFileSync(join(directory, "corpus.json"), largeManifest());
     const port = await freePort();
+    const jenkins = config === "ci" ? await startJenkinsStandIn() : null;
     const child = spawn(PYTHON, ["-m", "runcomposer.cli", "serve", "--port", String(port), "--config", join(directory, "config.yaml"), "--log-level", "warning"], {
       cwd: directory,
       stdio: ["ignore", "pipe", "pipe"],
+      // The repository root is importable, for a runner configured by import path.
+      env: { ...process.env, PYTHONPATH: REPO, ...(jenkins ? { E2E_JENKINS_URL: jenkins.url } : {}) },
     });
     const server = new Server(`http://127.0.0.1:${port}`, directory, child);
+    server.helpers = jenkins ? [jenkins.child] : [];
     await server.ready();
     return server;
   }
@@ -204,8 +267,30 @@ export class Server {
       await gone;
       clearTimeout(timer);
     }
+    for (const helper of this.helpers) helper.kill(9);
     rmSync(this.directory, { recursive: true, force: true });
   }
+}
+
+// The Jenkins stand-in of `runcomposer.testing.jenkins`, as a process: a real
+// HTTP server speaking the protocol the jenkins runner uses, with one job.
+const JENKINS_STAND_IN = `
+import sys, threading
+from runcomposer.testing.jenkins import FakeJenkins
+fake = FakeJenkins()
+fake.add_job("shop-nightly")
+print(fake.url, flush=True)
+threading.Event().wait()
+`;
+
+function startJenkinsStandIn(): Promise<{ url: string; child: ChildProcess }> {
+  return new Promise((resolveUrl, reject) => {
+    const child = spawn(PYTHON, ["-c", JENKINS_STAND_IN], { stdio: ["ignore", "pipe", "pipe"] });
+    let errors = "";
+    child.stderr?.on("data", (chunk: Buffer) => (errors += chunk.toString()));
+    child.once("exit", (code) => reject(new Error(`the Jenkins stand-in exited with ${code}: ${errors}`)));
+    child.stdout?.once("data", (chunk: Buffer) => resolveUrl({ url: chunk.toString().trim(), child }));
+  });
 }
 
 // -- talking to the API from a test -------------------------------------------------------

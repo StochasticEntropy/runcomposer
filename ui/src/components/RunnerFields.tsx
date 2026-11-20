@@ -6,8 +6,28 @@ import { useId, useState } from "react";
 
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { parseLabel } from "../lib/format.ts";
-import type { ParamValues } from "../lib/params.ts";
-import type { ParameterSpec, RunnerInfo } from "../lib/types.ts";
+import type { Translator } from "../lib/i18n.ts";
+import type { MappingRow, ParamProblem, ParamValues } from "../lib/params.ts";
+import type { HealthCheck, ParameterSpec, RunnerInfo } from "../lib/types.ts";
+
+/** What is wrong with a value, in the viewer's words — a pattern is quoted, so it can be met. */
+export function problemTexts(t: Translator["t"], specs: ParameterSpec[], problems: Record<string, ParamProblem>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(problems).map(([name, problem]) => [
+      name,
+      t(`runner.problem.${problem}`, { pattern: specs.find((spec) => spec.name === name)?.pattern ?? "" }),
+    ]),
+  );
+}
+
+/** The checks a runner reports about itself (`health.data.checks`), if it does. */
+export function healthChecks(runner: RunnerInfo | undefined): HealthCheck[] {
+  const checks = runner?.health?.data?.checks;
+  if (!Array.isArray(checks)) return [];
+  return checks.filter(
+    (entry): entry is HealthCheck => entry !== null && typeof entry === "object" && typeof (entry as HealthCheck).check === "string",
+  );
+}
 
 export const runnerUsable = (runner: RunnerInfo | undefined): runner is RunnerInfo => Boolean(runner) && !runner!.error;
 
@@ -71,6 +91,17 @@ export function RunnerSelect({ value, onChange }: { value: string | null; onChan
               </button>
             </p>
           </>
+        )}
+        {healthChecks(selected).length > 0 && (
+          <ul className="health-checks" aria-label={t("runner.checks")}>
+            {healthChecks(selected).map((entry) => (
+              <li key={entry.check} data-ok={entry.ok}>
+                <span className={`badge badge-${entry.ok ? "ok" : "danger"}`}>{entry.ok ? t("runner.checkOk") : t("runner.checkFailed")}</span>{" "}
+                <strong>{entry.check}</strong>
+                {entry.detail && <span className="muted"> — {entry.detail}</span>}
+              </li>
+            ))}
+          </ul>
         )}
         {selected?.health && ["down", "degraded"].includes(selected.health.status) && (
           <p className="field-error" role="status">
@@ -189,12 +220,73 @@ export function ParameterForm({ specs, values, onChange, problems }: FormProps) 
             </fieldset>
           );
         }
+        if (spec.kind === "mapping") {
+          const rows = Array.isArray(value) ? (value as MappingRow[]) : [];
+          const setRow = (index: number, change: Partial<MappingRow>) =>
+            set(spec.name, rows.map((row, position) => (position === index ? { ...row, ...change } : row)));
+          return (
+            <fieldset className="field mapping" key={spec.name} data-param={spec.name} aria-describedby={described}>
+              <legend className="field-label">{label}</legend>
+              {rows.map((row, index) => (
+                <div className="mapping-row" key={index}>
+                  <input
+                    className="input"
+                    type="text"
+                    value={row.key}
+                    placeholder={t("runner.mappingKey")}
+                    aria-label={t("runner.mappingKeyOf", { label: spec.label, number: index + 1 })}
+                    aria-invalid={problem ? true : undefined}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setRow(index, { key: event.target.value })}
+                  />
+                  <input
+                    className="input"
+                    type="text"
+                    value={row.value}
+                    placeholder={t("runner.mappingValue")}
+                    aria-label={t("runner.mappingValueOf", { label: spec.label, number: index + 1 })}
+                    aria-invalid={problem ? true : undefined}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setRow(index, { value: event.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-small btn-quiet"
+                    aria-label={t("runner.mappingRemoveOf", { label: spec.label, number: index + 1 })}
+                    onClick={() => set(spec.name, rows.filter((_, position) => position !== index))}
+                  >
+                    {t("action.remove")}
+                  </button>
+                </div>
+              ))}
+              <div>
+                <button type="button" className="btn btn-small" data-add-row onClick={() => set(spec.name, [...rows, { key: "", value: "" }])}>
+                  {t("runner.mappingAdd")}
+                </button>
+              </div>
+              {tail}
+            </fieldset>
+          );
+        }
         return (
           <div className="field" key={spec.name} data-param={spec.name}>
             <label className="field-label" htmlFor={fieldId}>
               {label}
             </label>
-            {spec.kind === "choice" ? (
+            {spec.kind === "text" ? (
+              <textarea
+                id={fieldId}
+                className="input"
+                rows={3}
+                value={typeof value === "string" ? value : ""}
+                aria-required={spec.required || undefined}
+                aria-describedby={described}
+                aria-invalid={problem ? true : undefined}
+                onChange={(event) => set(spec.name, event.target.value)}
+              />
+            ) : spec.kind === "choice" ? (
               <select
                 id={fieldId}
                 className="input"
@@ -281,7 +373,7 @@ export function LabelsInput({ labels, onChange, draft, onDraftChange, problem }:
                   onChange(next);
                 }}
               >
-                ×
+                {t("action.remove")}
               </button>
             </li>
           ))}

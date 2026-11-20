@@ -32,7 +32,8 @@
     "done": "Fertig",
     "refresh": "Aktualisieren",
     "reload": "Seite neu laden",
-    "retry": "Erneut versuchen"
+    "retry": "Erneut versuchen",
+    "remove": "Entfernen"
   },
   "state": {
     "loading": "Lädt…"
@@ -79,7 +80,8 @@
       "config-error": "Die Konfiguration des Servers ist ungültig.",
       "plugin-error": "Ein Plugin konnte nicht geladen werden.",
       "store-error": "Der Laufspeicher hat einen Fehler gemeldet.",
-      "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten."
+      "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten.",
+      "nothing-planned": "Nichts in der Lieferung gehört zu einem Eintrag dieses Laufs."
     }
   },
   "runState": {
@@ -103,7 +105,8 @@
     "FAIL": "fehlgeschlagen",
     "ERROR": "Fehler",
     "SKIP": "übersprungen",
-    "MISSING": "fehlend"
+    "MISSING": "fehlend",
+    "RUNNING": "läuft"
   },
   "health": {
     "ok": "verfügbar",
@@ -157,21 +160,21 @@
     "title": "Filter",
     "rootGroup": "Filterregeln, verknüpft mit {op}",
     "group": "Gruppe, verknüpft mit {op}",
-    "not": "NOT",
+    "not": "NICHT",
     "op": {
-      "AND": "AND",
-      "OR": "OR"
+      "AND": "UND",
+      "OR": "ODER"
     },
     "opLong": {
-      "AND": "alle davon (AND)",
-      "OR": "mindestens eine davon (OR)"
+      "AND": "alle davon (UND)",
+      "OR": "mindestens eine davon (ODER)"
     },
     "combine": "Wie die Regeln dieser Gruppe verknüpft sind",
-    "negateGroup": "Diese Gruppe verneinen",
-    "negateRule": "{pattern} verneinen",
+    "negateGroup": "NICHT: diese Gruppe verneinen",
+    "negateRule": "NICHT: {pattern} verneinen",
     "removeRule": "{pattern} entfernen",
     "editPattern": "{pattern} bearbeiten",
-    "removeGroup": "Diese Gruppe entfernen",
+    "removeGroup": "Gruppe entfernen",
     "ungroup": "Gruppe auflösen",
     "add": "Hinzufügen",
     "addTag": "Tag oder Muster hinzufügen",
@@ -200,7 +203,7 @@
       "unterminated-quote": "Position {position}: Dieses Anführungszeichen wird nie geschlossen.",
       "needs-quotes": "Position {position}: Ein Muster mit Klammern oder Anführungszeichen in Anführungszeichen setzen — \"{token}…\"."
     },
-    "negateAll": "Den ganzen Filter verneinen",
+    "negateAll": "NICHT: den ganzen Filter verneinen",
     "pickForGroup": "Tags für diese Gruppe auswählen…",
     "addGroupInGroup": "Gruppe in dieser Gruppe hinzufügen"
   },
@@ -339,9 +342,19 @@
       "catalog": "Der Katalog enthält {items} Einträge und {tags} Tags.",
       "loaded": "Eingelesen",
       "starts": "Einen Filter bauen oder mit einem davon beginnen:",
-      "all": "Alle {count} Einträge auswählen"
+      "all": "Alle {count} Einträge auswählen",
+      "presets": "Oder mit einer Vorlage beginnen — einer Auswahl samt Runner und Optionen:"
     },
-    "loadedFrom": "Aus „{title}“ geladen: Auswahl, Runner, Optionen und Labels."
+    "loadedFrom": "Aus „{title}“ geladen: Auswahl, Runner, Optionen und Labels.",
+    "runBar": "Diese Auswahl ausführen",
+    "withRunner": "mit {runner}",
+    "plan": "Plan",
+    "preset": "Vorlage",
+    "presetChoose": "Mit einer Vorlage beginnen…",
+    "presetApplied": "Vorlage „{label}“ übernommen: Auswahl, Runner, Optionen, Titel und Labels.",
+    "presetWithoutRunner": "Vorlage „{label}“ übernommen. Ihr Runner {runner} ist hier nicht verfügbar; einen anderen wählen.",
+    "usePreset": "Verwenden",
+    "usePresetNamed": "Vorlage {label} verwenden"
   },
   "runner": {
     "label": "Runner",
@@ -356,9 +369,21 @@
     "problem": {
       "required": "Diese Angabe ist erforderlich.",
       "integer": "Eine ganze Zahl eingeben.",
-      "choice": "Einen der aufgeführten Werte wählen."
+      "choice": "Einen der aufgeführten Werte wählen.",
+      "pattern": "Das entspricht nicht der geforderten Form: {pattern}",
+      "duplicate": "Jede Zeile braucht einen Namen, und jeden Namen nur einmal.",
+      "line": "Das muss eine einzelne Zeile sein."
     },
-    "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen."
+    "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen.",
+    "checks": "Was dieser Runner geprüft hat",
+    "checkOk": "ok",
+    "checkFailed": "fehlgeschlagen",
+    "mappingKey": "Name",
+    "mappingValue": "Wert",
+    "mappingKeyOf": "{label}, Name {number}",
+    "mappingValueOf": "{label}, Wert {number}",
+    "mappingRemoveOf": "Zeile {number} von {label} entfernen",
+    "mappingAdd": "Zeile hinzufügen"
   },
   "labels": {
     "label": "Labels",
@@ -503,7 +528,8 @@
       "failed": "Fehlgeschlagen",
       "missing": "Fehlend",
       "skipped": "Übersprungen",
-      "passed": "Bestanden"
+      "passed": "Bestanden",
+      "running": "Läuft"
     },
     "searchVerdicts": "Einträge und Meldungen durchsuchen",
     "live": "live, noch nicht geliefert",
@@ -556,7 +582,6 @@
     "rotateExplain": "Das bisherige Token gilt sofort nicht mehr. Wer die Ergebnisse schickt, braucht das neue.",
     "rotateConfirm": "Neues Token erzeugen",
     "rotateDone": "Neues Ingest-Token",
-    "originOf": "aus",
     "shardNothing": "keine Ergebnisse",
     "showDetails": "Details zu {item}",
     "seenLive": "zuletzt live gemeldet: {status}",
@@ -566,7 +591,22 @@
     "resultCount": {
       "one": "{count} Ergebnis",
       "other": "{count} Ergebnisse"
-    }
+    },
+    "group": "Gruppe",
+    "allGroups": "Alle Gruppen",
+    "groups": {
+      "one": "{count} Gruppe",
+      "other": "{count} Gruppen"
+    },
+    "groupShards": "{done} von {total} Shards geliefert",
+    "groupIncomplete": "unvollständig",
+    "nowRunning": {
+      "one": "{count} läuft",
+      "other": "{count} laufen"
+    },
+    "lastLiveRunning": "lief gerade, als der Lauf endete",
+    "artifactDirectory": "Ein Verzeichnis mit Dateien; seine Dateien sind aus den Berichten oben verlinkt.",
+    "rerunOf": "Wiederholung von"
   },
   "rerun": {
     "titleAll": "Erneut ausführen",
@@ -584,7 +624,9 @@
     "startedNew": {
       "one": "{count} Eintrag von „{title}“ wird wiederholt.",
       "other": "{count} Einträge von „{title}“ werden wiederholt."
-    }
+    },
+    "title": "Titel des neuen Laufs",
+    "titleHint": "Bleibt das Feld leer, behält der neue Lauf den Titel dieses Laufs."
   },
   "inbox": {
     "title": "Eingang",
@@ -621,7 +663,8 @@
       "sha-mismatch": "Gehört zu einem anderen Laufdokument",
       "marker-conflict": "Nennt einen anderen Lauf als den, an den es ging",
       "bad-bundle": "Konnte nicht gelesen werden",
-      "dispatch-cancelled": "Die zugehörige Ausführung wurde abgebrochen"
+      "dispatch-cancelled": "Die zugehörige Ausführung wurde abgebrochen",
+      "nothing-planned": "Enthält nichts für den genannten Lauf"
     },
     "transport": {
       "push": "Upload",
@@ -637,5 +680,41 @@
     },
     "nothingRecorded": "Es wurde nichts aufgezeichnet: Kein Ergebnis der Lieferung passt zu einem Eintrag des Laufs. Den Lauf prüfen, bevor man sich darauf verlässt.",
     "runIdHint": "Einen Lauf aus der Liste wählen oder seine ID einfügen."
+  },
+  "plan": {
+    "title": "Plan: Was dieser Lauf tun würde",
+    "intro": {
+      "one": "{count} Eintrag mit dem Runner {runner}. Durch das Ansehen wird nichts gestartet.",
+      "other": "{count} Einträge mit dem Runner {runner}. Durch das Ansehen wird nichts gestartet."
+    },
+    "loading": "Der Runner wird nach seinem Plan gefragt…",
+    "refused": "Der Runner würde diesen Lauf ablehnen:",
+    "refusedHint": "Ein Start würde jetzt genauso enden. Es wurde nichts gestartet.",
+    "none": "Der Runner hat keinen Plan geliefert.",
+    "summary": {
+      "one": "{count} Eintrag",
+      "other": "{count} Einträge"
+    },
+    "inShards": {
+      "one": "in {count} Shard",
+      "other": "in {count} Shards"
+    },
+    "inGroups": {
+      "one": "aus {count} Gruppe",
+      "other": "aus {count} Gruppen"
+    },
+    "estimated": "geschätzt {duration} Ausführung",
+    "notes": "Hinweise des Runners",
+    "groups": "Der Plan je Gruppe",
+    "shards": "Der Plan je Shard",
+    "column": {
+      "shards": "Shards",
+      "items": "Einträge",
+      "estimate": "Schätzung"
+    },
+    "asText": "Der Plan in den Worten des Runners",
+    "show": "Plan anzeigen",
+    "hide": "Plan ausblenden",
+    "fixOptions": "Die Optionen oben korrigieren, um den Plan zu sehen."
   }
 }

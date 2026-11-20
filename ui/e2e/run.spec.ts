@@ -34,8 +34,37 @@ test("the form is rendered from the runner's declared parameters, and its values
   expect(await api.runs()).toHaveLength(0);
 
   await form.getByRole("combobox", { name: /^Target environment/ }).selectOption("staging");
-  await form.getByRole("textbox", { name: /^Build number/ }).fill("2026.11");
   await form.getByRole("textbox", { name: "Retry count" }).fill("2");
+
+  // A value must have the form the runner declares — said with the form, before anything is sent.
+  const build = form.getByRole("textbox", { name: /^Build number/ });
+  await build.fill("build 11");
+  await runButton(page, 3).click();
+  await expect(form.locator('[data-param="build"]').getByRole("alert")).toHaveText(
+    msg("runner.problem.pattern", { pattern: "\\d{4}\\.\\d{1,2}" }),
+  );
+  await expect(build).toBeFocused();
+  expect(await api.runs()).toHaveLength(0);
+  await build.fill("2026.11");
+
+  // A text is several lines; a mapping is rows of name and value, starting from its default.
+  const notes = form.getByRole("textbox", { name: "Release notes" });
+  expect(await notes.evaluate((field) => field instanceof HTMLTextAreaElement)).toBe(true);
+  await notes.fill("Checkout redesign\nNew wallet provider");
+  const variables = form.getByRole("group", { name: "Extra variables" });
+  await expect(variables.getByRole("textbox", { name: msg("runner.mappingKeyOf", { label: "Extra variables", number: 1 }) })).toHaveValue("locale");
+  await variables.getByRole("textbox", { name: msg("runner.mappingValueOf", { label: "Extra variables", number: 1 }) }).fill("en_US");
+  await variables.getByRole("button", { name: msg("runner.mappingAdd") }).click();
+  await variables.getByRole("textbox", { name: msg("runner.mappingKeyOf", { label: "Extra variables", number: 2 }) }).fill("currency");
+  await variables.getByRole("textbox", { name: msg("runner.mappingValueOf", { label: "Extra variables", number: 2 }) }).fill("eur");
+  // Each value of the mapping must match its pattern too.
+  await runButton(page, 3).click();
+  await expect(form.locator('[data-param="variables"]').getByRole("alert")).toHaveText(msg("runner.problem.pattern", { pattern: "[a-z0-9-]+" }));
+  await variables.getByRole("textbox", { name: msg("runner.mappingValueOf", { label: "Extra variables", number: 1 }) }).fill("en");
+  // A third row is added and removed again.
+  await variables.getByRole("button", { name: msg("runner.mappingAdd") }).click();
+  await variables.getByRole("button", { name: msg("runner.mappingRemoveOf", { label: "Extra variables", number: 3 }) }).click();
+  await expect(variables.locator(".mapping-row")).toHaveCount(2);
   await form.getByRole("checkbox", { name: "Run headless" }).uncheck();
   await browsers.getByRole("checkbox", { name: "webkit" }).check();
   await page.getByRole("textbox", { name: msg("compose.title") }).fill("Anmeldung prüfen");
@@ -56,6 +85,8 @@ test("the form is rendered from the runner's declared parameters, and its values
     retries: 2,
     headless: false,
     browsers: ["chromium", "webkit"],
+    notes: "Checkout redesign\nNew wallet provider",
+    variables: { locale: "en", currency: "eur" },
   });
   await expect(status(page)).toContainText(msg("completion.PASS"));
   // The parameters are readable on the run.
@@ -95,7 +126,7 @@ test("a refused dispatch is explained where the run was started and leaves no ru
   await expectPreview(page, 3, 60);
   await runnerSelect(page).selectOption("strict");
   await runButton(page, 3).click();
-  const alert = page.locator(".run-panel").getByRole("alert");
+  const alert = page.locator(".run-bar").getByRole("alert");
   await expect(alert).toContainText(msg("error.code.dispatch-refused"));
   await expect(runButton(page, 3)).toBeFocused();
   await expect(alert).toContainText("pre_run_hook failed");
@@ -137,6 +168,20 @@ test("watch a run progress live, then cancel it", async ({ page, open, api }) =>
   await expect(progress).toHaveText(/^[1-9]\d* of 46 /);
   const earlier = Number.parseInt((await progress.textContent())!, 10);
   await expect.poll(async () => Number.parseInt((await progress.textContent())!, 10)).toBeGreaterThan(earlier);
+  // The item being executed right now is RUNNING: listed, counted as running — and not as a result.
+  await expect(page.locator('.verdict-table tbody tr[data-status="RUNNING"]')).toHaveCount(1);
+  await expect(page.getByTestId("run-running")).toHaveText(msg("run.nowRunning", { count: 1 }));
+  await expect(page.locator(".shard-card")).toContainText(msg("run.nowRunning", { count: 1 }));
+  const reported = Number.parseInt((await progress.textContent())!, 10);
+  const liveRows = await api.get<{ verdicts: { status: string; live: boolean }[] }>(`/runs/${runId}`);
+  expect(liveRows.verdicts.some((row) => row.status === "RUNNING" && row.live)).toBe(true);
+  expect(reported).toBeLessThan(46);
+  await page.getByRole("button", { name: new RegExp(`^${msg("run.filter.running")}\\s+1$`) }).click();
+  await expect(page.locator(".verdict-table tbody tr[data-item-id]")).toHaveCount(1);
+  await expect(page.locator(".verdict-table tbody tr[data-item-id]").first().locator(".col-duration")).toHaveText("–");
+  await page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}`) }).click();
+  // A run without groups shows shards as before — no group roll-up.
+  await expect(page.locator(".group-card")).toHaveCount(0);
   // Items that finished are listed while their shard is still running — marked live.
   await expect(page.locator(".verdict-table tbody tr[data-item-id]").first()).toBeVisible();
   await expect(page.locator(".verdict-table .live-dot").first()).toBeVisible();
@@ -158,7 +203,13 @@ test("watch a run progress live, then cancel it", async ({ page, open, api }) =>
   await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.missing")}\\s+46$`) })).toBeVisible();
   await expect(page.locator(".verdict-table .live-dot")).toHaveCount(0);
   await expect(progress).toHaveText(msg("progress.label", { done: 0, total: 46 }));
-  await expect(page.locator(".verdict-table .col-message").filter({ hasText: /last seen live/ }).first()).toBeVisible();
+  // Each missing item says what it was doing when the run stopped — the server's word, not a guess:
+  // those that had finished, and the one that was in the middle of it.
+  await expect(page.locator(".verdict-table .col-message").filter({ hasText: msg("run.seenLive", { status: msg("verdict.PASS") }) }).first()).toBeVisible();
+  await page.getByRole("searchbox", { name: msg("run.searchVerdicts") }).fill(msg("run.lastLiveRunning"));
+  await expect(page.locator(".verdict-table tbody tr[data-item-id]")).toHaveCount(1);
+  await expect(page.locator(".verdict-table tbody tr[data-item-id]").first()).toHaveAttribute("data-status", "MISSING");
+  await page.getByRole("searchbox", { name: msg("run.searchVerdicts") }).fill("");
   await expect(page.locator(".shard-card")).toContainText(msg("run.shardNothing"));
   await expect(page.getByRole("button", { name: msg("run.rerunFailed", { count: 46 }) })).toBeVisible();
   // A cancelled run is over: it can be run again, and no longer cancelled.
@@ -235,6 +286,10 @@ test("re-run only the failures of THIS run, with other parameters", async ({ pag
   const seed = dialog.getByRole("textbox", { name: "Seed" });
   await expect(seed).toHaveValue("b");
   await seed.fill("a");
+  // The new run may have a title of its own; left empty it keeps this run's.
+  const newTitle = dialog.getByRole("textbox", { name: msg("rerun.title") });
+  await expect(newTitle).toHaveAttribute("placeholder", "Nightly regression");
+  await newTitle.fill("Nightly regression, second attempt");
   await dialog.getByRole("button", { name: msg("compose.run", { count: failed }) }).click();
 
   // A NEW run, opened at its own URL, composed from exactly those failures.
@@ -243,9 +298,13 @@ test("re-run only the failures of THIS run, with other parameters", async ({ pag
   const rerun = await api.waitFor(rerunId, ["COMPLETE"]);
   expect(rerun.planned_count).toBe(failed);
   await expect(status(page)).toContainText(msg("runState.COMPLETE"));
-  // The header says what this run is a re-run of, with a link.
+  await expect(page.getByRole("heading", { level: 1, name: "Nightly regression, second attempt" })).toBeVisible();
+  // The header says what this run is a re-run of — the relation the server records — with a link back.
+  expect((await api.get<{ rerun_of: { run_id: string; scope: string } }>(`/runs/${rerunId}`)).rerun_of).toEqual({ run_id: nightly.id, scope: "failed" });
   await expect(page.locator(".run-facts")).toContainText(msg("origin.rerun"));
-  await expect(page.locator(".run-facts").getByRole("link", { name: "Nightly regression" })).toHaveAttribute("href", `#/runs/${nightly.id}`);
+  const back = page.getByTestId("rerun-of");
+  await expect(back).toContainText(msg("run.rerunOf"));
+  await expect(back.getByRole("link", { name: "Nightly regression" })).toHaveAttribute("href", `#/runs/${nightly.id}`);
   // Where it came from is said, and linked.
   await page.getByRole("link", { name: msg("run.tab.selection") }).click();
   await page.locator(".selection-tab").getByRole("link", { name: "Nightly regression" }).click();

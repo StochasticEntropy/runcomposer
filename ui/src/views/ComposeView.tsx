@@ -11,10 +11,12 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ExportDialog } from "../components/ExportDialog.tsx";
 import { ExpressionEditor } from "../components/ExpressionEditor.tsx";
 import { PreviewTable } from "../components/PreviewTable.tsx";
-import { LabelsInput, ParameterForm, RunnerSelect, runnerUsable } from "../components/RunnerFields.tsx";
+import { PlanView } from "../components/PlanView.tsx";
+import { LabelsInput, ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "../components/RunnerFields.tsx";
 import { TagPicker } from "../components/TagPicker.tsx";
 import { CopyButton, Dialog, ErrorState, ErrorText, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
+import { usePlan } from "../hooks/usePlan.ts";
 import { useResource } from "../hooks/useResource.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import {
@@ -41,7 +43,7 @@ import type { ApiError } from "../lib/request.ts";
 import { composeHref, runHref } from "../lib/router.ts";
 import type { Route } from "../lib/router.ts";
 import { indexByPattern, isSelectable, orderTree } from "../lib/tagTree.ts";
-import type { QuickFilter, TaxonomyNode } from "../lib/types.ts";
+import type { Preset, QuickFilter, TaxonomyNode } from "../lib/types.ts";
 
 const DRAFT_KEY = "runcomposer.compose.v2";
 
@@ -63,14 +65,16 @@ function rootFromText(text: string): { root: GroupNode; unreadable: boolean } {
   }
 }
 
-function initialDraft(query: Record<string, string>): { draft: StoredDraft; root: GroupNode; unreadable: boolean } {
+function initialDraft(query: Record<string, string>, defaultFilter: string): { draft: StoredDraft; root: GroupNode; unreadable: boolean } {
   const stored = readSession<StoredDraft>(DRAFT_KEY);
   const link = linkFromQuery(query);
   // A link to another selection than the one in the draft: the title typed
   // for the old selection does not belong to this one.
   const otherSelection = link !== null && (link.filter !== (stored?.filter ?? "") || link.from !== (stored?.from ?? null));
   const draft: StoredDraft = {
-    filter: link?.filter ?? stored?.filter ?? "",
+    // The deployment's default filter is where a NEW selection starts: no
+    // selection in the URL, and no draft of this session to come back to.
+    filter: link?.filter ?? stored?.filter ?? defaultFilter,
     excluded: link ? link.excluded : (stored?.excluded ?? []),
     from: link ? link.from : (stored?.from ?? null),
     runner: stored?.runner ?? null,
@@ -81,17 +85,16 @@ function initialDraft(query: Record<string, string>): { draft: StoredDraft; root
   return { draft, ...rootFromText(draft.filter) };
 }
 
-function quickStarts(taxonomy: TaxonomyNode[], configured: (string | QuickFilter)[]): QuickFilter[] {
-  const starts: QuickFilter[] = configured.map((entry) =>
-    typeof entry === "string" ? { label: entry, filter: entry } : entry,
-  );
-  const seen = new Set(starts.map((start) => start.filter));
+/** Ways into a selection: what the deployment configured, then the curated taxonomy. */
+function quickStarts(taxonomy: TaxonomyNode[], configured: QuickFilter[]): QuickFilter[] {
+  const starts: QuickFilter[] = [...configured];
+  const seen = new Set(starts.map((start) => start.text));
   const walk = (nodes: TaxonomyNode[]) => {
     for (const node of nodes) {
       if (starts.length >= 12) return;
       if (node.origin === "file" && isSelectable(node) && !seen.has(node.filter!)) {
         seen.add(node.filter!);
-        starts.push({ label: node.label, filter: node.filter! });
+        starts.push({ label: node.label, tag_filter: node.filter!, text: node.filter!, kind: "pattern" });
       }
       if (node.origin === "file" && node.children) walk(node.children);
     }
@@ -105,7 +108,8 @@ export function ComposeView({ route }: { route: Route }) {
   const i18n = useI18n();
   const { t } = i18n;
 
-  const [initial] = useState(() => initialDraft(route.query));
+  const defaultFilter = meta.ui.default_filter?.text ?? "";
+  const [initial] = useState(() => initialDraft(route.query, defaultFilter));
   const [root, setRoot] = useState<GroupNode>(initial.root);
   const [unreadableLink, setUnreadableLink] = useState(initial.unreadable);
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set(initial.draft.excluded));
@@ -281,6 +285,30 @@ export function ComposeView({ route }: { route: Route }) {
     // Once, for the link this view was opened with.
   }, [like]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const presets = useResource(useCallback((signal: AbortSignal) => api.presets(signal), [api]), "presets");
+  const presetList = presets.data?.presets ?? [];
+  /** A preset is a complete starting point: selection, runner, its options, title, labels. */
+  const applyPreset = (preset: Preset) => {
+    setRoot(fromAst(preset.tag_filter));
+    setUnreadableLink(false);
+    setExcluded(new Set());
+    setFrom(null);
+    setTitle(preset.title);
+    setLabels(preset.labels);
+    setLabelDraft("");
+    setSubmitError(null);
+    setParamErrors({});
+    const wanted = runners.find((candidate) => candidate.id === preset.runner);
+    if (runnerUsable(wanted)) {
+      setRunnerId(wanted.id);
+      setParamsByRunner((current) => ({ ...current, [wanted.id]: fromPayload(wanted.parameters ?? [], preset.parameters) }));
+      setNotice(t("compose.presetApplied", { label: preset.label }));
+    } else {
+      setNotice(preset.runner ? t("compose.presetWithoutRunner", { label: preset.label, runner: preset.runner }) : t("compose.presetApplied", { label: preset.label }));
+    }
+    announce(t("compose.presetApplied", { label: preset.label }));
+  };
+
   const changeRoot = (next: GroupNode) => {
     setRoot(next);
     setUnreadableLink(false);
@@ -288,7 +316,7 @@ export function ComposeView({ route }: { route: Route }) {
   };
 
   const reset = () => {
-    setRoot(emptyRoot());
+    setRoot(rootFromText(defaultFilter).root);
     setExcluded(new Set());
     setFrom(null);
     setTitle("");
@@ -333,16 +361,35 @@ export function ComposeView({ route }: { route: Route }) {
     return { selection: composed, labels: allLabels, ...(chosenTitle ? { title: chosenTitle } : {}) };
   };
 
+  /** The options are acceptable as far as the browser can tell; if not, the
+   * problems are put on their fields and the keyboard goes to the first. */
+  const optionsValid = (): boolean => {
+    const problems = validateValues(specs, values);
+    if (Object.keys(problems).length === 0) return true;
+    setParamErrors(problemTexts(t, specs, problems));
+    const first = specs.find((spec) => spec.name in problems)?.name;
+    formRef.current?.querySelector<HTMLElement>(`[data-param="${first}"] :is(input, select, textarea)`)?.focus();
+    return false;
+  };
+
+  // -- the plan preview ---------------------------------------------------------------------
+  // Asked for (selection, runner, options) as they are when "Plan" is pressed,
+  // and keyed by them: should any of them change, the answer on screen is
+  // dropped and asked for again — it is never the plan of something else.
+  const [planning, setPlanning] = useState(false);
+  const planQuestion = useMemo(() => {
+    if (!planning || !fresh || !runnerUsable(runner)) return null;
+    const planned = dispatchSelection(emitted.ast, pinned?.ids ?? null, matched, excluded);
+    if (planned === null) return null;
+    const body = { selection: planned, runner: runner.id, parameters: toPayload(specs, values) };
+    return { key: JSON.stringify(body), ask: (signal: AbortSignal) => api.plan(body, signal) };
+  }, [planning, fresh, runner, emitted.ast, pinned, matched, excluded, specs, values, api]);
+  const plan = usePlan(planQuestion);
+  const canPlan = runnerUsable(runner) && (runner.capabilities ?? []).includes("plan");
+
   const run = async () => {
     if (submitting.current || !runnerUsable(runner)) return;
-    const problems = validateValues(specs, values);
-    if (Object.keys(problems).length > 0) {
-      setParamErrors(Object.fromEntries(Object.entries(problems).map(([name, problem]) => [name, t(`runner.problem.${problem}`)])));
-      // Take the keyboard to the first field that needs attention.
-      const first = specs.find((spec) => spec.name in problems)?.name;
-      formRef.current?.querySelector<HTMLElement>(`[data-param="${first}"] input, [data-param="${first}"] select`)?.focus();
-      return;
-    }
+    if (!optionsValid()) return;
     const body = collect();
     if (!body) return;
     submitting.current = true;
@@ -390,6 +437,7 @@ export function ComposeView({ route }: { route: Route }) {
   const runnerBlocked = usable.length === 0 || runnerUsable(runner) ? null : t("compose.blocked.runner");
   const runBlocked = blocked !== null || usable.length === 0 || runnerBlocked !== null;
   const summaryId = useId();
+  const formId = useId();
   const blockedId = useId();
 
   const starts = useMemo(() => quickStarts(tree, meta.ui.quick_filters ?? []), [tree, meta.ui.quick_filters]);
@@ -412,16 +460,42 @@ export function ComposeView({ route }: { route: Route }) {
           <p>{t("compose.landing.starts")}</p>
           <ul className="quick-starts">
             {starts.map((start) => {
-              const node = byPattern.get(start.filter);
+              // One pattern is added as a rule; a whole expression becomes the filter.
+              const pattern = start.kind === "pattern" && typeof start.tag_filter === "string" ? start.tag_filter : null;
+              const node = pattern === null ? undefined : byPattern.get(pattern);
               return (
-                <li key={start.filter}>
-                  <button type="button" className="btn" onClick={() => changeRoot(addTag(root, ROOT_ID, start.filter))}>
+                <li key={start.text}>
+                  <button
+                    type="button"
+                    className="btn"
+                    title={start.kind === "expression" ? start.text : undefined}
+                    onClick={() => changeRoot(pattern === null ? fromAst(start.tag_filter) : addTag(root, ROOT_ID, pattern))}
+                  >
                     {start.label}
                     {node && <span className="muted"> · {node.item_count}</span>}
                   </button>
                 </li>
               );
             })}
+          </ul>
+        </>
+      )}
+      {presetList.length > 0 && (
+        <>
+          <p>{t("compose.landing.presets")}</p>
+          <ul className="preset-cards">
+            {presetList.map((preset) => (
+              <li key={preset.name} data-preset={preset.name}>
+                <div>
+                  <strong>{preset.label}</strong>
+                  {preset.description && <span className="hint"> {preset.description}</span>}
+                  <span className="cell-sub mono">{preset.text}</span>
+                </div>
+                <button type="button" className="btn btn-small" onClick={() => applyPreset(preset)} aria-label={t("compose.usePresetNamed", { label: preset.label })}>
+                  {t("compose.usePreset")}
+                </button>
+              </li>
+            ))}
           </ul>
         </>
       )}
@@ -448,6 +522,27 @@ export function ComposeView({ route }: { route: Route }) {
             </button>
           </span>
         </header>
+
+        {presetList.length > 0 && (
+          <label className="field field-inline preset-select">
+            <span>{t("compose.preset")}</span>
+            <select
+              className="input"
+              value=""
+              onChange={(event) => {
+                const chosen = presetList.find((preset) => preset.name === event.target.value);
+                if (chosen) applyPreset(chosen);
+              }}
+            >
+              <option value="">{t("compose.presetChoose")}</option>
+              {presetList.map((preset) => (
+                <option key={preset.name} value={preset.name}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {unreadableLink && (
           <Notice tone="warn" onDismiss={() => setUnreadableLink(false)}>
@@ -528,18 +623,13 @@ export function ComposeView({ route }: { route: Route }) {
         </header>
         <form
           ref={formRef}
+          id={formId}
           onSubmit={(event) => {
             event.preventDefault();
             void run();
           }}
           noValidate
         >
-          <p className="run-summary" data-testid="run-summary" id={summaryId}>
-            {fresh && preview.result
-              ? t("compose.summary", { selected: selectedCount, matched: preview.result.count, total: preview.result.total })
-              : (blocked ?? "")}
-          </p>
-
           <RunnerSelect
             value={runnerId}
             onChange={(id) => {
@@ -566,25 +656,84 @@ export function ComposeView({ route }: { route: Route }) {
           </div>
           <LabelsInput labels={labels} onChange={setLabels} draft={labelDraft} onDraftChange={setLabelDraft} problem={labelProblem} />
 
-          {submitError && (
+        </form>
+      </section>
+
+      {/* The run bar: always in reach, whatever is scrolled — what would run, with what, and the actions. */}
+      <div className="run-bar" role="group" aria-label={t("compose.runBar")}>
+        {submitError && (
+          <div className="run-bar-error">
             <Notice tone="error" onDismiss={() => setSubmitError(null)}>
               <ErrorText error={submitError} />
             </Notice>
-          )}
-
-          <div className="run-actions">
-            <button type="submit" className="btn btn-primary btn-large" disabled={runBlocked} aria-disabled={busy || undefined} aria-describedby={`${summaryId} ${blockedId}`}>
-              {busy ? t("compose.starting") : t("compose.run", { count: selectedCount })}
-            </button>
-            <button type="button" className="btn" disabled={busy || blocked !== null} onClick={() => setExporting(true)}>
-              {t("compose.export")}
-            </button>
           </div>
-          <p className="hint" id={blockedId}>
-            {runnerBlocked ?? ""}
+        )}
+        <div className="run-bar-info">
+          <p className="run-summary" data-testid="run-summary" id={summaryId}>
+            {fresh && preview.result
+              ? t("compose.summary", { selected: selectedCount, matched: preview.result.count, total: preview.result.total })
+              : (blocked ?? "")}
           </p>
-        </form>
-      </section>
+          <p className="hint" id={blockedId}>
+            {runnerBlocked ?? (runnerUsable(runner) ? t("compose.withRunner", { runner: runner.id }) : "")}
+          </p>
+        </div>
+        <div className="run-bar-actions">
+          {canPlan && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || runBlocked}
+              onClick={() => {
+                if (optionsValid()) setPlanning(true);
+              }}
+            >
+              {t("compose.plan")}
+            </button>
+          )}
+          <button type="button" className="btn" disabled={busy || blocked !== null} onClick={() => setExporting(true)}>
+            {t("compose.export")}
+          </button>
+          <button
+            type="submit"
+            form={formId}
+            className="btn btn-primary btn-large"
+            disabled={runBlocked}
+            aria-disabled={busy || undefined}
+            aria-describedby={`${summaryId} ${blockedId}`}
+          >
+            {busy ? t("compose.starting") : t("compose.run", { count: selectedCount })}
+          </button>
+        </div>
+      </div>
+
+      {planning && (
+        <Dialog
+          title={t("plan.title")}
+          onClose={() => setPlanning(false)}
+          size="large"
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy || runBlocked || plan.state.result?.refused === true}
+                onClick={() => {
+                  setPlanning(false);
+                  void run();
+                }}
+              >
+                {t("compose.run", { count: selectedCount })}
+              </button>
+            </>
+          }
+        >
+          <p className="hint">
+            {runnerUsable(runner) && t("plan.intro", { count: selectedCount, runner: runner.id })}
+          </p>
+          <PlanView state={plan.state} onRetry={plan.retry} />
+        </Dialog>
+      )}
 
       {pickerGroup !== null &&
         (taxonomy.data ? (

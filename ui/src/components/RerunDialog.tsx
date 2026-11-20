@@ -2,16 +2,18 @@
 // run (DESIGN.md §7). The runner and its parameters start out as they were
 // for the run's last dispatch and can be changed before anything starts.
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
 
 import { useApp, useI18n } from "../hooks/context.tsx";
+import { usePlan } from "../hooks/usePlan.ts";
 import { useResource } from "../hooks/useResource.ts";
 import { fromPayload, initialValues, toPayload, validateValues } from "../lib/params.ts";
 import type { ParamValues } from "../lib/params.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
 import type { DispatchResponse, RunDetail } from "../lib/types.ts";
-import { ParameterForm, RunnerSelect, runnerUsable } from "./RunnerFields.tsx";
+import { PlanView } from "./PlanView.tsx";
+import { ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "./RunnerFields.tsx";
 import { Dialog, ErrorText, Notice, describeError } from "./ui.tsx";
 
 interface Props {
@@ -37,6 +39,9 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     return latest && runnerId === latest.mode ? fromPayload(specs, latest.parameters) : initialValues(specs);
   }, [edited, runnerId, latest, specs]);
   const [problems, setProblems] = useState<Record<string, string>>({});
+  const [title, setTitle] = useState("");
+  const [planning, setPlanning] = useState(false);
+  const titleId = useId();
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -45,7 +50,7 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     if (inFlight.current || !runnerUsable(runner)) return;
     const found = validateValues(specs, values);
     if (Object.keys(found).length > 0) {
-      setProblems(Object.fromEntries(Object.entries(found).map(([name, problem]) => [name, t(`runner.problem.${problem}`)])));
+      setProblems(problemTexts(t, specs, found));
       return;
     }
     inFlight.current = true;
@@ -53,7 +58,14 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     setError(null);
     setProblems({});
     try {
-      onDone(await api.rerun(run.id, { scope, runner: runner.id, parameters: toPayload(specs, values) }));
+      onDone(
+        await api.rerun(run.id, {
+          scope,
+          runner: runner.id,
+          parameters: toPayload(specs, values),
+          ...(title.trim() ? { title: title.trim() } : {}),
+        }),
+      );
     } catch (caught) {
       const failure = asApiError(caught);
       const parameter = failure.extra.parameter;
@@ -79,6 +91,26 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
     `failed:${run.id}:${scope}`,
   );
   const count = scope === "failed" ? failed.data : run.planned_count;
+
+  // The plan of exactly what this dialog would start: for "run again" the
+  // stored run with these options, for the failures the selection the rerun
+  // composes from. Keyed by runner and options — changing either drops the
+  // plan on screen and asks again.
+  const canPlan = runnerUsable(runner) && (runner.capabilities ?? []).includes("plan");
+  const planQuestion = useMemo(() => {
+    if (!planning || !runnerUsable(runner) || !canPlan) return null;
+    if (Object.keys(validateValues(specs, values)).length > 0) return null;
+    const parameters = toPayload(specs, values);
+    const key = JSON.stringify({ run: run.id, scope, runner: runner.id, parameters });
+    return {
+      key,
+      ask: (signal: AbortSignal) =>
+        scope === "failed"
+          ? api.plan({ selection: { history: `failed+error+missing@run:${run.id}` }, runner: runner.id, parameters }, signal)
+          : api.planRun(run.id, { runner: runner.id, parameters }, signal),
+    };
+  }, [planning, runner, canPlan, specs, values, run.id, scope, api]);
+  const plan = usePlan(planQuestion);
   return (
     <Dialog
       title={scope === "failed" ? t("rerun.titleFailed") : latest ? t("rerun.titleAll") : t("rerun.titleFirst")}
@@ -118,6 +150,23 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
             setError(null);
           }}
         />
+        {scope === "failed" && (
+          <div className="field">
+            <label className="field-label" htmlFor={titleId}>
+              {t("rerun.title")}
+            </label>
+            <input
+              id={titleId}
+              className="input"
+              type="text"
+              value={title}
+              maxLength={200}
+              placeholder={run.title}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+            <p className="hint">{t("rerun.titleHint")}</p>
+          </div>
+        )}
         <ParameterForm
           specs={specs}
           values={values}
@@ -127,6 +176,14 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
           }}
           problems={problems}
         />
+        {canPlan && (
+          <div className="rerun-plan">
+            <button type="button" className="btn btn-small" aria-expanded={planning} onClick={() => setPlanning((open) => !open)}>
+              {planning ? t("plan.hide") : t("plan.show")}
+            </button>
+            {planning && (planQuestion ? <PlanView state={plan.state} onRetry={plan.retry} /> : <p className="hint">{t("plan.fixOptions")}</p>)}
+          </div>
+        )}
         {error && (
           <Notice tone="error">
             <ErrorText error={error} />

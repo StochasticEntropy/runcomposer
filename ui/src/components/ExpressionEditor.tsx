@@ -192,14 +192,8 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
                   {t("filter.ungroup")}
                 </button>
               )}
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => actions.remove(node.id)}
-                aria-label={t("filter.removeGroup")}
-                title={t("filter.removeGroup")}
-              >
-                ×
+              <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.remove(node.id)}>
+                {t("filter.removeGroup")}
               </button>
             </>
           )}
@@ -346,22 +340,22 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
         aria-label={t("filter.removeRule", { pattern: spoken })}
         title={t("filter.removeRule", { pattern: spoken })}
       >
-        ×
+        {t("action.remove")}
       </button>
     </span>
   );
 }
 
-// NOT is a switch on a rule or a group. It is drawn as its own small button
-// behind the rule — while it is off, nothing in front of the rule reads as
-// "NOT"; while it is on, the rule is marked red and says NOT in front.
+// NOT is a switch on a rule or a group, drawn as a small labelled box behind
+// the rule: an empty box while it is off — so nothing in FRONT of the rule
+// reads as "NOT" — and a ticked one while it is on, when the rule is also
+// marked red and says NOT in front.
 function NotToggle({ on, label, onToggle }: { on: boolean; label: string; onToggle: () => void }) {
+  const { t } = useI18n();
   return (
     <button type="button" className={`toggle-not${on ? " is-on" : ""}`} aria-pressed={on} aria-label={label} title={label} onClick={onToggle}>
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-        <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.6" />
-        <path d="M3.9 12.1 12.1 3.9" stroke="currentColor" strokeWidth="1.6" />
-      </svg>
+      <span className="toggle-box" aria-hidden="true" />
+      {t("filter.not")}
     </button>
   );
 }

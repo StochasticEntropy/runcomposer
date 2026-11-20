@@ -5,7 +5,7 @@ import { formatFilter } from "../lib/filter.ts";
 import type { RunDetail, VerdictRow } from "../lib/types.ts";
 import { failedItems, hasFailures, loadHref, runDuration } from "../views/RunView.tsx";
 import { plannedVerdicts } from "../views/RunsView.tsx";
-import { resultRows, runProgress } from "./RunResults.tsx";
+import { reportedOnly, resultRows, runProgress } from "./RunResults.tsx";
 import { applyPicks } from "./TagPicker.tsx";
 
 const verdict = (item_id: string, status: string, extra: Partial<VerdictRow> = {}): VerdictRow => ({
@@ -107,17 +107,25 @@ describe("runProgress", () => {
           { shard: "chromium-1", declared: true, delivered: true, count: 3, planned: 3, summary: { PASS: 2, FAIL: 1 }, completion: "FAIL" },
           { shard: "firefox-1", declared: true, delivered: false, count: 0, planned: 3, summary: {}, completion: null },
         ],
-        verdicts: [verdict("a", "PASS", { shard: "firefox-1", live: true }), verdict("b", "PASS", { shard: "chromium-1" })],
+        // firefox-1 has not delivered: one item passed live, one is running right now.
+        live_summary: { "firefox-1": { PASS: 1, RUNNING: 1 } },
+        verdicts: [
+          verdict("a", "PASS", { shard: "firefox-1", live: true }),
+          verdict("c", "RUNNING", { shard: "firefox-1", live: true }),
+          verdict("b", "PASS", { shard: "chromium-1" }),
+        ],
       }),
     );
-    expect(progress).toEqual({ counts: { PASS: 3, FAIL: 1 }, done: 4, planned: 6 });
+    // RUNNING is work in progress: shown as running, never counted as a result.
+    expect(progress).toEqual({ counts: { PASS: 3, FAIL: 1 }, done: 4, planned: 6, running: 1 });
+    expect(reportedOnly({ PASS: 1, RUNNING: 2 })).toEqual({ PASS: 1 });
   });
 
   it("falls back to the planned items when a runner declared no shard plan", () => {
     const progress = runProgress(
       run({ dispatch_id: "d1", dispatches: [{ dispatch_id: "d1", planned_verdicts: null, state: "RUNNING" }] as RunDetail["dispatches"] }),
     );
-    expect(progress).toEqual({ counts: {}, done: 0, planned: 3 });
+    expect(progress).toEqual({ counts: {}, done: 0, planned: 3, running: 0 });
     expect(plannedVerdicts(run({}))).toBe(3);
   });
 });
@@ -126,27 +134,41 @@ describe("a dispatch that is over", () => {
   const cancelled = run({
     state: "CANCELLED",
     dispatch_id: "d1",
-    dispatches: [{ dispatch_id: "d1", planned_verdicts: 2, state: "CANCELLED", summary: { MISSING: 2 } }] as unknown as RunDetail["dispatches"],
+    dispatches: [{ dispatch_id: "d1", planned_verdicts: 3, state: "CANCELLED", summary: { MISSING: 3 } }] as unknown as RunDetail["dispatches"],
     shards: [{ shard: "chromium-1", declared: true, delivered: false, count: 0, planned: 2, summary: {}, completion: null }],
     verdicts: [
       verdict("Shop.Auth.SSO.T001", "PASS", { shard: "chromium-1", live: true }),
-      verdict("Shop.Auth.SSO.T001", "MISSING", { shard: "chromium-1", message: "not-reported" }),
-      verdict("Shop.Auth.SSO.T002", "MISSING", { shard: "chromium-1", message: "not-reported" }),
+      verdict("Shop.Auth.SSO.T002", "RUNNING", { shard: "chromium-1", live: true }),
+      verdict("Shop.Auth.SSO.T001", "MISSING", {
+        shard: "chromium-1",
+        message: "not-reported",
+        last_live: { status: "PASS", duration_ms: 12, message: "", shard: "chromium-1" },
+      }),
+      verdict("Shop.Auth.SSO.T002", "MISSING", {
+        shard: "chromium-1",
+        message: "not-reported",
+        last_live: { status: "RUNNING", duration_ms: 0, message: "", shard: "chromium-1" },
+      }),
+      verdict("Shop.Auth.SSO.T003", "MISSING", { shard: "chromium-1", message: "not-reported", last_live: null }),
     ],
   });
 
   it("counts only what was delivered — a live observation is not a result", () => {
-    expect(runProgress(cancelled)).toEqual({ counts: { MISSING: 2 }, done: 0, planned: 2 });
+    expect(runProgress(cancelled)).toEqual({ counts: { MISSING: 3 }, done: 0, planned: 3, running: 0 });
   });
 
   it("shows one row per item: the verdict that counts, with what was seen live as a note", () => {
     const rows = resultRows(cancelled.verdicts, true);
     expect(rows.map((row) => [row.item_id, row.status, row.live, row.seenLive])).toEqual([
       ["Shop.Auth.SSO.T001", "MISSING", false, "PASS"],
-      ["Shop.Auth.SSO.T002", "MISSING", false, null],
+      ["Shop.Auth.SSO.T002", "MISSING", false, "RUNNING"],
+      ["Shop.Auth.SSO.T003", "MISSING", false, null],
     ]);
-    // While the dispatch still runs, nothing is folded.
-    expect(resultRows(cancelled.verdicts.slice(0, 1))).toMatchObject([{ status: "PASS", live: true, seenLive: null }]);
+    // While the dispatch still runs, live rows are rows — what is running comes before what passed.
+    expect(resultRows(cancelled.verdicts.slice(0, 2)).map((row) => [row.status, row.live])).toEqual([
+      ["RUNNING", true],
+      ["PASS", true],
+    ]);
   });
 
   it("measures its duration from its own start, not from the run's first dispatch", () => {

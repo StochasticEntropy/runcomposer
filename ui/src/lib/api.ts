@@ -7,8 +7,12 @@ import type {
   CompileResult,
   CreateRunResponse,
   DispatchResponse,
+  FilterEntry,
   IngestReport,
   Meta,
+  PlanResult,
+  Preset,
+  QuickFilter,
   QuarantineEntry,
   ResolvedTaxonomy,
   RunDetail,
@@ -81,6 +85,15 @@ export function createApi(client: Client = createClient()) {
     specPreview: (body: Omit<ComposeBody, "dispatch">) =>
       post<{ spec: Record<string, unknown>; warnings: string[] }>(`${API}/selection/spec-preview`, body),
 
+    /** What a dispatch of this selection would do. Nothing is stored or executed. */
+    plan: (body: { selection: Selection; runner: string; parameters?: Record<string, unknown>; title?: string; labels?: Record<string, string> }, signal?: AbortSignal) =>
+      post<PlanResult>(`${API}/plan`, body, signal),
+    /** The same for a stored run; without parameters, the ones its document carries. */
+    planRun: (runId: string, body: { runner: string; parameters?: Record<string, unknown> }, signal?: AbortSignal) =>
+      post<PlanResult>(`${API}/runs/${id(runId)}/plan`, body, signal),
+    presets: (signal?: AbortSignal) =>
+      get<{ presets: Preset[]; default_filter: FilterEntry | null; quick_filters: QuickFilter[] }>(`${API}/presets`, signal),
+
     createRun: (body: ComposeBody) => post<CreateRunResponse>(`${API}/runs`, body),
     listRuns: (query: RunListQuery, signal?: AbortSignal) => get<RunList>(runListPath(query), signal),
     run: (runId: string, dispatch?: string | null, signal?: AbortSignal) =>
@@ -94,7 +107,7 @@ export function createApi(client: Client = createClient()) {
       ),
     dispatch: (runId: string, body: DispatchBody) =>
       post<DispatchResponse>(`${API}/runs/${id(runId)}/dispatch`, body),
-    rerun: (runId: string, body: { scope: "all" | "failed"; runner?: string; parameters?: Record<string, unknown> }) =>
+    rerun: (runId: string, body: { scope: "all" | "failed"; runner?: string; parameters?: Record<string, unknown>; title?: string }) =>
       post<DispatchResponse>(`${API}/runs/${id(runId)}/rerun`, body),
     cancel: (runId: string, force = false) =>
       post<DispatchResponse>(`${API}/runs/${id(runId)}/cancel${force ? "?force=true" : ""}`),

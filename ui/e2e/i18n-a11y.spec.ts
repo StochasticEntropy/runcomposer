@@ -57,6 +57,10 @@ test("German: the language switch covers every view, enums and errors, and is re
   await expect(page.getByText(de("preview.staleHint"))).toBeVisible();
   await page.getByRole("button", { name: de("filter.removeRule", { pattern: "regex:(" }) }).click();
 
+  // The NOT switch says NICHT.
+  await expect(page.getByRole("button", { name: de("filter.negateRule", { pattern: "Payments" }) })).toHaveText("NICHT");
+  await expect(page.getByRole("group", { name: de("compose.runBar") }).getByRole("button", { name: de("compose.plan"), exact: true })).toBeVisible();
+
   // The picker.
   await page.getByRole("button", { name: de("filter.pick") }).click();
   const dialog = page.getByRole("dialog", { name: de("picker.title") });
@@ -272,9 +276,17 @@ test.describe("on a phone (375 px)", () => {
 
     await page.getByRole("combobox", { name: msg("runner.label") }).selectOption("demo");
     await page.getByRole("group", { name: msg("runner.parameters") }).getByRole("textbox", { name: "Seed" }).fill("b");
+    // The run bar is in reach without scrolling to it — and does not cover the form's last field.
     const start = runButton(page, 24);
-    await start.scrollIntoViewIfNeeded();
-    await expect(start).toBeInViewport();
+    await expect(start).toBeInViewport({ ratio: 1 });
+    const bar = page.getByRole("group", { name: msg("compose.runBar") });
+    await expect(bar.getByRole("button", { name: msg("compose.plan"), exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(bar.getByRole("button", { name: msg("compose.export") })).toBeInViewport({ ratio: 1 });
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    const lastField = page.getByRole("textbox", { name: msg("labels.label") });
+    await expect(lastField).toBeInViewport({ ratio: 1 });
+    expect((await lastField.boundingBox())!.y + (await lastField.boundingBox())!.height).toBeLessThanOrEqual((await bar.boundingBox())!.y);
+    expect((await bar.boundingBox())!.width).toBeLessThanOrEqual(375);
     await start.click();
     const runId = await currentRunId(page);
     const done = await api.waitFor(runId, ["COMPLETE"]);

@@ -7,7 +7,36 @@
 import type { ParameterSpec } from "./types.ts";
 
 export type ParamValues = Record<string, unknown>;
-export type ParamProblem = "required" | "integer" | "choice";
+export type ParamProblem = "required" | "integer" | "choice" | "pattern" | "duplicate" | "line";
+
+/** A mapping is edited as rows, so a key can be empty or doubled while it is typed. */
+export interface MappingRow {
+  key: string;
+  value: string;
+}
+
+const rowsOf = (value: unknown): MappingRow[] =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? Object.entries(value as Record<string, unknown>).map(([key, entry]) => ({ key, value: String(entry) }))
+    : [];
+
+const isRows = (value: unknown): value is MappingRow[] =>
+  Array.isArray(value) && value.every((row) => row !== null && typeof row === "object" && "key" in row && "value" in row);
+
+/** The pattern as the server applies it: the WHOLE value must match. Null when
+ * the browser cannot compile it — then the server alone decides. */
+export function wholeMatch(pattern: string | null | undefined): RegExp | null {
+  if (!pattern) return null;
+  try {
+    return new RegExp(`^(?:${pattern})$`, "u");
+  } catch {
+    try {
+      return new RegExp(`^(?:${pattern})$`);
+    } catch {
+      return null;
+    }
+  }
+}
 
 export function initialValue(spec: ParameterSpec): unknown {
   switch (spec.kind) {
@@ -19,6 +48,8 @@ export function initialValue(spec: ParameterSpec): unknown {
       return typeof spec.default === "number" ? String(spec.default) : "";
     case "choice":
       return typeof spec.default === "string" && spec.choices.includes(spec.default) ? spec.default : "";
+    case "mapping":
+      return rowsOf(spec.default);
     default:
       return typeof spec.default === "string" ? spec.default : "";
   }
@@ -38,7 +69,8 @@ export function mergeValues(specs: ParameterSpec[], stored: ParamValues | undefi
       values[spec.name] = kept.filter((entry) => spec.choices.includes(String(entry)));
     else if (spec.kind === "choice" && typeof kept === "string" && (kept === "" || spec.choices.includes(kept)))
       values[spec.name] = kept;
-    else if ((spec.kind === "string" || spec.kind === "integer") && typeof kept === "string") values[spec.name] = kept;
+    else if (spec.kind === "mapping" && isRows(kept)) values[spec.name] = kept;
+    else if ((spec.kind === "string" || spec.kind === "text" || spec.kind === "integer") && typeof kept === "string") values[spec.name] = kept;
   }
   return values;
 }
@@ -50,7 +82,13 @@ export function toPayload(specs: ParameterSpec[], values: ParamValues): Record<s
     const value = values[spec.name];
     if (spec.kind === "boolean") payload[spec.name] = value === true;
     else if (spec.kind === "multi_choice") payload[spec.name] = Array.isArray(value) ? value : [];
-    else if (spec.kind === "integer") {
+    else if (spec.kind === "mapping") {
+      const rows = (isRows(value) ? value : []).filter((row) => row.key.trim() !== "");
+      // An emptied mapping is sent as empty when it had a default — so the default does not come back.
+      if (rows.length > 0 || rowsOf(spec.default).length > 0) {
+        payload[spec.name] = Object.fromEntries(rows.map((row) => [row.key.trim(), row.value]));
+      }
+    } else if (spec.kind === "integer") {
       const text = String(value ?? "").trim();
       if (text !== "") payload[spec.name] = /^-?\d+$/.test(text) ? Number(text) : text;
     } else {
@@ -67,7 +105,7 @@ export function fromPayload(specs: ParameterSpec[], payload: Record<string, unkn
   for (const spec of specs) {
     const value = payload[spec.name];
     if (value === undefined || value === null) continue;
-    stored[spec.name] = spec.kind === "integer" ? String(value) : value;
+    stored[spec.name] = spec.kind === "integer" ? String(value) : spec.kind === "mapping" ? rowsOf(value) : value;
   }
   return mergeValues(specs, stored);
 }
@@ -77,8 +115,20 @@ export function validateValues(specs: ParameterSpec[], values: ParamValues): Rec
   for (const spec of specs) {
     const value = values[spec.name];
     const text = typeof value === "string" ? value.trim() : "";
+    const pattern = wholeMatch(spec.pattern);
+    if (spec.kind === "mapping") {
+      const rows = (isRows(value) ? value : []).filter((row) => row.key.trim() !== "" || row.value !== "");
+      const keys = rows.map((row) => row.key.trim());
+      if (keys.some((key) => key === "") || new Set(keys).size !== keys.length) problems[spec.name] = "duplicate";
+      else if (pattern && rows.some((row) => !pattern.test(row.value))) problems[spec.name] = "pattern";
+      else if (spec.required && rows.length === 0) problems[spec.name] = "required";
+      continue;
+    }
     if (spec.kind === "integer" && text !== "" && !/^-?\d+$/.test(text)) problems[spec.name] = "integer";
     else if (spec.kind === "choice" && text !== "" && !spec.choices.includes(text)) problems[spec.name] = "choice";
+    else if (spec.kind === "string" && typeof value === "string" && /[\r\n]/.test(value)) problems[spec.name] = "line";
+    else if ((spec.kind === "string" || spec.kind === "text") && typeof value === "string" && value !== "" && pattern && !pattern.test(value))
+      problems[spec.name] = "pattern";
     else if (spec.required) {
       const missing = spec.kind === "multi_choice" ? !Array.isArray(value) || value.length === 0 : spec.kind !== "boolean" && text === "";
       if (missing) problems[spec.name] = "required";

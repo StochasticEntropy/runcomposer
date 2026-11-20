@@ -335,6 +335,58 @@ test("the link to a selection can be copied, and says that it was", async ({ pag
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(page.url());
 });
 
+test("the run bar is always in reach and covers nothing", async ({ page, open }) => {
+  await open("#/compose?f=Regression");
+  await expectPreview(page, 46, 60);
+  const bar = page.getByRole("group", { name: msg("compose.runBar") });
+  // At the top of the page: what would run, with what, and the actions.
+  await expect(bar).toBeInViewport({ ratio: 1 });
+  await expect(bar.getByTestId("run-summary")).toHaveText(msg("compose.summary", { selected: 46, matched: 46, total: 60 }));
+  await expect(bar).toContainText(msg("compose.withRunner", { runner: "demo" }));
+  for (const name of [msg("compose.plan"), msg("compose.export"), msg("compose.run", { count: 46 })]) {
+    await expect(bar.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+  }
+  // Scrolled to the very end it is still there, and the last thing on the page ends above it.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await expect(bar).toBeInViewport({ ratio: 1 });
+  const labelsHint = page.locator(".run-panel").getByText(msg("labels.hint"));
+  await expect(labelsHint).toBeInViewport({ ratio: 1 });
+  const hintBox = (await labelsHint.boundingBox())!;
+  const barBox = (await bar.boundingBox())!;
+  expect(hintBox.y + hintBox.height).toBeLessThanOrEqual(barBox.y);
+  // A dialog is above the bar, not under it.
+  await page.getByRole("button", { name: msg("filter.pick") }).click();
+  const dialog = page.getByRole("dialog", { name: msg("picker.title") });
+  await dialog.getByRole("treeitem", { name: /^Smoke/ }).click();
+  await dialog.getByRole("button", { name: msg("picker.apply") }).click();
+  await expect(page.getByTestId("filter-text")).toHaveText("Regression AND Smoke");
+});
+
+test("NOT is a labelled switch, and no control is an icon alone", async ({ page, open }) => {
+  await open("#/compose?f=" + encodeURIComponent("(Payments OR Checkout) AND NOT prefix:Quarantine-"));
+  await expectPreview(page, 28, 60);
+  // The switch says NOT in words, and its name says what it does to which rule.
+  const off = page.getByRole("button", { name: msg("filter.negateRule", { pattern: "Payments" }) });
+  await expect(off).toHaveText(msg("filter.not"));
+  await expect(off).toHaveAttribute("aria-pressed", "false");
+  const on = page.getByRole("button", { name: msg("filter.negateRule", { pattern: "prefix:Quarantine-" }) });
+  await expect(on).toHaveText(msg("filter.not"));
+  await expect(on).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: msg("filter.removeRule", { pattern: "Payments" }) })).toHaveText(msg("action.remove"));
+
+  // Every button on the page — and in a dialog — carries visible words.
+  const wordless = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("button")]
+        .filter((button) => !/[\p{L}]{2,}/u.test(button.textContent ?? ""))
+        .map((button) => button.outerHTML.slice(0, 120)),
+    );
+  expect(await wordless()).toEqual([]);
+  await page.getByRole("button", { name: msg("filter.pick") }).first().click();
+  await expect(page.getByRole("dialog", { name: msg("picker.title") }).getByRole("button", { name: msg("action.close") })).toHaveText(msg("action.close"));
+  expect(await wordless()).toEqual([]);
+});
+
 test("a link whose filter cannot be read says so instead of guessing", async ({ page, open }) => {
   await open("#/compose?f=" + encodeURIComponent("Payments AND ("));
   await expect(page.getByText(msg("compose.unreadableLink"))).toBeVisible();

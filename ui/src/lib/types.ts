@@ -5,7 +5,9 @@ export type FilterAst = string | { op: "AND" | "OR"; items: FilterAst[] } | { no
 
 export interface ParameterSpec {
   name: string;
-  kind: "string" | "integer" | "boolean" | "choice" | "multi_choice";
+  kind: "string" | "text" | "integer" | "boolean" | "choice" | "multi_choice" | "mapping";
+  /** A regular expression the whole value must match (each value of a mapping). */
+  pattern?: string | null;
   label: string;
   help: string;
   default: unknown;
@@ -32,9 +34,59 @@ export interface RunnerInfo {
   health?: RunnerHealth;
 }
 
-export interface QuickFilter {
+/** A filter as a deployment configures it: one pattern, or a whole expression. */
+export interface FilterEntry {
+  tag_filter: FilterAst;
+  text: string;
+  kind: "pattern" | "expression";
+}
+
+export interface QuickFilter extends FilterEntry {
   label: string;
-  filter: string;
+}
+
+/** A named, complete starting point: everything a run needs. */
+export interface Preset extends FilterEntry {
+  name: string;
+  label: string;
+  description: string;
+  runner: string | null;
+  parameters: Record<string, unknown>;
+  title: string;
+  labels: Record<string, string>;
+}
+
+export interface HealthCheck {
+  check: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface PlanShard {
+  shard: string;
+  group: string | null;
+  count: number;
+  item_ids: string[];
+  estimate_ms: number | null;
+}
+
+export interface PlanGroup {
+  group: string;
+  shards: string[];
+  count: number;
+  estimate_ms: number | null;
+}
+
+/** What a dispatch would do — or the refusal it would meet. */
+export interface PlanResult {
+  runner: string;
+  run_id: string | null;
+  item_count: number;
+  parameters: Record<string, unknown>;
+  refused: boolean;
+  refusal: string | null;
+  plan: { text: string; shards: PlanShard[]; groups: PlanGroup[]; notes: string[]; data: Record<string, unknown> } | null;
+  warnings: string[];
 }
 
 export interface Meta {
@@ -46,7 +98,7 @@ export interface Meta {
   ingestion: { tokens: string; inbox: boolean };
   states: string[];
   completions: string[];
-  ui: { quick_filters?: (string | QuickFilter)[] } & Record<string, unknown>;
+  ui: { quick_filters?: QuickFilter[]; default_filter?: FilterEntry; presets?: Preset[] } & Record<string, unknown>;
   configured: { section: string; id: string; plugin: string }[];
 }
 
@@ -123,6 +175,8 @@ export interface Dispatch {
   executing: boolean;
   /** Verdicts the dispatch owes over all its shards; null when no shard declared its items. */
   planned_verdicts: number | null;
+  duration_s?: number | null;
+  shard_groups?: Record<string, string>;
 }
 
 export interface RunRow {
@@ -150,6 +204,21 @@ export interface VerdictRow {
   shard: string;
   attempt: number;
   live: boolean;
+  /** On a MISSING row: what the item last reported live before the dispatch ended. */
+  last_live?: { status: string; duration_ms: number; message: string; shard: string } | null;
+}
+
+/** The roll-up of the shards a runner declared as one group (a partition, a lane). */
+export interface GroupSummary {
+  group: string;
+  shards: string[];
+  declared_shards: number;
+  delivered_shards: number;
+  planned: number | null;
+  count: number;
+  summary: Record<string, number>;
+  live: Record<string, number>;
+  completion: string | null;
 }
 
 export interface ShardSummary {
@@ -168,8 +237,9 @@ export interface Artifact {
   media_type: string;
   dispatch_id: string | null;
   shard: string | null;
+  group?: string | null;
   url_or_path: string;
-  kind: "local" | "url" | "external-path" | string;
+  kind: "local" | "url" | "external-path" | "directory" | string;
   href: string | null;
 }
 
@@ -196,6 +266,12 @@ export interface RunDetail extends RunRow {
   dispatch_id: string | null;
   verdicts: VerdictRow[];
   shards: ShardSummary[];
+  /** shard → group, for the dispatch shown; empty when the runner declared no groups. */
+  shard_groups?: Record<string, string>;
+  groups?: GroupSummary[];
+  /** shard → counts by live status, for shards that have not delivered. */
+  live_summary?: Record<string, Record<string, number>>;
+  rerun_of?: { run_id: string; scope: string } | null;
   artifacts: Artifact[];
   events: RunEvent[];
   last_event_seq: number;
@@ -226,6 +302,7 @@ export interface DispatchResponse {
   run: RunRow;
   dispatch: Dispatch | null;
   source_run_id?: string;
+  rerun_of?: { run_id: string; scope: string } | null;
   spec_url?: string;
   spec_sha256?: string;
   spec_media_type?: string;

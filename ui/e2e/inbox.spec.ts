@@ -100,11 +100,12 @@ test("attaching a delivery that matches nothing in the run is not reported as a 
   await row(page, "sha-mismatch").getByRole("button", { name: msg("inbox.attach") }).click();
   const attach = page.getByRole("dialog", { name: msg("inbox.attachTitle") });
   await attach.getByRole("button", { name: msg("inbox.attach") }).click();
-  const outcome = page.locator(".notice-warn");
-  await expect(outcome).toContainText(msg("inbox.nothingRecorded"));
+  // The server refuses; the dialog says so, and neither the delivery nor the run changed.
+  await expect(attach.getByRole("alert")).toContainText(msg("error.code.nothing-planned"));
   await expect(page.locator(".notice-ok")).toHaveCount(0);
-  await outcome.getByRole("link", { name: msg("inbox.openRun") }).click();
-  await expect(page).toHaveURL(new RegExp(`#/runs/${run.id}`));
+  await attach.getByRole("button", { name: msg("action.cancel") }).click();
+  await expect(page.locator(".inbox-table tbody tr")).toHaveCount(1);
+  expect((await api.run(run.id)).state).toBe("AWAITING_RESULTS");
 });
 
 test("a delivery can become a run of its own", async ({ page, open, api, server }) => {

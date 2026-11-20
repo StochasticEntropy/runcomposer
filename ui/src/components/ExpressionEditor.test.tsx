@@ -47,11 +47,11 @@ describe("the expression editor", () => {
 
   it("negates and removes a rule with named buttons", () => {
     renderWithI18n(<Harness initial={{ op: "AND", items: ["Payments", "Smoke"] }} />);
-    const negate = screen.getByRole("button", { name: "Negate Smoke" });
+    const negate = screen.getByRole("button", { name: "NOT: negate Smoke" });
     expect(negate.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(negate);
     expect(text()).toBe("Payments AND NOT Smoke");
-    expect(screen.getByRole("button", { name: "Negate Smoke" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "NOT: negate Smoke" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Remove Payments" }));
     expect(text()).toBe("NOT Smoke");
   });
@@ -72,8 +72,8 @@ describe("the expression editor", () => {
       fireEvent.submit(field.closest("form")!);
     }
     expect(text()).toBe("Payments AND (Smoke OR Regression)");
-    fireEvent.click(within(group).getByRole("button", { name: "Negate this group" }));
-    expect(screen.getByRole("button", { name: "Negate the whole filter" })).toBeTruthy();
+    fireEvent.click(within(group).getByRole("button", { name: "NOT: negate this group" }));
+    expect(screen.getByRole("button", { name: "NOT: negate the whole filter" })).toBeTruthy();
     expect(within(group).getByRole("button", { name: "Pick tags for this group…" })).toBeTruthy();
     expect(text()).toBe("Payments AND NOT (Smoke OR Regression)");
   });
@@ -105,7 +105,7 @@ describe("the expression editor", () => {
     fireEvent.change(area, { target: { value: "Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine-" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(text()).toBe("Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine-");
-    expect(screen.getByRole("button", { name: "Negate prefix:Quarantine-" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "NOT: negate prefix:Quarantine-" }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("shows the match-everything filter as what it means", () => {

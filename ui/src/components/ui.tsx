@@ -74,8 +74,8 @@ export function Notice({ tone = "info", children, onDismiss }: { tone?: NoticeTo
     <div className={`notice notice-${tone}`} role={tone === "error" ? "alert" : "status"}>
       <div className="notice-body">{children}</div>
       {onDismiss && (
-        <button type="button" className="icon-btn" onClick={onDismiss} aria-label={t("action.dismiss")}>
-          ×
+        <button type="button" className="btn btn-small btn-quiet notice-dismiss" onClick={onDismiss}>
+          {t("action.dismiss")}
         </button>
       )}
     </div>
@@ -158,8 +158,8 @@ export function Dialog({ title, onClose, children, footer, size = "medium", clas
     <dialog ref={ref} className={`dialog dialog-${size} ${className}`} aria-labelledby={titleId} tabIndex={-1}>
       <header className="dialog-head">
         <h2 id={titleId}>{title}</h2>
-        <button type="button" className="icon-btn" onClick={onClose} aria-label={t("action.close")}>
-          ×
+        <button type="button" className="btn btn-small btn-quiet" onClick={onClose}>
+          {t("action.close")}
         </button>
       </header>
       <div className="dialog-body">{children}</div>
@@ -234,6 +234,7 @@ const RESULT_TONE: Record<string, string> = {
   INCOMPLETE: "warn",
   SKIP: "neutral",
   MISSING: "warn",
+  RUNNING: "running",
 };
 
 export function StateBadge({ state }: { state: string }) {
