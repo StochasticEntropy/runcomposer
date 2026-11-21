@@ -5,6 +5,11 @@ strictly, unknown fields inside known sections are ignored, unknown top-level
 sections are ignored with a warning, and a higher MAJOR is refused.
 ``for_dispatch=True`` adds the dispatch/export profile: the materialized
 selection and the results contract must be present (§3.1).
+
+``yaml`` and ``jsonschema`` are imported where a document is read from YAML
+or validated, not when this module is: building a document and reading JSON
+need neither, so a machine that only executes (the SDK, its toolkits,
+``runcomposer-exec``) runs without them.
 """
 
 from __future__ import annotations
@@ -16,9 +21,6 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Any
-
-import yaml
-from jsonschema import Draft202012Validator, FormatChecker
 
 from .errors import InvalidRequest
 from .filter import FilterError, parse_filter
@@ -32,6 +34,7 @@ __all__ = [
     "ValidationReport",
     "build_spec",
     "load_document",
+    "require_module",
     "runspec_schema",
     "validate_document",
 ]
@@ -48,16 +51,43 @@ class SpecLoadError(InvalidRequest):
     code = "spec-unreadable"
 
 
-# `date-time` is enforced by this checker, not left to whether an optional
-# format-validation package happens to be installed next to jsonschema.
-_FORMATS = FormatChecker(formats=())
+def require_module(name: str, needed_for: str) -> Any:
+    """Import ``name`` for ``needed_for``, or raise ``ModuleNotFoundError``
+    saying which package is missing and what needed it — a minimal install
+    (``pip install --no-deps runcomposer``) leaves out what only reading,
+    validating and serving need."""
+    from importlib import import_module
+
+    try:
+        return import_module(name)
+    except ImportError as exc:
+        raise ModuleNotFoundError(
+            f"{needed_for} needs the {name!r} package, which is not installed — "
+            f"`pip install runcomposer` installs it (a `--no-deps` install leaves it out)",
+            name=name,
+        ) from exc
 
 
-@_FORMATS.checks("date-time", raises=InvalidRequest)  # type: ignore[untyped-decorator, unused-ignore]
 def _is_date_time(value: Any) -> bool:
     if isinstance(value, str):
         parse_time(value)
     return True
+
+
+_format_checker: Any = None
+
+
+def _formats() -> Any:
+    """`date-time` is enforced by this checker, not left to whether an
+    optional format-validation package happens to be installed next to
+    jsonschema."""
+    global _format_checker
+    if _format_checker is None:
+        jsonschema = require_module("jsonschema", "validating a run-spec document")
+        checker = jsonschema.FormatChecker(formats=())
+        checker.checks("date-time", raises=InvalidRequest)(_is_date_time)
+        _format_checker = checker
+    return _format_checker
 
 
 _schema_cache: dict[str, Any] | None = None
@@ -142,6 +172,7 @@ def load_document(path: str | Path) -> Any:
             return json.loads(text)
         except json.JSONDecodeError as exc:
             raise SpecLoadError(f"{path}: not valid JSON: {exc}") from None
+    yaml = require_module("yaml", f"reading the YAML spec file {path}")
     try:
         return yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -180,7 +211,8 @@ def validate_document(doc: Any, *, for_dispatch: bool = False) -> ValidationRepo
         )
         return report
 
-    validator = Draft202012Validator(runspec_schema(), format_checker=_FORMATS)
+    jsonschema = require_module("jsonschema", "validating a run-spec document")
+    validator = jsonschema.Draft202012Validator(runspec_schema(), format_checker=_formats())
     for error in sorted(validator.iter_errors(doc), key=lambda e: list(map(str, e.absolute_path))):
         report.errors.append(f"{error.json_path}: {error.message}")
 

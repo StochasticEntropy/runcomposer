@@ -711,9 +711,10 @@ class TestSecrets:
             tmp_path,
             self.secretive(
                 api_token="Bearer ${env:SHOP_CI_TOKEN}",
-                endpoints={"primary": {"url": "https://${env:SHOP_REGION}.ci.shop.example",
+                # A region is no secret (and two characters are too short for one).
+                endpoints={"primary": {"url": "https://${env-public:SHOP_REGION}.ci.shop.example",
                                        "key": "${env:SHOP_CI_TOKEN}"}},
-                mirrors=["https://${env:SHOP_REGION}-a.shop.example", "plain"],
+                mirrors=["https://${env-public:SHOP_REGION}-a.shop.example", "plain"],
                 retries=3,
             ),
         )
@@ -976,20 +977,24 @@ class TestOnePathBase:
         assert Path(config.store_spec().options["path"]) == tmp_path / "runcomposer.db"
 
 
-def test_values_shorter_than_four_characters_are_not_redacted(tmp_path, monkeypatch):
-    """A documented limit (DESIGN.md §8, the connector guide's Known limits):
-    blanking a value of one to three characters out of every recorded line
-    would mangle ordinary text (``${env:WORKERS:-4}`` would blank every "4"),
-    so such values are not treated as secrets. Use secrets of four characters
-    or more — any real token is."""
+def test_a_secret_shorter_than_four_characters_is_refused(tmp_path, monkeypatch):
+    """Blanking a value of one to three characters out of every recorded line
+    would mangle ordinary text (blanking "123" rewrites every 123), and
+    leaving it unblanked would let a secret through: such a secret is
+    refused at startup, naming the variable and the public spelling for a
+    value that is no secret. Values of four characters or more are
+    secrets as before."""
     monkeypatch.setenv("SHOP_PIN", "123")
     monkeypatch.setenv("SHOP_TOKEN", "s3cr")
-    path = write_config(tmp_path, runners={"demo": {}}, observers={
+    observers = {
         "hook": {"plugin": "webhook", "url": "https://chat.shop.example/hooks",
                  "secret": "${env:SHOP_TOKEN}", "headers": {"X-Pin": "${env:SHOP_PIN}"}},
-    })
-    secrets = load_config(str(path)).secret_values()
-    assert "s3cr" in secrets and "123" not in secrets
+    }
+    with pytest.raises(ConfigError, match=r"SHOP_PIN.*3 character\(s\).*\$\{env-public:SHOP_PIN\}"):
+        load_config(str(write_config(tmp_path, runners={"demo": {}}, observers=observers))).secret_values()
+    observers["hook"]["headers"] = {"X-Pin": "${env-public:SHOP_PIN}"}
+    secrets = load_config(str(write_config(tmp_path, runners={"demo": {}}, observers=observers))).secret_values()
+    assert secrets == frozenset({"s3cr"})
 
 
 def test_a_default_written_in_the_file_is_not_treated_as_a_secret(tmp_path, monkeypatch):

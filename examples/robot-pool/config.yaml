@@ -49,3 +49,24 @@ runners:
       - { name: browser, kind: choice, choices: [firefox, chromium], default: firefox }
     parameter_variables: { variables: "*", browser: BROWSER }
     history_statuses: [PASS]      # balance by how long tests take when they pass
+  # Each region is ONE environment: it never runs two chunks at once, the
+  # person starting a run chooses whether every test runs on each region or
+  # once across them (--param partition_mode=split), per-run variables cannot
+  # redirect a run to another shop, and the run ends with one merged log per
+  # region and one for the whole run.
+  robot-regions:
+    plugin: robot-pool
+    suite_root: ../robot-shop/tests
+    max_workers: 4
+    partitions: [eu, us]
+    partition_mode: each
+    partition_mode_per_run: true
+    max_chunks_per_partition: 1
+    partition_variables:
+      eu: { CURRENCY: EUR, SHOP_URL: "https://eu.shop.example" }
+      us: { CURRENCY: USD, SHOP_URL: "https://us.shop.example" }
+    run_parameters:
+      - { name: variables, kind: mapping, label: "Extra variables" }
+    parameter_variables: { variables: "*" }
+    protected_variables: [SHOP_URL, CURRENCY]
+    merge_groups: true

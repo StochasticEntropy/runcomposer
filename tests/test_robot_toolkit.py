@@ -389,7 +389,10 @@ class TestSmallPieces:
         }
         with pytest.raises(LookupError, match=r"'Billing\.Invoice' belongs to none of the configured suite roots"):
             attribute_roots([str(ui), str(api)], ["Billing.Invoice"])
-        assert attribute_roots([str(ui)], ["Anything.At.All"]) == {"Anything.At.All": str(ui)}
+        # A single root is checked as well: its root suite is named "Shop".
+        assert attribute_roots([str(ui)], ["Shop.Cart.Add"]) == {"Shop.Cart.Add": str(ui)}
+        with pytest.raises(LookupError, match=r"'Anything\.At\.All' is not under the suite root"):
+            attribute_roots([str(ui)], ["Anything.At.All"])
 
     def test_the_listener_never_breaks_the_execution_it_reports_on(self):
         class Broken:

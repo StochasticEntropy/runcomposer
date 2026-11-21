@@ -33,6 +33,7 @@ from runcomposer.core.errors import (
     ConfigError,
     Conflict,
     InvalidRequest,
+    InvalidTransition,
     NotFound,
     RunActive,
     UnknownRun,
@@ -48,7 +49,7 @@ from runcomposer.core.timeutil import epoch_ms, normalize_time
 from .artifacts import Artifacts
 from .catalog import Catalog
 from .compose import Composer, ComposeResult, ExportResult, Preview
-from .config import Config, _resolve_env, redact
+from .config import Config, _resolve_env, redact, redact_free_text, resolve_options
 from .dispatching import DispatchManager, Outcome, PlanOutcome
 from .eventbus import EventBus, ObserverBinding
 from .housekeeping import collect_garbage, remove_run_artifacts
@@ -105,6 +106,9 @@ def parameter_json(parameter: Parameter) -> dict[str, Any]:
         "choices": list(parameter.choices),
         "required": parameter.required,
         "pattern": parameter.pattern,
+        # The regular expression every key of a `mapping` must match (null:
+        # any non-empty name), for a form to check names as it checks values.
+        "key_pattern": parameter.key_pattern,
     }
 
 
@@ -152,7 +156,7 @@ class Service:
             if wanted is not None:
                 binding = ObserverBinding(spec.key, observer, tuple(wanted))
             bindings.append(binding)
-        return EventBus(self.store, bindings, redact=self.redact)
+        return EventBus(self.store, bindings, redact=self.redact_event_data)
 
     @_part
     def ledger(self) -> Ledger:
@@ -186,6 +190,13 @@ class Service:
         refusal, an error or its health — a hook command with a token in it,
         say; what is recorded, logged and answered goes through here."""
         return redact(value, self._secrets)
+
+    def redact_event_data(self, data: Mapping[str, Any]) -> dict[str, Any]:
+        """An event's data with the secrets blanked out of its free-text
+        fields only (``message``, ``reason``, ``error``, ``plan``,
+        ``detail``) — shard and group names, ids, states and links are
+        identifiers, never rewritten."""
+        return redact_free_text(data, self._secrets)
 
     @_part
     def _secrets(self) -> frozenset[str]:
@@ -265,11 +276,13 @@ class Service:
         return MappingProxyType(_resolve_env(raw, f"connectors.{name}"))
 
     def runner_options(self, runner_id: str) -> dict[str, Any]:
-        """The runner's configured options as its constructor received them."""
+        """The runner's configured options as its constructor received them
+        (environment references substituted, converted where the
+        constructor annotates a number or a boolean)."""
         spec = self.config.plugin_spec("runners", runner_id)
         if spec is None:
             return {}
-        return {name: _resolve_env(value, spec.where) for name, value in spec.options.items()}
+        return resolve_options(spec)
 
     def runner_health(self, runner_id: str, *, refresh: bool = False) -> Health:
         cached = self._health.get(runner_id)
@@ -488,8 +501,12 @@ class Service:
             outstanding = lifecycle.outstanding_shards(
                 dispatch.shards, self.store.delivered_shards(run.id, dispatch.dispatch_id)
             )
-            expired.append(
-                self.ledger.move(
+            try:
+                # The ledger re-reads the state inside its own unit: a
+                # dispatch another process completed (or cancelled) since it
+                # was found waiting is not moved — that race is lost
+                # benignly, the results came after all.
+                moved = self.ledger.move(
                     dispatch.dispatch_id,
                     "FAILED",
                     error=(
@@ -505,7 +522,14 @@ class Service:
                         "outstanding_shards": outstanding,
                     },
                 )
-            )
+            except InvalidTransition:
+                current = self.store.get_dispatch(dispatch.dispatch_id)
+                log.info(
+                    "dispatch %s of run %s was not expired: it is %s by now",
+                    dispatch.dispatch_id, run.id, current.state if current else "gone",
+                )
+                continue
+            expired.append(moved)
             log.warning("dispatch %s of run %s expired while awaiting results",
                         dispatch.dispatch_id, run.id)
         return expired
@@ -689,11 +713,15 @@ class Service:
     def delete_run(self, run_id: str) -> None:
         """Remove a run, everything recorded for it, and its artifact
         directory. Refused while a runner is executing it."""
-        run = self.require_run(run_id)
-        latest = run.latest_dispatch
-        if latest is not None and latest.state in ("DISPATCHED", "RUNNING") and latest.owner:
-            raise RunActive(f"run {run_id} is {latest.state} — cancel it before deleting it")
-        self.store.delete_run(run_id)
+        # The check and the delete are one unit of the store: a dispatch
+        # another process starts in between waits for it — and then finds
+        # no run — instead of being deleted under its runner.
+        with self.store.atomic():
+            run = self.require_run(run_id)
+            latest = run.latest_dispatch
+            if latest is not None and latest.state in ("DISPATCHED", "RUNNING") and latest.owner:
+                raise RunActive(f"run {run_id} is {latest.state} — cancel it before deleting it")
+            self.store.delete_run(run_id)
         remove_run_artifacts(self.config.artifact_dir, run_id, self.config.private_dir)
         log.info("run %s deleted", run_id)
 

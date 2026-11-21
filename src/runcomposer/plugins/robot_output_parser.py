@@ -29,6 +29,16 @@ def _require_robot() -> tuple[Any, Any]:
     return ExecutionResult, ResultVisitor
 
 
+def _duration_ms(test: Any) -> int:
+    """Whole milliseconds, as Robot reports them — except that a test which
+    ran (PASS or FAIL) in under a millisecond is 1 ms, not 0: a duration of 0
+    means "not known" to the duration history, and a fast test is known to be
+    fast. Weighed as unknown it would count as long as the mean of the known
+    ones when a plan is balanced."""
+    elapsed = int(test.elapsedtime)
+    return 1 if elapsed == 0 and test.status in ("PASS", "FAIL") else elapsed
+
+
 class RobotOutputXmlParser(ParserBase):
     format_id = "robot-output-xml"
 
@@ -62,7 +72,7 @@ class RobotOutputXmlParser(ParserBase):
                     ParsedVerdict(
                         native_name=test.longname,
                         status=_STATUS_MAP.get(test.status, "ERROR"),
-                        duration_ms=int(test.elapsedtime),
+                        duration_ms=_duration_ms(test),
                         message=test.message or "",
                     )
                 )

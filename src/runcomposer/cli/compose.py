@@ -118,14 +118,39 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_NO
 
 
+#: The source entry ``catalog --manifest`` reads a file with — the key, and
+#: by default the plugin name, a deployment's ``sources:`` uses for it.
+MANIFEST_ENTRY = "manifest"
+
+
+def manifest_catalog(config_path: str | None, manifest: str) -> Any:
+    """The catalog of one manifest file, built the way a configured source
+    is: the ``sources.manifest`` entry of the configuration — its
+    ``plugin:`` / ``module:`` and options, so a deployment that configures
+    another plugin under that entry is honoured — else the plugin
+    registered under the entry-point name ``manifest``; with ``path`` set
+    to the file. Options are checked, the plugin is checked against the
+    TestSource contract and errors name the entry, as at startup."""
+    from pathlib import Path
+
+    from runcomposer.app.catalog import Catalog
+    from runcomposer.app.config import Config, load_config
+
+    config = load_config(config_path)
+    entry = dict((config.data.get("sources") or {}).get(MANIFEST_ENTRY) or {})
+    # Given on the command line: relative to where the command runs, not
+    # to the config file's directory.
+    entry["path"] = str(Path(manifest).absolute())
+    data = {**config.data, "sources": {MANIFEST_ENTRY: entry}}
+    return Catalog(Config(data=data, path=config.path))
+
+
 def cmd_catalog(args: argparse.Namespace) -> int:
     """The catalog every other command selects from: the merged catalog of
     the configured sources, or — with ``--manifest`` — one manifest file."""
     source: Any
     if args.manifest:
-        from runcomposer.core.registry import SOURCE_GROUP, load_entry_point
-
-        source = load_entry_point(SOURCE_GROUP, "manifest")(args.manifest)
+        source = manifest_catalog(args.config, args.manifest)
     else:
         source = service_for(args).catalog
 

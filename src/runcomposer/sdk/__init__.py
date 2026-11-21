@@ -41,6 +41,10 @@ What is here, by role:
   ``load_import_path`` (for a plugin's own ``"pkg.mod:callable"`` options)
   and ``RemoteLiveChannel`` (live status and log lines pushed to the API by
   an executor that runs elsewhere).
+- **Worker processes** — ``supervise_workers`` with ``WorkerPayload`` and
+  ``WorkerOutcome``: shards executed in spawned processes, in lanes, with a
+  timeout and a stop protocol that reaches what a worker started — for any
+  framework (the Robot toolkit's ``supervise`` is built on it).
 - **Embedding** — ``load_config`` and ``Service``, for driving runcomposer
   from a Python program instead of through the CLI or the HTTP API.
 """
@@ -72,7 +76,8 @@ from runcomposer.core.errors import (
     UnknownRunner,
 )
 from runcomposer.core.events import LIFECYCLE_KINDS
-from runcomposer.core.filter import FilterError, format_filter, parse_filter
+from runcomposer.core.filter import FilterError, format_filter, parse_filter, quote_pattern
+from runcomposer.core.filtertext import FilterSyntaxError, parse_filter_text, read_filter_string
 from runcomposer.core.handoff import corpus_drifted
 from runcomposer.core.hashing import bundle_hash, canonical_json, sha256_hex, verdicts_hash
 from runcomposer.core.ids import new_ulid
@@ -131,6 +136,7 @@ from runcomposer.core.registry import ConfiguredCall, configured_calls, load_imp
 from runcomposer.core.remote import RemoteLiveChannel, ResultsPushRefused, push_results
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
+from runcomposer.core.supervise import WorkerOutcome, WorkerPayload, supervise_workers
 from runcomposer.core.timeutil import epoch_ms, normalize_time, parse_time, utc_now
 from runcomposer.core.xmlsafe import forbid_dtd, parse_xml
 
@@ -163,6 +169,7 @@ __all__ = [
     "DispatchRecord",
     "DispatchRefused",
     "FilterError",
+    "FilterSyntaxError",
     "Forbidden",
     "Health",
     "History",
@@ -208,6 +215,8 @@ __all__ = [
     "UnknownRun",
     "UnknownRunner",
     "Verdict",
+    "WorkerOutcome",
+    "WorkerPayload",
     "bundle_hash",
     "canonical_json",
     "completion_of",
@@ -227,14 +236,18 @@ __all__ = [
     "outstanding_shards",
     "parameters_from_config",
     "parse_filter",
+    "parse_filter_text",
     "parse_time",
     "parse_xml",
     "plan_chunks",
     "push_results",
+    "quote_pattern",
+    "read_filter_string",
     "read_marker",
     "sha256_hex",
     "split_max",
     "summarize",
+    "supervise_workers",
     "utc_now",
     "validate_document",
     "validate_parameters",

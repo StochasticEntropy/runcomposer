@@ -28,13 +28,16 @@ def meta(service: Service = Depends(service_of)) -> dict[str, Any]:
     """Everything a client needs at boot, in one call: version, default
     locale, the dispatchable runners with their per-run parameters, the size
     of the catalog, whether a taxonomy is configured, whether the API
-    documentation viewers are served (``api.docs``), what the deployment
+    documentation viewers are served (``api.docs``), the language of the
+    server's free text (``text_language``), what the deployment
     loads (``configured``) and what is installed (``plugins``)."""
     config = service.config
     stats = service.catalog.stats()
     return {
         "version": __version__,
         "locale_default": config.locale_default,
+        # The language the server and its runners write free text in.
+        "text_language": config.text_language,
         "runners": service.runner_infos(health=False),
         "catalog": stats,
         "taxonomy": {"configured": config.taxonomy_configured},
@@ -67,8 +70,16 @@ def ui_config(service: Service = Depends(service_of)) -> dict[str, Any]:
     normalized: each of ``quick_filters`` and ``presets``, and
     ``default_filter``, carries ``tag_filter`` (the expression, in the
     grammar ``selection.tag_filter`` takes), ``text`` (one line to show) and
-    ``kind`` (``pattern`` for a single pattern, ``expression`` otherwise)."""
-    return {"locale_default": service.config.locale_default, **service.config.ui}
+    ``kind`` (``pattern`` for a single pattern, ``expression`` otherwise);
+    ``text`` is the canonical filter text, readable back to ``tag_filter``.
+    ``text_language`` (``core.text_language``) is the language of the free
+    text the server and its runners write — error details, health reasons,
+    plan text — for a client to mark it with."""
+    return {
+        "locale_default": service.config.locale_default,
+        "text_language": service.config.text_language,
+        **service.config.ui,
+    }
 
 
 @router.get("/presets")

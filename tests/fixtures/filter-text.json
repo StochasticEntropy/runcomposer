@@ -1,5 +1,5 @@
 {
-  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1). parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. A case with `ui` set to `pending` is not yet read alike by the web UI.",
+  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1), read by the core (tests/test_filter_text.py) and by the web UI (ui/src/lib/filter.fixture.test.ts) alike, every case on both sides. parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. `*` is every item: it reads as {\"not\": \"regex:^$\"}, which is written `*`; the quoted \"*\" is the tag spelled so.",
   "parse": [
     {
       "text": "Payments",
@@ -326,8 +326,7 @@
         "items": [
           "Auth"
         ]
-      },
-      "ui": "pending"
+      }
     },
     {
       "text": "OR (Auth OR Cart)",
@@ -342,8 +341,7 @@
             ]
           }
         ]
-      },
-      "ui": "pending"
+      }
     },
     {
       "text": "NOT AND (Auth)",
@@ -354,8 +352,7 @@
             "Auth"
           ]
         }
-      },
-      "ui": "pending"
+      }
     },
     {
       "text": "Auth OR AND (Cart)",
@@ -370,8 +367,91 @@
             ]
           }
         ]
-      },
-      "ui": "pending"
+      }
+    },
+    {
+      "text": "*",
+      "ast": {
+        "not": "regex:^$"
+      }
+    },
+    {
+      "text": "NOT *",
+      "ast": {
+        "not": {
+          "not": "regex:^$"
+        }
+      }
+    },
+    {
+      "text": "* AND NOT prefix:Quarantine-",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "not": "regex:^$"
+          },
+          {
+            "not": "prefix:Quarantine-"
+          }
+        ]
+      }
+    },
+    {
+      "text": "Auth OR *",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Auth",
+          {
+            "not": "regex:^$"
+          }
+        ]
+      }
+    },
+    {
+      "text": "(*)",
+      "ast": {
+        "not": "regex:^$"
+      }
+    },
+    {
+      "text": "AND (*)",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "not": "regex:^$"
+          }
+        ]
+      }
+    },
+    {
+      "text": "\"*\"",
+      "ast": "*"
+    },
+    {
+      "text": "Cart*",
+      "ast": "Cart*"
+    },
+    {
+      "text": "**",
+      "ast": "**"
+    },
+    {
+      "text": "\"Cart \ud83d\uded2\" OR AND (Auth)",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Cart \ud83d\uded2",
+          {
+            "op": "AND",
+            "items": [
+              "Auth"
+            ]
+          }
+        ]
+      }
     }
   ],
   "format": [
@@ -445,7 +525,7 @@
       "ast": {
         "not": "regex:^$"
       },
-      "text": "NOT regex:^$"
+      "text": "*"
     },
     {
       "ast": {
@@ -549,8 +629,7 @@
           "Auth"
         ]
       },
-      "text": "AND (Auth)",
-      "ui": "pending"
+      "text": "AND (Auth)"
     },
     {
       "ast": {
@@ -561,8 +640,7 @@
           ]
         }
       },
-      "text": "NOT OR (Cart)",
-      "ui": "pending"
+      "text": "NOT OR (Cart)"
     },
     {
       "ast": {
@@ -577,8 +655,7 @@
           }
         ]
       },
-      "text": "Auth OR AND (Cart)",
-      "ui": "pending"
+      "text": "Auth OR AND (Cart)"
     },
     {
       "ast": {
@@ -598,8 +675,60 @@
           }
         ]
       },
-      "text": "AND (OR (Auth AND Cart))",
-      "ui": "pending"
+      "text": "AND (OR (Auth AND Cart))"
+    },
+    {
+      "ast": {
+        "not": {
+          "not": "regex:^$"
+        }
+      },
+      "text": "NOT *"
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "not": "regex:^$"
+          },
+          {
+            "not": "prefix:Quarantine-"
+          }
+        ]
+      },
+      "text": "* AND NOT prefix:Quarantine-"
+    },
+    {
+      "ast": "*",
+      "text": "\"*\""
+    },
+    {
+      "ast": "Cart*",
+      "text": "Cart*"
+    },
+    {
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "not": "regex:^$"
+          }
+        ]
+      },
+      "text": "OR (*)"
+    },
+    {
+      "ast": {
+        "op": "AND",
+        "items": [
+          "*",
+          {
+            "not": "regex:^$"
+          }
+        ]
+      },
+      "text": "\"*\" AND *"
     }
   ],
   "errors": [
@@ -779,24 +908,66 @@
       "error": {
         "problem": "unterminated-quote",
         "position": 10
-      },
-      "ui": "pending"
+      }
     },
     {
       "text": "AND (Auth",
       "error": {
         "problem": "unbalanced-open",
         "position": 4
-      },
-      "ui": "pending"
+      }
     },
     {
       "text": "OR ()",
       "error": {
         "problem": "unbalanced-close",
         "position": 4
-      },
-      "ui": "pending"
+      }
+    },
+    {
+      "text": "Payments *",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "*"
+      }
+    },
+    {
+      "text": "* *",
+      "error": {
+        "problem": "missing-operator",
+        "position": 2,
+        "token": "*"
+      }
+    },
+    {
+      "text": "NOT (*",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 4
+      }
+    },
+    {
+      "text": "\"Cart \ud83d\uded2\" Auth",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "Auth"
+      }
+    },
+    {
+      "text": "Cart OR \ud83d\uded2 AND (Auth",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 14
+      }
+    },
+    {
+      "text": "OR (\ud83d\uded2",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 3
+      }
     }
   ]
 }

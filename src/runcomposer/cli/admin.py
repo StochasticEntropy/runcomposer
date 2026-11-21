@@ -68,6 +68,39 @@ def _data_lines(data: Any, indent: str = "") -> list[str]:
     return lines
 
 
+#: How many items a failed suite-root check names before it only counts.
+_NAMED_ITEMS = 3
+
+
+def _check_suite_roots(runner: dict[str, Any], items: list[Any], problems: list[str]) -> None:
+    """A ``robot-pool`` runner executes items from its suite roots, and a
+    dispatch whose items the roots would not find is refused. The same
+    check over the whole catalog, as a row of the runner's health checks:
+    a catalog built from other suites than the runner executes shows here,
+    not when the first run is refused."""
+    health = runner.get("health") or {}
+    data = health.get("data")
+    if not isinstance(data, dict) or not data.get("suite_roots") or not data.get("robot_version"):
+        return  # no roots or no Robot: health says so already
+    from runcomposer.sdk.robot import root_mismatches
+
+    mismatches = root_mismatches(
+        [str(root) for root in data["suite_roots"]], [item.id for item in items], items
+    )
+    row: dict[str, Any] = {"check": "catalog items under the suite roots", "ok": not mismatches}
+    if mismatches:
+        named = "; ".join(mismatches[:_NAMED_ITEMS])
+        more = len(mismatches) - _NAMED_ITEMS
+        row["detail"] = (
+            f"{len(mismatches)} of {len(items)} catalog item(s) are not under the suite roots "
+            f"— a run selecting them is refused: {named}" + (f"; … and {more} more" if more > 0 else "")
+        )
+        problems.append(f"runner {runner['id']}: {row['detail']}")
+    else:
+        row["detail"] = f"all {len(items)} catalog item(s) are under the suite roots"
+    data["checks"] = [*(data.get("checks") or []), row]
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from runcomposer.demo.demo import DemoError, run_demo
 
@@ -129,6 +162,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"catalog: {stats['duplicate_ids']} id(s) belong to more than one item"
                 )
             report["runners"] = service.runner_infos(refresh=True)
+            items = None
+            for runner in report["runners"]:
+                if runner.get("plugin") == "robot-pool" and not runner.get("error"):
+                    items = service.catalog.items() if items is None else items
+                    _check_suite_roots(runner, items, problems)
             for runner in report["runners"]:
                 health = runner.get("health") or {}
                 if runner.get("error"):

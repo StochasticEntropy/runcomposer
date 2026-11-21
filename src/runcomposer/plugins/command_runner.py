@@ -14,7 +14,10 @@ of configuration::
 
 Per shard the runner writes the shard's item ids, one per line, to
 ``{ids_file}``, runs the command, and — if it exited with an accepted code —
-delivers ``{out_dir}``.
+delivers ``{out_dir}``. Each shard's command is started by a worker process
+under the SDK's ``supervise_workers``: at most ``max_parallel`` at once, a
+shard over ``timeout_s`` stopped, and a cancellation stopping the command
+together with whatever it started.
 
 Placeholders, replaced literally (nothing else in braces is touched, so
 ``awk '{print $1}'`` is safe): ``{ids_file}`` ``{out_dir}`` ``{spec_file}``
@@ -30,8 +33,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +46,11 @@ from runcomposer.sdk import (
     RunnerBase,
     RunnerInfo,
     Verdict,
+    WorkerOutcome,
+    WorkerPayload,
     parameters_from_config,
     plan_chunks,
+    supervise_workers,
 )
 
 __all__ = ["CommandRunner"]
@@ -176,51 +181,50 @@ class CommandRunner(RunnerBase):
         if skips:
             ctx.deliver("drift", verdicts=skips, format=self.format)
 
-        pending = list(shards.items())
-        running: list[tuple[subprocess.Popen[bytes], str, Path, Any, float]] = []
+        channel = ctx.live_channel()
+        payloads = [
+            self._payload(ctx, shard, ids, spec_file, channel) for shard, ids in shards.items()
+        ]
         failures: list[str] = []
-        try:
-            while pending or running:
-                if ctx.cancelled:
-                    break
-                while pending and len(running) < self.max_parallel:
-                    shard, ids = pending.pop(0)
-                    running.append(self._start(ctx, shard, ids, spec_file))
-                still = []
-                for process, shard, out_dir, log, started in running:
-                    code = process.poll()
-                    overrun = self.timeout_s is not None and time.monotonic() - started > self.timeout_s
-                    if code is None and not overrun:
-                        still.append((process, shard, out_dir, log, started))
-                        continue
-                    if code is None:
-                        _stop(process)
-                        log.close()
-                        self._record_artifacts(ctx, shard, out_dir)  # command.log says why
-                        failures.append(f"shard {shard}: exceeded timeout_s={self.timeout_s:g}")
-                        continue
-                    log.close()
-                    problem = self._finish(ctx, shard, out_dir, code)
-                    if problem:
-                        failures.append(problem)
-                running = still
-                if running:
-                    time.sleep(0.05)
-        finally:
-            for process, _shard, _out, log, _started in running:
-                _stop(process)
-                log.close()
+
+        def finished(payload: WorkerPayload, outcome: WorkerOutcome) -> None:
+            shard, out_dir = payload.shard, Path(payload.out_dir)
+            result = outcome.result if isinstance(outcome.result, Mapping) else {}
+            if "not_started" in result:
+                # As before: a command that cannot start fails the dispatch now.
+                raise RuntimeError(
+                    f"shard {shard}: the command could not be started: {result['not_started']}"
+                )
+            if outcome.timed_out:
+                self._record_artifacts(ctx, shard, out_dir)  # command.log says why
+                failures.append(f"shard {shard}: exceeded timeout_s={self.timeout_s:g}")
+            elif "exit_code" not in result:
+                self._record_artifacts(ctx, shard, out_dir)
+                failures.append(f"shard {shard}: {outcome.problem}")
+            else:
+                problem = self._finish(ctx, shard, out_dir, int(result["exit_code"]))
+                if problem:
+                    failures.append(problem)
+
+        supervise_workers(
+            payloads,
+            _run_command,
+            max_workers=self.max_parallel,
+            on_done=finished,
+            cancelled=lambda: ctx.cancelled,
+            timeout_s=self.timeout_s,
+        )
         ctx.raise_if_cancelled()
         if failures:
             raise RuntimeError("; ".join(failures))
 
-    def _start(
-        self, ctx: DispatchContext, shard: str, ids: Sequence[str], spec_file: Path
-    ) -> tuple[subprocess.Popen[bytes], str, Path, Any, float]:
+    def _payload(
+        self, ctx: DispatchContext, shard: str, ids: Sequence[str], spec_file: Path, channel: Any
+    ) -> WorkerPayload:
+        """What the worker of one shard is told: the command with its
+        placeholders replaced, and the environment it runs in."""
         out_dir = ctx.workdir / f"shard-{shard}"
-        out_dir.mkdir(parents=True, exist_ok=True)
         ids_file = out_dir / "item_ids.txt"
-        ids_file.write_text("\n".join(ids) + "\n", encoding="utf-8")
         values = {
             "ids_file": str(ids_file),
             "out_dir": str(out_dir),
@@ -229,7 +233,7 @@ class CommandRunner(RunnerBase):
             "dispatch_id": ctx.dispatch_id,
             "shard": shard,
         }
-        env = {**os.environ, **self.env}
+        env = dict(self.env)
         for name, value in values.items():
             env[f"RUNCOMPOSER_{name.upper()}"] = value
         for name, value in ctx.parameters.items():
@@ -245,24 +249,14 @@ class CommandRunner(RunnerBase):
             command = substitute(self.command, values, quote=True)
         else:
             command = [substitute(part, values, quote=False) for part in self.command]
-        # Closed by the dispatch loop when the process ends (it outlives this call).
-        log = open(out_dir / "command.log", "wb")  # noqa: SIM115
-        try:
-            process = subprocess.Popen(
-                command,
-                shell=isinstance(command, str),
-                cwd=self.cwd,
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=os.name != "nt",  # its own group: children stop with it
-            )
-        except OSError as exc:
-            log.close()
-            raise RuntimeError(f"shard {shard}: the command could not be started: {exc}") from None
-        ctx.log(f"shard {shard}: command started (pid {process.pid})")
-        return process, shard, out_dir, log, time.monotonic()
+        return WorkerPayload(
+            shard=shard,
+            out_dir=str(out_dir),
+            item_ids=tuple(ids),
+            cwd=self.cwd,
+            env=env,
+            data={"command": command, "channel": channel},
+        )
 
     @staticmethod
     def _record_artifacts(ctx: DispatchContext, shard: str, out_dir: Path) -> None:
@@ -287,21 +281,49 @@ class CommandRunner(RunnerBase):
         return None
 
 
-def _stop(process: subprocess.Popen[bytes]) -> None:
-    """Stop the command and whatever it started (its process group)."""
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        process.terminate()
-    else:
-        import signal
+def _run_command(payload: WorkerPayload, stop: Callable[[], bool]) -> dict[str, Any]:
+    """The worker of one shard (a spawned process, already in the shard's
+    working directory and environment): write the ids file, run the command
+    with its output in ``command.log``, and hand back its exit code.
 
+    The command runs in the worker's process group, so the supervisor's stop
+    protocol reaches it and whatever it started; once asked to stop, the
+    worker also terminates the command itself (on Windows there is no group
+    to signal)."""
+    out_dir = Path(payload.out_dir)
+    (out_dir / "item_ids.txt").write_text("\n".join(payload.item_ids) + "\n", encoding="utf-8")
+    command = payload.data["command"]
+    channel = payload.data.get("channel")
+    if stop():  # stopped while the worker was starting: nothing to start
+        return {"stopped": True}
+    with open(out_dir / "command.log", "wb") as log:
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+            process = subprocess.Popen(
+                command,
+                shell=isinstance(command, str),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            return {"not_started": str(exc)}
+        if channel is not None:
+            channel.log(f"shard {payload.shard}: command started (pid {process.pid})", "info")
+        asked = False
+        try:
+            while True:
+                try:
+                    code = process.wait(timeout=0.05)
+                    break
+                except subprocess.TimeoutExpired:
+                    if stop() and not asked:
+                        # The group's signal has reached the command already —
+                        # unless it started just after; and on Windows there is
+                        # no group signal at all.
+                        asked = True
+                        process.terminate()
+        finally:
+            if process.poll() is None:  # the worker itself is being terminated
+                process.kill()
+                process.wait()
+    return {"exit_code": code}

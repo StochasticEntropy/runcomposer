@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from runcomposer.core.errors import InvalidRequest
-from runcomposer.core.filter import FilterError, format_filter, parse_filter, quote_pattern
+from runcomposer.core.filter import MATCH_ALL, FilterError, format_filter, parse_filter, quote_pattern
 from runcomposer.core.filtertext import (
     FilterSyntaxError,
     format_filter_text,
@@ -70,6 +70,28 @@ def test_the_shared_cases_cover_every_problem_and_node_shape():
 # -- the grammar in prose -----------------------------------------------------------
 
 
+def test_every_shared_case_is_read_alike_by_the_web_ui():
+    # No case is set aside for one reader: the UI runs every one of them too
+    # (ui/src/lib/filter.fixture.test.ts).
+    pending = [case for kind in ("parse", "format", "errors") for case in CASES[kind] if "ui" in case]
+    assert pending == []
+
+
+def test_a_bare_star_is_every_item_and_every_item_is_written_star():
+    assert parse_filter_text("*") == MATCH_ALL == {"not": "regex:^$"}
+    node = parse_filter(parse_filter_text("*"))
+    assert node.matches(["Cart"]) and node.matches([])
+    assert format_filter(parse_filter({"not": "regex:^$"})) == "*"
+    assert parse_filter_text("Checkout AND NOT *") == {"op": "AND", "items": ["Checkout", {"not": MATCH_ALL}]}
+
+
+def test_a_star_that_is_a_tag_is_quoted_and_a_star_inside_a_word_is_a_pattern():
+    assert quote_pattern("*") == '"*"'
+    assert parse_filter_text('"*"') == "*"
+    assert format_filter(parse_filter("*")) == '"*"'
+    assert parse_filter_text("Cart*") == "Cart*" and quote_pattern("Cart*") == "Cart*"
+
+
 def test_not_binds_tighter_than_and_and_and_tighter_than_or():
     assert parse_filter_text("NOT Auth AND Cart OR Checkout") == {
         "op": "OR",
@@ -117,7 +139,7 @@ def test_deep_nesting_is_refused_as_a_filter_error_not_a_crash():
 _PIECES = [
     "Auth", "Cart", "Checkout", "Payments-Cards", "Auth-SSO", "Catalog", "and", "or", "not",
     "AND", "OR", "NOT", " ", "  ", "(", ")", '"', "\\", ":", "\t", "\n", " ", "　",
-    "﻿", "\u001c", "\U0001f6d2", "-", "V2",
+    "﻿", "\u001c", "\U0001f6d2", "-", "V2", "*",
 ]
 _REGEXES = ["regex:^Cart(V2)?$", "regex:^Auth-", "regex:(?i)^cart", 'regex:^"Cart"$', "regex:^Cart\\d+$"]
 _PREFIXES = ["prefix:Checkout-", "prefix:Payments \\(V2\\)", "prefix:Auth\\d"]

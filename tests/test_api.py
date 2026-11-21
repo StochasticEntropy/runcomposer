@@ -857,7 +857,7 @@ class TestMeta:
         assert runner["parameters"] == [
             {
                 "name": "seed", "kind": "string", "label": "Seed", "default": "demo", "choices": [],
-                "required": False, "pattern": None,
+                "required": False, "pattern": None, "key_pattern": None,
                 "help": "Same seed, same simulated verdicts; change it to see results flip.",
             }
         ]
@@ -876,7 +876,8 @@ class TestMeta:
     def test_ui_config(self, make_client):
         client, _service = make_client(ui={"quick_filters": ["Smoke"]})
         assert client.get(f"{API}/ui-config").json() == {
-            "locale_default": "en", "quick_filters": [{"label": "Smoke", "filter": "Smoke", "tag_filter": "Smoke", "text": "Smoke", "kind": "pattern"}],
+            "locale_default": "en", "text_language": "en",
+            "quick_filters": [{"label": "Smoke", "filter": "Smoke", "tag_filter": "Smoke", "text": "Smoke", "kind": "pattern"}],
         }
 
     def test_runners_are_listed_under_their_config_key_with_cached_health(self, gated):

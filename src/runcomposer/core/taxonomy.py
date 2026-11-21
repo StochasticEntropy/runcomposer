@@ -34,10 +34,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import RunComposerError
-from .filter import FilterError, parse_filter
+from .filter import FilterError, format_filter, parse_filter, quote_pattern
+from .filtertext import read_filter_string
 from .model import Item
 
-__all__ = ["TaxonomyError", "resolve_taxonomy", "validate_taxonomy"]
+__all__ = ["TaxonomyError", "leaf_pattern", "resolve_taxonomy", "validate_taxonomy"]
 
 NODE_KEYS = ("label", "filter", "children")
 
@@ -63,11 +64,16 @@ def _type_name(value: Any) -> str:
     return "null" if value is None else type(value).__name__
 
 
-def validate_taxonomy(document: Any, *, origin: str = "taxonomy") -> dict[str, Any]:
+def validate_taxonomy(
+    document: Any, *, origin: str = "taxonomy", warnings: list[str] | None = None
+) -> dict[str, Any]:
     """Validate a parsed taxonomy document; return it unchanged, or raise.
 
     ``origin`` is the file name used in messages — the reader needs to know
-    *which* taxonomy is wrong when a deployment has several.
+    *which* taxonomy is wrong when a deployment has several. A leaf whose
+    ``filter`` is read as one pattern only by the fallback for strings that
+    are not filter text (``regex:^Cart(V2)?$``) is valid; what to write
+    instead is appended to ``warnings`` when a list is given.
     """
     if document is None:
         raise TaxonomyError(
@@ -96,11 +102,13 @@ def validate_taxonomy(document: Any, *, origin: str = "taxonomy") -> dict[str, A
         raise TaxonomyError(
             f"{origin}: 'taxonomy' must be a list of nodes, got {_type_name(nodes)}"
         )
-    _validate_nodes(nodes, origin=origin, path="taxonomy")
+    _validate_nodes(nodes, origin=origin, path="taxonomy", warnings=warnings)
     return dict(document)
 
 
-def _validate_nodes(nodes: list[Any], *, origin: str, path: str) -> None:
+def _validate_nodes(
+    nodes: list[Any], *, origin: str, path: str, warnings: list[str] | None = None
+) -> None:
     seen: dict[str, int] = {}
     for index, node in enumerate(nodes):
         node_path = f"{path}[{index}]"
@@ -125,7 +133,7 @@ def _validate_nodes(nodes: list[Any], *, origin: str, path: str) -> None:
 
         has_filter = "filter" in node
         if has_filter:
-            _validate_filter(node["filter"], origin=origin, named=named)
+            _validate_filter(node["filter"], origin=origin, named=named, warnings=warnings)
         has_children = "children" in node
         if has_children:
             children = node["children"]
@@ -134,7 +142,7 @@ def _validate_nodes(nodes: list[Any], *, origin: str, path: str) -> None:
                     f"{origin}: {named} has 'children' of type {_type_name(children)} — "
                     "'children' must be a list of nodes"
                 )
-            _validate_nodes(children, origin=origin, path=f"{node_path}.children")
+            _validate_nodes(children, origin=origin, path=f"{node_path}.children", warnings=warnings)
         if not has_filter and not has_children:
             extra = sorted(str(key) for key in node if key not in NODE_KEYS)
             hint = (
@@ -148,7 +156,9 @@ def _validate_nodes(nodes: list[Any], *, origin: str, path: str) -> None:
             )
 
 
-def _validate_filter(value: Any, *, origin: str, named: str) -> None:
+def _validate_filter(
+    value: Any, *, origin: str, named: str, warnings: list[str] | None = None
+) -> None:
     if not isinstance(value, str):
         raise TaxonomyError(
             f"{origin}: {named} has a 'filter' of type {_type_name(value)} — the filter of "
@@ -156,9 +166,32 @@ def _validate_filter(value: Any, *, origin: str, named: str) -> None:
             "'regex:^(Visa|Mastercard)$' (docs/taxonomy.md)"
         )
     try:
-        parse_filter(value, path=f"{named} filter")
+        pattern, note = read_filter_string(value)
+    except FilterError as exc:
+        raise TaxonomyError(f"{origin}: {named} filter: {exc}") from None
+    if not isinstance(pattern, str):
+        raise TaxonomyError(
+            f"{origin}: {named} has the filter {value!r}, which reads as the filter expression "
+            f"{format_filter(parse_filter(pattern))!r} — the filter of a leaf is one pattern: "
+            "write alternatives as one regex, e.g. 'regex:^(Visa|Mastercard)$', or write "
+            f"{quote_pattern(value.strip())} for the tag spelled so (docs/taxonomy.md)"
+        )
+    try:
+        parse_filter(pattern, path=f"{named} filter")
     except FilterError as exc:
         raise TaxonomyError(f"{origin}: {exc}") from None
+    if note and warnings is not None:
+        warnings.append(f"{origin}: {named}: {note}")
+
+
+def leaf_pattern(value: str) -> str:
+    """The one pattern a validated leaf's ``filter`` names: the string read
+    as filter text (``'"Sprint 12"'`` is the tag ``Sprint 12``), or — by the
+    fallback for strings that are not filter text — the pattern it spells."""
+    pattern, _ = read_filter_string(value)
+    if not isinstance(pattern, str):
+        raise TaxonomyError(f"the leaf filter {value!r} names more than one pattern")
+    return pattern
 
 
 # -- resolution against a catalog --------------------------------------------
@@ -284,7 +317,8 @@ class _Resolver:
         return built
 
     def build_node(self, node: Mapping[str, Any], node_path: str) -> _Resolved | None:
-        pattern = node.get("filter")
+        written_filter = node.get("filter")
+        pattern = leaf_pattern(written_filter) if isinstance(written_filter, str) else None
         own = self.matching_tags(pattern) if isinstance(pattern, str) else ()
         self.claimed.update(own)
         if len(own) == 1:
@@ -360,7 +394,10 @@ def resolve_taxonomy(
 
     Nodes come back in the same three-key grammar the file is written in —
     ``label``, optional ``filter``, optional ``children`` — plus additive
-    metadata:
+    metadata. A written ``filter`` is filter text that names one pattern
+    (``Payments``, ``"Sprint 12"``); a resolved node's ``filter`` is that
+    pattern itself, as a selection's ``tag_filter`` holds it — what a client
+    puts into its filter as one rule:
 
     ``id``
         Stable key for this node, spelled as its path in the document
@@ -390,7 +427,8 @@ def resolve_taxonomy(
     exists. ``document`` is validated first, on the same terms as everywhere
     else (§8), so this cannot be reached with a shape the endpoint refuses.
     """
-    validated = validate_taxonomy(document, origin=origin)
+    warnings: list[str] = []
+    validated = validate_taxonomy(document, origin=origin, warnings=warnings)
     resolver = _Resolver(items)
     built = resolver.build(validated["taxonomy"], "taxonomy")
     nodes = [entry.node for entry in built]
@@ -436,4 +474,7 @@ def resolve_taxonomy(
             "nodes_dropped": resolver.dropped,
             "nodes_total": _count_nodes(nodes),
         },
+        # Leaves read as one pattern only by the fallback for strings that
+        # are not filter text, each with what to write instead.
+        "warnings": warnings,
     }

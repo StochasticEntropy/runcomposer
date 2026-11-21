@@ -7,7 +7,7 @@ Grammar::
 
     expr    := and ("OR" and)*
     and     := unary ("AND" unary)*
-    unary   := "NOT" unary | "(" expr ")" | ("AND" | "OR") "(" expr ")" | pattern
+    unary   := "NOT" unary | "(" expr ")" | ("AND" | "OR") "(" expr ")" | "*" | pattern
     pattern := bare | '"' quoted '"'
 
 - NOT binds tighter than AND, AND tighter than OR; parentheses group. A run
@@ -22,12 +22,17 @@ Grammar::
   quote is refused rather than cut short: ``"regex:^Cart(V2)?$"`` is quoted.
 - ``AND (x)`` / ``OR (x)`` is a group of exactly one item — the one AST shape
   infix notation cannot spell otherwise.
+- ``*`` is every item of the catalog. The AST has no node of its own for
+  that; ``*`` reads as :data:`.filter.MATCH_ALL` (``{"not": "regex:^$"}``,
+  true of every item), and that node is written ``*``. Only the bare word
+  ``*`` is: ``Cart*`` is a pattern, and ``"*"`` is the tag spelled ``*``.
 - Empty or blank text is no filter (``None``).
 
 The text is only an input and a display: what a run spec stores is the AST
 (:mod:`.filter`), and ``parse_filter_text(format_filter(n)) == to_data(n)``
 for every node. Errors name the offset where reading stopped (``position``,
-counted in characters from 0) and what was expected there.
+counted in Unicode code points from 0 — what a Python ``str`` indexes; the
+web UI converts its UTF-16 offsets to this unit) and what was expected there.
 """
 
 from __future__ import annotations
@@ -36,6 +41,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .filter import (
+    EVERYTHING,
+    MATCH_ALL,
     OPERATOR_WORDS,
     TEXT_WHITESPACE,
     FilterError,
@@ -67,12 +74,16 @@ class FilterSyntaxError(FilterError):
         self.problem = problem
         self.position = position
         self.token = token
+        # What a transport adds to its error body; the word found there only
+        # where there is one (`missing-operator`, `needs-quotes`, …).
         self.extra = {"problem": problem, "position": position}
+        if token:
+            self.extra["token"] = token
 
 
 @dataclass(frozen=True)
 class _Token:
-    kind: str  # "op" | "open" | "close" | "pattern"
+    kind: str  # "op" | "open" | "close" | "all" | "pattern"
     at: int
     value: str = ""
 
@@ -126,11 +137,12 @@ def _tokenize(text: str) -> list[_Token]:
                     'parenthesis or a quote is written in double quotes, e.g. "regex:^Cart(V2)?$"',
                     word,
                 )
-            tokens.append(_Token("op" if word in OPERATOR_WORDS else "pattern", start, word))
+            kind = "all" if word == EVERYTHING else "op" if word in OPERATOR_WORDS else "pattern"
+            tokens.append(_Token(kind, start, word))
     return tokens
 
 
-_OPERAND = 'a pattern, NOT or "("'
+_OPERAND = 'a pattern, *, NOT or "("'
 
 
 class _Parser:
@@ -147,6 +159,8 @@ class _Parser:
         if token is None:
             raise FilterSyntaxError("unexpected-end", self.end, f"the text ends where {_OPERAND} was expected")
         self.cursor += 1
+        if token.kind == "all":
+            return dict(MATCH_ALL)
         if token.kind == "pattern":
             if token.value == "":
                 raise FilterSyntaxError("empty", token.at, 'an empty pattern ("") — a pattern needs a character')
@@ -209,7 +223,7 @@ def parse_filter_text(text: str) -> Any:
     if rest is not None:
         if rest.kind == "close":
             raise FilterSyntaxError("unbalanced-close", rest.at, "this ')' closes no '('")
-        found = rest.value if rest.kind in ("pattern", "op") else "("
+        found = rest.value if rest.kind in ("pattern", "op", "all") else "("
         raise FilterSyntaxError(
             "missing-operator", rest.at, f"{found!r} where AND, OR or the end of the text was expected", found
         )

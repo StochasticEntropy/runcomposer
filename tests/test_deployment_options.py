@@ -73,6 +73,8 @@ class TestPathsFromTheEnvironment:
             self.runner(tmp_path, root="${env:SHOP_CHECKOUT}/tests")
 
     def test_what_is_not_a_path_option_is_substituted_as_before_and_still_redacted(self, tmp_path, monkeypatch):
+        """A path is a location, not a credential: a reference used as a
+        path option is not blanked; every other ``${env:…}`` value is."""
         monkeypatch.setenv("SHOP_LABEL", "blue-green-7")
         monkeypatch.setenv("SHOP_CHECKOUT", "/srv/shop/checkout")
         config = load_config(str(write_config(tmp_path, runners={
@@ -80,7 +82,7 @@ class TestPathsFromTheEnvironment:
         with Service(config) as service:
             assert service.runner("pathy").label == "blue-green-7"
             assert service.redact("label blue-green-7 at /srv/shop/checkout") == (
-                "label ‹from the environment› at ‹from the environment›"
+                "label ‹from the environment› at /srv/shop/checkout"
             )
 
     def test_the_core_s_own_paths_take_references_too(self, tmp_path, monkeypatch):

@@ -153,11 +153,23 @@ class TestEndToEnd:
         assert service.require_spec(run.id)["results"]["expect"] == [{"format": "robot-output-xml"}]
         assert "robot-pool plan: 13 item(s) × 1 partition(s)" in dispatch.plan
         assert "cold start" in dispatch.plan
-        kinds = [e.kind for e in service.store.events(run.id)]
-        assert kinds == [
+        events = service.store.events(run.id)
+        kinds = [e.kind for e in events]
+        assert [kind for kind in kinds if kind != "log"] == [
             "run.composed", "run.dispatched", "run.running",
             "delivery.recorded", "delivery.recorded", "run.completed",
         ]
+        # Between the hand-off and the deliveries: a line when each shard
+        # starts and one when it ends, the end before the shard's delivery.
+        lines = sorted(
+            str(e.data["message"]).rpartition(" after ")[0] or str(e.data["message"])
+            for e in events if e.kind == "log"
+        )
+        assert lines == [
+            "shard default-1: finished", "shard default-1: started",
+            "shard default-2: finished", "shard default-2: started",
+        ]
+        assert kinds[kinds.index("delivery.recorded") - 1] == "log"
 
     def test_the_declared_shards_say_which_items_each_reports(self, make_service):
         service = pool_service(make_service)
@@ -465,35 +477,33 @@ class TestSeveralRoots:
         )
         assert execute(service, "Smoke").completion == "PASS"
 
-    def test_a_catalog_wider_than_the_single_suite_root_is_not_green(self, make_service, tmp_path):
-        """H2: a two-root catalog met a single `suite_root`, the other root's
-        items were silently not executed, and the run completed PASS."""
+    def test_a_catalog_wider_than_the_single_suite_root_is_refused_before_the_hand_off(
+        self, make_service, tmp_path
+    ):
+        """A two-root catalog met a single `suite_root`: the other root's
+        item cannot be executed from it, so the dispatch is refused — naming
+        the item and the root — instead of ending MISSING after the fact."""
         api, storefront = two_roots(tmp_path)
         service = pool_service(
             make_service, api, source={"robotframework": {"roots": [str(api), str(storefront)]}}
         )
-        run = execute(service, "Smoke")
-        assert (run.state, run.completion) == ("COMPLETE", "INCOMPLETE")
-        assert dict(run.latest_dispatch.summary) == {"PASS": 1, "MISSING": 1}
-        missing = [v for v in service.ledger.scored_verdicts(run.latest_dispatch) if v.status == "MISSING"]
-        assert [v.item_id for v in missing] == ["Storefront.Login.Login Works"]
-        # …and the run says why, instead of leaving it to be worked out.
-        (warning,) = [w["message"] for w in events_of(service, run.id, "warning")]
-        assert "1 of 1 selected test(s) do not exist under" in warning and str(api) in warning
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        outcome = service.dispatch(run_id, RUNNER, foreground=True)
+        assert "'Storefront.Login.Login Works'" in outcome.refusal and str(api) in outcome.refusal
+        assert service.require_run(run_id).dispatches == ()
 
     def test_the_same_holds_when_both_items_share_one_shard(self, make_service, tmp_path):
-        """Whether the stray item sits alone in a shard or next to one that
-        runs must not change the outcome."""
+        """Whether the stray item would sit alone in a shard or next to one
+        that runs must not change the outcome."""
         api, storefront = two_roots(tmp_path)
         service = pool_service(
             make_service, api, max_workers=1,
             source={"robotframework": {"roots": [str(api), str(storefront)]}},
         )
-        run = execute(service, "Smoke")
-        assert (run.state, run.completion) == ("COMPLETE", "INCOMPLETE")
-        assert dict(run.latest_dispatch.summary) == {"PASS": 1, "MISSING": 1}
-        (warning,) = [w["message"] for w in events_of(service, run.id, "warning")]
-        assert "1 of 2 selected test(s) do not exist under" in warning
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        outcome = service.dispatch(run_id, RUNNER, foreground=True)
+        assert "'Storefront.Login.Login Works'" in outcome.refusal
+        assert service.require_run(run_id).dispatches == ()
 
     def test_an_item_that_belongs_to_no_configured_root_refuses_the_dispatch(self, make_service, tmp_path):
         api, storefront = two_roots(tmp_path)

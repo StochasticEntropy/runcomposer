@@ -23,6 +23,8 @@ PARAMETER_KINDS = (
 )
 #: The kinds an optional ``pattern`` applies to.
 _PATTERN_KINDS = ("string", "text", "mapping")
+#: The kinds an optional ``key_pattern`` applies to.
+_KEY_PATTERN_KINDS = ("mapping",)
 
 
 @dataclass(frozen=True)
@@ -37,8 +39,10 @@ class Parameter:
 
     ``pattern`` is an optional regular expression the whole value must match
     (``re.fullmatch``): the value of a ``string``, the whole of a ``text``,
-    every *value* of a ``mapping``. It is checked when the run is requested —
-    not inside the runner — and the error names the parameter.
+    every *value* of a ``mapping``. ``key_pattern`` is the same for every
+    *key* (name) of a ``mapping``. Both are checked when the run is requested
+    — not inside the runner — and the error names the parameter (and the
+    offending key).
     """
 
     name: str
@@ -49,25 +53,33 @@ class Parameter:
     choices: tuple[str, ...] = ()
     required: bool = False
     pattern: str | None = None
+    key_pattern: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in PARAMETER_KINDS:
             raise ValueError(
                 f"parameter {self.name!r}: kind must be one of {PARAMETER_KINDS}, got {self.kind!r}"
             )
-        if self.pattern is not None:
-            if self.kind not in _PATTERN_KINDS:
-                raise ValueError(
-                    f"parameter {self.name!r}: 'pattern' applies to the kinds {_PATTERN_KINDS}, "
-                    f"not to {self.kind!r}"
-                )
-            try:
-                re.compile(self.pattern)
-            except re.error as exc:
-                raise ValueError(
-                    f"parameter {self.name!r}: pattern {self.pattern!r} is not a regular "
-                    f"expression ({exc})"
-                ) from None
+        self._check_expression("pattern", self.pattern, _PATTERN_KINDS)
+        self._check_expression("key_pattern", self.key_pattern, _KEY_PATTERN_KINDS)
+
+    def _check_expression(
+        self, field_name: str, expression: str | None, kinds: tuple[str, ...]
+    ) -> None:
+        if expression is None:
+            return
+        if self.kind not in kinds:
+            raise ValueError(
+                f"parameter {self.name!r}: '{field_name}' applies to the kinds {kinds}, "
+                f"not to {self.kind!r}"
+            )
+        try:
+            re.compile(expression)
+        except re.error as exc:
+            raise ValueError(
+                f"parameter {self.name!r}: {field_name} {expression!r} is not a regular "
+                f"expression ({exc})"
+            ) from None
 
     def check(self, value: Any) -> Any:
         """Return the accepted value, or raise :class:`InvalidParameter`
@@ -95,6 +107,12 @@ class Parameter:
             ):
                 raise bad("a mapping of names to strings")
             for key, entry in value.items():
+                if self.key_pattern is not None and re.fullmatch(self.key_pattern, key) is None:
+                    raise InvalidParameter(
+                        f"parameter {self.name!r}: key {key!r} does not match the key pattern "
+                        f"{self.key_pattern!r}",
+                        parameter=self.name,
+                    )
                 self._match(entry, f"[{key!r}]")
             return dict(value)
         elif self.kind == "integer":
@@ -154,7 +172,9 @@ def validate_parameters(
     return accepted
 
 
-_PARAMETER_KEYS = ("name", "kind", "label", "help", "default", "choices", "required", "pattern")
+_PARAMETER_KEYS = (
+    "name", "kind", "label", "help", "default", "choices", "required", "pattern", "key_pattern",
+)
 
 
 def parameters_from_config(raw: Sequence[Any] | None, where: str) -> tuple[Parameter, ...]:
@@ -181,6 +201,9 @@ def parameters_from_config(raw: Sequence[Any] | None, where: str) -> tuple[Param
                     choices=tuple(str(choice) for choice in entry.get("choices") or ()),
                     required=bool(entry.get("required", False)),
                     pattern=None if entry.get("pattern") is None else str(entry["pattern"]),
+                    key_pattern=(
+                        None if entry.get("key_pattern") is None else str(entry["key_pattern"])
+                    ),
                 )
             )
             if entry.get("default") is not None:

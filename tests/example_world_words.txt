@@ -173,6 +173,7 @@ AA                # WCAG conformance level
 ALL-CAPS
 ASCII
 ASGI
+BCP               # BCP 47, the language tags of the web (core.text_language)
 CA                # certificate authority
 CamelCase
 CAPS
@@ -233,6 +234,7 @@ UNC
 UNSTABLE          # a CI build result
 UPSERT
 URLs
+Unicode
 UTF
 VCS
 WAL               # write-ahead logging

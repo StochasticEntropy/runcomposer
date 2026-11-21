@@ -17,6 +17,13 @@ Semantics:
 The same filter has a one-line text form for people (``Payments AND NOT
 prefix:Quarantine-``): :func:`format_filter` writes it, and
 :mod:`.filtertext` reads it back into this AST.
+
+"Every item" has no node of its own: an empty ``AND`` is refused, and the
+run spec's closed ``runspec/1.0`` grammar has no other shape for it. It is
+the one expression true of every item, :data:`MATCH_ALL` —
+``{"not": "regex:^$"}``, NOT of a pattern no tag can match (a tag is never
+empty). That is what a run spec stores and the API returns; the text form
+writes it, and reads it, as ``*`` (:data:`EVERYTHING`).
 """
 
 from __future__ import annotations
@@ -29,12 +36,15 @@ from typing import Any, Union
 from .errors import InvalidRequest
 
 __all__ = [
+    "EVERYTHING",
+    "MATCH_ALL",
     "BoolOp",
     "FilterError",
     "FilterNode",
     "NotNode",
     "TagPattern",
     "format_filter",
+    "is_everything",
     "parse_filter",
     "quote_pattern",
     "to_data",
@@ -142,6 +152,21 @@ def to_data(node: FilterNode) -> Any:
     raise TypeError(f"not a filter node: {node!r}")
 
 
+#: The pattern no tag matches: a tag is never the empty string.
+_NO_TAG = "regex:^$"
+#: "Every item", as a run spec stores it — the AST data of the only node
+#: that is true for every item. Always the same data, so it is recognized
+#: by equality: :func:`is_everything`.
+MATCH_ALL: dict[str, Any] = {"not": _NO_TAG}
+#: "Every item", as the text form writes and reads it.
+EVERYTHING = "*"
+
+
+def is_everything(node: FilterNode) -> bool:
+    """``node`` is :data:`MATCH_ALL` — written ``*`` in the text form."""
+    return isinstance(node, NotNode) and isinstance(node.item, TagPattern) and node.item.raw == _NO_TAG
+
+
 #: What the one-line text form (``core.filtertext``) reads as an operator.
 OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
 #: The whitespace of the text form: exactly what ``\\s`` matches in the
@@ -157,8 +182,14 @@ def quote_pattern(pattern: str) -> str:
     """A pattern as the text form writes it: bare when it reads back as
     itself, else in double quotes with ``\\`` and ``"`` escaped by a
     backslash — a space, a parenthesis, a quote or a backslash in it, or a
-    pattern that is an operator word (``"AND"``), is quoted."""
-    if pattern and pattern not in OPERATOR_WORDS and not any(ch in _NEEDS_QUOTES for ch in pattern):
+    pattern that is an operator word (``"AND"``) or the word for every item
+    (``"*"``, the tag literally spelled so), is quoted."""
+    if (
+        pattern
+        and pattern not in OPERATOR_WORDS
+        and pattern != EVERYTHING
+        and not any(ch in _NEEDS_QUOTES for ch in pattern)
+    ):
         return pattern
     escaped = pattern.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
@@ -172,9 +203,12 @@ def format_filter(node: FilterNode) -> str:
     AND binds tighter than OR, so a group inside a group, and a group under
     NOT, is parenthesized. A group of exactly one item has no infix spelling
     and is written as its operator applied to it: ``AND (Checkout)``.
+    :data:`MATCH_ALL` is written ``*``.
     """
     if isinstance(node, TagPattern):
         return quote_pattern(node.raw)
+    if is_everything(node):
+        return EVERYTHING
     if isinstance(node, NotNode):
         return f"NOT {_operand(node.item)}"
     if len(node.items) == 1:

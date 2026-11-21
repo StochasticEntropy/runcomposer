@@ -50,9 +50,13 @@ PUBLIC_NAMES = {
     "read_marker", "forbid_dtd", "parse_xml", "completion_of", "effective_verdicts",
     "missing_verdicts", "outstanding_shards", "summarize", "new_ulid", "utc_now", "parse_time",
     "normalize_time", "epoch_ms", "parse_filter", "format_filter", "load_document",
+    # the filter's text form: read, quote, and the error that says where
+    "parse_filter_text", "read_filter_string", "quote_pattern", "FilterSyntaxError",
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
     "RemoteLiveChannel", "corpus_drifted", "ConfiguredCall", "configured_calls",
     "push_results", "ResultsPushRefused",
+    # worker processes for any framework: lanes, a timeout, the stop protocol
+    "supervise_workers", "WorkerPayload", "WorkerOutcome",
     # embedding
     "Service", "load_config", "Config",
 }
@@ -66,6 +70,8 @@ ROBOT_TOOLKIT = {
     "Execution", "ShardPayload", "ShardOutput", "ShardResult", "ShardOutcome",
     "run_shard", "read_shard_result", "supervise", "stop_worker", "RESULT_FILE", "STOP_FILE",
     "collect_verdicts", "deliver_shard", "merge_outputs", "MergeNoiseRemover", "robot_version",
+    # merging in a spawned process; the single-root check
+    "MergePayload", "MergeResult", "run_merge", "spawn_merge", "NameTopSuites", "root_mismatches",
 }
 JENKINS_TOOLKIT = {
     "JenkinsClient", "JenkinsError", "JenkinsTimeout", "JenkinsQueueCancelled", "encode_spec", "decode_spec", "queue_id_of",

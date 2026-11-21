@@ -61,8 +61,7 @@ def _start(
     handed_off = service.dispatcher.wait_handoff(
         outcome, float(service.config.dispatch["handoff_wait_s"])
     )
-    if outcome.refusal is not None:
-        raise DispatchRefused(outcome.refusal)
+    outcome.raise_if_rejected()
     return {"handoff": _handoff(handed_off)}, service.store.get_dispatch(outcome.dispatch_id)
 
 
@@ -342,8 +341,8 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
     handed_off = service.dispatcher.wait_handoff(
         outcome, float(service.config.dispatch["handoff_wait_s"])
     )
-    if outcome.refusal is not None:
-        error = DispatchRefused(outcome.refusal)
+    if outcome.refusal is not None or outcome.invalid is not None:
+        error: RunComposerError = outcome.invalid or DispatchRefused(str(outcome.refusal))
         if target != run_id:
             service.delete_run(target)
             error.extra = {"run_kept": False, "run_id": None}

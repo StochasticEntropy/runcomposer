@@ -27,8 +27,10 @@ Two more ways to drive it, for runners that cannot be tested by waiting for
   local port (``harness.url``, ``harness.api``), for a connector whose
   executor pushes results or progress itself. The address is known before
   the plugins are built: reference it in an entry as
-  ``${env:RUNCOMPOSER_HARNESS_URL}`` (a ``callback_base``, say), or build one
-  from ``${env:RUNCOMPOSER_HARNESS_PORT}``. For an executor in a container,
+  ``${env-public:RUNCOMPOSER_HARNESS_URL}`` (a ``callback_base``, say), or
+  build one from ``${env-public:RUNCOMPOSER_HARNESS_PORT}`` — the public
+  spelling, since an address is no secret (as ``${env:…}`` it would be
+  blanked out of every recorded text, the port number included). For an executor in a container,
   serve on every interface and advertise the name the container reaches the
   host by: ``ConnectorHarness(serve=True, host="0.0.0.0",
   advertise_host="host.docker.internal")``.
@@ -225,8 +227,9 @@ class ConnectorHarness:
     port of 127.0.0.1 (``host=`` for another interface, ``"0.0.0.0"`` for
     all): ``harness.url`` is its base address, ``harness.api`` the API root,
     ``harness.port`` the port. The address exists before the plugins are
-    built — an entry refers to it as ``${env:RUNCOMPOSER_HARNESS_URL}``, or
-    puts a host of its own in front of ``${env:RUNCOMPOSER_HARNESS_PORT}``.
+    built — an entry refers to it as ``${env-public:RUNCOMPOSER_HARNESS_URL}``,
+    or puts a host of its own in front of
+    ``${env-public:RUNCOMPOSER_HARNESS_PORT}``.
 
     ``advertise_host`` is the name the *executor* reaches this machine by,
     when that is not the address the harness listens on — an executor in a

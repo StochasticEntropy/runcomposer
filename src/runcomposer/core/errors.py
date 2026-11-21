@@ -51,12 +51,26 @@ class InvalidRequest(RunComposerError, ValueError):
 
 
 class InvalidParameter(InvalidRequest):
-    """A per-run runner parameter is unknown, missing or ill-typed.
-    ``parameter`` names it."""
+    """A per-run runner parameter is unknown, missing, ill-typed — or has a
+    value the runner cannot carry out. ``parameter`` names it.
+
+    Two spellings::
+
+        InvalidParameter("parameter 'region' must be …", parameter="region")
+        InvalidParameter("region", "no build agent serves 'ap'")
+
+    The second — parameter name, then what is wrong — is the one for a
+    runner: raised from ``plan`` or from ``dispatch`` before ``declare``, it
+    is answered like a value the declaration refuses (HTTP ``400``
+    ``invalid-parameter``, no dispatch left behind); raised after the
+    hand-off it fails the dispatch with its message."""
 
     code = "invalid-parameter"
 
-    def __init__(self, message: str, *, parameter: str = ""):
+    def __init__(self, message: str, detail: str | None = None, *, parameter: str = ""):
+        if detail is not None:
+            parameter = parameter or message
+            message = f"parameter {message!r}: {detail}"
         super().__init__(message)
         self.parameter = parameter
 

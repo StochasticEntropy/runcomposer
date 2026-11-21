@@ -23,8 +23,14 @@ is the evidence that they suffice.
   produced, delivered through the dispatch context.
 - :func:`merge_outputs` — several ``output.xml`` of one shard merged into
   one readable result, without the "added from merged output" notes a merge
-  of disjoint executions would stamp on every test.
-- :func:`attribute_roots` — which suite root each item is executed from.
+  of disjoint executions would stamp on every test; ``rebot_options`` pass
+  further options to rebot. :class:`MergePayload` / :func:`run_merge` /
+  :func:`spawn_merge` — the same merge in a spawned process, for a server
+  that must not run Robot itself; :class:`NameTopSuites` names the
+  top-level suites of outputs combined side by side.
+- :func:`attribute_roots` / :func:`root_mismatches` — which suite root each
+  item is executed from, checked: an item of the catalog that the roots
+  would not find is named before anything runs.
 
 Robot Framework itself is imported only when something is executed (inside
 the functions that need it): importing this module works without it, and
@@ -44,18 +50,22 @@ import re
 import sys
 import time
 import traceback
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from runcomposer.sdk import (
+    ConfiguredCall,
     DispatchContext,
     Item,
     LiveChannel,
     RemoteLiveChannel,
     Verdict,
-    load_import_path,
+    WorkerOutcome,
+    WorkerPayload,
+    supervise_workers,
 )
 
 __all__ = [
@@ -65,6 +75,9 @@ __all__ = [
     "Execution",
     "LiveStatusListener",
     "MergeNoiseRemover",
+    "MergePayload",
+    "MergeResult",
+    "NameTopSuites",
     "RemoteLiveStatusListener",
     "ShardOutcome",
     "ShardOutput",
@@ -76,7 +89,10 @@ __all__ = [
     "merge_outputs",
     "read_shard_result",
     "robot_version",
+    "root_mismatches",
+    "run_merge",
     "run_shard",
+    "spawn_merge",
     "stop_worker",
     "supervise",
 ]
@@ -133,46 +149,115 @@ class ExactSelection:
         suite.suites = [child for child in suite.suites if child.test_count > 0]
 
 
+#: How many mismatched items a refusal names before it only counts the rest.
+_NAMED_MISMATCHES = 3
+
+
 def attribute_roots(
     suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item] = ()
 ) -> dict[str, str]:
-    """Which suite root each item is executed from. The catalog says so when
-    it was built by the Robot source (``Item.meta["source"]`` lies under the
-    root); otherwise the root suite's name — the first segment of the id —
-    does. Raises ``LookupError`` naming an item that belongs to no root."""
+    """Which suite root each item is executed from — checked, also for a
+    single root. Raises ``LookupError`` naming the items (the first few, and
+    how many there are) that belong to no configured root, so that a run is
+    refused before anything executes instead of ending ``MISSING``.
+
+    With several roots, the catalog says which when it was built by the
+    Robot source (``Item.meta["source"]`` lies under the root); otherwise the
+    root suite's name — the first segment of the id — does. A single root is
+    checked by :func:`root_mismatches`."""
+    roots_of, problems = _assign_roots(suite_roots, item_ids, items)
+    if problems:
+        raise LookupError(_describe_mismatches(problems))
+    return roots_of
+
+
+def _describe_mismatches(problems: Sequence[str]) -> str:
+    """:func:`root_mismatches` as one message: the first few, and how many
+    there are."""
+    named = "; ".join(problems[:_NAMED_MISMATCHES])
+    if len(problems) == 1:
+        return named
+    more = len(problems) - _NAMED_MISMATCHES
+    return (
+        f"{len(problems)} item(s) do not belong to the configured suite roots: {named}"
+        + (f"; … and {more} more" if more > 0 else "")
+    )
+
+
+def root_mismatches(
+    suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item] = ()
+) -> list[str]:
+    """Every item of ``item_ids`` that belongs to none of ``suite_roots``,
+    each as a sentence naming the item and the root — empty when all belong.
+    The check :func:`attribute_roots` refuses on; ``runcomposer doctor``
+    runs it over the whole catalog.
+
+    With a single root, an item belongs to it when its id begins with the
+    root suite's name (Robot's own name for that directory or file) and its
+    recorded source (``Item.meta["source"]``, when the catalog records one)
+    lies under the root. An item the Robot source collected from this very
+    root (``Item.meta["root"]`` is the root) belongs whatever the root suite
+    is called — a suite may rename itself."""
+    return _assign_roots(suite_roots, item_ids, items)[1]
+
+
+def _assign_roots(
+    suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item]
+) -> tuple[dict[str, str], list[str]]:
     roots = [str(root) for root in suite_roots]
-    if len(roots) == 1:
-        return dict.fromkeys(item_ids, roots[0])
+    meta = {item.id: item.meta for item in items}
+    if not roots:
+        return {}, [f"item {item_id!r}: no suite root is configured" for item_id in item_ids]
     from robot.running import TestSuite
 
     resolved = {root: Path(root).resolve() for root in roots}
-    by_name = {TestSuite.name_from_source(root): root for root in roots}
-    meta = {item.id: item.meta for item in items}
+    names = {root: TestSuite.name_from_source(root) for root in roots}
+
+    def under(path: str, root: str) -> bool:
+        base, found = resolved[root], Path(path).resolve()
+        return found == base or base in found.parents
+
+    def named(item_id: str, root: str) -> bool:
+        return item_id == names[root] or item_id.startswith(names[root] + ".")
+
     roots_of: dict[str, str] = {}
+    problems: list[str] = []
+    if len(roots) == 1:
+        (root,) = roots
+        for item_id in item_ids:
+            recorded = meta.get(item_id) or {}
+            source = str(recorded.get("source") or "")
+            collected_here = bool(recorded.get("root")) and (
+                Path(str(recorded["root"])).resolve() == resolved[root]
+            )
+            if source and not under(source, root):
+                problems.append(
+                    f"item {item_id!r} comes from {source}, which is not under the suite root "
+                    f"{root!r} — the catalog was built from other suites than this runner executes"
+                )
+            elif not collected_here and not named(item_id, root):
+                problems.append(
+                    f"item {item_id!r} is not under the suite root {root!r}: executed from there, "
+                    f"every test's id begins with {names[root] + '.'!r} — the catalog was built "
+                    "from another directory than this runner executes"
+                )
+            else:
+                roots_of[item_id] = root
+        return roots_of, problems
     for item_id in item_ids:
         found = None
         source = str((meta.get(item_id) or {}).get("source") or "")
         if source:
-            path = Path(source).resolve()
-            found = next(
-                (root for root, base in resolved.items() if path == base or base in path.parents),
-                None,
-            )
+            found = next((root for root in roots if under(source, root)), None)
         if found is None:
-            found = next(
-                (
-                    root
-                    for name, root in by_name.items()
-                    if item_id == name or item_id.startswith(name + ".")
-                ),
-                None,
-            )
+            found = next((root for root in roots if named(item_id, root)), None)
         if found is None:
-            raise LookupError(
+            problems.append(
                 f"item {item_id!r} belongs to none of the configured suite roots {roots}"
             )
-        roots_of[item_id] = found
-    return roots_of
+        else:
+            roots_of[item_id] = found
+    return roots_of, problems
 
 
 # -- live status ---------------------------------------------------------------------------
@@ -293,10 +378,17 @@ class ShardPayload:
       ``live_status``, per-test status (``ctx.live_channel()``).
     - ``listeners`` — additional Robot listeners (import paths).
     - ``executed_tag`` — a tag added to every executed test.
-    - ``worker_setup`` — ``"pkg.mod:callable"`` references called in the
-      worker before the first execution with ``{shard, partition, run_id,
-      dispatch_id, out_dir, variables}``; a mapping they return is added to
-      the variables.
+    - ``worker_setup`` — ``"pkg.mod:callable"`` references (or
+      :class:`~runcomposer.sdk.ConfiguredCall` entries, whose settings reach
+      the callable as ``settings=``) called in the worker before the first
+      execution with ``{shard, partition, run_id, dispatch_id, out_dir,
+      variables, data}``; a mapping they return is added to the variables.
+    - ``cwd`` — the worker changes into this directory before anything is
+      executed (a corpus that reads its files relative to the working
+      directory); ``env`` — set in the worker's process environment (they
+      are not Robot variables); ``worker_data`` — a picklable mapping made
+      by the dispatching process, handed to ``worker_setup`` as
+      ``info["data"]``.
     - ``rerun_failed`` — re-execute failed tests up to this many more times;
       every attempt is reported, the last one counts.
     - ``rpa`` — the execution mode: ``None`` lets Robot decide (it refuses a
@@ -317,7 +409,7 @@ class ShardPayload:
     live_status: bool = True
     listeners: tuple[str, ...] = ()
     executed_tag: str | None = None
-    worker_setup: tuple[str, ...] = ()
+    worker_setup: tuple[str | ConfiguredCall, ...] = ()
     pythonpath: tuple[str, ...] = ()
     log: bool = True
     report: bool = True
@@ -326,6 +418,9 @@ class ShardPayload:
     robot_options: Mapping[str, Any] = field(default_factory=dict)
     run_id: str = ""
     dispatch_id: str = ""
+    cwd: str | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    worker_data: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def item_ids(self) -> tuple[str, ...]:
@@ -408,19 +503,29 @@ class _Stopped(Exception):
     """The shard was asked to stop."""
 
 
-def run_shard(payload: ShardPayload) -> None:
+def run_shard(payload: ShardPayload, stop: Callable[[], bool] | None = None) -> None:
     """Worker entry: execute one shard with real Robot Framework and write
     what happened to :data:`RESULT_FILE` in ``payload.out_dir``. Meant as the
-    target of a spawned process (:func:`supervise` uses it that way); it can
-    also be called in-process."""
-    out_dir = Path(payload.out_dir)
+    target of a spawned process (:func:`supervise` runs it that way); it can
+    also be called in-process, where ``payload.cwd`` and ``payload.env``
+    apply for the duration of the call.
+
+    ``stop()`` (optional) says the shard was asked to stop — the
+    supervisor's stop request; :data:`STOP_FILE` in ``out_dir`` says so
+    too. No further execution starts once it is true."""
+    out_dir = Path(os.path.abspath(payload.out_dir))  # unaffected by payload.cwd
     out_dir.mkdir(parents=True, exist_ok=True)
     outputs: list[ShardOutput] = []
     problems: list[str] = []
     error: str | None = None
     stopped = False
+
+    def asked() -> bool:
+        return (stop is not None and stop()) or (out_dir / STOP_FILE).exists()
+
     try:
-        _execute_shard(payload, out_dir, outputs, problems)
+        with _working_in(payload.cwd, payload.env):
+            _execute_shard(payload, out_dir, outputs, problems, asked)
         error = "; ".join(problems) or None
     except _Stopped:
         stopped = True
@@ -438,8 +543,37 @@ def run_shard(payload: ShardPayload) -> None:
         (out_dir / RESULT_FILE).write_text(json.dumps(document), encoding="utf-8")
 
 
+@contextmanager
+def _working_in(cwd: str | None, env: Mapping[str, str]) -> Iterator[None]:
+    """``cwd`` as the working directory and ``env`` in the process
+    environment, both restored afterwards."""
+    before_cwd = os.getcwd()
+    before_env = {str(key): os.environ.get(str(key)) for key in env}
+    try:
+        if cwd:
+            os.chdir(cwd)
+        os.environ.update({str(key): str(value) for key, value in env.items()})
+        yield
+    finally:
+        os.chdir(before_cwd)
+        for key, value in before_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _supervised_shard(work: WorkerPayload, stop: Callable[[], bool]) -> None:
+    """The worker target :func:`supervise` hands to ``supervise_workers``."""
+    run_shard(work.data["payload"], stop)
+
+
 def _execute_shard(
-    payload: ShardPayload, out_dir: Path, outputs: list[ShardOutput], problems: list[str]
+    payload: ShardPayload,
+    out_dir: Path,
+    outputs: list[ShardOutput],
+    problems: list[str],
+    asked: Callable[[], bool],
 ) -> None:
     for entry in payload.pythonpath:
         if entry not in sys.path:
@@ -463,23 +597,22 @@ def _execute_shard(
         "partition": payload.partition,
         "run_id": payload.run_id,
         "dispatch_id": payload.dispatch_id,
-        "out_dir": payload.out_dir,
+        "out_dir": str(out_dir),
+        "data": dict(payload.worker_data),
     }
     for ref in payload.worker_setup:
-        extra = load_import_path(ref)(dict(info, variables=dict(variables)))
+        extra = ConfiguredCall.parse(ref, "worker_setup")(dict(info, variables=dict(variables)))
         if isinstance(extra, Mapping):  # a setup may contribute Robot variables
             variables.update({str(key): str(value) for key, value in extra.items()})
 
     def execute(execution: Execution, target: Path, *, final: bool, attempt: int = 1) -> ShardOutput | None:
         """One Robot execution; what it produced, or None without an output."""
-        if (out_dir / STOP_FILE).exists():
+        if asked():
             raise _Stopped
         target.mkdir(parents=True, exist_ok=True)
         listeners: list[Any] = list(payload.listeners)
         if channel is not None and payload.live_status:
-            listeners.append(
-                LiveStatusListener(channel, payload.shard, (out_dir / STOP_FILE).exists)
-            )
+            listeners.append(LiveStatusListener(channel, payload.shard, asked))
         selection = ExactSelection(execution.item_ids, payload.executed_tag)
         options: dict[str, Any] = dict(payload.robot_options)
         options.update(
@@ -502,7 +635,7 @@ def _execute_shard(
         complaints = io.StringIO()
         with open(os.devnull, "w", encoding="utf-8") as devnull:
             rc = robot_api.run(execution.root, stdout=devnull, stderr=complaints, **options)
-        if rc == _STOPPED_BY_SIGNAL or (out_dir / STOP_FILE).exists():
+        if rc == _STOPPED_BY_SIGNAL or asked():
             # Robot ended the execution in flight; do not go on to the next.
             raise _Stopped
         output = target / "output.xml"
@@ -616,6 +749,58 @@ class MergeNoiseRemover:
         item.message = plain if "<" not in rest else f"*HTML* {rest}"
 
 
+class NameTopSuites:
+    """Pre-rebot modifier for outputs combined side by side
+    (``merge=False``): gives the top-level suites, in the order the outputs
+    were given, the names in ``names`` — so that the same suite executed on
+    two partitions reads as ``eu`` and ``us`` instead of twice ``Tests``.
+    Only the copy for people is renamed; the outputs merged are untouched."""
+
+    def __init__(self, names: Sequence[str]):
+        self.names = tuple(str(name) for name in names)
+
+    def visit_suite(self, suite: Any) -> None:
+        for child, name in zip(suite.suites, self.names, strict=False):
+            child.name = name
+        suite.name = " & ".join(child.name for child in suite.suites)
+
+
+#: What :func:`merge_outputs` decides itself — not to be given again through
+#: ``rebot_options`` (compared case-insensitively, ``-`` and ``_`` ignored, as
+#: Robot reads option names).
+_MERGE_OWN_OPTIONS = {
+    "merge": "merge=",
+    "outputdir": "out_dir",
+    "output": "out_dir (the merged file is always output.xml)",
+    "log": "log=",
+    "report": "report=",
+    "rpa": "rpa=",
+    "processemptysuite": "nothing — an empty merge is still written",
+    "consolecolors": "nothing — rebot writes to no console",
+    "stdout": "nothing — rebot writes to no console",
+    "stderr": "nothing — rebot writes to no console",
+}
+
+
+def _rebot_options(rebot_options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The extra rebot options, checked: none of those merge_outputs sets
+    itself. Raises ``ValueError`` naming each and what to use instead."""
+    extra = {str(name): value for name, value in (rebot_options or {}).items()}
+    refused = [
+        name for name in extra if name.lower().replace("-", "").replace("_", "") in _MERGE_OWN_OPTIONS
+    ]
+    if refused:
+        raise ValueError(
+            "rebot_options may not set "
+            + ", ".join(
+                f"{name!r} (use {_MERGE_OWN_OPTIONS[name.lower().replace('-', '').replace('_', '')]})"
+                for name in refused
+            )
+            + " — merge_outputs sets these itself"
+        )
+    return extra
+
+
 def merge_outputs(
     outputs: Sequence[str | Path],
     out_dir: str | Path,
@@ -624,16 +809,48 @@ def merge_outputs(
     report: bool = True,
     merge: bool = True,
     rpa: bool | None = None,
+    rebot_options: Mapping[str, Any] | None = None,
 ) -> Path:
     """Combine several ``output.xml`` into one ``output.xml`` (and
     ``log.html`` / ``report.html``) in ``out_dir``: later outputs merged
     over earlier ones (``merge=True`` — executions of one root: chunks,
     reruns), or side by side under one top-level suite (``merge=False`` —
-    executions of different roots). Returns the merged ``output.xml``."""
+    executions of different roots). Returns the merged ``output.xml``.
+
+    ``rebot_options`` are further keyword options for Robot's ``rebot``
+    (``{"removekeywords": ["passed"], "logtitle": "Checkout on eu"}``). The
+    options this function sets itself (``merge``, ``outputdir``, ``output``,
+    ``log``, ``report``, ``rpa``, ``processemptysuite``, ``consolecolors``,
+    ``stdout``, ``stderr``) are refused by name with a ``ValueError``; a
+    ``prerebotmodifier`` given there runs after the toolkit's own.
+
+    This runs Robot in the calling process — its result model and its
+    process-global logger. A server process merges with
+    :func:`spawn_merge` instead."""
+    return _rebot(
+        outputs, out_dir, log=log, report=report, merge=merge, rpa=rpa,
+        rebot_options=rebot_options,
+    )[0]
+
+
+def _rebot(
+    outputs: Sequence[str | Path],
+    out_dir: str | Path,
+    *,
+    log: bool,
+    report: bool,
+    merge: bool,
+    rpa: bool | None,
+    rebot_options: Mapping[str, Any] | None,
+) -> tuple[Path, str]:
+    """:func:`merge_outputs`, and what rebot complained about."""
+    extra = _rebot_options(rebot_options)
     import robot
 
     robot_api: Any = robot
+    modifiers = [MergeNoiseRemover(), *_as_list(extra.pop("prerebotmodifier", None))]
     options: dict[str, Any] = {
+        **extra,
         "merge": merge,
         "outputdir": str(out_dir),
         "output": "output.xml",
@@ -641,13 +858,117 @@ def merge_outputs(
         "report": "report.html" if report else "NONE",
         "processemptysuite": True,
         "consolecolors": "off",
-        "prerebotmodifier": [MergeNoiseRemover()],
+        "prerebotmodifier": modifiers,
     }
     if rpa is not None:
         options["rpa"] = rpa
+    complaints = io.StringIO()
     with open(os.devnull, "w", encoding="utf-8") as devnull:
-        robot_api.rebot(*[str(path) for path in outputs], stdout=devnull, stderr=devnull, **options)
-    return Path(out_dir) / "output.xml"
+        robot_api.rebot(*[str(path) for path in outputs], stdout=devnull, stderr=complaints, **options)
+    return Path(out_dir) / "output.xml", " ".join(complaints.getvalue().split())[:600]
+
+
+#: What a merge process writes into its output directory when it is done.
+_MERGE_RESULT_FILE = ".merge-result.json"
+
+
+@dataclass(frozen=True)
+class MergePayload:
+    """Everything a merge process needs — the arguments of
+    :func:`merge_outputs`. Picklable: it travels to a spawned process."""
+
+    outputs: tuple[str, ...]
+    out_dir: str
+    log: bool = True
+    report: bool = True
+    merge: bool = True
+    rpa: bool | None = None
+    rebot_options: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """How a merge ended: the merged ``output.xml`` (and ``log.html`` /
+    ``report.html`` beside it when asked for), or why there is none."""
+
+    output: str | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.output is not None and self.error is None
+
+
+def run_merge(payload: MergePayload) -> None:
+    """Merge-process entry: :func:`merge_outputs` with the payload's
+    arguments, and what happened written to :data:`_MERGE_RESULT_FILE` in
+    ``payload.out_dir``. A module-level function, so it can be the target of
+    a spawned process (:func:`spawn_merge` uses it that way)."""
+    out_dir = Path(payload.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    document: dict[str, Any] = {"output": None, "error": None}
+    try:
+        merged, said = _rebot(
+            list(payload.outputs), out_dir, log=payload.log, report=payload.report,
+            merge=payload.merge, rpa=payload.rpa, rebot_options=payload.rebot_options,
+        )
+        if merged.is_file():
+            document["output"] = str(merged)
+        else:
+            document["error"] = "rebot wrote no output.xml" + (f": {said}" if said else "")
+    except BaseException as exc:
+        document["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        (out_dir / _MERGE_RESULT_FILE).write_text(json.dumps(document), encoding="utf-8")
+
+
+def spawn_merge(
+    payload: MergePayload,
+    *,
+    timeout_s: float | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
+    poll_s: float = 0.05,
+) -> MergeResult:
+    """:func:`run_merge` in a spawned process, waited for: the calling
+    process imports nothing of Robot Framework and never touches its
+    process-global logger, so a server can merge while it serves — and
+    several merges can run at once. ``rebot_options`` are checked here,
+    before anything is started (a ``ValueError``). A merge over
+    ``timeout_s``, or one still running when ``cancelled()`` becomes true,
+    is killed and ends with an error."""
+    _rebot_options(payload.rebot_options)
+    out_dir = Path(payload.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / _MERGE_RESULT_FILE).unlink(missing_ok=True)
+    process = multiprocessing.get_context("spawn").Process(
+        target=run_merge, args=(payload,), name="runcomposer-merge"
+    )
+    process.start()
+    started = time.monotonic()
+    reason = None
+    while process.is_alive():
+        process.join(timeout=poll_s)
+        if not process.is_alive():
+            break
+        if cancelled():
+            reason = "the merge was cancelled"
+        elif timeout_s is not None and time.monotonic() - started > timeout_s:
+            reason = f"the merge exceeded its timeout of {timeout_s:g}s"
+        if reason:
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+            return MergeResult(error=reason)
+    try:
+        data = json.loads((out_dir / _MERGE_RESULT_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return MergeResult(
+            error=f"the merge process ended (exit code {process.exitcode}) without a result"
+        )
+    return MergeResult(output=data.get("output"), error=data.get("error"))
 
 
 # -- the supervisor ----------------------------------------------------------------------------
@@ -679,9 +1000,12 @@ def supervise(
     cancelled: Callable[[], bool] = lambda: False,
     timeout_s: float | None = None,
     poll_s: float = 0.05,
+    log: Callable[[str, str], None] | None = None,
+    grace_s: float = 5.0,
 ) -> list[ShardOutcome]:
     """Run ``payloads`` on spawned worker processes, at most ``max_workers``
-    at once, and hand each back as it finishes.
+    at once, and hand each back as it finishes — ``supervise_workers`` of
+    the SDK with :func:`run_shard` as the worker.
 
     Payloads that share a ``lane`` never overlap and start in the order
     given — a lane is something only one execution may use at a time (a
@@ -690,64 +1014,53 @@ def supervise(
     deliver there (:func:`deliver_shard`), so that a shard's results are in
     while the others still execute. ``timeout_s`` bounds one shard; a shard
     over it is stopped and reported as timed out. When ``cancelled()``
-    becomes true, running workers are stopped with :func:`stop_worker` and
-    the function returns what had ended by then — payloads that never
-    started are not in the result.
+    becomes true, running workers are stopped — asked first, so that Robot
+    ends the execution in flight and writes its output, terminated and
+    killed after ``grace_s`` each, together with what they started — and
+    the function returns what had ended by then: payloads that never
+    started, and those stopped, are not in the result. ``log(message,
+    level)`` gets a line when a shard starts and when it ends; by default
+    that is the ``log`` of the payloads' ``channel``.
     """
-    spawn = multiprocessing.get_context("spawn")
-    pending = list(payloads)
-    running: list[tuple[Any, ShardPayload, float]] = []
+    shard_payloads = list(payloads)
+    work = [
+        WorkerPayload(
+            shard=payload.shard,
+            out_dir=payload.out_dir,
+            item_ids=payload.item_ids,
+            lane=payload.lane or None,
+            data={"payload": payload},
+        )
+        for payload in shard_payloads
+    ]
+    if log is None:
+        channel = next((p.channel for p in shard_payloads if p.channel is not None), None)
+        log = channel.log if channel is not None else None
     outcomes: list[ShardOutcome] = []
 
-    def finished(outcome: ShardOutcome) -> None:
-        outcomes.append(outcome)
+    def finished(done: WorkerPayload, outcome: WorkerOutcome) -> None:
+        shard_outcome = ShardOutcome(
+            done.data["payload"],
+            outcome.exitcode,
+            read_shard_result(done.out_dir),
+            timed_out=outcome.timed_out,
+            timeout_s=timeout_s if outcome.timed_out else None,
+        )
+        outcomes.append(shard_outcome)
         if on_done is not None:
-            on_done(outcome)
+            on_done(shard_outcome)
 
-    try:
-        while pending or running:
-            if cancelled():
-                break
-            busy = {payload.lane for _process, payload, _started in running if payload.lane}
-            index = 0
-            while index < len(pending) and len(running) < max(1, int(max_workers)):
-                payload = pending[index]
-                if payload.lane and payload.lane in busy:
-                    index += 1
-                    continue
-                pending.pop(index)
-                Path(payload.out_dir).mkdir(parents=True, exist_ok=True)
-                process = spawn.Process(
-                    target=run_shard, args=(payload,), name=f"runcomposer-shard-{payload.shard}"
-                )
-                process.start()
-                running.append((process, payload, time.monotonic()))
-                if payload.lane:
-                    busy.add(payload.lane)
-            still_running = []
-            for process, payload, started in running:
-                process.join(timeout=poll_s)
-                overrun = timeout_s is not None and time.monotonic() - started > timeout_s
-                if process.is_alive() and not overrun:
-                    still_running.append((process, payload, started))
-            ended = [entry for entry in running if entry not in still_running]
-            running = still_running
-            for process, payload, _started in ended:
-                if process.is_alive():
-                    stop_worker(process, payload.out_dir)
-                    finished(
-                        ShardOutcome(
-                            payload, process.exitcode, read_shard_result(payload.out_dir),
-                            timed_out=True, timeout_s=timeout_s,
-                        )
-                    )
-                else:
-                    finished(
-                        ShardOutcome(payload, process.exitcode, read_shard_result(payload.out_dir))
-                    )
-    finally:
-        for process, payload, _started in running:
-            stop_worker(process, payload.out_dir)
+    supervise_workers(
+        work,
+        _supervised_shard,
+        max_workers=max_workers,
+        on_done=finished,
+        cancelled=cancelled,
+        timeout_s=timeout_s,
+        grace_s=grace_s,
+        log=log,
+        poll_s=poll_s,
+    )
     return outcomes
 
 
@@ -786,14 +1099,25 @@ def deliver_shard(
     read: ``log.html``, ``report.html`` and ``output.xml`` as artifacts of
     the shard, and the shard's directory itself (so that what a log refers
     to — screenshots — is servable). Returns the reason when there is
-    nothing to deliver (:attr:`ShardOutcome.problem`), else ``None``."""
+    nothing to deliver (:attr:`ShardOutcome.problem`), else ``None``.
+
+    The artifacts are recorded *before* the delivery: the delivery of the
+    last outstanding shard completes the run, and what a runner records
+    after it arrives after the run's completion event — an observer
+    reacting to ``run.completed`` would not see it."""
     payload = outcome.payload
     if outcome.result is not None and outcome.result.error and not outcome.result.stopped:
         ctx.log(f"shard {payload.shard}: {outcome.result.error}", level="error")
     problem = outcome.problem
     if problem is not None:
         return problem
-    ctx.deliver(payload.shard, verdicts=collect_verdicts(ctx, outcome, format=format), format=format)
+    verdicts = collect_verdicts(ctx, outcome, format=format)
+    _record_shard_artifacts(ctx, payload, group)
+    ctx.deliver(payload.shard, verdicts=verdicts, format=format)
+    return None
+
+
+def _record_shard_artifacts(ctx: DispatchContext, payload: ShardPayload, group: str | None) -> None:
     out_dir = Path(payload.out_dir)
     for name, media_type in (
         ("log.html", "text/html"),
@@ -810,4 +1134,3 @@ def deliver_shard(
         f"files ({payload.shard})", out_dir, media_type="inode/directory",
         shard=payload.shard, group=group,
     )
-    return None

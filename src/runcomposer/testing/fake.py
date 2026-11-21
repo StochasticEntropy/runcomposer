@@ -27,6 +27,7 @@ import mimetypes
 import shutil
 import tempfile
 import threading
+import warnings as _warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
@@ -35,6 +36,7 @@ from typing import Any, NoReturn
 from runcomposer.app.livechannel import FileLiveChannel, LiveTail
 from runcomposer.core.errors import DispatchCancelled, DispatchRefused
 from runcomposer.core.filter import parse_filter
+from runcomposer.core.filtertext import read_filter_string
 from runcomposer.core.handoff import (
     HandoffOrder,
     check_delivery_args,
@@ -290,9 +292,10 @@ class FakeDispatchContext:
     ) -> FakeDispatchContext:
         """A fake over a real catalog: the planned items are the source's own
         ``Item`` objects (tags, hierarchy, ``meta``) and ``ctx.source`` is the
-        source. ``selection`` picks them — ``None`` for all, a tag-filter
-        expression (``"Checkout"``, ``{"op": "AND", …}``) or a list of item
-        ids. Everything else is passed on to the constructor."""
+        source. ``selection`` picks them — ``None`` for all, a tag filter as
+        text (``"Checkout"``, ``"Auth OR Cart"``) or as an AST (``{"op":
+        "AND", …}``), or a list of item ids. Everything else is passed on to
+        the constructor."""
         items = list(source.items())
         if isinstance(selection, (list, tuple)):
             wanted = [str(item_id) for item_id in selection]
@@ -302,6 +305,13 @@ class FakeDispatchContext:
                 raise ValueError(f"the source has no item(s) {unknown}")
             items = [by_id[item_id] for item_id in wanted]
         elif selection is not None:
+            if isinstance(selection, str):
+                # One string is filter text, as wherever a filter is one
+                # string; a single pattern that is not filter text still
+                # means that pattern — with the API's warning.
+                selection, note = read_filter_string(selection)
+                if note:
+                    _warnings.warn(note, UserWarning, stacklevel=2)
             node = parse_filter(selection)
             items = [item for item in items if node.matches(item.tags)]
         return cls(items=items, source=source, **kwargs)
@@ -314,9 +324,10 @@ class FakeDispatchContext:
     # -- the hand-off ----------------------------------------------------------------
 
     def refuse(self, reason: str) -> NoReturn:
-        if not self._order.declared:
-            self.refusal = str(reason)
-        self._order.refuse(reason)
+        with self._lock:
+            if not self._order.declared:
+                self.refusal = str(reason)
+            self._order.refuse(reason)
 
     def declare(
         self,
@@ -342,6 +353,11 @@ class FakeDispatchContext:
     def set_link(self, name: str, url: str) -> None:
         with self._lock:
             self._links[str(name)] = str(url)
+
+    # Thread safety: as in runcomposer, every member may be called from
+    # several threads at once (a runner's workers deliver, log, add artifacts
+    # and stream live status concurrently); one shard is delivered by one
+    # thread, and ``declare`` comes before the deliveries it announces.
 
     @property
     def is_declared(self) -> bool:
@@ -413,7 +429,11 @@ class FakeDispatchContext:
     def _drain_live(self) -> None:
         if self._tail is None:
             return
-        for entry in self._tail.read():
+        # One reader at a time: two threads draining at once would read the
+        # same lines twice. The lock is re-entrant, so recording inside is fine.
+        with self._lock:
+            entries = list(self._tail.read())
+        for entry in entries:
             if "log" in entry:
                 self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
                 continue

@@ -39,10 +39,27 @@ built plugin the members of its role's protocol — ``TestSource``, ``Runner``,
 :class:`ConfigError` at startup naming it; afterwards the members are called
 directly, never looked up by attribute convention.
 
-**Secrets.** A string option of the form ``${env:NAME}`` or
-``${env:NAME:-default}`` is replaced from the environment when the plugin is
-built. A missing variable is a :class:`ConfigError` naming it. Configured
-options never travel into a run spec, an API response or a log line.
+**Values from the environment.** A string option of the form
+``${env:NAME}`` or ``${env:NAME:-default}`` is replaced from the environment
+when the plugin is built; ``${env-public:NAME}`` is the same substitution for
+a value that is not a secret. A missing variable is a :class:`ConfigError`
+naming it. An environment value is text; an option the plugin's constructor
+annotates as ``int``, ``float`` or ``bool`` receives it converted, and a
+value that does not convert is a :class:`ConfigError` naming the option and
+the variable. Configured options never travel into a run spec, an API
+response or a log line.
+
+**What is a secret.** The value of an ``${env:NAME}`` reference is, unless it
+is used as a path (an option the plugin names in ``PATH_OPTIONS``) or as a
+number or a boolean (it is converted, above) — or it is written
+``${env-public:NAME}``. A ``:-default`` is written in the file and is no
+secret. Secrets are blanked out of free text — messages, reasons, errors,
+plan text and notes, health details, error documents, log lines — and out of
+the string values of runner-defined data (health ``data``, plan ``data``);
+never out of mapping keys or identifiers (shard, group and item names, ids,
+states, kinds, parameter names, links). A secret shorter than
+:data:`MIN_SECRET_LENGTH` characters is refused at startup: it could not be
+blanked out without mangling ordinary text.
 
 With no config file at all, runcomposer runs on built-in defaults — the
 sqlite store in ``./runcomposer.db``, the bundled demo corpus and taxonomy,
@@ -52,6 +69,7 @@ and the ``demo`` runner — so every command works out of the box.
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -64,6 +82,7 @@ import yaml
 
 from runcomposer.core.errors import ConfigError, PluginError
 from runcomposer.core.filter import FilterError, format_filter, parse_filter, to_data
+from runcomposer.core.filtertext import read_filter_string
 from runcomposer.core.ports import (
     Configurable,
     ResultParser,
@@ -83,7 +102,20 @@ from runcomposer.core.registry import (
     load_import_path,
 )
 
-__all__ = ["REDACTED", "Config", "ConfigError", "PluginSpec", "load_config", "redact"]
+__all__ = [
+    "FREE_TEXT_KEYS",
+    "MIN_SECRET_LENGTH",
+    "REDACTED",
+    "Config",
+    "ConfigError",
+    "PluginSpec",
+    "load_config",
+    "option_types",
+    "plugin_secrets",
+    "redact",
+    "redact_free_text",
+    "resolve_options",
+]
 
 _KNOWN_CORE_KEYS = {
     "api",
@@ -94,6 +126,7 @@ _KNOWN_CORE_KEYS = {
     "dispatch",
     "locale_default",
     "private_dir",
+    "text_language",
 }
 _KNOWN_TOP_LEVEL = (
     "core",
@@ -145,7 +178,25 @@ _ZERO_CONFIG: dict[str, Any] = {
     "runners": {"demo": {}},
 }
 
-_ENV_REF = re.compile(r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+#: A BCP 47 language tag (RFC 5646 ``langtag``, any case): language with
+#: optional extlang, script, region, variants, extensions, private use.
+_LANGUAGE_TAG = re.compile(
+    r"(?:[a-z]{2,3}(?:-[a-z]{3}){0,3}|[a-z]{4}|[a-z]{5,8})"
+    r"(?:-[a-z]{4})?"
+    r"(?:-(?:[a-z]{2}|[0-9]{3}))?"
+    r"(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*"
+    r"(?:-[0-9a-wy-z](?:-[a-z0-9]{2,8})+)*"
+    r"(?:-x(?:-[a-z0-9]{1,8})+)?",
+    re.IGNORECASE,
+)
+
+#: ``${env:NAME}`` (a secret), ``${env-public:NAME}`` (not one), each with an
+#: optional ``:-default``. Groups: form, name, default.
+_ENV_REF = re.compile(r"\$\{(env|env-public):([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_PUBLIC_FORM = "env-public"
+#: A secret shorter than this cannot be blanked out of recorded text without
+#: mangling it (blanking "4" would rewrite every 4) — refused at startup.
+MIN_SECRET_LENGTH = 4
 
 
 @dataclass(frozen=True)
@@ -155,12 +206,11 @@ class PluginSpec:
     section: str
     key: str
     cls: Any
-    #: Options as written in the file (paths resolved, secrets NOT resolved —
-    #: except inside a path option, where the reference is substituted before
-    #: the path is anchored).
+    #: Options as written in the file (paths resolved, environment references
+    #: NOT resolved — except inside a path option, where the reference is
+    #: substituted before the path is anchored: a path is no secret).
     options: Mapping[str, Any] = field(default_factory=dict)
-    #: The entry exactly as written: where the ``${env:…}`` references are
-    #: that say which values must be blanked out of recorded text.
+    #: The entry exactly as written, every reference still in place.
     written: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -186,6 +236,13 @@ class Config:
     @property
     def locale_default(self) -> str:
         return str(self.core.get("locale_default", "en"))
+
+    @property
+    def text_language(self) -> str:
+        """The language of the free text the server and its runners write —
+        error details, health reasons, plan text (``core.text_language``, a
+        BCP 47 tag; ``en`` by default). The UI marks such text with it."""
+        return str(self.core.get("text_language", "en"))
 
     @property
     def taxonomy_configured(self) -> bool:
@@ -361,13 +418,13 @@ class Config:
         constructor, ``${env:…}`` references resolved, errors turned into
         :class:`ConfigError` naming the entry."""
         check_options(spec)
-        options = {name: _resolve_env(value, spec.where) for name, value in spec.options.items()}
-        secrets = _env_values(spec.written or spec.options)
+        options = resolve_options(spec)
+        secrets = plugin_secrets(spec)
         connector = spec.cls.CONNECTOR
         if connector is not None:
             raw = self.connector_settings(str(connector))
             options[_CONNECTOR_KEYWORD] = _resolve_env(raw, f"connectors.{connector}")
-            secrets |= _env_values(raw)
+            secrets |= _env_secrets(raw, f"connectors.{connector}")
 
         def redacted(message: object) -> str:
             # A plugin that refuses a value tends to quote it. Whatever came
@@ -412,14 +469,28 @@ class Config:
         return [str(key) for key in self._section("runners")]
 
     def secret_values(self) -> frozenset[str]:
-        """Every value this configuration takes from the environment
-        (``${env:…}``), for blanking out of anything that is recorded or
-        answered. Values shorter than four characters are not included —
-        blanking those would mangle ordinary text."""
+        """Every secret this configuration takes from the environment, for
+        blanking out of the free text that is recorded or answered: the
+        values of ``${env:…}`` references — not of ``${env-public:…}``, not
+        of a reference inside a path option, not of one an option converts to
+        a number or a boolean (see the module's "What is a secret").
+
+        Raises :class:`ConfigError` for a secret shorter than
+        :data:`MIN_SECRET_LENGTH` characters."""
         found: set[str] = set()
-        for section in (*_PLUGIN_SECTIONS, "connectors"):
-            for raw in self._section(section).values():
-                found |= _env_values(raw)
+        for section in _PLUGIN_SECTIONS:
+            try:
+                specs = self.plugin_specs(section)
+            except ConfigError:
+                # A plugin that cannot be loaded says nothing about which of
+                # its options are paths or numbers: every reference counts.
+                for key, raw in self._section(section).items():
+                    found |= _env_secrets(raw, f"{section}.{key}")
+                continue
+            for spec in specs:
+                found |= plugin_secrets(spec)
+        for name, raw in self._section("connectors").items():
+            found |= _env_secrets(raw, f"connectors.{name}")
         return frozenset(found)
 
     def validate(self) -> None:
@@ -516,19 +587,20 @@ def check_options(spec: PluginSpec) -> None:
 
 
 def _resolve_env(value: Any, where: str) -> Any:
-    """Replace ``${env:NAME}`` / ``${env:NAME:-default}`` in strings, at any
-    depth of an option value."""
+    """Replace ``${env:NAME}`` / ``${env-public:NAME}`` (each optionally
+    with ``:-default``) in strings, at any depth of an option value."""
     if isinstance(value, str):
 
         def substitute(match: re.Match[str]) -> str:
-            name, default = match.group(1), match.group(2)
+            form, name, default = match.group(1), match.group(2), match.group(3)
             if name in os.environ:
                 return os.environ[name]
             if default is not None:
                 return default
             raise ConfigError(
                 f"{where}: environment variable {name!r} is not set "
-                f"(referenced as ${{env:{name}}}; use ${{env:{name}:-default}} to make it optional)"
+                f"(referenced as ${{{form}:{name}}}; use ${{{form}:{name}:-default}} to make it "
+                "optional)"
             )
 
         return _ENV_REF.sub(substitute, value)
@@ -539,12 +611,102 @@ def _resolve_env(value: Any, where: str) -> Any:
     return value
 
 
+# -- converting environment text to the option's type -------------------------------
+
+_TRUE = ("true", "yes", "on", "1")
+_FALSE = ("false", "no", "off", "0")
+
+
+def option_types(cls: Any) -> dict[str, tuple[type, bool]]:
+    """The options of a plugin class whose constructor annotation is ``int``,
+    ``float`` or ``bool`` — optionally ``| None`` — as ``{name: (type,
+    accepts_none)}``. An annotation that cannot be evaluated, or names
+    anything else (``str``, a list, a union of several kinds), gives no
+    entry: the value is handed over as written."""
+    import typing
+    from types import UnionType
+
+    try:
+        hints = typing.get_type_hints(cls.__init__)
+    except Exception:
+        return {}
+    types: dict[str, tuple[type, bool]] = {}
+    for name, hint in hints.items():
+        if name == "return":
+            continue
+        origin = typing.get_origin(hint)
+        members = typing.get_args(hint) if origin in (typing.Union, UnionType) else (hint,)
+        concrete = [member for member in members if member is not type(None)]
+        if len(concrete) == 1 and concrete[0] in (int, float, bool):
+            types[name] = (concrete[0], len(concrete) < len(members))
+    return types
+
+
+def _references(value: Any) -> list[str]:
+    """The variable names a written option value references, in order."""
+    if isinstance(value, str):
+        return [match.group(2) for match in _ENV_REF.finditer(value)]
+    return []
+
+
+def _convert(text: str, kind: type, accepts_none: bool, where: str, variables: list[str]) -> Any:
+    """Environment text as the option's annotated type, or a ConfigError
+    naming the option and the variable(s). The value is not quoted: an
+    option that does not convert may have been handed the wrong variable."""
+    named = "environment variable " + ", ".join(repr(name) for name in variables)
+    stripped = text.strip()
+    if accepts_none and stripped == "":
+        return None
+    try:
+        if kind is bool:
+            if stripped.lower() in _TRUE:
+                return True
+            if stripped.lower() in _FALSE:
+                return False
+            raise ValueError(stripped)
+        if kind is int:
+            return int(stripped)
+        return float(stripped)
+    except ValueError:
+        expected = {bool: "true or false", int: "an integer", float: "a number"}[kind]
+        raise ConfigError(
+            f"{where}: the option takes {expected}, and the value of {named} is not "
+            f"{expected} — an environment value is text, converted to the type the plugin "
+            "declares for the option"
+        ) from None
+
+
+def resolve_options(spec: PluginSpec) -> dict[str, Any]:
+    """A plugin entry's options as its constructor receives them: every
+    environment reference substituted, and an option the constructor
+    annotates as ``int`` / ``float`` / ``bool`` converted when its value
+    came from the environment."""
+    types = option_types(spec.cls)
+    resolved: dict[str, Any] = {}
+    for name, value in spec.options.items():
+        substituted = _resolve_env(value, spec.where)
+        variables = _references(value)
+        if variables and name in types and isinstance(substituted, str):
+            substituted = _convert(substituted, *types[name], f"{spec.where}.{name}", variables)
+        resolved[name] = substituted
+    return resolved
+
+
+# -- secrets ---------------------------------------------------------------------------
+
 REDACTED = "‹from the environment›"
+
+#: The keys of an event's data that hold free text — what a runner or a
+#: parser wrote — and are therefore blanked; every other key holds an
+#: identifier or a record the core composed (shards, groups, states, kinds,
+#: ids, links, counts) and is never rewritten.
+FREE_TEXT_KEYS = ("message", "reason", "error", "plan", "detail")
 
 
 def redact(value: Any, secrets: frozenset[str] | set[str]) -> Any:
     """``value`` with every secret blanked out — in a string, and in the
-    strings inside mappings and lists."""
+    string values inside mappings and lists. Mapping keys are never
+    rewritten."""
     if not secrets:
         return value
     if isinstance(value, str):
@@ -559,22 +721,57 @@ def redact(value: Any, secrets: frozenset[str] | set[str]) -> Any:
     return value
 
 
-def _env_values(value: Any) -> set[str]:
-    """Every value an option takes from the environment (``${env:…}``). A
-    ``:-default`` is written in the file itself, so it is not a secret and
-    is not collected."""
+def redact_free_text(data: Mapping[str, Any], secrets: frozenset[str] | set[str]) -> dict[str, Any]:
+    """An event's data with the secrets blanked out of its free-text fields
+    (:data:`FREE_TEXT_KEYS`) only: identifiers and structured records pass
+    unchanged, so a shard named like an environment value stays that
+    shard."""
+    return {
+        key: redact(entry, secrets) if key in FREE_TEXT_KEYS else entry
+        for key, entry in data.items()
+    }
+
+
+def _env_secrets(value: Any, where: str) -> set[str]:
+    """The secrets an option value takes from the environment: the values
+    of its ``${env:…}`` references, at any depth. ``${env-public:…}`` is no
+    secret, and neither is a ``:-default`` — it is written in the file. A
+    secret shorter than :data:`MIN_SECRET_LENGTH` is refused."""
     found: set[str] = set()
     if isinstance(value, str):
         for match in _ENV_REF.finditer(value):
-            resolved = os.environ.get(match.group(1))
-            if resolved is not None and len(resolved) >= 4:  # shorter would redact ordinary text
-                found.add(resolved)
+            form, name = match.group(1), match.group(2)
+            resolved = os.environ.get(name)
+            if form == _PUBLIC_FORM or not resolved:
+                continue
+            if len(resolved) < MIN_SECRET_LENGTH:
+                raise ConfigError(
+                    f"{where}: the value of environment variable {name!r} is {len(resolved)} "
+                    f"character(s) long — a secret that short cannot be blanked out of what is "
+                    f"recorded and answered without mangling ordinary text, so it is refused "
+                    f"(a secret needs at least {MIN_SECRET_LENGTH}). If the value is not a "
+                    f"secret, write ${{env-public:{name}}}"
+                )
+            found.add(resolved)
     elif isinstance(value, Mapping):
-        for entry in value.values():
-            found |= _env_values(entry)
+        for key, entry in value.items():
+            found |= _env_secrets(entry, f"{where}.{key}")
     elif isinstance(value, (list, tuple)):
-        for entry in value:
-            found |= _env_values(entry)
+        for index, entry in enumerate(value):
+            found |= _env_secrets(entry, f"{where}[{index}]")
+    return found
+
+
+def plugin_secrets(spec: PluginSpec) -> set[str]:
+    """The secrets of one plugin entry. A path option arrives with its
+    references already substituted (a path is no secret), and an option
+    converted to a number or a boolean is none either."""
+    types = option_types(spec.cls)
+    found: set[str] = set()
+    for name, value in spec.options.items():
+        if name in types and _references(value):
+            continue
+        found |= _env_secrets(value, f"{spec.where}.{name}")
     return found
 
 
@@ -583,14 +780,22 @@ def _env_values(value: Any) -> set[str]:
 _PRESET_KEYS = ("name", "label", "description", "filter", "runner", "parameters", "title", "labels")
 
 
-def _selection_entry(raw: Any, where: str) -> dict[str, Any]:
-    """One configured filter — a pattern string or a whole expression — as
+def _selection_entry(raw: Any, where: str, warnings: list[str] | None = None) -> dict[str, Any]:
+    """One configured filter — filter text or a whole expression — as
     ``{tag_filter, text, kind}``: the expression in the grammar a run spec
-    uses, a one-line rendering of it, and whether it is a single pattern."""
+    uses, its canonical one-line text, and whether it is a single pattern.
+    A string is filter text (``Auth OR Cart``, ``"Sprint 12"``), read like a
+    string ``tag_filter`` over the API — a single pattern that is not text
+    still means that pattern, and what to write instead goes to
+    ``warnings``."""
     try:
+        if isinstance(raw, str):
+            raw, note = read_filter_string(raw)
+            if note and warnings is not None:
+                warnings.append(f"{where}: {note}")
         node = parse_filter(raw, where)
     except FilterError as exc:
-        raise ConfigError(str(exc)) from None
+        raise ConfigError(f"{where}: {exc}" if not str(exc).startswith(where) else str(exc)) from None
     return {
         "tag_filter": to_data(node),
         "text": format_filter(node),
@@ -598,18 +803,23 @@ def _selection_entry(raw: Any, where: str) -> dict[str, Any]:
     }
 
 
-def ui_selections(section: Mapping[str, Any]) -> dict[str, Any]:
+def ui_selections(section: Mapping[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
     """Validate and normalize the selections of a ``ui:`` section.
 
-    - ``quick_filters``: ``[{label, filter}]`` — ``filter`` is one pattern
-      (``Checkout``, ``prefix:Payments-``) or a full filter expression
-      (``{op: AND, items: […]}``, ``{not: …}``); a bare string is short for
-      a pattern labelled with itself. Served as ``{label, filter}`` with
-      ``filter`` as written plus ``tag_filter`` / ``text`` / ``kind``.
+    - ``quick_filters``: ``[{label, filter}]`` — ``filter`` is filter text
+      (``Checkout``, ``prefix:Payments-``, ``Auth OR Cart``, ``"Sprint
+      12"``) or a full filter expression (``{op: AND, items: […]}``,
+      ``{not: …}``); a bare string is short for a filter labelled with
+      itself (a single pattern: the pattern). Served as ``{label, filter}``
+      with ``filter`` as written plus ``tag_filter`` / ``text`` / ``kind``.
     - ``default_filter``: the expression a new selection starts from.
     - ``presets``: named, complete starting points — ``name`` and ``filter``,
       optionally ``label``, ``description``, ``title``, ``labels``, and a
       ``runner`` with its per-run ``parameters``.
+
+    A ``filter`` string is read as a string ``tag_filter`` is over the API;
+    one that only the fallback for single patterns reads appends what to
+    write instead to ``warnings``.
     """
     result: dict[str, Any] = {}
     quick = section.get("quick_filters")
@@ -620,17 +830,18 @@ def ui_selections(section: Mapping[str, Any]) -> dict[str, Any]:
         for index, entry in enumerate(quick):
             where = f"ui.quick_filters[{index}]"
             if isinstance(entry, str):
-                entry = {"label": entry, "filter": entry}
+                entry = {"filter": entry}
             if not isinstance(entry, Mapping) or "filter" not in entry:
                 raise ConfigError(f"{where} must be a mapping with a 'filter' (and a 'label')")
-            normalized = _selection_entry(entry["filter"], f"{where}.filter")
+            normalized = _selection_entry(entry["filter"], f"{where}.filter", warnings)
+            pattern = normalized["tag_filter"] if normalized["kind"] == "pattern" else None
             entries.append(
-                {**entry, "label": str(entry.get("label") or normalized["text"]), **normalized}
+                {**entry, "label": str(entry.get("label") or pattern or normalized["text"]), **normalized}
             )
         result["quick_filters"] = entries
     default = section.get("default_filter")
     if default is not None:
-        result["default_filter"] = _selection_entry(default, "ui.default_filter")
+        result["default_filter"] = _selection_entry(default, "ui.default_filter", warnings)
     presets = section.get("presets")
     if presets is not None:
         if not isinstance(presets, list):
@@ -658,7 +869,7 @@ def ui_selections(section: Mapping[str, Any]) -> dict[str, Any]:
                     "name": name,
                     "label": str(entry.get("label") or name),
                     "description": str(entry.get("description") or ""),
-                    **_selection_entry(entry["filter"], f"{where}.filter"),
+                    **_selection_entry(entry["filter"], f"{where}.filter", warnings),
                     "runner": str(entry["runner"]) if entry.get("runner") else None,
                     "parameters": dict(entry.get("parameters") or {}),
                     "title": str(entry.get("title") or entry.get("label") or name),
@@ -732,6 +943,19 @@ def _check_core_values(config: Config, file_path: Path) -> None:
         _ = config.ui
     except ConfigError as exc:
         raise ConfigError(f"{file_path}: {exc}") from None
+    # A configured filter string read only by the fallback for single
+    # patterns works, and says once, at load, how to write it as text.
+    notes: list[str] = []
+    ui_selections(config.data.get("ui") or {}, notes)
+    for note in notes:
+        logging.getLogger(__name__).warning("%s: %s", file_path, note)
+    language = config.core.get("text_language", "en")
+    if not isinstance(language, str) or not _LANGUAGE_TAG.fullmatch(language):
+        raise ConfigError(
+            f"{file_path}: core.text_language must be a BCP 47 language tag — the language "
+            f"the server and its runners write free text in, such as 'en', 'de' or 'de-CH' — "
+            f"got {language!r}"
+        )
     artifact_dir, private_dir = config.artifact_dir.resolve(), config.private_dir.resolve()
     if private_dir == artifact_dir or artifact_dir in private_dir.parents:
         raise ConfigError(

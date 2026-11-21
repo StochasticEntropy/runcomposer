@@ -280,8 +280,12 @@ class TestReferenceRunnersAgainstTheFake:
         ctx = check_runner(runner, FakeDispatchContext(CART), cancel_after_declare=True, expect="cancelled",
                            timeout=30)
         assert ctx.outstanding == ["1"]
-        wait_until(lambda: process_gone(int(block.read_text(encoding="utf-8"))), timeout=10,
-                   what="the cancelled command to be gone")
+        # The kit cancels right after the hand-off, which may reach the shard's
+        # worker before it has started the command — then nothing was started.
+        # A cancel that meets the command running: test_command_runner.py::TestCancel.
+        if block.exists():
+            wait_until(lambda: process_gone(int(block.read_text(encoding="utf-8"))), timeout=10,
+                       what="the cancelled command to be gone")
 
     def test_jenkins_poll(self):
         fake = FakeJenkins()

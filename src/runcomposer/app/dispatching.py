@@ -12,8 +12,22 @@ start()      validate → record the dispatch (DISPATCHED) → run the runner
                ctx.deliver(shard)   → completion recomputed
   returns      all shards in → COMPLETE, otherwise AWAITING_RESULTS
   raises       before declare → as a refusal; after → FAILED, results kept
+               InvalidParameter before declare → the request's 400; after → FAILED
 cancel()     flag + runner.cancel(ctx) → CANCELLED when the runner comes back
 ```
+
+A dispatch that leaves no record (refused, invalid, raised or returned
+before the hand-off) leaves no files either: the work and private
+directories this attempt created are removed.
+
+The context is safe to use from several threads at once — a runner's
+workers deliver, log, add artifacts, stream live status and set links
+concurrently; ``declare`` and ``set_link`` are serialized with each other, so
+a link set while another thread declares is part of the hand-off or stored
+after it, never lost. What stays the runner's to order: one shard is
+delivered by one thread (two deliveries of one shard are two deliveries, the
+later one replacing the earlier), and ``declare`` happens before the
+deliveries it announces.
 
 A dispatch names its owner — this process — for as long as the runner is
 executing. That is what lets a restarted server tell an interrupted dispatch
@@ -42,7 +56,9 @@ from runcomposer.core.errors import (
     Conflict,
     DispatchCancelled,
     DispatchRefused,
+    InvalidParameter,
     InvalidRequest,
+    InvalidTransition,
     RunActive,
     UnknownRun,
 )
@@ -107,6 +123,13 @@ def parse_owner(owner: str) -> tuple[str, int]:
 def spec_bytes(document: Mapping[str, Any]) -> bytes:
     """A spec document as the exact bytes a dispatch hands out."""
     return (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _redacted_invalid(service: Service, error: InvalidParameter) -> InvalidParameter:
+    """A runner's ``InvalidParameter`` as it is answered: the same parameter,
+    the message with the deployment's secrets blanked out (a runner may
+    quote an option)."""
+    return InvalidParameter(str(service.redact(str(error))), parameter=error.parameter)
 
 
 class _History:
@@ -230,28 +253,63 @@ class _Context:
         self._tail: LiveTail | None = None
         self._tail_thread: threading.Thread | None = None
         self._tail_stop = threading.Event()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        #: Serializes declare / set_link / refuse: the hand-off and the links
+        #: it records are one step whichever thread calls them.
+        self._handoff_lock = threading.RLock()
+        #: One reader of the live files at a time — the tail thread and a
+        #: delivering thread both drain them.
+        self._live_lock = threading.Lock()
+        #: Directories this attempt created, outermost first — what a dispatch
+        #: that leaves no record removes again.
+        self._created: list[Path] = []
         #: Set when the dispatch was declared, refused or settled — what a
         #: caller waiting for "did the hand-off happen" waits on.
         self.handoff = threading.Event()
 
     # -- input ------------------------------------------------------------------
 
+    def _make_dir(self, root: Path) -> Path:
+        """``root/<run>/<dispatch>``, created, remembering which of the two
+        levels below ``root`` did not exist before."""
+        run_dir = root / self.run_id
+        path = run_dir / self.dispatch_id
+        missing = [p for p in (run_dir, path) if not p.exists()]
+        path.mkdir(parents=True, exist_ok=True)
+        self._created.extend(missing)
+        return path.resolve()
+
     @property
     def workdir(self) -> Path:
-        if self._workdir is None:
-            path = self._service.config.artifact_dir / self.run_id / self.dispatch_id
-            path.mkdir(parents=True, exist_ok=True)
-            self._workdir = path.resolve()
-        return self._workdir
+        with self._lock:
+            if self._workdir is None:
+                self._workdir = self._make_dir(self._service.config.artifact_dir)
+            return self._workdir
 
     @property
     def private_dir(self) -> Path:
-        if self._private_dir is None:
-            path = self._service.config.private_dir / self.run_id / self.dispatch_id
-            path.mkdir(parents=True, exist_ok=True)
-            self._private_dir = path.resolve()
-        return self._private_dir
+        with self._lock:
+            if self._private_dir is None:
+                self._private_dir = self._make_dir(self._service.config.private_dir)
+            return self._private_dir
+
+    def remove_created_dirs(self) -> None:
+        """Remove the work and private directories of this attempt and every
+        parent directory it created that is empty now — for a dispatch that
+        leaves no record. Nothing an earlier dispatch made is touched."""
+        import shutil
+
+        with self._lock:
+            for directory in (self._workdir, self._private_dir):
+                if directory is not None:
+                    shutil.rmtree(directory, ignore_errors=True)
+            for created in reversed(self._created):
+                try:
+                    created.rmdir()
+                except OSError:
+                    pass  # gone already, or something else lives there now
+            self._created.clear()
+            self._workdir = self._private_dir = None
 
     @property
     def source(self) -> Any:
@@ -269,7 +327,8 @@ class _Context:
         return self._service.connector_settings(name)
 
     def refuse(self, reason: str) -> NoReturn:
-        self._order.refuse(reason)
+        with self._handoff_lock:
+            self._order.refuse(reason)
 
     def declare(
         self,
@@ -280,31 +339,35 @@ class _Context:
         spec_sha256: str | None = None,
         groups: Mapping[str, str] | None = None,
     ) -> None:
-        self._order.before_declare()
-        names, shard_items = normalize_shards(shards)
-        shard_groups = normalize_groups(groups, names)
-        with self._lock:
-            # Links set before the hand-off are part of it.
-            self._links.update({str(k): str(v) for k, v in (links or {}).items()})
-            recorded = dict(self._links)
-        self._service.ledger.declare(
-            self.dispatch_id, shards=names, shard_items=shard_items, plan=plan, links=recorded,
-            groups=shard_groups,
-        )
-        if spec_sha256:
-            # The runner handed out bytes it serialized itself.
-            self._service.store.update_dispatch(self.dispatch_id, spec_sha256=spec_sha256)
-        self._shards = tuple(names)
-        self._order.declared = True
+        with self._handoff_lock:
+            self._order.before_declare()
+            names, shard_items = normalize_shards(shards)
+            shard_groups = normalize_groups(groups, names)
+            with self._lock:
+                # Links set before the hand-off are part of it.
+                self._links.update({str(k): str(v) for k, v in (links or {}).items()})
+                recorded = dict(self._links)
+            self._service.ledger.declare(
+                self.dispatch_id, shards=names, shard_items=shard_items, plan=plan,
+                links=recorded, groups=shard_groups,
+            )
+            if spec_sha256:
+                # The runner handed out bytes it serialized itself.
+                self._service.store.update_dispatch(self.dispatch_id, spec_sha256=spec_sha256)
+            self._shards = tuple(names)
+            self._order.declared = True
         self.handoff.set()
 
     def set_link(self, name: str, url: str) -> None:
-        with self._lock:
-            self._links[str(name)] = str(url)
-            recorded = dict(self._links)
-        if not self._order.declared:
-            return  # recorded with the hand-off
-        self._service.store.update_dispatch(self.dispatch_id, links=recorded)
+        with self._handoff_lock:
+            with self._lock:
+                self._links[str(name)] = str(url)
+                recorded = dict(self._links)
+            if not self._order.declared:
+                return  # recorded with the hand-off
+            # Written under the lock: two links set at once are both stored,
+            # never the older snapshot over the newer.
+            self._service.store.update_dispatch(self.dispatch_id, links=recorded)
         self._service.bus.emit(
             self.run_id,
             kinds.LOG,
@@ -354,7 +417,9 @@ class _Context:
     def _drain_live(self) -> None:
         if self._tail is None:
             return
-        for entry in self._tail.read():
+        with self._live_lock:
+            entries = list(self._tail.read())
+        for entry in entries:
             if "log" in entry:
                 self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
                 continue
@@ -508,7 +573,21 @@ class Outcome:
         self.run_id = run_id
         #: declared | refused | finished
         self.refusal: str | None = None
+        #: The runner refused a per-run parameter before the hand-off
+        #: (``InvalidParameter``): the request was invalid, no dispatch
+        #: remains. Transports answer it as they answer a parameter the
+        #: declaration refuses (HTTP 400 ``invalid-parameter``).
+        self.invalid: InvalidParameter | None = None
         self.done = threading.Event()
+
+    def raise_if_rejected(self) -> None:
+        """Raise what the dispatch was rejected with before the hand-off:
+        the runner's ``InvalidParameter``, or its refusal as
+        ``DispatchRefused``. Nothing when it was not rejected."""
+        if self.invalid is not None:
+            raise self.invalid
+        if self.refusal is not None:
+            raise DispatchRefused(self.refusal)
 
 
 class _Active:
@@ -647,6 +726,10 @@ class DispatchManager:
             )
         except DispatchRefused as exc:
             refusal = str(service.redact(str(exc)))
+        except InvalidParameter as exc:
+            # The runner says a per-run value cannot be carried out: the
+            # request is invalid, as when the declaration refuses it.
+            raise _redacted_invalid(service, exc) from None
         except Exception as exc:
             log.error(
                 "runner %r raised while planning\n%s", runner_id,
@@ -722,6 +805,8 @@ class DispatchManager:
         self._ensure_monitor()
         if foreground:
             self._execute(active)
+            if active.outcome.invalid is not None:
+                raise active.outcome.invalid
         else:
             active.future = self._pool.submit(self._execute, active)
         return active.outcome
@@ -795,28 +880,33 @@ class DispatchManager:
             if cancelled:
                 ledger.move(ctx.dispatch_id, "CANCELLED", error="cancelled before the hand-off")
                 return
+            answered = isinstance(error, (DispatchRefused, InvalidParameter))
             if error is None:
                 reason = (
                     f"runner {ctx.runner_id!r} returned without calling ctx.declare() — "
                     "nothing was handed off"
                 )
+            elif isinstance(error, InvalidParameter):
+                invalid = _redacted_invalid(self._service, error)
+                active.outcome.invalid = invalid
+                reason = str(invalid)
             elif isinstance(error, DispatchRefused):
                 reason = str(error)
             else:
                 self._log_crash("raised before the hand-off", ctx, error)
                 reason = f"{type(error).__name__}: {error}"
             reason = str(self._service.redact(reason))
-            active.outcome.refusal = reason
-            ledger.discard(
-                ctx.dispatch_id, reason,
-                crashed=error is not None and not isinstance(error, DispatchRefused),
-            )
+            if active.outcome.invalid is None:
+                active.outcome.refusal = reason
+            # No record remains of this attempt, so neither do its files.
+            ctx.remove_created_dirs()
+            ledger.discard(ctx.dispatch_id, reason, crashed=error is not None and not answered)
             return
         if cancelled:
             ledger.move(ctx.dispatch_id, "CANCELLED", error="cancelled on request")
             return
         if error is not None:
-            if not isinstance(error, DispatchRefused):
+            if not isinstance(error, (DispatchRefused, InvalidParameter)):
                 self._log_crash("failed after the hand-off", ctx, error)
             ledger.move(ctx.dispatch_id, "FAILED", error=f"{type(error).__name__}: {error}")
             return
@@ -854,14 +944,18 @@ class DispatchManager:
         but is not the one (a reused process id): the dispatch is closed as
         CANCELLED here and now, whatever its owner."""
         service = self._service
-        run = service.store.get_run(run_id)
-        if run is None:
-            raise UnknownRun(run_id)
-        dispatch = run.latest_dispatch
-        if dispatch is None or dispatch.state not in ACTIVE_STATES:
-            state = dispatch.state if dispatch else "COMPOSED"
-            raise Conflict(f"run {run_id} has nothing in flight to cancel (state {state})")
-        service.store.update_dispatch(dispatch.dispatch_id, cancel_requested=True)
+        # "Is something in flight" and recording the request are one unit:
+        # a completion another process commits lands before it (and the
+        # answer is "nothing in flight") or after it.
+        with service.store.atomic():
+            run = service.store.get_run(run_id)
+            if run is None:
+                raise UnknownRun(run_id)
+            dispatch = run.latest_dispatch
+            if dispatch is None or dispatch.state not in ACTIVE_STATES:
+                state = dispatch.state if dispatch else "COMPOSED"
+                raise Conflict(f"run {run_id} has nothing in flight to cancel (state {state})")
+            service.store.update_dispatch(dispatch.dispatch_id, cancel_requested=True)
         service.bus.emit(
             run_id, kinds.RUN_CANCEL_REQUESTED, dispatch_id=dispatch.dispatch_id,
             data={"state": dispatch.state},
@@ -924,7 +1018,18 @@ class DispatchManager:
             )
             ctx.request_cancel()
             self._call_runner_cancel(runner, ctx)
-        service.ledger.move(dispatch.dispatch_id, "CANCELLED", error="cancelled on request")
+        try:
+            service.ledger.move(dispatch.dispatch_id, "CANCELLED", error="cancelled on request")
+        except InvalidTransition:
+            # The last results arrived — from another process, say — while
+            # the executor was being stopped: the run completed, and that is
+            # the answer, as for a cancel that came after it.
+            current = service.store.get_dispatch(dispatch.dispatch_id)
+            state = current.state if current is not None else "gone"
+            raise Conflict(
+                f"run {dispatch.run_id} has nothing in flight to cancel any more: it became "
+                f"{state} before the cancel took effect"
+            ) from None
 
     def _call_runner_cancel(self, runner: Any, ctx: _Context) -> None:
         try:
@@ -1039,10 +1144,26 @@ def pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return not _ended_unreaped(pid)
     except OSError:
         return False
-    return True
+    return not _ended_unreaped(pid)
+
+
+def _ended_unreaped(pid: int) -> bool:
+    """Whether ``pid`` is a process that has ended but was not collected by
+    its parent yet (a zombie). It still answers ``kill(pid, 0)``, but it does
+    not run — and under a parent that never collects (a container whose
+    process 1 is not an init) it stays that way. Linux says so in
+    ``/proc``; elsewhere this answers ``False``."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read()
+    except OSError:
+        return False
+    # "pid (name) state …" — the name may itself contain ")" and spaces.
+    state = stat.rpartition(b")")[2].split()[:1]
+    return state in ([b"Z"], [b"X"])
 
 
 def _pid_alive_windows(pid: int) -> bool:
