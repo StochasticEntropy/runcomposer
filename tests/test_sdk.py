@@ -72,6 +72,8 @@ ROBOT_TOOLKIT = {
     "collect_verdicts", "deliver_shard", "merge_outputs", "MergeNoiseRemover", "robot_version",
     # merging in a spawned process; the single-root check
     "MergePayload", "MergeResult", "run_merge", "spawn_merge", "NameTopSuites", "root_mismatches",
+    # an execution's output.xml rewritten without keyword data, in the worker
+    "clean_output",
 }
 JENKINS_TOOLKIT = {
     "JenkinsClient", "JenkinsError", "JenkinsTimeout", "JenkinsQueueCancelled", "encode_spec", "decode_spec", "queue_id_of",

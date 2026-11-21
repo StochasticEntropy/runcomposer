@@ -513,10 +513,16 @@ class TestRobotOutputParser:
             RobotOutputXmlParser().parse(write(tmp_path / "output.xml", JUNIT_SAMPLE))
 
 
-@pytest.mark.skipif(HAS_ROBOT, reason="only meaningful where Robot Framework is absent")
-def test_without_robot_the_parser_says_what_to_install(tmp_path):
-    """The extra is a plugin dependency: without it the parser is a clean
-    ParseError naming the extra, not an ImportError out of ingestion."""
-    file = write(tmp_path / "output.xml", "<robot/>")
-    with pytest.raises(ParseError, match=r"runcomposer\[robot\]"):
-        RobotOutputXmlParser().parse(file)
+def test_the_parser_needs_no_robot_framework(tmp_path):
+    """The parser reads output.xml with the standard library (a server
+    parses its workers' outputs without loading Robot), so it works where
+    the extra is absent too — checked there for real by
+    tests/test_robot_output_reader.py with ``robot`` made unimportable."""
+    file = write(
+        tmp_path / "output.xml",
+        '<robot generator="Robot 7.0"><suite name="Shop"><test name="Pay By Card">'
+        '<status status="PASS" start="2026-01-01T12:00:00.000000" elapsed="0.250"/>'
+        "</test></suite></robot>",
+    )
+    (verdict,) = RobotOutputXmlParser().parse(file)
+    assert (verdict.native_name, verdict.status, verdict.duration_ms) == ("Shop.Pay By Card", "PASS", 250)

@@ -54,6 +54,17 @@ Per-run parameters: ``partitions`` and ``allow_drift`` (and
 declares; ``parameter_variables`` turns those into Robot variables, and
 ``protected_variables`` names variables a per-run mapping may not set.
 
+Where the workers stand: ``worker_cwd`` (a path, relative to the config
+file) is their working directory, ``worker_env`` is set in their
+environment, and a ``pre_dispatch`` step may return ``{variables: {…}, env:
+{…}, worker_data: {…}}`` — computed once, merged into every shard of the
+dispatch (``worker_data`` reaches ``worker_setup`` as ``info["data"]``).
+After every execution, in the worker: ``clean_output`` (Robot's own
+``remove_keywords`` / ``flatten_keywords`` selectors) rewrites that
+execution's ``output.xml`` before anything reads it, then the
+``post_execution`` steps run with its path. ``health_checks`` answer within
+``health_check_timeout_s`` or are failed rows.
+
 Every option that names a callable takes ``"pkg.mod:callable"`` or
 ``{call: "pkg.mod:callable", with: {…}}`` — the ``with`` mapping reaches the
 callable as ``settings=``.
@@ -67,6 +78,7 @@ event stream through the same channel.
 from __future__ import annotations
 
 import os
+import pickle
 import re
 import subprocess
 import threading
@@ -178,6 +190,17 @@ def _configured(entries: Any, option: str) -> tuple[ConfiguredCall, ...]:
     return configured_calls(entries, f"robot-pool: {option}")
 
 
+def _text_mapping(values: Mapping[str, Any], where: str) -> dict[str, str]:
+    """An environment mapping: names to text (a number or a boolean is
+    written as text); a nested value is refused, naming it."""
+    found: dict[str, str] = {}
+    for key, value in values.items():
+        if isinstance(value, (Mapping, list, tuple, set)) or value is None:
+            raise ConfigError(f"{where}.{key}: an environment variable's value is text, got {value!r}")
+        found[str(key)] = str(value)
+    return found
+
+
 def _call(call: ConfiguredCall, *args: Any) -> Any:
     """Call a configured callable; one that cannot be imported is a
     configuration error naming its option."""
@@ -221,8 +244,45 @@ def _health_rows(call: ConfiguredCall, info: Mapping[str, Any]) -> list[dict[str
     return rows
 
 
+def _timed_health_rows(
+    calls: tuple[ConfiguredCall, ...], info: Mapping[str, Any], timeout_s: float
+) -> list[dict[str, Any]]:
+    """Every ``health_checks`` callable's rows, the checks run side by side,
+    each given ``timeout_s`` from the same start: one that has not answered
+    by then is a failed row saying so, and the health answer does not wait
+    for it. (Its thread is left to end on its own — a thread cannot be
+    stopped — and is a daemon, so it never holds the process.)"""
+    if not calls:
+        return []
+    answers: dict[int, list[dict[str, Any]]] = {}
+    threads = []
+    for index, call in enumerate(calls):
+
+        def check(index: int = index, call: ConfiguredCall = call) -> None:
+            answers[index] = _health_rows(call, info)
+
+        thread = threading.Thread(target=check, name=f"health-check-{call.ref}", daemon=True)
+        thread.start()
+        threads.append(thread)
+    deadline = time.monotonic() + timeout_s
+    rows: list[dict[str, Any]] = []
+    for index, (call, thread) in enumerate(zip(calls, threads, strict=True)):
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if index in answers:
+            rows.extend(answers[index])
+        else:
+            rows.append(
+                {
+                    "check": call.ref,
+                    "ok": False,
+                    "detail": f"did not answer within {timeout_s:g}s (health_check_timeout_s)",
+                }
+            )
+    return rows
+
+
 class RobotPoolRunner(RunnerBase):
-    PATH_OPTIONS = ("suite_root", "suite_roots", "pythonpath")
+    PATH_OPTIONS = ("suite_root", "suite_roots", "pythonpath", "worker_cwd")
 
     def __init__(
         self,
@@ -250,6 +310,11 @@ class RobotPoolRunner(RunnerBase):
         pre_dispatch: list[Any] | None = None,
         worker_setup: list[Any] | None = None,
         health_checks: list[Any] | None = None,
+        health_check_timeout_s: float = 5.0,
+        post_execution: list[Any] | None = None,
+        clean_output: Mapping[str, Any] | None = None,
+        worker_cwd: str | None = None,
+        worker_env: Mapping[str, Any] | None = None,
         pythonpath: list[str] | None = None,
         log: bool = True,
         report: bool = True,
@@ -355,6 +420,21 @@ class RobotPoolRunner(RunnerBase):
         self.pre_dispatch = _configured(pre_dispatch, "pre_dispatch")
         self.worker_setup = _configured(worker_setup, "worker_setup")
         self.health_checks = _configured(health_checks, "health_checks")
+        if isinstance(health_check_timeout_s, bool) or float(health_check_timeout_s) <= 0:
+            raise ConfigError("robot-pool: health_check_timeout_s must be a positive number of seconds")
+        self.health_check_timeout_s = float(health_check_timeout_s)
+        self.post_execution = _configured(post_execution, "post_execution")
+        try:  # Robot's own selectors, checked where the payload is made
+            self.clean_output = dict(
+                ShardPayload(shard="-", out_dir="-", executions=(), clean_output=clean_output or {})
+                .clean_output
+            )
+        except ValueError as exc:
+            raise ConfigError(f"robot-pool: {exc}") from None
+        self.worker_cwd = str(worker_cwd) if worker_cwd else None
+        if worker_env is not None and not isinstance(worker_env, Mapping):
+            raise ConfigError("robot-pool: worker_env must be a mapping of variable names to text")
+        self.worker_env = _text_mapping(worker_env or {}, "robot-pool: worker_env")
         self.pythonpath = [str(entry) for entry in (pythonpath or [])]
         self.log = bool(log)
         self.report = bool(report)
@@ -436,8 +516,9 @@ class RobotPoolRunner(RunnerBase):
         )
 
     def health(self) -> Health:
-        """Robot and the suite roots, as ``data.checks`` rows, followed by
-        what every ``health_checks`` callable says. A failed row of the
+        """Robot, the suite roots and ``worker_cwd``, as ``data.checks``
+        rows, followed by what every ``health_checks`` callable says — each
+        within ``health_check_timeout_s``, side by side. A failed row of the
         latter makes the health ``degraded``, naming it."""
         version = robot_version()
         checks: list[dict[str, Any]] = [
@@ -477,7 +558,18 @@ class RobotPoolRunner(RunnerBase):
             "partition_mode": self.partition_mode,
             "max_workers": self.max_workers,
         }
-        own = [row for call in self.health_checks for row in _health_rows(call, info)]
+        no_cwd = bool(self.worker_cwd) and not Path(str(self.worker_cwd)).is_dir()
+        if self.worker_cwd:
+            checks.append(
+                {
+                    "check": f"worker_cwd {self.worker_cwd}",
+                    "ok": not no_cwd,
+                    "detail": "not a directory" if no_cwd else "found",
+                }
+            )
+        if self._suite_name():
+            data["suite_name"] = self._suite_name()
+        own = _timed_health_rows(self.health_checks, info, self.health_check_timeout_s)
         checks.extend(own)
         failed = [row["check"] for row in own if not row["ok"]]
         failing = f"health check(s) failed: {', '.join(failed)}" if failed else ""
@@ -485,9 +577,15 @@ class RobotPoolRunner(RunnerBase):
             return Health(status="down", detail=_NOT_INSTALLED, data=data)
         if not self.suite_roots:
             return Health(status="down", detail="no suite_root configured", data=data)
-        if missing or failed:
+        if missing or failed or no_cwd:
             detail = "; ".join(
-                part for part in (missing and f"suite root(s) not found: {missing}", failing) if part
+                part
+                for part in (
+                    missing and f"suite root(s) not found: {missing}",
+                    no_cwd and f"worker_cwd is not a directory: {self.worker_cwd}",
+                    failing,
+                )
+                if part
             )
             return Health(status="degraded", detail=detail, data=data)
         return Health(status="ok", detail=f"Robot Framework {version}", data=data)
@@ -511,6 +609,12 @@ class RobotPoolRunner(RunnerBase):
             notes=tuple(notes),
             data=plan.data,
         )
+
+    def _suite_name(self) -> str | None:
+        """The top-level suite name ``robot_options`` gives every execution
+        (``name``, the one spelling ``robot.run`` accepts for ``--name``)."""
+        value = self.robot_options.get("name")
+        return str(value) if value not in (None, "") else None
 
     def _mode(self, ctx: PlanContext) -> str:
         if self.partition_mode_per_run:
@@ -543,7 +647,9 @@ class RobotPoolRunner(RunnerBase):
             statuses=self.history_statuses,
         )
         try:
-            roots_of = attribute_roots(self.suite_roots, item_ids, ctx.source.items())
+            roots_of = attribute_roots(
+                self.suite_roots, item_ids, ctx.source.items(), name=self._suite_name()
+            )
         except LookupError as exc:
             ctx.refuse(f"{exc} (checked before anything is handed off)")
 
@@ -603,10 +709,16 @@ class RobotPoolRunner(RunnerBase):
             )
         elif chunks.known < chunks.total:
             notes.append(
-                f"duration history for {chunks.known} of {chunks.total} item(s); the other "
-                f"{chunks.total - chunks.known} are weighed with the mean of the known "
-                f"durations, {_seconds(chunks.fallback_ms)} each — the estimates per partition "
-                "assume they take that long"
+                f"duration history for {chunks.known} of {chunks.total} item(s); "
+                + (
+                    "the other one is weighed with the mean of the known durations, "
+                    f"{_seconds(chunks.fallback_ms)} — the estimates per partition assume it "
+                    "takes that long"
+                    if chunks.total - chunks.known == 1
+                    else f"the other {chunks.total - chunks.known} are weighed with the mean of "
+                    f"the known durations, {_seconds(chunks.fallback_ms)} each — the estimates "
+                    "per partition assume they take that long"
+                )
             )
         if chunks.dominant is not None and len(chunks.chunks) > 1:
             item, weight = chunks.dominant
@@ -737,7 +849,14 @@ class RobotPoolRunner(RunnerBase):
         plan = self._plan(ctx)
         self._run_hooks(ctx)
         variables = {**self.variables, **self._parameter_variables(ctx)}
-        variables.update(self._pre_dispatch(ctx, plan, variables))
+        added = self._pre_dispatch(ctx, plan, variables)
+        variables.update(added.variables)
+        if self.worker_cwd and not Path(self.worker_cwd).is_dir():
+            ctx.refuse(f"worker_cwd {self.worker_cwd!r} is not a directory")
+        try:
+            pickle.dumps(added.worker_data)
+        except Exception as exc:
+            ctx.refuse(f"pre_dispatch: worker_data cannot be sent to a worker process: {exc}")
 
         result_format = self.format or _spec_format(ctx.spec) or "robot-output-xml"
         channel = ctx.live_channel()
@@ -776,6 +895,11 @@ class RobotPoolRunner(RunnerBase):
                         robot_options=self.robot_options,
                         run_id=ctx.run_id,
                         dispatch_id=ctx.dispatch_id,
+                        cwd=self.worker_cwd,
+                        env={**self.worker_env, **added.env},
+                        worker_data=dict(added.worker_data),
+                        clean_output=self.clean_output,
+                        post_execution=tuple(self.post_execution),
                     )
                 )
 
@@ -864,13 +988,15 @@ class RobotPoolRunner(RunnerBase):
 
     def _pre_dispatch(
         self, ctx: DispatchContext, plan: _Plan, variables: Mapping[str, str]
-    ) -> dict[str, str]:
+    ) -> _Additions:
         """``pre_dispatch``: preparation in this process, once the plan stands
         and nothing is handed off yet. Each callable gets the context — so
         it can ``ctx.refuse``, ``ctx.log``, keep files in ``ctx.private_dir``
-        — and the plan; a mapping it returns is added to the Robot variables
-        of every shard."""
-        added: dict[str, str] = {}
+        — and the plan. What it returns goes into every shard of the
+        dispatch (:func:`_additions`): a mapping of Robot variables, or
+        ``{variables: {…}, env: {…}, worker_data: {…}}``; ``None`` (or
+        anything that is not a mapping) adds nothing."""
+        added = _Additions()
         for call in self.pre_dispatch:
             ctx.raise_if_cancelled()
             info = {
@@ -881,12 +1007,10 @@ class RobotPoolRunner(RunnerBase):
                 "groups": dict(plan.groups),
                 "plan": plan.text,
                 "item_ids": list(plan.item_ids),
-                "variables": {**variables, **added},
+                "variables": {**variables, **added.variables},
                 "workdir": str(ctx.workdir),
             }
-            result = _call(call, ctx, info)
-            if isinstance(result, Mapping):
-                added.update({str(key): str(value) for key, value in result.items()})
+            added.take(_call(call, ctx, info), call.ref)
             ctx.log(f"pre_dispatch {call.ref}: done")
         return added
 
@@ -1126,6 +1250,42 @@ class _Merger:
             if file.is_file():
                 ctx.add_artifact(f"{name} ({label})", file, media_type=media_type, group=group)
         ctx.log(f"merged result of {what} recorded ({count} result(s) merged)")
+
+
+#: The keys of a ``pre_dispatch`` answer that addresses more than Robot
+#: variables — each a mapping.
+_ADDITION_KEYS = frozenset(("variables", "env", "worker_data"))
+
+
+@dataclass
+class _Additions:
+    """What the ``pre_dispatch`` steps of one dispatch give its shards."""
+
+    variables: dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
+    worker_data: dict[str, Any] = field(default_factory=dict)
+
+    def take(self, answer: Any, ref: str) -> None:
+        """One step's answer, merged over the earlier ones. A mapping whose
+        keys are only ``variables``, ``env`` and ``worker_data``, each a
+        mapping, is read as those three: Robot variables, the workers'
+        environment, and data each ``worker_setup`` receives as
+        ``info["data"]``. Any other mapping is Robot variables (as it has
+        always been); ``None``, or anything that is not a mapping, adds
+        nothing."""
+        if not isinstance(answer, Mapping):
+            return
+        structured = bool(answer) and set(answer) <= _ADDITION_KEYS and all(
+            isinstance(value, Mapping) for value in answer.values()
+        )
+        if not structured:
+            self.variables.update({str(key): str(value) for key, value in answer.items()})
+            return
+        self.variables.update(
+            {str(key): str(value) for key, value in (answer.get("variables") or {}).items()}
+        )
+        self.env.update(_text_mapping(answer.get("env") or {}, f"pre_dispatch {ref}: env"))
+        self.worker_data.update({str(key): value for key, value in (answer.get("worker_data") or {}).items()})
 
 
 def _spec_format(spec: Mapping[str, Any]) -> str | None:

@@ -70,3 +70,8 @@ runners:
     parameter_variables: { variables: "*" }
     protected_variables: [SHOP_URL, CURRENCY]
     merge_groups: true
+    # Every execution's output.xml is cleaned in the worker before it is
+    # parsed, merged and recorded: the keywords of passing tests go, the
+    # verdicts stay as they were. (robot_options such as removekeywords only
+    # shape log.html and report.html.)
+    clean_output: { remove_keywords: [passed] }

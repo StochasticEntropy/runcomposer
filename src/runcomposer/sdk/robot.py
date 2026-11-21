@@ -21,6 +21,9 @@ is the evidence that they suffice.
   Robot end the execution in flight, terminate, kill).
 - :func:`deliver_shard` / :func:`collect_verdicts` — what a finished worker
   produced, delivered through the dispatch context.
+- :func:`clean_output` — one ``output.xml`` rewritten without the keyword
+  data Robot's own selectors pick, verdicts unchanged: the step
+  ``ShardPayload.clean_output`` runs in the worker after every execution.
 - :func:`merge_outputs` — several ``output.xml`` of one shard merged into
   one readable result, without the "added from merged output" notes a merge
   of disjoint executions would stamp on every test; ``rebot_options`` pass
@@ -44,11 +47,9 @@ from __future__ import annotations
 import html
 import io
 import json
-import multiprocessing
 import os
 import re
 import sys
-import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -84,6 +85,7 @@ __all__ = [
     "ShardPayload",
     "ShardResult",
     "attribute_roots",
+    "clean_output",
     "collect_verdicts",
     "deliver_shard",
     "merge_outputs",
@@ -111,12 +113,32 @@ _STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "NOT RUN": "SKIP"
 
 def robot_version() -> str | None:
     """The installed Robot Framework's version, ``None`` when it is not
-    installed (``pip install 'runcomposer[robot]'``)."""
+    installed (``pip install 'runcomposer[robot]'``). Read from the
+    distribution's metadata: importing any part of the ``robot`` package
+    loads all of it — result model and process-global logger included —
+    which a server answering ``health`` has no use for."""
+    from importlib import metadata
+
     try:
-        from robot.version import get_version
-    except ImportError:
+        return metadata.version("robotframework")
+    except metadata.PackageNotFoundError:
         return None
-    return str(get_version())
+
+
+def _suite_name(source: str | Path) -> str:
+    """The name Robot gives the suite of a directory or file — the rule of
+    ``robot.running.TestSuite.name_from_source``, restated so that the
+    dispatching process needs no Robot import: the base name (a file without
+    its extension), a ``prefix__`` dropped, underscores as spaces, an
+    all-lower-case name title-cased."""
+    if not str(source):
+        return ""
+    path = Path(source)
+    name = path.name if path.is_dir() else path.stem
+    if "__" in name:
+        name = name.split("__", 1)[1] or name
+    name = name.replace("_", " ").strip()
+    return name.title() if name.islower() else name
 
 
 # -- selection ---------------------------------------------------------------------------
@@ -131,14 +153,22 @@ class ExactSelection:
 
     Pass an instance as ``prerunmodifier`` (``robot.run(…,
     prerunmodifier=[ExactSelection(ids)])``).
+
+    ``name`` is the top-level suite's name when the execution renames it
+    (``robot.run(…, name=…)``): Robot applies that name only after the
+    pre-run modifiers, so without it the ids — which carry the configured
+    name — would match nothing.
     """
 
-    def __init__(self, ids: Iterable[str], tag: str | None = None):
+    def __init__(self, ids: Iterable[str], tag: str | None = None, name: str | None = None):
         self.ids = frozenset(ids)
         self.tag = tag
+        self.name = name
         self.kept = 0
 
     def visit_suite(self, suite: Any) -> None:
+        if self.name and suite.parent is None:
+            suite.name = self.name
         suite.tests = [test for test in suite.tests if test.longname in self.ids]
         self.kept += len(suite.tests)
         if self.tag:
@@ -154,7 +184,11 @@ _NAMED_MISMATCHES = 3
 
 
 def attribute_roots(
-    suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item] = ()
+    suite_roots: Sequence[str],
+    item_ids: Sequence[str],
+    items: Iterable[Item] = (),
+    *,
+    name: str | None = None,
 ) -> dict[str, str]:
     """Which suite root each item is executed from — checked, also for a
     single root. Raises ``LookupError`` naming the items (the first few, and
@@ -164,8 +198,10 @@ def attribute_roots(
     With several roots, the catalog says which when it was built by the
     Robot source (``Item.meta["source"]`` lies under the root); otherwise the
     root suite's name — the first segment of the id — does. A single root is
-    checked by :func:`root_mismatches`."""
-    roots_of, problems = _assign_roots(suite_roots, item_ids, items)
+    checked by :func:`root_mismatches`. ``name`` is the top-level suite name
+    the execution sets (``robot_options: {name: …}``), which every root's
+    suite then carries instead of its own."""
+    roots_of, problems = _assign_roots(suite_roots, item_ids, items, name)
     if problems:
         raise LookupError(_describe_mismatches(problems))
     return roots_of
@@ -185,7 +221,11 @@ def _describe_mismatches(problems: Sequence[str]) -> str:
 
 
 def root_mismatches(
-    suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item] = ()
+    suite_roots: Sequence[str],
+    item_ids: Sequence[str],
+    items: Iterable[Item] = (),
+    *,
+    name: str | None = None,
 ) -> list[str]:
     """Every item of ``item_ids`` that belongs to none of ``suite_roots``,
     each as a sentence naming the item and the root — empty when all belong.
@@ -197,21 +237,24 @@ def root_mismatches(
     recorded source (``Item.meta["source"]``, when the catalog records one)
     lies under the root. An item the Robot source collected from this very
     root (``Item.meta["root"]`` is the root) belongs whatever the root suite
-    is called — a suite may rename itself."""
-    return _assign_roots(suite_roots, item_ids, items)[1]
+    is called — a suite may rename itself. With ``name`` (the execution
+    renames the top-level suite, ``robot_options: {name: …}``) that is the
+    root suite's name."""
+    return _assign_roots(suite_roots, item_ids, items, name)[1]
 
 
 def _assign_roots(
-    suite_roots: Sequence[str], item_ids: Sequence[str], items: Iterable[Item]
+    suite_roots: Sequence[str],
+    item_ids: Sequence[str],
+    items: Iterable[Item],
+    name: str | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     roots = [str(root) for root in suite_roots]
     meta = {item.id: item.meta for item in items}
     if not roots:
         return {}, [f"item {item_id!r}: no suite root is configured" for item_id in item_ids]
-    from robot.running import TestSuite
-
     resolved = {root: Path(root).resolve() for root in roots}
-    names = {root: TestSuite.name_from_source(root) for root in roots}
+    names = {root: name or _suite_name(root) for root in roots}
 
     def under(path: str, root: str) -> bool:
         base, found = resolved[root], Path(path).resolve()
@@ -318,7 +361,10 @@ class RemoteLiveStatusListener(LiveStatusListener):
     ``RUNCOMPOSER_CALLBACK_URL`` (the run's results URL, or any URL of the
     run's API resource), ``RUNCOMPOSER_INGEST_TOKEN``, ``RUNCOMPOSER_SHARD``
     (default ``1``) and ``RUNCOMPOSER_DISPATCH_ID`` (optional). Without a
-    callback URL it does nothing.
+    callback URL it does nothing. Over HTTPS, ``RUNCOMPOSER_CA_BUNDLE`` names
+    a file of the CA certificates to trust instead of the system's, and
+    ``RUNCOMPOSER_VERIFY_TLS=false`` skips the check — the two variables the
+    ``runcomposer-exec`` consumer reads, with the same meaning.
     """
 
     def __init__(
@@ -327,6 +373,8 @@ class RemoteLiveStatusListener(LiveStatusListener):
         token: str | None = None,
         shard: str | None = None,
         dispatch_id: str | None = None,
+        ca_bundle: str | None = None,
+        verify_tls: bool | str | None = None,
     ):
         url = callback_url or os.environ.get("RUNCOMPOSER_CALLBACK_URL") or ""
         channel: Any = _NoChannel()
@@ -335,8 +383,24 @@ class RemoteLiveStatusListener(LiveStatusListener):
                 url,
                 token or os.environ.get("RUNCOMPOSER_INGEST_TOKEN"),
                 dispatch_id=dispatch_id or os.environ.get("RUNCOMPOSER_DISPATCH_ID") or None,
+                ca_bundle=ca_bundle or os.environ.get("RUNCOMPOSER_CA_BUNDLE") or None,
+                verify_tls=_verify_tls(verify_tls),
             )
         super().__init__(channel, shard or os.environ.get("RUNCOMPOSER_SHARD") or "1")
+
+
+def _verify_tls(given: bool | str | None) -> bool:
+    """A listener argument arrives as text (``robot --listener name:…``), the
+    environment's value is text too: true or false in the words the consumer
+    accepts; left out, the certificate is checked."""
+    if isinstance(given, bool):
+        return given
+    word = (given if given is not None else os.environ.get("RUNCOMPOSER_VERIFY_TLS", "")).strip().lower()
+    if not word or word in ("1", "true", "yes", "on"):
+        return True
+    if word in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"RUNCOMPOSER_VERIFY_TLS / verify_tls: not true or false: {word!r}")
 
 
 class _NoChannel:
@@ -396,7 +460,30 @@ class ShardPayload:
       as tests, ``True`` as tasks.
     - ``robot_options`` — further keyword options for ``robot.run`` (for
       example ``{"loglevel": "DEBUG", "variablefile": ["env.py"]}``); the
-      options this toolkit sets itself win.
+      options this toolkit sets itself win. Robot's ``removekeywords`` /
+      ``flattenkeywords`` among them shape the log and report Robot writes,
+      never the execution's ``output.xml``; ``name`` renames the top-level
+      suite (the ids then begin with it).
+    - ``clean_output`` — ``{remove_keywords: [...], flatten_keywords:
+      [...]}``, Robot's own selectors (``passed``, ``for``, ``wuks``,
+      ``name:<pattern>``, ``tag:<pattern>`` …): every execution's
+      ``output.xml`` is rewritten with them in the worker, right after the
+      execution and before anything reads it (:func:`clean_output`) — so
+      what is parsed, merged, recorded and pushed is the smaller file. The
+      verdicts it holds are unchanged. The same selectors shape the log and
+      report too, so that they show what the output holds.
+    - ``post_execution`` — configured callables called in the worker after
+      every execution, in order (after ``clean_output``), as ``step(output,
+      info)`` (``settings=`` with ``{call, with}``): ``output`` the path of
+      that execution's ``output.xml``, ``info`` what ``worker_setup`` gets,
+      the final ``variables`` included, plus ``execution`` (its 1-based
+      index in ``executions``; ``None`` for a re-execution of failures),
+      ``attempt`` (1, or the attempt a re-execution is), ``rerun``,
+      ``root`` and ``item_ids`` (what was selected for it). A step that
+      raises fails that execution: its tests are reported ``ERROR`` with a
+      message naming the step — the results the execution produced are
+      neither used nor lost without a word — and the shard goes on with
+      its next execution.
     """
 
     shard: str
@@ -421,6 +508,13 @@ class ShardPayload:
     cwd: str | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     worker_data: Mapping[str, Any] = field(default_factory=dict)
+    clean_output: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    post_execution: tuple[str | ConfiguredCall, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Checked where the payload is made, not in the worker: a selector
+        # Robot would refuse is a ValueError naming it.
+        object.__setattr__(self, "clean_output", _clean_settings(self.clean_output))
 
     @property
     def item_ids(self) -> tuple[str, ...]:
@@ -431,13 +525,19 @@ class ShardPayload:
 @dataclass(frozen=True)
 class ShardOutput:
     """One ``output.xml`` a worker produced: which attempt it is, how many
-    tests were selected for it and how many of them existed under ``root``."""
+    tests were selected for it and how many of them existed under ``root``.
+    ``failed`` says that a step after the execution (``clean_output``,
+    ``post_execution``) raised: the file is not to be trusted, and the
+    tests selected for it (``item_ids``) are reported ``ERROR`` with that
+    message instead."""
 
     path: str
     attempt: int = 1
     root: str = ""
     selected: int = 0
     tests: int = 0
+    item_ids: tuple[str, ...] = ()
+    failed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -463,10 +563,16 @@ class ShardOutcome:
 
     @property
     def outputs(self) -> tuple[ShardOutput, ...]:
-        """The outputs that really exist on disk."""
+        """The outputs that really exist on disk — and those a step after
+        the execution failed on, whatever the step left (their tests are
+        reported ``ERROR``)."""
         if self.result is None:
             return ()
-        return tuple(output for output in self.result.outputs if Path(output.path).is_file())
+        return tuple(
+            output
+            for output in self.result.outputs
+            if output.failed is not None or Path(output.path).is_file()
+        )
 
     @property
     def problem(self) -> str | None:
@@ -488,7 +594,10 @@ def read_shard_result(out_dir: str | Path) -> ShardResult | None:
         data = json.loads((Path(out_dir) / RESULT_FILE).read_text(encoding="utf-8"))
         return ShardResult(
             shard=str(data["shard"]),
-            outputs=tuple(ShardOutput(**entry) for entry in data.get("outputs") or ()),
+            outputs=tuple(
+                ShardOutput(**{**entry, "item_ids": tuple(entry.get("item_ids") or ())})
+                for entry in data.get("outputs") or ()
+            ),
             error=data.get("error"),
             stopped=bool(data.get("stopped")),
         )
@@ -592,6 +701,7 @@ def _execute_shard(
                 pass
 
     variables = {str(key): str(value) for key, value in payload.variables.items()}
+    renamed = payload.robot_options.get("name") or None  # robot.run's --name
     info = {
         "shard": payload.shard,
         "partition": payload.partition,
@@ -605,6 +715,38 @@ def _execute_shard(
         if isinstance(extra, Mapping):  # a setup may contribute Robot variables
             variables.update({str(key): str(value) for key, value in extra.items()})
 
+    # What runs after every execution: the built-in cleaning, then the
+    # deployment's own steps — each as (what it is called, the callable).
+    cleaning = _clean_settings(payload.clean_output)
+    steps: list[tuple[str, Callable[..., Any]]] = []
+    if cleaning:
+        steps.append(("clean_output", ConfiguredCall(f"{__name__}:clean_output", cleaning)))
+    for ref in payload.post_execution:
+        call = ConfiguredCall.parse(ref, "post_execution")
+        steps.append((f"post_execution step {call.ref!r}", call))
+
+    def after(output: ShardOutput, execution: Execution, index: int | None) -> ShardOutput:
+        """The steps after one execution, in order; the first that raises
+        fails the execution and the rest do not run."""
+        step_info = dict(
+            info, variables=dict(variables), execution=index, attempt=output.attempt,
+            rerun=output.attempt > 1, root=execution.root, item_ids=list(execution.item_ids),
+        )
+        for label, step in steps:
+            try:
+                step(output.path, dict(step_info))
+            except Exception as exc:
+                what = f"execution {index}" if index is not None else f"attempt {output.attempt}"
+                problem = (
+                    f"{label} raised after {what} of {execution.root}: {type(exc).__name__}: {exc}"
+                    f" — its {len(execution.item_ids)} test(s) are reported as ERROR; what the "
+                    "execution produced is not used"
+                )
+                problems.append(problem)
+                say(problem, "error")
+                return replace(output, failed=problem)
+        return output
+
     def execute(execution: Execution, target: Path, *, final: bool, attempt: int = 1) -> ShardOutput | None:
         """One Robot execution; what it produced, or None without an output."""
         if asked():
@@ -613,8 +755,12 @@ def _execute_shard(
         listeners: list[Any] = list(payload.listeners)
         if channel is not None and payload.live_status:
             listeners.append(LiveStatusListener(channel, payload.shard, asked))
-        selection = ExactSelection(execution.item_ids, payload.executed_tag)
+        selection = ExactSelection(execution.item_ids, payload.executed_tag, renamed)
         options: dict[str, Any] = dict(payload.robot_options)
+        # The log and report show what the cleaned output holds.
+        for option, key in (("removekeywords", "remove_keywords"), ("flattenkeywords", "flatten_keywords")):
+            if cleaning.get(key):
+                options[option] = [*_as_list(options.get(option)), *cleaning[key]]
         options.update(
             prerunmodifier=[*_as_list(options.get("prerunmodifier")), selection],
             variable=[
@@ -655,15 +801,18 @@ def _execute_shard(
             problems.append(problem)
             say(problem, "error")
             return None
-        return ShardOutput(
+        produced = ShardOutput(
             path=str(output),
             attempt=attempt,
             root=execution.root,
             selected=len(execution.item_ids),
             tests=selection.kept,
+            item_ids=tuple(execution.item_ids),
         )
+        return after(produced, execution, index_of.get(id(execution)))
 
     executions = payload.executions
+    index_of = {id(execution): index for index, execution in enumerate(executions, start=1)}
     single = len(executions) == 1 and not payload.rerun_failed
     for index, execution in enumerate(executions, start=1):
         if len(executions) > 1:
@@ -673,7 +822,8 @@ def _execute_shard(
         if produced is not None:
             outputs.append(produced)
 
-    # Re-execute what failed, up to rerun_failed more times.
+    # Re-execute what failed, up to rerun_failed more times — from results
+    # that are trusted only.
     roots = sorted({execution.root for execution in executions})
     last_by_root = {root: [o for o in outputs if o.root == root] for root in roots}
     for attempt in range(2, payload.rerun_failed + 2):
@@ -682,7 +832,7 @@ def _execute_shard(
             failed = [
                 test.longname
                 for entry in previous
-                if entry.tests
+                if entry.tests and entry.failed is None
                 for test in ExecutionResult(entry.path).suite.all_tests
                 if test.status == "FAIL"
             ]
@@ -701,13 +851,14 @@ def _execute_shard(
         if not again:
             break
 
-    if not single and outputs:
+    trusted = [output for output in outputs if output.failed is None]
+    if not single and trusted:
         merge_outputs(
-            [output.path for output in outputs],
+            [output.path for output in trusted],
             out_dir,
             log=payload.log,
             report=payload.report,
-            merge=len({output.root for output in outputs}) == 1,
+            merge=len({output.root for output in trusted}) == 1,
             rpa=payload.rpa,
         )
 
@@ -716,6 +867,80 @@ def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
     return list(value) if isinstance(value, (list, tuple)) else [value]
+
+
+# -- cleaning an output -------------------------------------------------------------------
+
+#: Robot's own selectors (``--removekeywords`` / ``--flattenkeywords``),
+#: besides ``name:<pattern>`` and ``tag:<pattern>``; case does not matter.
+_REMOVE_SELECTORS = ("all", "passed", "for", "while", "wuks")
+_FLATTEN_SELECTORS = ("for", "while", "iteration", "foritem")
+_CLEAN_KEYS = {"remove_keywords": _REMOVE_SELECTORS, "flatten_keywords": _FLATTEN_SELECTORS}
+
+
+def _clean_settings(settings: Any, where: str = "clean_output") -> dict[str, list[str]]:
+    """``{remove_keywords: [...], flatten_keywords: [...]}`` checked — Robot's
+    own selectors, without importing Robot — and with the empty ones left
+    out. Raises ``ValueError`` naming what is wrong."""
+    if not settings:
+        return {}
+    if not isinstance(settings, Mapping):
+        raise ValueError(
+            f"{where} is a mapping {{remove_keywords: [...], flatten_keywords: [...]}}, "
+            f"got {settings!r}"
+        )
+    unknown = sorted(str(key) for key in settings if key not in _CLEAN_KEYS)
+    if unknown:
+        raise ValueError(f"{where} takes remove_keywords and flatten_keywords, got {unknown}")
+    checked: dict[str, list[str]] = {}
+    for key, words in _CLEAN_KEYS.items():
+        values = settings.get(key) or []
+        values = [values] if isinstance(values, str) else values
+        if not isinstance(values, (list, tuple)):
+            raise ValueError(f"{where}.{key} is a list of selectors, got {values!r}")
+        for value in values:
+            text = str(value)
+            kind, sep, _pattern = text.partition(":")
+            if text.lower() not in words and not (sep and kind.lower() in ("name", "tag")):
+                raise ValueError(
+                    f"{where}.{key}: {text!r} is not a selector — use "
+                    + ", ".join(words) + ", name:<pattern> or tag:<pattern>"
+                )
+        if values:
+            checked[key] = [str(value) for value in values]
+    return checked
+
+
+def clean_output(
+    output: str | Path, info: Mapping[str, Any] | None = None, *, settings: Mapping[str, Any]
+) -> Path:
+    """Rewrite one ``output.xml`` without the keyword data ``settings``
+    selects — ``{remove_keywords: [...], flatten_keywords: [...]}``,
+    Robot's own ``--removekeywords`` / ``--flattenkeywords`` selectors —
+    through Robot's result model, atomically: the cleaned file is written
+    beside the output and then replaces it. The tests, their statuses,
+    messages, tags and times are what they were; only keywords (and what
+    they logged) go. Returns the path.
+
+    A ``post_execution`` step (``info`` is accepted and not needed), and what
+    ``ShardPayload.clean_output`` runs after every execution. It runs Robot
+    in the calling process: call it in a worker, not in a server."""
+    selectors = _clean_settings(settings)
+    path = Path(output)
+    if not selectors:
+        return path
+    from robot.api import ExecutionResult
+
+    result = ExecutionResult(str(path), flattened_keywords=selectors.get("flatten_keywords", []))
+    for how in selectors.get("remove_keywords", []):
+        result.suite.remove_keywords(how)
+    beside = path.with_name(f".{path.name}.cleaning")
+    try:
+        result.save(str(beside))
+        os.replace(beside, path)
+    finally:
+        beside.unlink(missing_ok=True)
+    return path
 
 
 # -- merging ---------------------------------------------------------------------------------
@@ -848,6 +1073,105 @@ def _rebot(
     import robot
 
     robot_api: Any = robot
+    sources, made = _relinked(outputs, out_dir)
+    try:
+        return _rebot_sources(sources, out_dir, robot_api, extra, log=log, report=report, merge=merge, rpa=rpa)
+    finally:
+        for copy in made:
+            copy.unlink(missing_ok=True)
+
+
+#: An ``src=`` / ``href=`` attribute in an HTML message, and a link that is
+#: not relative (``scheme:``, ``/…``, ``#…``).
+_LINK = re.compile(r"""(?P<attr>\b(?:src|href)\s*=\s*)(?P<q>["'])(?P<url>.*?)(?P=q)""", re.IGNORECASE | re.DOTALL)
+_NOT_RELATIVE = re.compile(r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|[/\\#])")
+
+
+def _relink_html(text: str, prefix: str) -> str:
+    """Every relative link of an HTML text, prefixed with ``prefix``."""
+
+    def moved(match: re.Match[str]) -> str:
+        url = match.group("url")
+        if not url or _NOT_RELATIVE.match(url):
+            return match.group(0)
+        return f"{match.group('attr')}{match.group('q')}{prefix}/{url}{match.group('q')}"
+
+    return _LINK.sub(moved, text)
+
+
+def _mentions_html(path: Path) -> bool:
+    """Whether an output holds an HTML message at all — read in pieces,
+    since an output can be large."""
+    needles = (b'html="true"', b"*HTML*")
+    keep = max(len(needle) for needle in needles)
+    tail = b""
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1 << 20):
+            window = tail + chunk
+            if any(needle in window for needle in needles):
+                return True
+            tail = window[-keep:]
+    return False
+
+
+def _relinked(outputs: Sequence[str | Path], out_dir: str | Path) -> tuple[list[str], list[Path]]:
+    """The outputs to merge into ``out_dir``, with the relative links of
+    their HTML messages (a screenshot a library logged, a file linked from a
+    message) rewritten to be relative to ``out_dir`` — where the merged log
+    is written — instead of to the directory each output came from. An
+    output that needs it is copied (a hidden file in ``out_dir``, removed
+    after the merge); the outputs themselves are never changed. Returns the
+    sources to merge and the copies made."""
+    target = Path(out_dir).resolve()
+    sources: list[str] = []
+    made: list[Path] = []
+    for index, output in enumerate(outputs, start=1):
+        path = Path(output)
+        prefix = Path(os.path.relpath(path.resolve().parent, target)).as_posix()
+        if prefix == "." or not path.is_file() or not _mentions_html(path):
+            sources.append(str(output))
+            continue
+        from urllib.parse import quote
+
+        from robot.api import ExecutionResult, ResultVisitor
+
+        class Relink(ResultVisitor):
+            def __init__(self, moved: str):
+                self.moved = moved
+
+            def visit_message(self, message: Any) -> None:
+                if message.html:
+                    message.message = _relink_html(message.message, self.moved)
+
+            def start_suite(self, suite: Any) -> None:
+                if (suite.message or "").startswith("*HTML*"):
+                    suite.message = _relink_html(suite.message, self.moved)
+
+            def start_test(self, test: Any) -> None:
+                if (test.message or "").startswith("*HTML*"):
+                    test.message = _relink_html(test.message, self.moved)
+
+        result = ExecutionResult(str(path))
+        result.visit(Relink(quote(prefix)))
+        target.mkdir(parents=True, exist_ok=True)
+        copy = target / f".relinked-{index}.xml"
+        result.save(str(copy))
+        sources.append(str(copy))
+        made.append(copy)
+    return sources, made
+
+
+def _rebot_sources(
+    outputs: Sequence[str],
+    out_dir: str | Path,
+    robot_api: Any,
+    extra: dict[str, Any],
+    *,
+    log: bool,
+    report: bool,
+    merge: bool,
+    rpa: bool | None,
+) -> tuple[Path, str]:
     modifiers = [MergeNoiseRemover(), *_as_list(extra.pop("prerebotmodifier", None))]
     options: dict[str, Any] = {
         **extra,
@@ -936,39 +1260,53 @@ def spawn_merge(
     several merges can run at once. ``rebot_options`` are checked here,
     before anything is started (a ``ValueError``). A merge over
     ``timeout_s``, or one still running when ``cancelled()`` becomes true,
-    is killed and ends with an error."""
+    is stopped and ends with an error.
+
+    The process is the SDK's worker supervisor's (``supervise_workers``,
+    one payload, the merge as its target): one implementation of starting,
+    stopping and reaping a worker for every process this toolkit runs."""
     _rebot_options(payload.rebot_options)
     out_dir = Path(payload.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / _MERGE_RESULT_FILE).unlink(missing_ok=True)
-    process = multiprocessing.get_context("spawn").Process(
-        target=run_merge, args=(payload,), name="runcomposer-merge"
+    outcomes = supervise_workers(
+        [WorkerPayload(shard="merge", out_dir=str(out_dir), data={"payload": payload})],
+        _supervised_merge,
+        max_workers=1,
+        cancelled=cancelled,
+        timeout_s=timeout_s,
+        poll_s=poll_s,
     )
-    process.start()
-    started = time.monotonic()
-    reason = None
-    while process.is_alive():
-        process.join(timeout=poll_s)
-        if not process.is_alive():
-            break
-        if cancelled():
-            reason = "the merge was cancelled"
-        elif timeout_s is not None and time.monotonic() - started > timeout_s:
-            reason = f"the merge exceeded its timeout of {timeout_s:g}s"
-        if reason:
-            process.terminate()
-            process.join(timeout=5)
-            if process.is_alive():
-                process.kill()
-                process.join(timeout=5)
-            return MergeResult(error=reason)
+    if not outcomes:  # stopped (or never started) because of the cancellation
+        return MergeResult(error="the merge was cancelled")
+    (outcome,) = outcomes
+    if outcome.timed_out:
+        return MergeResult(error=f"the merge exceeded its timeout of {timeout_s:g}s")
     try:
         data = json.loads((out_dir / _MERGE_RESULT_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return MergeResult(
-            error=f"the merge process ended (exit code {process.exitcode}) without a result"
+            error=f"the merge process ended (exit code {outcome.exitcode}) without a result"
         )
     return MergeResult(output=data.get("output"), error=data.get("error"))
+
+
+def _supervised_merge(work: WorkerPayload, stop: Callable[[], bool]) -> None:
+    """The worker target :func:`spawn_merge` hands to ``supervise_workers``.
+    A merge has nothing to bring to an end gracefully, so the first stop
+    request ends it (the supervisor's first ``SIGTERM`` otherwise only
+    asks)."""
+    if os.name != "nt":
+        import signal
+
+        signal.signal(signal.SIGTERM, _end_merge)
+    if stop():  # asked while it was starting
+        raise SystemExit(1)
+    run_merge(work.data["payload"])
+
+
+def _end_merge(signum: int, _frame: Any) -> None:
+    raise SystemExit(128 + signum)
 
 
 # -- the supervisor ----------------------------------------------------------------------------
@@ -1071,10 +1409,18 @@ def collect_verdicts(ctx: DispatchContext, outcome: ShardOutcome, *, format: str
     """Parse every output of a finished shard through ``ctx.parse`` and label
     each verdict with the attempt its output is. A selected id that is not a
     test under its root is logged as a warning — nothing ran for it, so
-    nothing is reported and it ends up ``MISSING``."""
+    nothing is reported and it ends up ``MISSING``. An output a step after
+    its execution failed on (:attr:`ShardOutput.failed`) is not parsed: its
+    selected tests are ``ERROR`` with the step's message."""
     shard = outcome.payload.shard
     verdicts: list[Verdict] = []
     for output in outcome.outputs:
+        if output.failed is not None:
+            verdicts.extend(
+                Verdict(item_id=item_id, status="ERROR", message=output.failed, attempt=output.attempt)
+                for item_id in output.item_ids
+            )
+            continue
         if 0 <= output.tests < output.selected:
             ctx.log(
                 f"shard {shard}: {output.selected - output.tests} of {output.selected} selected "

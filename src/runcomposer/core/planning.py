@@ -51,7 +51,12 @@ class ChunkPlan:
             )
         else:
             line = f"duration-balanced chunking: history for {self.known}/{self.total} item(s)"
-            if self.known < self.total:
+            if self.total - self.known == 1:
+                line += (
+                    "; the other one weighs the mean of the known durations, "
+                    f"{self.fallback_ms:.0f}ms"
+                )
+            elif self.known < self.total:
                 line += (
                     f"; the other {self.total - self.known} weigh the mean of the known "
                     f"durations, {self.fallback_ms:.0f}ms each"

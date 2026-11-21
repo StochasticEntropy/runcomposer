@@ -85,7 +85,8 @@ def _check_suite_roots(runner: dict[str, Any], items: list[Any], problems: list[
     from runcomposer.sdk.robot import root_mismatches
 
     mismatches = root_mismatches(
-        [str(root) for root in data["suite_roots"]], [item.id for item in items], items
+        [str(root) for root in data["suite_roots"]], [item.id for item in items], items,
+        name=data.get("suite_name") or None,
     )
     row: dict[str, Any] = {"check": "catalog items under the suite roots", "ok": not mismatches}
     if mismatches:
