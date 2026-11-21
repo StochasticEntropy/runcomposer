@@ -366,6 +366,13 @@ def python_parts(text: str) -> PythonParts | None:
         return None
     docstring_at = set()
     for node in ast.walk(tree):
+        # Names from the tree as well as from the tokens: an identifier used
+        # only inside an f-string is a token of its own only from Python 3.12
+        # on, and the vocabulary must not depend on the interpreter.
+        if isinstance(node, ast.Name):
+            parts.names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            parts.names.add(node.attr)
         if isinstance(node, ast.Expr):
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 docstring_at.add((node.lineno, node.col_offset))

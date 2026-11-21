@@ -54,6 +54,7 @@
       "filter-syntax": "The filter text cannot be read.",
       "cross-site-request": "The server refused a request it took for one from another site.",
       "results-push-refused": "The results push was refused.",
+      "unknown-host": "The server does not answer to the host name this page was opened under.",
       "invalid-selection": "The selection is not valid.",
       "invalid-parameter": "This value was not accepted.",
       "unknown-runner": "This runner is not configured.",

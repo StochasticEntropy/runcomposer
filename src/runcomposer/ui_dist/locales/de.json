@@ -54,6 +54,7 @@
       "filter-syntax": "Der Filtertext ist nicht lesbar.",
       "cross-site-request": "Der Server hat eine Anfrage abgelehnt, die er für eine von einer anderen Website hielt.",
       "results-push-refused": "Das Übertragen der Ergebnisse wurde abgelehnt.",
+      "unknown-host": "Der Server antwortet nicht unter dem Hostnamen, unter dem diese Seite geöffnet wurde.",
       "invalid-selection": "Die Auswahl ist ungültig.",
       "invalid-parameter": "Dieser Wert wurde nicht angenommen.",
       "unknown-runner": "Dieser Runner ist nicht konfiguriert.",

@@ -515,3 +515,13 @@ def test_the_guard_runs_without_a_git_checkout(tmp_path):
     listed = rules.list_files(copy.resolve())
     assert "README.md" in listed and rules.WORDS_FILE_NAME in listed
     assert rules.scan_tree(copy.resolve(), REPO)["host"] == ()
+
+
+def test_an_identifier_used_only_inside_an_f_string_is_known_on_every_python():
+    """The words the code spells are part of the vocabulary. A name that
+    appears only inside an f-string is a token of its own only from Python
+    3.12 on, so the names are also read from the syntax tree — the guard's
+    verdict must not depend on the interpreter that runs it."""
+    parts = rules.python_parts('label = f"{re.escape(tag)}-{shop.region_code}"\n')
+    assert parts is not None
+    assert {"re", "escape", "tag", "shop", "region_code", "label"} <= parts.names
