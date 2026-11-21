@@ -23,6 +23,11 @@ pip install -e ".[dev,robot]"    # adds Robot Framework: the robot plugin tests
 
 All three — tests, `ruff`, `mypy` — are expected to be clean on every change.
 
+An editable install copies the one-file consumer, `src/runcomposer_exec.py`,
+into the environment instead of linking it: after editing that file, install
+again before using the `runcomposer-exec` command (the tests load the file
+from `src/` and are not affected).
+
 To *use* runcomposer rather than work on it, `pip install runcomposer` is
 enough — the clone above is for development.
 

@@ -408,6 +408,11 @@ class TestThreadSafety:
         path = manifest(tmp_path / "shop.json", PAYMENTS)
         catalog = catalog_for(tmp_path, {"manifest": {"path": "shop.json"}})
         small = frozenset(i["id"] for i in PAYMENTS)
+        # Loaded before the corpus starts to flip: a catalog that has a
+        # version keeps it when a check meets the file mid-save — one that
+        # has none yet can only fail (the test below), which is not what
+        # this test is about.
+        assert catalog.item_ids() == small
         big_items = [*PAYMENTS, *CHECKOUT]
         big = frozenset(i["id"] for i in big_items)
         errors: list[BaseException] = []
@@ -439,3 +444,14 @@ class TestThreadSafety:
         assert not errors, errors
         assert seen <= {small, big}
         assert frozenset(i.id for i in catalog.items()) == small  # round 19 wrote PAYMENTS
+
+    def test_a_first_load_that_meets_a_file_mid_save_has_nothing_to_keep(self, tmp_path):
+        """The other side of the rule above: before anything was loaded
+        there is no version to fall back on, so the reader is told."""
+        path = manifest(tmp_path / "shop.json", PAYMENTS)
+        catalog = catalog_for(tmp_path, {"manifest": {"path": "shop.json"}})
+        path.write_text("", encoding="utf-8")  # the moment a save has truncated the file
+        with pytest.raises(Exception, match="cannot parse manifest"):
+            catalog.items()
+        manifest(path, PAYMENTS)
+        assert catalog.item_ids() == frozenset(i["id"] for i in PAYMENTS)
