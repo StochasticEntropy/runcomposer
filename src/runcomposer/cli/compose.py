@@ -198,8 +198,9 @@ def taxonomy_drift(service: Any) -> tuple[list[tuple[str, str]], list[str], list
     """``(leaves, unclaimed tags, dead leaves, tag count)`` — the taxonomy
     held against the catalog in both directions."""
     from runcomposer.core.filter import parse_filter
+    from runcomposer.core.taxonomy import leaf_pattern
 
-    leaves: list[tuple[str, str]] = []  # (label path, pattern)
+    leaves: list[tuple[str, str]] = []  # (label path, the leaf's filter as written)
 
     def walk(nodes: list[Any], path: str) -> None:
         for node in nodes:
@@ -210,7 +211,7 @@ def taxonomy_drift(service: Any) -> tuple[list[tuple[str, str]], list[str], list
 
     walk(service.taxonomy().get("taxonomy") or [], "")
     tags = sorted(service.catalog.tag_counts())
-    matchers = [(label, pattern, parse_filter(pattern)) for label, pattern in leaves]
+    matchers = [(label, written, parse_filter(leaf_pattern(written))) for label, written in leaves]
     unclaimed = [tag for tag in tags if not any(node.matches([tag]) for _l, _p, node in matchers)]
     dead = [
         (label, pattern)

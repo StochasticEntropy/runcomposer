@@ -163,7 +163,7 @@ def _validate_filter(
         raise TaxonomyError(
             f"{origin}: {named} has a 'filter' of type {_type_name(value)} — the filter of "
             "a leaf is a single pattern string; write alternatives as one regex, e.g. "
-            "'regex:^(Visa|Mastercard)$' (docs/taxonomy.md)"
+            "'\"regex:^(Visa|Mastercard)$\"' (docs/taxonomy.md)"
         )
     try:
         pattern, note = read_filter_string(value)
@@ -173,7 +173,7 @@ def _validate_filter(
         raise TaxonomyError(
             f"{origin}: {named} has the filter {value!r}, which reads as the filter expression "
             f"{format_filter(parse_filter(pattern))!r} — the filter of a leaf is one pattern: "
-            "write alternatives as one regex, e.g. 'regex:^(Visa|Mastercard)$', or write "
+            "write alternatives as one regex, e.g. '\"regex:^(Visa|Mastercard)$\"', or write "
             f"{quote_pattern(value.strip())} for the tag spelled so (docs/taxonomy.md)"
         )
     try:

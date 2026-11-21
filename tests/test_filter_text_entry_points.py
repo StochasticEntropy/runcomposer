@@ -203,3 +203,41 @@ def test_a_syntax_error_over_http_carries_problem_position_and_the_word_found(cl
     assert body["detail"].startswith("cannot read the filter text at column 20")
     unclosed = client.post(f"{API}/selection/compile", json={"tag_filter": "Auth OR (Cart"}).json()
     assert "token" not in unclosed and (unclosed["problem"], unclosed["position"]) == ("unbalanced-open", 8)
+
+
+class TestTheDriftCheckReadsLeavesAsTheTreeDoes:
+    """`taxonomy-check` holds the leaves against the catalog's tags: it reads
+    a leaf's filter as filter text, exactly as the resolved tree does — a
+    quoted pattern is the pattern, not a tag with quotes around it."""
+
+    def test_a_quoted_leaf_claims_its_tags_and_is_not_reported_dead(self, tmp_path, capsys):
+        from runcomposer.cli import main
+
+        from .conftest import write_config
+
+        (tmp_path / "tree.yaml").write_text(
+            "taxonomy:\n"
+            "  - {label: Cart, filter: '\"regex:^Cart(V2)?$\"'}\n"
+            "  - {label: Sprint, filter: '\"Sprint-12\"'}\n"
+            "  - {label: Returns, filter: '\"Returns\"'}\n",
+            encoding="utf-8",
+        )
+        config = write_config(tmp_path, core={"taxonomy_file": "tree.yaml"})
+        code = main(["taxonomy-check", "--limit", "0", "--config", str(config)])
+        out = capsys.readouterr().out
+        assert code == 1
+        unclaimed = out.split("tags no leaf claims")[1].split("leaves that match nothing")[0].split()
+        assert "Cart" not in unclaimed and "CartV2" not in unclaimed and "Sprint-12" not in unclaimed
+        assert "leaves that match nothing (clickable, selects nothing): 1" in out
+        assert 'Returns  →  "Returns"' in out
+
+    def test_the_bundled_demo_taxonomy_needs_no_fallback(self, tmp_path):
+        from runcomposer.sdk import Service, load_config
+
+        from .conftest import write_config
+
+        service = Service(load_config(str(write_config(tmp_path))))
+        try:
+            assert service.resolved_taxonomy().get("warnings", []) == []
+        finally:
+            service.close()
