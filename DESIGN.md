@@ -410,7 +410,14 @@ error text, and whatever was delivered until then is kept.
   (host, process id, a per-process token). At startup — `serve`, the
   dispatching CLI commands, and `doctor` — every `DISPATCHED`/`RUNNING`
   dispatch whose owner is gone is marked `STALE` with a `run.stale` event
-  saying why. An owner is gone when its process id is dead (on Linux a
+  saying why. `serve` repeats this every `core.dispatch.recovery_interval_s`
+  seconds (default 15; `null`: at startup only), so a dispatch of another
+  process on the same store — a foreground `runcomposer run` — whose
+  process dies while the server is up becomes `STALE` without a restart; a
+  dispatch whose owner is alive, or is the server itself, is never touched,
+  and the store decides again inside its transaction, so a dispatch that
+  moved on in the meantime is left alone (tests/test_recovery_periodic.py).
+  An owner is gone when its process id is dead (on Linux a
   process that ended but was not reaped — a zombie under a container's
   process 1 without an init — counts as dead); when it is this
   very process id under another token (an earlier life of it — process id 1
@@ -424,7 +431,8 @@ error text, and whatever was delivered until then is kept.
   dispatch once. A reader does not recover: `runcomposer runs`, `show` and
   `watch` flag a `DISPATCHED`/`RUNNING` dispatch whose owner is gone as
   `RUNNING (owner gone)`, with a line naming the way out (`doctor` or
-  starting `serve` marks it `STALE`; `cancel --force` closes it), and their
+  starting `serve` marks it `STALE`, and so does a running `serve` within
+  its recovery interval; `cancel --force` closes it), and their
   JSON carries `owner_gone` on the run and on each dispatch; they change
   nothing (tests/test_cli_owner_gone.py).
 - **Events.** Every state change emits an event — `run.composed`,
@@ -536,7 +544,10 @@ concurrent deliveries to one shard leave exactly one.
   the path and the headers: an unknown run is a plain `404` and nothing is
   kept; a missing token is `401`, a wrong one `403`, a token used against
   another dispatch `403` — answered before a byte of the body is read, the
-  connection then closed. The body of an authenticated push is read as a
+  connection then closed. (The whole answer goes out first, and what the
+  client still sends is discarded for at most two seconds before the close:
+  a client that is in the middle of sending reads the refusal, not a reset.)
+  The body of an authenticated push is read as a
   stream into a temporary bundle directory, each file under its base name (a
   name that is not a file name — `..`, `.`, empty, a control character — is
   a `400`). Only an authenticated bundle that is then refused for what it
@@ -595,6 +606,22 @@ side is `RemoteLiveChannel` in the SDK (a `LiveChannel` that POSTs),
 --callback` (§6.2c) (tests/test_runner_contract.py, `TestPushedProgress`,
 `TestTheRemoteChannelAndTheConsumer`).
 
+Over HTTPS an executor verifies the server's certificate against the
+system's trust store, or against a CA bundle — a file of the certificates
+to trust, for a server behind a private certificate authority:
+`ca_bundle=` on `RemoteLiveChannel` and `push_results`, `--ca-bundle` /
+`RUNCOMPOSER_CA_BUNDLE` for `runcomposer-exec`, and the same variable for
+`RemoteLiveStatusListener` (or its `ca_bundle` argument). `verify_tls=False`
+/ `--no-verify-tls` / `RUNCOMPOSER_VERIFY_TLS=false` skips the check, for a
+lab server whose certificate nobody signed. A bundle that does not exist,
+or holds no certificate, is refused where it is given — by the channel's
+constructor, by `push_results` before anything is sent, and by the
+consumer before anything executes. A certificate
+that cannot be verified is a counted progress failure, and a refused
+results push whose message names the TLS reason and the way out. The
+channel stays picklable: the TLS context is built in the process that
+pushes (tests/test_remote_tls.py, tests/test_remote_listener_tls.py).
+
 **The file drop.** Each immediate subdirectory of the inbox
 (`core.ingestion.inbox`) is one bundle, taken in when it is *complete*:
 either it contains the marker or an empty `.done` file — the sender's own
@@ -608,7 +635,13 @@ ingested is quarantined and can never block the ones after it.
 `runcomposer-verdicts` (the reference JSON format), `robot-output-xml`,
 `junit-xml`. Bad input is one error type — `ParseError` — whichever parser
 raises it; anything else a parser raises is treated the same way: the bundle
-is refused as `bad-bundle`. **The anti-leak litmus test is about identity,
+is refused as `bad-bundle`. `robot-output-xml` reads an `output.xml` with
+the standard library's streaming reader, after the defused check: Robot's
+own reading restated — longname, status, message, elapsed time, a failed or
+skipped suite teardown applied to the tests below it — and compared field
+by field with Robot's result model (tests/test_robot_output_reader.py). So
+a server that parses results needs no Robot Framework, loads nothing of
+it, and never holds a large output's keyword tree in memory. **The anti-leak litmus test is about identity,
 not parser count:** the core never string-compares native names — every
 native name goes through `TestSource.resolve(native_name) → id`, so all
 name-normalization quirks live inside the source plugin that owns them. A
@@ -803,7 +836,11 @@ works with **any** RunStore: it carries no store, only a file in `workdir`
 that worker processes append to (one file per process) and the dispatching
 process tails — live status and log lines alike, so a worker's progress
 lands in the run's event stream (tests/test_runner_contract.py,
-`TestOwnDispatch`, `TestShardGroups`, `TestRunningAndWorkerLogs`).
+`TestOwnDispatch`, `TestShardGroups`, `TestRunningAndWorkerLogs`). What a
+worker wrote before its shard is delivered is in the stream before that
+delivery: a delivery reads the files once more before it records, and waits
+for a line the tailing thread has read but not yet emitted
+(tests/test_live_lines_before_delivery.py).
 
 Three rules about using it, each held by a test:
 
@@ -895,7 +932,12 @@ processes (started with the `spawn` method, one per shard, at most
   dispatch before the hand-off, naming the item and the root, instead of
   ending in `MISSING` items; `runcomposer doctor` runs the same check over
   the whole catalog (tests/test_robot_pool_options.py,
-  `TestASingleRootIsChecked`). `rpa`
+  `TestASingleRootIsChecked`). `robot_options: {name: …}` renames the
+  top-level suite, so the ids begin with that name: the suite-root check,
+  the exact selection — which renames the top suite before it matches,
+  since Robot applies the name only after its pre-run modifiers — and
+  `doctor` read the ids so (tests/test_robot_pool_suite_name_and_health.py,
+  `TestARenamedTopSuite`). `rpa`
   (`true` / `false` / `null`, default `null`: Robot decides) sets the
   execution mode: a root that mixes tests and tasks needs it, since Robot
   refuses a selection keeping both — and that dispatch fails with Robot's own
@@ -912,7 +954,30 @@ processes (started with the `spawn` method, one per shard, at most
   `{shard}`) is stamped on every executed test. `worker_setup` — configured
   callables — run inside each worker before Robot and may contribute
   variables; `pythonpath` and `listener` are passed on, `robot_options` are
-  further keyword options for Robot's own `run`. `rerun_failed: N`
+  further keyword options for Robot's own `run`. `worker_cwd` (a path,
+  relative to the config file) is the workers' working directory and
+  `worker_env` is set in their environment — text, `${env:…}` like any
+  option (tests/test_robot_pool_worker_surroundings.py). `robot_options`
+  such as `removekeywords` and `flattenkeywords` shape the `log.html` and
+  `report.html` Robot writes, never its `output.xml`; `clean_output:
+  {remove_keywords: […], flatten_keywords: […]}` — Robot's own selectors,
+  checked at startup — shapes the `output.xml` itself, and with it
+  everything that is parsed, merged, recorded and pushed: every execution's
+  output, re-executions included, is rewritten in the worker through
+  Robot's result model, atomically, right after the execution, every
+  test's id, status, message, tags and duration unchanged; the same
+  selectors shape that execution's log and report, so they show what the
+  output holds (tests/test_robot_post_execution.py, `TestCleanOutput`,
+  `TestRobotOptionsShapeTheLogOnly`). `post_execution` names configured
+  callables called in the worker after every execution, after the
+  cleaning, as `step(output, info)`: the path of that execution's
+  `output.xml`, and what `worker_setup` gets — the final `variables`
+  included — plus `execution` (its 1-based index; `None` for a
+  re-execution of failures), `attempt`, `rerun`, `root` and `item_ids`. A
+  step that raises, or a cleaning that fails, fails that execution: its
+  tests are `ERROR` with a message naming the step, its output is neither
+  parsed, re-executed nor merged, and the shard goes on with its next
+  execution (`TestPostExecution`). `rerun_failed: N`
   re-executes failures up to N times, each attempt delivered with its
   attempt number. Everything a shard executed is merged into one
   `output.xml` / `log.html` / `report.html` (`log`, `report`, default on) —
@@ -920,7 +985,13 @@ processes (started with the `spawn` method, one per shard, at most
   would stamp on every test — and recorded as artifacts, together with the
   shard's directory itself (`files (<shard>)`, a recorded directory), so the
   files a log refers to are servable (§6.4) — recorded before the shard is
-  delivered. `merge_groups: true` adds one merged `output.xml` /
+  delivered. Relative links in the HTML messages of a merged result — a
+  file a library wrote and linked — are rewritten for where the merged log
+  lies, so they reach the shard's files where they are served; an image a
+  served log shows inline renders only when it is embedded (`data:`),
+  since the artifact sandbox loads images from nowhere else (§6.4;
+  tests/test_robot_merge_process.py, `TestLinksInMergedLogs`).
+  `merge_groups: true` adds one merged `output.xml` /
   `log.html` / `report.html` per group and one for the run, each produced
   in a spawned process as soon as its shards are in and recorded as a group
   or run artifact (`log.html (group eu)`, `log.html (run)`) before the last
@@ -934,7 +1005,8 @@ processes (started with the `spawn` method, one per shard, at most
   per-run parameter, executes the intersection and reports the rest as
   `SKIP` / `drift`), a failing or overrunning `pre_run_hooks` command
   (`hook_timeout_s`), a missing suite root, an item no suite root holds, a
-  protected variable, and whatever a `plan_checks` or `pre_dispatch` step
+  protected variable, a `worker_cwd` that is not a directory, `worker_data`
+  that cannot be sent to a worker process, and whatever a `plan_checks` or `pre_dispatch` step
   refuses. `plan_checks` — configured callables, free of side effects — run
   for a preview and for a dispatch alike, after the plan stands and before
   any readiness step, as `check(ctx, info)` with `info` holding
@@ -945,9 +1017,15 @@ processes (started with the `spawn` method, one per shard, at most
   the dispatching process before the hand-off as `step(ctx, info)`, where
   `info` holds the plan — `partitions`, `parameters`, `shards`, `groups`,
   `plan`, `item_ids`, `variables`, `workdir`. A step may `ctx.refuse`, log,
-  keep files in `ctx.private_dir`, and return a mapping that is added to the
-  Robot variables of every shard: preparation that needs to know what is
-  about to run.
+  keep files in `ctx.private_dir`, and return what goes into every shard of
+  the dispatch: a mapping of Robot variables, or `{variables: {…}, env:
+  {…}, worker_data: {…}}` — a mapping whose keys are only those three, each
+  a mapping — whose `env` is added to `worker_env` and whose `worker_data`
+  reaches `worker_setup` as `info["data"]`; later steps win, and `None` or
+  an answer that is not a mapping adds nothing
+  (tests/test_robot_pool_worker_surroundings.py,
+  `TestWhatAPreDispatchAnswerMeans`): preparation that needs to know what
+  is about to run.
 - *Stopping.* Cancellation, and `shard_timeout_s`, stop worker processes;
   outstanding shards are not started. Each worker runs in a session of its
   own, so a stop reaches what a suite started, too; a worker says when its
@@ -967,9 +1045,15 @@ processes (started with the `spawn` method, one per shard, at most
   robot_version, suite_roots, partitions, partition_mode, max_workers}`,
   each answering one `{check, ok, detail}` row or a list of them; a failing
   or raising check makes the health `degraded` (tests/test_robot_pool_options.py,
-  `TestHealthChecks`).
+  `TestHealthChecks`). The checks run side by side, and each answers within
+  `health_check_timeout_s` (default 5) or is a failed row saying so — a
+  check that overruns keeps running in its thread, but `health` returns
+  (tests/test_robot_pool_suite_name_and_health.py, `TestHealthCheckTimeout`).
+  With `worker_cwd` a row says whether it is a directory; with
+  `robot_options: {name: …}` the data carry `suite_name`.
 - *Configured callables.* Every option that names a callable —
-  `worker_setup`, `pre_dispatch`, `plan_checks`, `health_checks` — takes
+  `worker_setup`, `pre_dispatch`, `post_execution`, `plan_checks`,
+  `health_checks` — takes
   `"pkg.mod:callable"` or `{call: "pkg.mod:callable", with: {…}}`; the
   `with:` mapping reaches the callable as the keyword `settings`, in a
   spawned worker too (§8).
@@ -980,7 +1064,8 @@ two-test pieces as shards, a `mapping` and a `choice` parameter turned into
 Robot variables, balanced on passing durations) — each run end to end by
 tests/test_four_ways.py (`test_1_…`, `test_1b_…`) — and `robot-regions`
 (the mode chosen per run, one chunk of a region at a time, protected
-`SHOP_URL` / `CURRENCY`, merged results per region and for the run), run by
+`SHOP_URL` / `CURRENCY`, merged results per region and for the run, outputs
+cleaned of the keywords of passing tests), run by
 tests/test_robot_pool_options.py (`TestTheShippedExample`); the switches are
 tested in tests/test_robot_toolkit.py, tests/test_robot_pool.py and
 tests/test_robot_pool_options.py.
@@ -1020,6 +1105,23 @@ trigger whose parameters exceed `max_parameter_bytes` (one value, default
 128 000) or `max_request_bytes` (all of them, default 1 000 000; `null`
 lifts either) is refused before anything is sent, with a message naming the
 way out (`{spec_b64}` or `{spec_url}` instead of `{spec_json}`).
+
+*The document is a visible build parameter, deliberately.* It carries no
+credential: the ingest token is never part of it and no per-run parameter
+kind is a secret, so everything in it — title, labels, selection, item
+ids, per-run values — is what runcomposer itself serves for the run
+(`GET /api/v1/runs/{id}/spec`), and the build page says exactly which
+document was run. The token travels only as `{token}`, bound to a Jenkins
+password parameter, which the REST API names without a value and neither
+the parameters page nor the console shows — unless a shell step traces
+its commands (`set -x`, or a step without a shebang line, which Jenkins
+runs with `sh -xe`), since Jenkins does not mask it by itself. The cost is
+size: every build parameter reaches the build step as an environment
+variable, which on Linux must stay under 128 KiB or the step cannot start;
+`max_parameter_bytes` (128 000) refuses such a trigger before it is sent,
+and `{spec_url}` keeps the document out of the parameters altogether.
+`ci/jenkins/e2e.py` checks each of these against a real Jenkins
+(`what_jenkins_shows_of_the_parameters`).
 
 *Shards.* `shards` names what one build reports separately — a list, or a
 template rendering to a comma- or newline-separated list
@@ -1130,7 +1232,11 @@ execution goes on. `--push` uploads the finished bundle to that URL as one
 multipart POST, so no other transport is needed; a push that is refused or
 cannot be delivered is an error of the consumer (exit `4`), with the bundle
 and its marker left on disk (tests/test_runner_contract.py,
-`TestTheRemoteChannelAndTheConsumer`).
+`TestTheRemoteChannelAndTheConsumer`). Behind a private certificate
+authority, `--ca-bundle PATH` (default `RUNCOMPOSER_CA_BUNDLE`) names the
+certificates to trust; `--no-verify-tls` (default `RUNCOMPOSER_VERIFY_TLS`,
+true or false) skips the check (§5; tests/test_remote_tls.py,
+`TestTheConsumerOverHttps`).
 
 **`runcomposer-exec` distribution — decided: both, by construction.** It is a
 single self-contained **stdlib-only** Python file (reads the spec as JSON;
@@ -1371,7 +1477,8 @@ plugin's own options that name a callable, in either spelling, §8), the
 filter's text form (`parse_filter_text`, `read_filter_string`,
 `quote_pattern`, `format_filter`, `FilterSyntaxError`, §3.1),
 `RemoteLiveChannel` and `push_results` (an executor's progress and its
-results bundle, pushed to the API; a refused push raises
+results bundle, pushed to the API — over HTTPS with `ca_bundle` /
+`verify_tls`; a refused push raises
 `ResultsPushRefused` with the status and the server's answer, §5) — plus
 `load_config` and `Service` for driving
 runcomposer from Python (compose → dispatch → wait → read, in one process).
@@ -1387,8 +1494,12 @@ worker's process group, so what the worker started is asked too), after
 `grace_s` terminate, after another `grace_s` kill, then kill what is left
 of the group before the worker is reaped. A payload or a function that
 cannot be sent to a spawned process is refused before anything starts. The
-Robot toolkit's `supervise` and the `command` runner are built on it
-(tests/test_worker_supervisor.py).
+Robot toolkit's `supervise` and `spawn_merge` (one payload, the merge as
+its target) and the `command` runner are built on it — one implementation
+of starting, stopping and reaping a worker
+(tests/test_worker_supervisor.py, tests/test_robot_merge_process.py).
+`WorkerPayload` has no hook after an execution: the target is the author's
+own function, and what follows an execution is its next line.
 
 It is a package with **two toolkits** — the parts `robot-pool` and `jenkins`
 are assembled from:
@@ -1397,7 +1508,11 @@ are assembled from:
   live listeners (`LiveStatusListener`, and `RemoteLiveStatusListener` for
   an agent that executes elsewhere), what one worker is told and its entry
   point (`ShardPayload` — with a working directory, an environment and data
-  for the worker's setup — and `run_shard`), the supervisor of Robot
+  for the worker's setup, the cleaning of every output and the steps after
+  every execution — and `run_shard`; a `ShardOutput` a step failed on
+  carries `failed` and the `item_ids` reported `ERROR` for it),
+  `clean_output` (one `output.xml` rewritten without the keyword data
+  Robot's selectors name), the supervisor of Robot
   workers (`supervise`, on `supervise_workers`: a bound on parallelism,
   lanes that must not overlap, a per-shard timeout, the stop protocol),
   delivery of what a worker produced, its artifacts recorded first
@@ -1405,7 +1520,9 @@ are assembled from:
   `rebot_options`, and `MergePayload` / `run_merge` / `spawn_merge` for a
   merge in a spawned process, so the dispatching process never loads
   Robot's result model; `NameTopSuites`), the suite-root check
-  (`attribute_roots`, `root_mismatches`), `robot_version`;
+  (`attribute_roots`, `root_mismatches`, both with `name=` for a renamed
+  top suite), `robot_version` (read from the installed distribution's
+  metadata);
 - `runcomposer.sdk.jenkins` — `JenkinsClient` (session and crumb, bounded
   retry, TLS, trigger → queue item → build, lookup by queue id once the
   queue item is gone, stop and cancel, archived artifacts and any URL below
@@ -1447,6 +1564,17 @@ imported only inside the functions that execute), the toolkits import only
 `runcomposer.sdk` from this package, the SDK has exactly these two
 toolkits, and the reference runners are built on them (tests/test_sdk.py,
 tests/test_self_containment.py).
+
+**What a server process loads of Robot Framework.** Importing any part of
+the `robot` package loads all of it, its process-global logger included.
+So `robot_version()` reads the distribution's metadata, the suite-name rule
+is restated (and compared with Robot's own), the parser reads the file
+itself (§5), and merges run in a spawned process: with a catalog that is
+not read through Robot, a server that answers `health`, previews and
+dispatches with `merge_groups` has no `robot` module loaded at any point.
+The `robotframework` catalog source does load Robot when it builds the
+catalog — that is its nature — and the runner adds nothing to what the
+source loaded (tests/test_robot_server_imports.py).
 
 **The contract is checked, not discovered.** Every member the application
 calls on a plugin is a member of its protocol; the optional ones have
@@ -1605,14 +1733,17 @@ execution takes over. `runcomposer history durations [--label] [--last N]
 # config.yaml — one file, layered sections
 core:
   api: { host: 127.0.0.1, port: 8100, cors: [...],
-         docs: false }                 # true: also serve the /docs and /redoc viewers (§9)
+         docs: false,                  # true: also serve the /docs and /redoc viewers (§9)
+         hosts: null }                 # the host names it answers to; null: the loopback
+                                       #   names on a loopback bind, else every name (below)
   taxonomy_file: taxonomy.yaml        # curated tree over tag patterns; format: docs/taxonomy.md
   artifact_dir: artifacts/
   private_dir: private/               # ctx.private_dir — never served; outside artifact_dir
   retention: { max_age_days: 90, max_runs: null }      # null = no limit
   dispatch: { max_concurrent: 2, handoff_wait_s: 2.0,
-              awaiting_timeout_s: null }               # null = wait for results until
+              awaiting_timeout_s: null,                # null = wait for results until
                                                        #   finalized or cancelled (§4)
+              recovery_interval_s: 15 }                # serve's recovery pass; null = at startup only
   ingestion: { tokens: required, inbox: results_inbox/, max_upload_mb: 200,
                quarantine_dir: quarantine/, quarantine_max: 100,
                poll_interval_s: 2.0, settle_s: null }
@@ -1740,6 +1871,23 @@ Rules:
   `./runcomposer.db`, the `demo-corpus` source, the bundled taxonomy, and the
   `demo` runner. A config file that leaves out `store:` or `sources:` gets
   those two defaults; runners are never implied.
+- **`core.api.hosts`** lists the host names the server answers to — a
+  name, an IPv4 address or a bracketed IPv6 address, optionally with
+  `:port` (without one, any port); `*.shop.example` for every name below
+  `shop.example` but not that name itself; `*` for every name. A request
+  for any other name, or without a `Host`, is a `400` `unknown-host`
+  before anything else sees it, whatever its method (§9). The list
+  replaces the default rather than adding to it. Unset, the address the
+  server is bound to decides: on a loopback address (`serve` on its
+  default `127.0.0.1`) only `localhost`, `127.0.0.1`, `[::1]` and the bound
+  address itself are answered, since nothing but this machine can reach it
+  by any other name — which closes DNS rebinding for the default local
+  setup; on any other address (`0.0.0.0` in the image) every name is
+  answered until the list is set. An application built without its bind
+  address (embedded in another server, the kit's harness) answers to every
+  name unless the list is set. An empty list or an entry that is not a host
+  refuses the start, naming `core.api.hosts[i]` (tests/test_api_hosts.py;
+  SECURITY.md §6).
 
 **One path base.** A relative path anywhere in the config file resolves against the
 **config file's own directory** — the core's keys (`taxonomy_file`,
@@ -1751,7 +1899,13 @@ paths are left as written. A path may come from the environment, and then
 ${env:SHOP_CHECKOUT}/tests` with an absolute value stays where the variable
 points, and a relative value is anchored like any other; this holds for the
 core's keys and for every option a plugin names in `PATH_OPTIONS`
-(tests/test_deployment_options.py).
+(tests/test_deployment_options.py). The config file's own path is made
+absolute when it is loaded — also when `--config` named it by a relative
+path, made absolute rather than resolved, so a file reached through a
+symbolic link keeps the directory it was named in — and without a file the
+working directory at load time is the base; so every anchored path is
+absolute, and a later change of directory, or a worker process started
+elsewhere, finds the same files (tests/test_config_paths_absolute.py).
 
 The core must not decide what a plugin's options *mean*, and "which of these
 strings are paths" is exactly that kind of decision — a listener spec, a
@@ -1904,7 +2058,7 @@ needs the document downloads it rather than re-serializing JSON it was shown.
 <stable id>}` — a domain error, a failed request validation (`400`,
 `invalid-request`, plus a `fields` list), an unknown route. Status codes
 follow from the *type* of the error, mapped in one place: not found `404`,
-invalid request `400`, state conflict `409` (`run-active`,
+invalid request `400` (`invalid-request`, `unknown-host`, …), state conflict `409` (`run-active`,
 `dispatch-refused`, `spec-conflict`, …), token `401`/`403`, unreadable bundle
 `422`, too large `413`; a deployment that broke under a running server (the
 taxonomy file) is a `500` that says what is wrong. Request bodies are
@@ -1924,6 +2078,14 @@ sees it: an `Origin` that is neither this server's own (the request's
 Clients that send neither header — curl, the CLI, an executor pushing with
 its token — are unaffected (tests/test_api_browser_safety.py; SECURITY.md
 §6).
+
+**Only the server's own names are answered.** Comparing `Origin` with
+`Host` cannot see DNS rebinding — a page on a name its author controls,
+resolved to this server's address, is one origin with that name to the
+browser. So a request for a host name the server does not answer to
+(`core.api.hosts`, §8) is refused `400`, `unknown-host`, before any route —
+or the cross-site check — sees it, whatever its method: `GET` included,
+the health route, the UI and the artifacts too (tests/test_api_hosts.py).
 
 `?resolve=true` on the taxonomy is a parameter rather than a second endpoint:
 the unresolved body is the published shape and a client that asks for the
@@ -1966,7 +2128,8 @@ unknown, a plan that would be refused); `2` the command line or the
 configuration is wrong; `3` the run ended without a result (refused, failed,
 cancelled, stale, timed out). Every
 command that reads a deployment takes `--config` — the only way to select a
-config file. Plus the
+config file. `python -m runcomposer` is the same command line, exit codes
+included (tests/test_python_m.py). Plus the
 vendorable **`runcomposer-exec`** consumer (§6.2c), shipped as its own tiny
 artifact.
 
@@ -2205,7 +2368,9 @@ pytest-flavored manifest example ships alongside (§6.1).
   `runcomposer validate`; neutral demo corpus; CI. **Acceptance criterion:
   one-command quickstart** — `pipx run runcomposer demo` *and*
   `docker run ... runcomposer demo`, UI pre-bundled (no Node toolchain for
-  evaluators).
+  evaluators). The image runs runcomposer under an init (`tini`) as process
+  1, which forwards signals and reaps the processes a stopped worker leaves
+  behind; `docker run --init` is not needed.
 - **P1 — compose & export:** SpecBuilder emits runspec; compile/preview API;
   sqlite store; UI port (i18n + ui-config + stack refresh); **export-mode
   end-to-end**: compose → `runcomposer spec` → `runcomposer-exec` → marker bundle →
@@ -2259,3 +2424,5 @@ as history; `CHANGELOG.md` says what changed.
 | 23 | UI stack (0.2; supersedes #3) | **TypeScript and React only** (§10): the expression editor, dialogs and list windowing are the UI's own. Rejected: keeping the filter widget behind an adapter — the filter is the run spec's grammar, and translating a widget's model into it was a standing source of silent mistranslations. |
 | 24 | A filter given as one string (0.2) | **Filter text, read by the core** (§3.1), with the single-pattern fallback and a warning for a string that is not text. The spec stores the AST; "every item" is `{"not": "regex:^$"}`, spelled `*` only in the text. Rejected: a string as always one pattern (`compile 'Auth OR Cart'` selected nothing), and a new node for "every item" (refused by every shipped `runspec/1.0` validator). |
 | 25 | Which values from the environment are secret (0.2) | **`${env:…}` stays a secret; `${env-public:…}`, paths and converted numbers are none** (§8), and secrets are blanked out of free text only, never out of identifiers. Rejected: every environment value a secret (a region named like a shard, or a port, was blanked out of identifiers and addresses), and a secret too short to blank safely kept silently unblanked — it is refused instead. |
+| 26 | The host names the server answers to (0.2) | **`core.api.hosts`, defaulted by the address actually bound** (§8, §9): unset, a loopback bind answers to the loopback names only — DNS rebinding is closed for the default local setup with nothing to configure — and any other bind to every name until the list is set. Keyed to the bind, not to `core.api.host`, because `serve --host` overrides the file (the image binds `0.0.0.0` over any config). The refusal is an ordinary error document (`400`, `unknown-host`); an entry without a port matches any port, one with a port that port only. Rejected: restricting every deployment to the loopback names by default (every server reached by a real name would refuse its first request), and leaving `Host` unchecked with a reverse proxy as the only answer (the default local setup was open to any page its user visits). |
+| 27 | The run spec as a Jenkins build parameter (0.2) | **Visible, on purpose** (§6.2b): the document carries no credential — the token travels only as a password parameter — and it is what runcomposer itself serves for the run, so the build page says which document was run. Its cost is size (one environment variable of the build step); `max_parameter_bytes` refuses before that limit and `{spec_url}` keeps the document out of the parameters. Rejected: hiding the document as a password parameter, which protects nothing and takes from the build page the one thing worth showing. |

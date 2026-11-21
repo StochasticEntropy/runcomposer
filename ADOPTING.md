@@ -492,7 +492,9 @@ class MySource(SourceBase):
 
 The core resolves exactly those before constructing you: absolute paths, empty
 strings and non-strings are left untouched, anything else is joined onto the
-config file's directory. It deliberately does not guess — plenty of plugin
+config file's directory — which is absolute, also when `--config` named the
+file by a relative path, so your plugin receives absolute paths
+(`tests/test_config_paths_absolute.py`). It deliberately does not guess — plenty of plugin
 options look path-shaped and are not (a listener spec, a shell hook, a URL).
 When the rule has exceptions, decide yourself instead:
 
@@ -555,6 +557,12 @@ execution started with `--listener runcomposer.sdk.robot.RemoteLiveStatusListene
 streams which test is running — that one needs runcomposer installed where
 Robot runs ([connector guide
 §3.3](docs/connectors.md#33-dispatchctx--prepare-declare-execute-deliver)).
+Behind a private certificate authority, give the executing side the CA
+bundle to trust — `--ca-bundle`, or `RUNCOMPOSER_CA_BUNDLE` in its
+environment, which the listener reads too. And the server must answer to
+the name the executor uses: listed in `core.api.hosts` once that is set
+(a server bound to a loopback address answers to the loopback names only
+until it is; [docs/cli.md](docs/cli.md#the-names-it-answers-to)).
 
 **A minimal install for a machine that only executes.** Where runcomposer
 itself must be installed on the executing side — for the Robot listener, the

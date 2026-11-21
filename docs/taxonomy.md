@@ -119,7 +119,10 @@ string `tag_filter` is read over the API, and it must name one pattern:
   with the quoted spelling to use instead.
 
 In the resolved taxonomy a written node's `filter` is the pattern itself,
-without the quotes.
+without the quotes. `runcomposer taxonomy-check` reads a leaf the same way,
+so a quoted leaf claims the tags its pattern matches and is never reported
+as matching nothing
+(`tests/test_filter_text_entry_points.py::TestTheDriftCheckReadsLeavesAsTheTreeDoes`).
 
 ---
 
@@ -199,7 +202,9 @@ Alongside `taxonomy`, the response carries a `resolved` summary:
 `nodes_total` — and, as a key of its own, `warnings`: one sentence per leaf whose `filter` was
 read as one pattern only by the fallback for strings that are not filter
 text ([above](#the-pattern-in-a-leaf)); empty for a file written as filter
-text throughout, such as the bundled one.
+text throughout, such as the bundled one, whose one regex leaf is written
+quoted
+(`tests/test_filter_text_entry_points.py::TestTheDriftCheckReadsLeavesAsTheTreeDoes::test_the_bundled_demo_taxonomy_needs_no_fallback`).
 
 ### The three rules worth knowing
 
@@ -410,4 +415,6 @@ curl -s localhost:8100/api/v1/taxonomy
 What remains *legal but useless* is a tree whose patterns match nothing — a
 valid document renders a valid, empty-looking tree if every leaf's pattern is
 wrong. That is the case-sensitivity trap above, not a shape problem: check a
-leaf's pattern with `runcomposer compile 'prefix:Checkout-'`.
+leaf's pattern with `runcomposer compile 'prefix:Checkout-'`, or let
+`runcomposer taxonomy-check` list every leaf that matches nothing and every
+tag no leaf claims ([docs/cli.md](cli.md#taxonomy-check)).

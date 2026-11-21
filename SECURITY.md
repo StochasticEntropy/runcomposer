@@ -83,7 +83,10 @@ the spec document and no API returns it. The run and the token are checked
 from the request's path and headers before anything is read or written: a
 push for an unknown run (`404`), without a token (`401`) or with a wrong one
 (`403`) is answered before runcomposer reads any of its body, and the
-connection is closed.
+connection is closed — after the answer is out, and after what the client
+still sends has been discarded, unparsed and unstored, for at most two
+seconds, so that a client in the middle of sending reads the refusal instead
+of a reset connection.
 The same holds for an executor's progress (`/live`, `/log`). The body of an
 authenticated push is then read as a stream, each file into a temporary
 bundle directory under its base name — a name that is not a file name (`..`,
@@ -135,19 +138,30 @@ other request: pushing from a web page is not a use case. In scope: any
 state-changing request a page on another origin can get accepted.
 
 *Behind a reverse proxy*, pass the `Host` the browser used through to
-runcomposer unchanged — or, if the proxy rewrites it, list the public origin
+runcomposer unchanged, and list that name in `core.api.hosts` (below) — or,
+if the proxy rewrites it, list the public origin
 (`https://runcomposer.shop.example`) in `core.api.cors`; otherwise the UI's
 own requests are refused.
 
-*The `Host` header itself is not restricted*: runcomposer has no setting that
-names its public address to compare it with. A page on a host name its
-author controls that resolves to runcomposer's address (DNS rebinding) is
-the same origin as that host name to the browser, so the rule above does not
-stop it — and listening on `127.0.0.1` does not either, since the browser
-making the requests runs on that machine. What stops it is a reverse proxy
-in front of runcomposer that answers only for runcomposer's own host name
-and refuses every other `Host`; deploy one wherever a browser that visits
-untrusted pages can reach the port.
+*The `Host` header is restricted to the names the server answers to.* A
+page on a host name its author controls that resolves to runcomposer's
+address (DNS rebinding) is, to the browser, the same origin as that name,
+so comparing `Origin` with `Host` cannot stop it — and listening on
+`127.0.0.1` alone does not either, since the browser making the requests
+runs on that machine. `core.api.hosts` lists the names runcomposer answers
+to (`runcomposer.shop.example`, `*.shop.example`, `localhost:8100`; a name
+without a port matches any port). A request for any other name, or without
+a `Host`, is refused with `400` (`unknown-host`) before any route sees it,
+whatever its method — `GET` included. Left unset, a server bound to a
+loopback address (`runcomposer serve` on its default `127.0.0.1`) answers
+only to `localhost`, `127.0.0.1`, `[::1]` and the address it is bound to,
+which closes rebinding for the default local setup. A server bound to any
+other address (`0.0.0.0` in the Docker image) answers to every name until
+`core.api.hosts` is set — set it wherever a browser that visits untrusted
+pages can reach the port, or put a reverse proxy in front that refuses
+every other `Host`. An application embedded in another server without its
+bind address answers to every name unless the list is set. In scope: a
+request for a name the server does not answer to that it accepts anyway.
 
 **7. API documentation.** `/openapi.json` — the API's description, from this
 origin, with nothing in it but the schema — is always served. The two
@@ -174,6 +188,11 @@ normal issue, but they will not get an advisory:
   command lines in your config, and `runcomposer-exec` runs the `--command` you
   give it. Someone who can already edit your config can already run code as
   you. That is the feature. (A run *spec* is not config — see 4 above.)
+- **`verify_tls=False` and `--no-verify-tls` skip the certificate check**
+  of an executor's push, as documented — for a lab server whose
+  certificate nobody signed. Behind a private certificate authority give
+  the CA bundle instead (`ca_bundle=`, `--ca-bundle`,
+  `RUNCOMPOSER_CA_BUNDLE`).
 - **`--simulate` fabricates verdicts.** It is a transport test. It is documented
   as such wherever it is used, and it never claims a test ran.
 - **`runcomposer demo` writes a database under the working directory**

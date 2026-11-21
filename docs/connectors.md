@@ -66,6 +66,9 @@ to any of them is accidental.
 - the `RunStore` protocol is wide — 33 members — and may gain members in a
   minor release, with a default in `StoreBase` wherever a default can be
   right ([§4](#runstore--persistence));
+- a record may gain fields with defaults — the Robot toolkit's
+  `ShardPayload` gained `clean_output` and `post_execution`, its
+  `ShardOutput` `item_ids` and `failed` — so build records by keyword;
 - a response may gain fields: read what you know and ignore the rest.
 
 **Import nothing else of runcomposer** — every
@@ -522,11 +525,12 @@ as `X-Runcomposer-Token` or `Authorization: Bearer`:
 A token reports for its own dispatch only (`403` otherwise)
 (`tests/test_runner_contract.py::TestPushedProgress`). The client side ships
 in four forms (`tests/test_runner_contract.py::TestTheRemoteChannelAndTheConsumer`):
-`RemoteLiveChannel(callback_url, token, dispatch_id=…)` in the SDK is a
+`RemoteLiveChannel(callback_url, token, dispatch_id=…, ca_bundle=None,
+verify_tls=True)` in the SDK is a
 `LiveChannel` over HTTP — best-effort: what cannot be pushed is counted in
 `failures`, never raised into the execution;
 `push_results(callback_url, token, files, shard=…, dispatch_id=…,
-format=…)` in the SDK pushes a finished bundle (one multipart POST) and
+format=…, ca_bundle=None, verify_tls=True)` in the SDK pushes a finished bundle (one multipart POST) and
 returns the server's answer — a refusal raises `ResultsPushRefused` with the
 HTTP `status` (`None` when the server could not be reached) and the
 server's error document as `body`, and a missing file or two files with one
@@ -540,6 +544,22 @@ runcomposer.sdk.robot.RemoteLiveStatusListener tests/`, configured from
 [--push]` reports log lines (with `--simulate`, live status too) while it
 works and with `--push` uploads its finished bundle, exiting `4` when the push
 is refused.
+
+Over HTTPS all four verify the server's certificate against the system's
+trust store, or against a CA bundle — a file of the certificates to trust,
+for a server behind a private certificate authority: `ca_bundle=` on the
+two SDK clients (a path or a string), `RUNCOMPOSER_CA_BUNDLE` for the
+listener (or its `ca_bundle` argument) and `--ca-bundle` /
+`RUNCOMPOSER_CA_BUNDLE` for the consumer. `verify_tls=False`,
+`RUNCOMPOSER_VERIFY_TLS=false` and `--no-verify-tls` skip the check, for a
+lab server whose certificate nobody signed. A bundle that does not exist is
+a `FileNotFoundError` where it is given, one that holds no certificate a
+`ValueError` — before anything is sent. Without the bundle, a certificate
+the system does not trust is a counted failure of the channel, and a
+`ResultsPushRefused` (`status` `None`) whose message names the TLS reason
+and both ways out. The channel stays picklable: its TLS context is built in
+the process that pushes (`tests/test_remote_tls.py`,
+`tests/test_remote_listener_tls.py`).
 
 **Results that never come.** A dispatch left in `AWAITING_RESULTS` waits for
 ever unless the deployment says how long: with `core.dispatch.awaiting_timeout_s`
@@ -769,7 +789,10 @@ ui:                            # selections people start from
   `serve`, `doctor` and the harness refuse to start
   (`tests/test_config.py`, `examples/connector-template/tests/test_connector.py::test_a_typo_in_the_runner_entry_fails_startup`).
 - **Paths.** Name the options that are file paths in `PATH_OPTIONS = ("root",)`
-  and they arrive resolved against the config file's directory; override the
+  and they arrive resolved against the config file's directory — absolute,
+  also when `--config` named the file by a relative path, so a worker
+  process started in another directory finds the same file
+  (`tests/test_config_paths_absolute.py`); override the
   classmethod `resolve_config_paths(options, resolve)` when the rule has
   exceptions (the sqlite store leaves `:memory:` alone). A `${env:…}` inside a
   path is substituted *before* the path is anchored: `root:
@@ -1070,7 +1093,10 @@ a container, serve on every interface and advertise the name the container
 reaches this machine by — `ConnectorHarness(serve=True, host="0.0.0.0",
 advertise_host="host.docker.internal")`: `harness.url` and the variables
 carry that name, and `harness.local_url` is the address the test itself
-uses (`tests/test_jenkins_followup.py::TestHarnessAddress`).
+uses (`tests/test_jenkins_followup.py::TestHarnessAddress`). The harness
+builds its server without a bind address, so it answers to every host
+name — such as the advertised one — unless the configuration sets
+`core.api.hosts` (DESIGN.md §8).
 `harness.artifacts(run_id)` lists a run's artifacts as the API does — `name`,
 `kind`, `shard`, `group`, `href` — so the address of a served file is
 `harness.url + href`, and a test can ask for it, and for a file beside it
@@ -1208,15 +1234,19 @@ options in [ADOPTING.md §2](../ADOPTING.md#2-start-with-configuration-not-code)
 | `max_chunks_per_partition: N` | at most `N` chunks of one partition are cut, and so run at once; `1`: a partition that is one environment never executes two chunks at the same time (`split` is one lane per partition already) |
 | `max_tests_per_chunk: N`, `chunk_shards: true` | a chunk is executed in pieces of at most `N` tests, one after another. With `chunk_shards` every piece is a declared shard of its own, `<lane>-NN`, delivered as soon as it is done instead of merged into one result per chunk; shards are grouped by partition. `chunk_shards` without `max_tests_per_chunk` is a `ConfigError` |
 | `plan_checks: [callable]` | checks free of side effects, run for a preview and for a dispatch alike, after the plan stands and before any readiness step, as `check(ctx, info)`; `info` is `{partitions, partition_mode, parameters, shards, groups, item_ids, plan}`. A check may raise `InvalidParameter` (a `400`) or refuse; a preview whose checks passed notes it |
-| `pre_dispatch: [callable]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`; a mapping it returns is added to the Robot variables of every shard |
-| `worker_setup: [callable]` | called in each worker process before its first execution as `callable(info)`; `info` is `{shard, partition, run_id, dispatch_id, out_dir, variables, data}` (`out_dir` absolute; `data` is the payload's `worker_data`, which `robot-pool` leaves empty); a mapping it returns is added to that shard's variables |
+| `pre_dispatch: [callable]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`. What it returns goes into every shard: a mapping of Robot variables, or `{variables: {…}, env: {…}, worker_data: {…}}` — a mapping whose keys are only those three, each a mapping — for Robot variables, the workers' environment (over `worker_env`) and the data every `worker_setup` receives as `info["data"]` (it must survive a pickle, or the dispatch is refused). Later steps win; `None`, or an answer that is not a mapping, adds nothing (`tests/test_robot_pool_worker_surroundings.py::TestWhatAPreDispatchAnswerMeans`) |
+| `worker_setup: [callable]` | called in each worker process before its first execution as `callable(info)`; `info` is `{shard, partition, run_id, dispatch_id, out_dir, variables, data}` (`out_dir` absolute; `data` is the `worker_data` a `pre_dispatch` step returned, else empty); a mapping it returns is added to that shard's variables |
+| `post_execution: [callable]` | called in the worker after every execution — re-executions of failures included — as `step(output, info)`: the path of that execution's `output.xml` (already cleaned, with `clean_output`), and `worker_setup`'s `info` with the final `variables`, plus `execution` (its 1-based index; `None` for a re-execution), `attempt`, `rerun`, `root` and `item_ids`. A step that raises fails that execution: its tests are delivered `ERROR` with a message naming the step, and its output is neither parsed, re-executed nor merged; the shard goes on with its next execution (`tests/test_robot_post_execution.py::TestPostExecution`) |
+| `clean_output: {remove_keywords: […], flatten_keywords: […]}` | Robot's own selectors — to remove `all`, `passed`, `for`, `while`, `wuks`; to flatten `for`, `while`, `iteration`, `foritem`; for both `name:<pattern>` and `tag:<pattern>` — checked at startup: every execution's `output.xml` is rewritten in the worker through Robot's result model, atomically, before anything reads it — so what is parsed, merged, recorded and pushed is the smaller file, every test's id, status, message, tags and duration unchanged. The same selectors shape the execution's log and report (`tests/test_robot_post_execution.py::TestCleanOutput`) |
+| `worker_cwd: path`, `worker_env: {NAME: text}` | the workers' working directory (relative to the config file) and what is set in their environment — a suite that reads its files relative to where it stands, `%{SHOP_REGION}` in a suite. Values are text (a number or a boolean is written as text; a nested value is a `ConfigError`); `${env:…}` like any option. A `worker_cwd` that is not a directory makes the health `degraded` and refuses the dispatch (`tests/test_robot_pool_worker_surroundings.py::TestWhereTheWorkersStand`) |
 | `health_checks: [callable]` | called by `health()` as `check(info)` with `{options, robot_version, suite_roots, partitions, partition_mode, max_workers}`; each returns a `{check, ok, detail}` row or a list of them, appended to `data.checks` after the built-in rows. A failing row makes the health `degraded`; a check that raises is a failed row with the exception's type and message |
+| `health_check_timeout_s: 5` | the checks run side by side, and one that has not answered within this many seconds is a failed row saying so; `health` returns, though the check keeps running in its thread (`tests/test_robot_pool_suite_name_and_health.py::TestHealthCheckTimeout`) |
 | `run_parameters: [{name, kind, …}]` | further per-run parameters, declared with the fields of `Parameter` — beside the runner's own `partitions` and `allow_drift` |
 | `parameter_variables: {param: VARIABLE}` | a per-run parameter as a Robot variable (a list comma-joined); `"*"` for a `mapping` parameter makes each of its entries a variable |
 | `protected_variables: [NAME, …]` | Robot variables a per-run mapping may not set, matched as Robot matches names — case, spaces, underscores and `${…}` ignored, so `shop_url` and `${Shop Url}` both hit `SHOP_URL`. Refused as an invalid parameter by preview and dispatch; a `parameter_variables` entry aiming a scalar parameter at a protected name is a `ConfigError` |
 | `merge_groups: true` | one merged `output.xml` / `log.html` / `report.html` per group (`… (group eu)`) and one for the run (`… (run)`), each merged in a spawned process as soon as its shards are in and recorded before the last shard delivers; a failed merge is a warning line, a cancelled dispatch merges nothing more, no verdict depends on it |
 | `rpa: true \| false \| null` | the execution mode. `null` (default) lets Robot decide — and Robot refuses a selection that keeps both tests and tasks, so a root that mixes them needs `false` (everything executed as tests) or `true`; otherwise the dispatch fails with Robot's own message and that hint |
-| `robot_options: {…}` | further keyword options for `robot.run` (`{loglevel: DEBUG, variablefile: [env.py]}`); the options the runner sets itself win |
+| `robot_options: {…}` | further keyword options for `robot.run` (`{loglevel: DEBUG, variablefile: [env.py]}`); the options the runner sets itself win. `robot_options` shape `log.html` and `report.html` only — `removekeywords` and `flattenkeywords` leave `output.xml` as big as it was; `clean_output` shapes `output.xml`, and with it everything that is parsed, merged, recorded and pushed (`tests/test_robot_post_execution.py::TestRobotOptionsShapeTheLogOnly`). `name` (lowercase, as `robot.run` takes it) renames the top-level suite; the suite-root check, the exact selection and `doctor` read the ids under that name, and the health data carry it as `suite_name` (`tests/test_robot_pool_suite_name_and_health.py::TestARenamedTopSuite`) |
 | `history_statuses: [PASS]` | balance by the durations of executions that ended with these statuses only |
 
 A `callable` above is `"pkg.mod:callable"` or `{call: "pkg.mod:callable",
@@ -1229,7 +1259,10 @@ starts and ends, each shard's directory is
 recorded as a directory artifact `files (<shard>)` so that what a log refers
 to is servable — a shard's artifacts recorded before it is delivered — and
 outputs of several executions are merged without "added
-from merged output" notes. Every item is checked against the suite roots,
+from merged output" notes — relative links in their HTML messages
+rewritten for where the merged log lies, so a file a library wrote and
+linked is reached where it is served
+(`tests/test_robot_merge_process.py::TestLinksInMergedLogs`). Every item is checked against the suite roots,
 a single root included: an item belongs when its id begins with the root
 suite's name and its recorded source lies under the root, and a mismatch
 refuses preview and dispatch before the hand-off, naming the item and the
@@ -1267,8 +1300,10 @@ run end to end by `tests/test_four_ways.py::test_1b_the_pool_configured_as_lanes
 
 Its third entry runs each region as one environment that never executes
 two chunks at once, lets a run choose the mode, keeps the region's address
-out of reach of a per-run mapping, and merges each region's results and the
-whole run's (`tests/test_robot_pool_options.py::TestTheShippedExample`):
+out of reach of a per-run mapping, merges each region's results and the
+whole run's, and cleans every output of the keywords of passing tests
+(`tests/test_robot_pool_options.py::TestTheShippedExample`,
+`tests/test_robot_post_execution.py::TestTheShippedExample`):
 
 ```yaml
   robot-regions:
@@ -1287,6 +1322,7 @@ whole run's (`tests/test_robot_pool_options.py::TestTheShippedExample`):
     parameter_variables: { variables: "*" }
     protected_variables: [SHOP_URL, CURRENCY]
     merge_groups: true
+    clean_output: { remove_keywords: [passed] }
 ```
 
 ```console
@@ -1379,17 +1415,18 @@ test's longname):
 
 | Name | What |
 |---|---|
-| `ExactSelection(ids, tag=None)` | a pre-run modifier keeping exactly the tests whose longname is in `ids` — an id is never read as a pattern; `kept` counts what was found |
-| `attribute_roots(suite_roots, item_ids, items=())`, `root_mismatches(…)` | which suite root each item is executed from — checked, a single root included: an item belongs when its id begins with the root suite's name and its recorded source (`Item.meta["source"]`) lies under the root. `attribute_roots` raises `LookupError` naming the first mismatches and how many there are; `root_mismatches` returns them as sentences (empty when all belong) |
-| `LiveStatusListener(channel, shard, stopped=None)`, `RemoteLiveStatusListener(...)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start. A test cut short by a stop is not reported as failed: what stays is that it was `RUNNING` |
-| `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup` (configured callables), `rerun_failed`, `rpa`, `robot_options`, `cwd` and `env` (the working directory and environment the worker executes in — `%{SHOP_REGION}` in a suite), `worker_data` (a picklable mapping its `worker_setup` sees as `info["data"]`), … |
-| `run_shard(payload, stop=None)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `stop()` (or `STOP_FILE`) asks it to end early; `cwd` and `env` apply for the call only. `read_shard_result(out_dir)` reads the result back as a `ShardResult` of `ShardOutput`s |
+| `ExactSelection(ids, tag=None, name=None)` | a pre-run modifier keeping exactly the tests whose longname is in `ids` — an id is never read as a pattern; `kept` counts what was found. `name` is the top-level suite's name when the execution renames it (`robot.run(…, name=…)`): Robot applies that name only after its pre-run modifiers, so the selection renames the top suite before it matches |
+| `attribute_roots(suite_roots, item_ids, items=(), *, name=None)`, `root_mismatches(…, *, name=None)` | which suite root each item is executed from — checked, a single root included: an item belongs when its id begins with the root suite's name (or `name`, for a renamed top suite) and its recorded source (`Item.meta["source"]`) lies under the root. `attribute_roots` raises `LookupError` naming the first mismatches and how many there are; `root_mismatches` returns them as sentences (empty when all belong) |
+| `LiveStatusListener(channel, shard, stopped=None)`, `RemoteLiveStatusListener(callback_url=None, token=None, shard=None, dispatch_id=None, ca_bundle=None, verify_tls=None)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start (each argument left out comes from the environment, `RUNCOMPOSER_CA_BUNDLE` and `RUNCOMPOSER_VERIFY_TLS` included). A test cut short by a stop is not reported as failed: what stays is that it was `RUNNING` |
+| `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup` (configured callables), `rerun_failed`, `rpa`, `robot_options`, `cwd` and `env` (the working directory and environment the worker executes in — `%{SHOP_REGION}` in a suite), `worker_data` (a picklable mapping its `worker_setup` sees as `info["data"]`), `clean_output` (the selectors every output is cleaned with — a selector Robot would refuse is a `ValueError` where the payload is made), `post_execution` (configured callables after every execution), … |
+| `run_shard(payload, stop=None)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `stop()` (or `STOP_FILE`) asks it to end early; `cwd` and `env` apply for the call only. `read_shard_result(out_dir)` reads the result back as a `ShardResult` of `ShardOutput`s — each with `item_ids`, and `failed` set when a step after its execution raised: its tests are then reported `ERROR` with that message by `collect_verdicts`, and `ShardOutcome.outputs` keeps it even when the step removed the file |
+| `clean_output(output, info=None, *, settings)` | one `output.xml` rewritten without the keyword data `settings` (`{remove_keywords: […], flatten_keywords: […]}`) selects, through Robot's result model, atomically; the tests, their statuses, messages, tags and times stay as they were. It runs Robot in the calling process — a worker, a `post_execution` step — not in a server (`tests/test_robot_post_execution.py::TestCleanOutput`) |
 | `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; a line when a shard starts and ends through `log` (default: the payloads' channel); `on_done(outcome)` is called with a `ShardOutcome` in the calling thread as each payload ends |
 | `stop_worker(process, out_dir)`, `STOP_FILE` | the stop protocol on its own: no further execution, Robot ends the one in flight, then terminate and kill |
 | `deliver_shard(ctx, outcome, *, format="robot-output-xml", group=None)`, `collect_verdicts(ctx, outcome, *, format)` | parse a finished shard through `ctx.parse`, label every attempt, record `log.html` / `report.html` / `output.xml` and the shard's directory as artifacts, then deliver; returns the reason when there is nothing to deliver |
 | `merge_outputs(outputs, out_dir, ..., rebot_options=None)`, `MergeNoiseRemover`, `NameTopSuites` | several `output.xml` merged into one, without merge notes; `rebot_options` are further options for Robot's `rebot` (one the function sets itself is a `ValueError` naming it). `NameTopSuites` names the top suites of outputs put side by side (`merge=False`) — `eu`, `us` instead of twice the same suite |
-| `MergePayload(...)`, `spawn_merge(payload, *, timeout_s=None, cancelled=…)`, `run_merge`, `MergeResult` | the same merge in a spawned process, waited for: the calling process loads nothing of Robot Framework, so a server can merge while it serves; options are checked before anything starts, a merge over its timeout or cancelled is stopped, and a failure comes back as `MergeResult.error` with Robot's own complaint (`tests/test_robot_merge.py`) |
-| `robot_version()` | the installed version, `None` without Robot Framework |
+| `MergePayload(...)`, `spawn_merge(payload, *, timeout_s=None, cancelled=…)`, `run_merge`, `MergeResult` | the same merge in a spawned process, waited for — a worker of `supervise_workers` — so the calling process loads nothing of Robot Framework, and a server can merge while it serves; options are checked before anything starts, a merge over its timeout or cancelled is stopped at once, and a failure comes back as `MergeResult.error` with Robot's own complaint (`tests/test_robot_merge.py`, `tests/test_robot_merge_process.py`) |
+| `robot_version()` | the installed version, read from the distribution's metadata without importing Robot; `None` without Robot Framework |
 
 **`runcomposer.sdk.jenkins`** — stdlib `urllib`, no dependency:
 
@@ -1725,6 +1762,23 @@ its own is pinned by the rest of that file.
 >   ([§4](#runstore--persistence)).
 > - `ctx.connector_settings(name)` is a member of `DispatchContext` and
 >   `PlanContext`: a context of your own (a test double) adds it.
+> - A `robot-pool` `pre_dispatch` step that returns a mapping whose keys
+>   are only `variables`, `env` and `worker_data`, each a mapping, now
+>   gets the structured meaning — Robot variables, the workers'
+>   environment, data for `worker_setup` — instead of three Robot
+>   variables of those names; any other mapping is Robot variables as
+>   before ([§9.1](#91-configure-before-you-code)).
+> - Code that reads `ShardOutcome.outputs` sees outputs a step after the
+>   execution failed on, with `failed` set — also when the step removed
+>   the file; `collect_verdicts` reports their tests `ERROR`
+>   ([§9.2](#92-compose-when-configuration-is-not-enough)).
+> - Executing with `--name` through a `robot.run` of your own, pass the
+>   same name to `ExactSelection`, `attribute_roots` and
+>   `root_mismatches` (`name=`): the ids begin with it.
+> - `ShardPayload(clean_output=…)` with a selector Robot would refuse
+>   raises `ValueError` where the payload is made.
+> - The `robot-output-xml` parser no longer needs Robot Framework, and no
+>   longer raises "needs Robot Framework"; drop code that expected it.
 >
 > What your own code no longer needs to do, because the SDK does it:
 >
@@ -1743,7 +1797,19 @@ its own is pinned by the rest of that file.
 > - check catalog ids against a suite root, lock a region against two
 >   chunks, guard Robot variables a run must not set, or add health checks
 >   in code: `robot-pool`'s suite-root check, `max_chunks_per_partition`,
->   `protected_variables`, `health_checks`.
+>   `protected_variables`, `health_checks`;
+> - shrink outputs with a rebot or `ExecutionResult` pass of your own:
+>   `clean_output` (the option, or `runcomposer.sdk.robot.clean_output`);
+> - wrap `run_shard` to post-process or push an `output.xml`:
+>   `post_execution` steps;
+> - change directory or set the environment inside `worker_setup`:
+>   `worker_cwd` and `worker_env`, or a `pre_dispatch` step's `env` and
+>   `worker_data` for what is computed per dispatch;
+> - put a timeout of your own around a health check:
+>   `health_check_timeout_s`;
+> - build TLS handling of your own for a push to a server behind a private
+>   CA: `ca_bundle=` on `RemoteLiveChannel` and `push_results`,
+>   `RUNCOMPOSER_CA_BUNDLE` for the listener and the consumer.
 
 ---
 
@@ -1770,6 +1836,13 @@ Deliberate, each for a reason:
   the corpus lives is the executing side's configuration. A path in the
   document would tie it to one checkout layout (the schema still accepts the
   field as optional provenance, and nothing reads it).
+- **The run spec is a visible build parameter of a Jenkins job.** It holds
+  no credential — the token travels only as a password parameter, which
+  Jenkins shows nowhere unless a shell step traces it — and it is what
+  runcomposer itself serves for the run, so the build page says which
+  document was run. Its limit is size: one environment variable of the
+  build step; `{spec_url}` keeps it out of the parameters
+  ([ci/jenkins/README.md](../ci/jenkins/README.md), DESIGN.md §6.2b).
 
 Edges you should know:
 
@@ -1798,7 +1871,20 @@ Edges you should know:
   gain, and fields a response may gain are provisional for the 0.2.x
   series; the rest of the surface is not ([§1](#1-the-surface)).
 - **Restart recovery cannot tell a reused process id** from the process that
-  owned a dispatch; `cancel --force` closes such a dispatch.
+  owned a dispatch; `cancel --force` closes such a dispatch. A running
+  server repeats it every `core.dispatch.recovery_interval_s`, but the
+  kit's harness serves without the server's background loops, so neither
+  that pass nor the expiry of `awaiting_timeout_s` runs under it.
+- **An image a served log shows inline renders only when embedded (`data:`).**
+  The artifact sandbox loads images from nowhere else (`img-src data:
+  blob:`, [SECURITY.md](../SECURITY.md) §2); a linked file opens.
+- **A health check that overruns `health_check_timeout_s` keeps running**
+  in its thread — a thread cannot be stopped — though `health` has
+  answered with a failed row.
+- **The `robotframework` catalog source loads Robot Framework** in the
+  process that builds the catalog — any import from the `robot` package
+  loads all of it. With a catalog read otherwise (`manifest`), a server
+  loads no `robot` module (`tests/test_robot_server_imports.py`).
 - **One instance owns a store.** The store refuses a second in-flight dispatch
   per run across processes, but runcomposer does not coordinate instances or
   queue across them (DESIGN.md §13).

@@ -50,7 +50,10 @@ runcomposer serve --config runcomposer-demo/config.yaml   # API (+ web UI) at ht
 come from a seed, so the loop can be shown without a test framework. `run`
 composes, dispatches, waits and prints the outcome; it exits `0` only when the
 run is `PASS`. Everything the demo writes is in that one directory, so
-`rm -rf runcomposer-demo` undoes it.
+`rm -rf runcomposer-demo` undoes it. `python -m runcomposer` is the same
+command line. The image runs runcomposer under an init (`tini`) as process
+1, which forwards signals and reaps what a stopped worker leaves behind, so
+`docker run --init` is not needed.
 
 ## What it does
 
@@ -94,7 +97,11 @@ The two reference runners have modes beyond the basics:
   preparation steps that see the plan before anything starts (`pre_dispatch`),
   keep a partition to one chunk at a time (`max_chunks_per_partition`),
   protect variables a run must not set, and merge each group's results and
-  the whole run's into one log (`merge_groups`).
+  the whole run's into one log (`merge_groups`); shrink every `output.xml`
+  in the worker before anything reads it (`clean_output` — Robot's
+  `removekeywords` shapes only the log and report), run steps of your own
+  after every execution (`post_execution`), and tell the workers where to
+  stand (`worker_cwd`, `worker_env`).
 - `jenkins` can drive a job that fans out into several shards in one build,
   pass the document compressed (`{spec_b64}`), compute build parameters from
   the selection (`field_providers`), and read results from any URL below the
@@ -144,7 +151,10 @@ CTRF; `robot-output-xml` and `junit-xml` parse results coming the other way
 (both refuse documents carrying entity or DTD declarations).
 
 The web UI ships pre-built inside the wheel in English and German, so
-evaluating it needs no Node toolchain. `/openapi.json` describes the API; the
+evaluating it needs no Node toolchain. A server answers only to the host
+names in `core.api.hosts` — unset, a server on a loopback address answers
+to the loopback names only, which keeps DNS rebinding out of a local
+setup. `/openapi.json` describes the API; the
 `/docs` and `/redoc` viewers are off unless `core.api.docs: true`, since they
 load their script from a public CDN. Persistence is sqlite by default — safe
 for the threads of a server and for several processes on one file, because
@@ -183,7 +193,7 @@ neutral template a private adopter package copies.
 | | |
 |---|---|
 | [examples/robot-shop](examples/robot-shop) | 58 Robot Framework tests over a fictional web shop — the corpus behind the screenshot and the specs on the homepage. |
-| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions — once each (`robot-pool`), distributed over them in two-test shards (`robot-lanes`), or per region, one chunk of a region at a time, with merged logs (`robot-regions`). |
+| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions — once each (`robot-pool`), distributed over them in two-test shards (`robot-lanes`), or per region, one chunk of a region at a time, with merged logs and cleaned outputs (`robot-regions`). |
 | [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids and executed by the `command` runner — the framework-agnosticism proof. |
 | [examples/jenkins](examples/jenkins) · [ci/jenkins](ci/jenkins) | The `jenkins` runner in both completion modes, also against a job that fans out into one shard per region, and a pinned Jenkins-in-Docker whose jobs run the vendored consumer; `ci/jenkins/e2e.py` drives one against the other. |
 | [examples/remote-agent](examples/remote-agent) | The full remote round trip on one machine. |
@@ -199,7 +209,9 @@ pip install "runcomposer[robot]"
 A machine that only executes what runcomposer hands out — a build agent —
 can do with `pip install --no-deps runcomposer` (plus `robotframework` for
 the Robot toolkit): the SDK, the push clients and `runcomposer-exec` import
-without the reading and serving dependencies
+without the reading and serving dependencies, and push over HTTPS to a
+server behind a private CA with a CA bundle (`--ca-bundle`,
+`RUNCOMPOSER_CA_BUNDLE`)
 ([the connector guide, §1](docs/connectors.md#1-the-surface)).
 
 ## Developing

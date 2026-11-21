@@ -14,7 +14,7 @@ cd runcomposer
 
 pip install -e ".[dev]"          # Python 3.10 – 3.13
 pytest                           # a few thousand tests, green in a couple of minutes
-ruff check src tests             # lint
+ruff check src tests ci          # lint (CI also lints examples/connector-template)
 mypy                             # type check (strict, configured in pyproject.toml)
 
 pip install -e ".[dev,robot]"    # adds Robot Framework: the robot plugin tests
@@ -100,6 +100,10 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
   problem it solves* rather than what files it touches.
 - Tests pass on 3.10 through 3.13 — CI runs the whole matrix, plus the pipx
   quickstart, the export round trip, the Docker build, and the UI bundle check.
+  It also runs the whole suite inside the shipped image (`shipped-image`),
+  installs the wheel without its dependencies to check that an executing
+  machine needs nothing else (the `wheel` job), and holds the messages of
+  the commits your change adds to rule 8 (`commit-messages`).
 - New behaviour comes with a test. Bug fixes come with the test that would have
   caught it.
 - Update `CHANGELOG.md` under an `## Unreleased` heading.

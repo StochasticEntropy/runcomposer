@@ -213,6 +213,33 @@ where the member, field or behaviour did not exist or worked differently.
   `warnings` on the resolved taxonomy (whose written nodes' `filter` is now
   the resolved pattern), `robot-pool`'s health `data.checks` (also in a
   `down` answer) and its plan `data.durations` / `partition_estimates_ms`.
+- **A server answers only to its own host names.** A request for a name
+  not in `core.api.hosts` is a `400 unknown-host`, whatever its method.
+  Unset, a server bound to a loopback address answers to `localhost`,
+  `127.0.0.1`, `[::1]` and that address only: a deployment reached under
+  another name on a loopback bind — a reverse proxy that passes its public
+  `Host` through to `serve` on `127.0.0.1` — lists that name in
+  `core.api.hosts`, or every request is refused. A server bound to any
+  other address answers to every name, as before, until the list is set.
+- **A `robot-pool` `pre_dispatch` answer whose keys are only `variables`,
+  `env` and `worker_data`**, each a mapping, means Robot variables, the
+  workers' environment and the data `worker_setup` receives — not three
+  Robot variables of those names. Any other mapping is Robot variables, as
+  before; return `{variables: {…}}` to set a variable named like one of
+  the three.
+- **`ShardOutcome.outputs` includes an output a step after its execution
+  failed on** (`ShardOutput.failed` set), also when the step removed the
+  file; `collect_verdicts` reports its tests `ERROR`. A connector reading
+  `outputs` itself skips or reports those.
+- **The `robot-output-xml` parser needs no Robot Framework** and no longer
+  raises "needs Robot Framework"; code that relied on that message drops
+  it. It reads the file as a stream, the way Robot reads it.
+- **`Config.path`, `Config.base_dir` and every anchored path are absolute**
+  — also when `--config` named the file by a relative path; `doctor` and
+  `doctor --json` print the absolute config path.
+- **The two log lines of dispatch expiry** come from the logger
+  `runcomposer.expiry` (they came from `runcomposer.service`); a log
+  filter on the old name follows.
 
 **Configuration**
 
@@ -533,9 +560,57 @@ where the member, field or behaviour did not exist or worked differently.
   guard reads every text file of the tree — prose against a reviewed
   vocabulary, `tests/example_world_words.txt` — and
   `ci/check_commit_messages.py` holds commit messages to the same rules.
+- **`robot-pool`**: `post_execution` (steps called in the worker after
+  every execution with the path of its `output.xml`; one that raises makes
+  that execution's tests `ERROR`, naming the step), `clean_output`
+  (`{remove_keywords, flatten_keywords}`: every execution's `output.xml`
+  rewritten without that keyword data before it is parsed, merged,
+  recorded or pushed — verdicts unchanged; `robot_options` such as
+  `removekeywords` shape only `log.html` and `report.html`), `worker_cwd`
+  and `worker_env`, `health_check_timeout_s` (default 5), and a
+  `pre_dispatch` answer `{variables, env, worker_data}` for every shard of
+  the dispatch. Health data carry `suite_name` when `robot_options` names
+  the top suite, and a row for `worker_cwd`. The example entry
+  `robot-regions` cleans its outputs.
+- **Robot toolkit**: `clean_output(output, info=None, *, settings)`;
+  `ShardPayload.clean_output` and `.post_execution`; `ShardOutput.item_ids`
+  and `.failed`; `ExactSelection(…, name=None)`, `attribute_roots(…,
+  name=None)`, `root_mismatches(…, name=None)` for a renamed top suite;
+  `RemoteLiveStatusListener(…, ca_bundle=None, verify_tls=None)`, reading
+  `RUNCOMPOSER_CA_BUNDLE` and `RUNCOMPOSER_VERIFY_TLS` when left out.
+- **Pushing over HTTPS to a server behind a private CA**: `ca_bundle=` and
+  `verify_tls=` on `RemoteLiveChannel` and `push_results`;
+  `runcomposer-exec --ca-bundle PATH` and `--verify-tls` /
+  `--no-verify-tls`, defaulting to `RUNCOMPOSER_CA_BUNDLE` and
+  `RUNCOMPOSER_VERIFY_TLS`. A bundle that does not exist, or holds no
+  certificate, is refused where it is given; a refused push names the TLS
+  reason and both ways out.
+- **`core.api.hosts`**: the host names the server answers to (a name, an
+  IPv4 or bracketed IPv6 address, optionally `:port`; `*.shop.example`;
+  `*`).
+- **`core.dispatch.recovery_interval_s`** (default 15, `null` turns it
+  off): `serve` repeats restart recovery while it runs, so a dispatch of
+  another process on the same store whose process dies becomes `STALE`
+  without a restart.
+- **`python -m runcomposer`**, the same command line as `runcomposer`.
+- **CI**: `shipped-image` runs the test suite inside the image, as its
+  user and under its init; `commit-messages` checks the messages a change
+  adds; the `wheel` job installs the wheel without its dependencies and
+  imports what an executing machine needs; the `docker` job checks that
+  process 1 is the init and that an orphan leaves no zombie entry.
+  `ci/jenkins/e2e.py` also cancels a dispatch whose build is still queued
+  and checks what Jenkins shows of the parameters (`--image`,
+  `--container`).
 
 ### Fixed
 
+- A line a worker wrote before its shard was delivered could land in the
+  event stream after that delivery, when the thread tailing the live files
+  had read it but not yet emitted it; a delivery now waits for it.
+- A client still sending when a push was refused could find the connection
+  reset before it had read the refusal; the answer goes out in full and the
+  connection is closed after what still arrives was discarded for at most
+  two seconds.
 - A run completed green without its planned items; a refused re-dispatch
   erased a finished run; a late bundle for an old dispatch rewrote the run's
   state; a shard with an unexpected name completed a dispatch; a re-dispatch
@@ -606,6 +681,35 @@ where the member, field or behaviour did not exist or worked differently.
   `sources.manifest` entry.
 - The Jenkins client let a dropped connection escape as a raw exception,
   outside its retries and its `cancel`.
+- `taxonomy-check` (and `doctor`'s taxonomy line) read a leaf as one raw
+  pattern, so a leaf written as quoted filter text was reported as
+  matching nothing while the resolved tree showed it right. The bundled
+  demo taxonomy writes its regex leaf quoted and resolves without a
+  warning; the refusal of a leaf that names alternatives shows the quoted
+  spelling.
+- A relative `--config` left configured paths relative: a later change of
+  directory, or a worker started elsewhere, looked for the files in the
+  wrong place.
+- A running server never noticed that the process executing a dispatch on
+  the same store — a foreground `runcomposer run` — had died: the run said
+  `RUNNING` until the next restart.
+- `robot_options: {name: …}` made the suite-root check refuse every item,
+  and the exact selection select nothing (Robot applies the name after its
+  pre-run modifiers).
+- A `robot-pool` health check that never answered held `health` — and
+  `doctor`, and the runner listing — indefinitely.
+- A server parsing Robot results, answering `health` or naming a suite
+  loaded all of Robot Framework, its process-global logger included.
+- Relative links in a merged Robot log (a shard of several executions, a
+  group's or the run's merge) pointed at files that did not exist where
+  the log is served.
+- The Docker image ran without an init: processes a stopped worker left
+  behind stayed as zombie entries until the container exited.
+- The Jenkins example gave its addresses and user name as secrets: health
+  showed the job URL blanked, and a short user name refused startup. They
+  are `${env-public:…}` now; only the API token is a secret.
+- `robot-pool`'s preview read "the other 1 weigh the mean" for a single
+  item without history.
 
 ### Security
 
@@ -625,6 +729,12 @@ where the member, field or behaviour did not exist or worked differently.
   `core.api.docs: true`.
 - SECURITY.md quotes the headers every artifact is served with, and a test
   holds the two together.
+- A request for any host name was answered, so a page on a name its author
+  controls, resolved to the server's address (DNS rebinding), could read
+  and write the API through a visitor's browser — also on the default
+  `127.0.0.1`. A server now answers only to `core.api.hosts`, and on a
+  loopback address by default only to the loopback names (`400
+  unknown-host` otherwise, `GET` included).
 
 ### Web UI
 
@@ -753,18 +863,31 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
   custom "actions" endpoint; a catalog cache shared across CLI invocations;
   a `source.root` the executor would read from the run spec; a filter node
   of its own for "every item" (`runspec/1.0` stores `{"not": "regex:^$"}`,
-  DESIGN.md §3.1).
+  DESIGN.md §3.1); hiding the run spec from a Jenkins job's build page (it
+  holds no credential — the token is a password parameter — and its limit
+  is the size of one environment variable, DESIGN.md §6.2b).
+- An image a served log shows inline renders only when embedded (`data:`; the
+  artifact sandbox's `img-src`); a health check that overruns
+  `health_check_timeout_s` keeps running in its thread; the
+  `robotframework` catalog source loads Robot Framework in the process that
+  builds the catalog; the kit's serving harness runs neither periodic
+  recovery nor expiry.
 - What is stable for 0.2.x: the names in `__all__` of the SDK, of its two
   toolkits and of the kit, the run-spec document, the error codes and the
   reference runners' documented options. Provisional: `Service` and
   `Config` beyond the members the connector guide names, members the
   `RunStore` protocol (33 today) may gain in a minor release — with a
-  `StoreBase` default where one can be right — and fields a response may
+  `StoreBase` default where one can be right — fields with defaults a
+  record may gain, and fields a response may
   gain ([docs/connectors.md](docs/connectors.md#1-the-surface)).
 - A secret from the environment needs four characters (a shorter one is
   refused); links a runner records are stored as given.
 - Restart recovery cannot tell a reused process id from the process that
   owned a dispatch; `cancel --force` closes such a dispatch.
+- With `core.api.hosts` unset, a server bound to an address that is not a
+  loopback one — `0.0.0.0` in the image — answers to every host name; set
+  the list wherever a browser that visits untrusted pages can reach it. An
+  application built without its bind address answers to every name too.
 - One instance owns a store: dispatching one run twice is refused across
   processes, but instances are not coordinated (`DESIGN.md` §13).
 - The Windows CI job has not been seen green yet and does not block.

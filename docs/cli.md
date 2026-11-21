@@ -12,6 +12,10 @@ Two executables are installed:
 | `runcomposer` | The tool: compose, dispatch, ingest, browse, serve. |
 | `runcomposer-exec` | The vendorable single-file consumer that *executes* a spec somewhere else. Stdlib-only, no install needed. [Below](#runcomposer-exec). |
 
+`python -m runcomposer …` is the same command line as `runcomposer …`, exit
+codes included — for an interpreter whose scripts directory is not on the
+`PATH` (`tests/test_python_m.py`).
+
 ```
 runcomposer [--version] [-v] [-h] <command> [options]
 
@@ -120,8 +124,12 @@ error: no runner is configured under the id 'robot-pool' (configured: ['demo', '
 **the config file's own directory** — the `core:` keys (`taxonomy_file`,
 `artifact_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`) and the plugin
 sections (`store.sqlite.path`, `sources.robotframework.root`,
-`runners.robot-pool.suite_root`) alike. A config directory is therefore
-portable, and the same `--config` behaves identically from anywhere:
+`runners.robot-pool.suite_root`) alike. The config file's own path is made
+absolute when it is loaded, so every anchored path is absolute — `doctor`
+prints them so — and a worker process or a later change of directory
+finds the same files (`tests/test_config_paths_absolute.py`). A config
+directory is therefore portable, and the same `--config` behaves
+identically from anywhere:
 
 ```console
 $ runcomposer runs --config envs/staging/config.yaml --limit 2
@@ -470,7 +478,9 @@ resolved tree (GET /api/v1/taxonomy?resolve=true, and what the UI renders):
 Worth running in CI over the config you ship: a red build is a cheaper way to
 learn that a rename orphaned half the tree than a colleague reporting that a
 filter "does nothing". [`doctor`](#doctor) includes the same counts in its
-report.
+report. Each leaf is read as filter text, as the resolved tree reads it: the
+demo's quoted leaf `'"regex:^Cart(V2)?$"'` claims `Cart` and `CartV2`
+([docs/taxonomy.md](taxonomy.md#the-pattern-in-a-leaf)).
 
 The last block is the same file read the other way round: not "does the tree
 still fit the catalog" but "what does the tree become once its patterns are
@@ -1713,8 +1723,9 @@ dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z  demo  RUNNING (owner gone)  no verdicts
 The owner is `host:pid:token`; it is gone when that process is dead (on
 Linux, also when it ended and was never reaped) or ran on another host.
 [`doctor`](#doctor), or starting [`serve`](#serve), marks such a dispatch
-`STALE`; [`cancel --force`](#cancel) closes it as `CANCELLED`
-(`tests/test_cli_owner_gone.py`).
+`STALE`, and so does a `serve` already running on the same store, within
+`core.dispatch.recovery_interval_s` (default 15 seconds); [`cancel --force`](#cancel) closes it as `CANCELLED`
+(`tests/test_cli_owner_gone.py`, `tests/test_recovery_periodic.py`).
 
 ---
 
@@ -2201,25 +2212,25 @@ An export nobody answered, with `awaiting_timeout_s: 2` in the config:
 ```console
 $ runcomposer spec Payments-Refunds --title "Refunds, handed out" --format json -o refunds.json --export --token-file refunds.token --config config.yaml
 spec written to refunds.json
-run: 01M7X9ASYAC0FBX60KCDFR8SDN (state COMPOSED)
-export dispatch: 01M7X9ASYGJDVCJ94X0Q745402 (1 shard(s) declared, state AWAITING_RESULTS)
-spec sha256: 2b77e6d61f13029877940b0f05065810535f14990a979e2380116ec9ce9ad1fc
+run: 01M7XVDHESSHQ28RHDJGBB5B93 (state COMPOSED)
+export dispatch: 01M7XVDHG93S9NNA53FDWDKAEQ (1 shard(s) declared, state AWAITING_RESULTS)
+spec sha256: ea93d83211eab3d14fcd2bdaf8f07e80eccc3bcf197be57c7628804ccb77724c
 ingest token written to refunds.token
 
 $ runcomposer gc --config config.yaml           # a few seconds later
-WARNING runcomposer.service: dispatch 01M7X9ASYGJDVCJ94X0Q745402 of run 01M7X9ASYAC0FBX60KCDFR8SDN expired while awaiting results
+WARNING runcomposer.expiry: dispatch 01M7XVDHG93S9NNA53FDWDKAEQ of run 01M7XVDHESSHQ28RHDJGBB5B93 expired while awaiting results
 quarantine: removed 0 entr(y/ies) beyond the configured bound
 inbox/processed: removed 0 expired bundle(s)
 store: pruned 0 run(s) past retention
 artifacts: removed 0 run director(y/ies)
 dispatches: expired 1 that waited for results longer than core.dispatch.awaiting_timeout_s
 
-$ runcomposer show 01M7X9ASYAC0FBX60KCDFR8SDN --config config.yaml
-run 01M7X9ASYAC0FBX60KCDFR8SDN  Refunds, handed out
+$ runcomposer show 01M7XVDHESSHQ28RHDJGBB5B93 --config config.yaml
+run 01M7XVDHESSHQ28RHDJGBB5B93  Refunds, handed out
 state: FAILED — 4 MISSING
-planned: 4 item(s); created 2026-11-20T20:10:57Z; origin cli; labels {}
-dispatch 01M7X9ASYGJDVCJ94X0Q745402  export  FAILED  4 MISSING
-  error: expired: no results for 4s, longer than core.dispatch.awaiting_timeout_s (2s) — outstanding shard(s): ['1']. Results that still arrive are taken in and may complete it
+planned: 4 item(s); created 2026-11-21T01:27:01Z; origin cli; labels {}
+dispatch 01M7XVDHG93S9NNA53FDWDKAEQ  export  FAILED  4 MISSING
+  error: expired: no results for 5s, longer than core.dispatch.awaiting_timeout_s (2s) — outstanding shard(s): ['1']. Results that still arrive are taken in and may complete it
   shard 1: outstanding — no verdicts
   reported by no shard: 4 MISSING
 ```
@@ -2231,7 +2242,7 @@ here, the bundle `runcomposer-exec` wrote from `refunds.json`:
 
 ```console
 $ runcomposer ingest results --config config.yaml
-01M7X9ASYAC0FBX60KCDFR8SDN shard 1: delivery recorded (4 verdict(s))
+01M7XVDHESSHQ28RHDJGBB5B93 shard 1: delivery recorded (4 verdict(s))
 run state: COMPLETE (PASS)
 ```
 
@@ -2348,10 +2359,13 @@ runcomposer doctor [-v] [--json] [--config PATH]
 | `--json` | off | [One JSON document](#--json--one-document-for-a-script); it always carries the health data. |
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
+The samples below were taken in `/srv`; the config file's path, and every
+path anchored to it, is printed absolute:
+
 ```console
 $ runcomposer doctor --config shop/config.yaml
 runcomposer 0.2.0
-config: shop/config.yaml
+config: /srv/shop/config.yaml
 installed plugins:
   observers  command                runcomposer 0.2.0
   observers  jsonl                  runcomposer 0.2.0
@@ -2403,7 +2417,8 @@ What it checks, in order:
 
 It also performs the one repair that is always right: a dispatch that a
 process which no longer exists left `DISPATCHED` or `RUNNING` is marked
-`STALE` (as `serve` does at startup), and reported.
+`STALE` (as `serve` does at startup and every
+`core.dispatch.recovery_interval_s` while it runs), and reported.
 
 ### `-v` — what the runners' health checks found
 
@@ -2420,7 +2435,7 @@ configures the plugin three times:
 ```console
 $ runcomposer doctor -v --config robot-pool/config.yaml
 runcomposer 0.2.0
-config: robot-pool/config.yaml
+config: /srv/robot-pool/config.yaml
 installed plugins:
 …
 configured (what this deployment loads):
@@ -2435,14 +2450,14 @@ runners:
       robot_version: 7.5.1
       max_workers: 4
       suite_roots:
-        - robot-pool/../robot-shop/tests
+        - /srv/robot-pool/../robot-shop/tests
       partitions:
         - eu
         - us
       partition_mode: each
       checks:
         [ok  ] Robot Framework installed — Robot Framework 7.5.1
-        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] suite root /srv/robot-pool/../robot-shop/tests — found
         [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
       --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
       --param allow_drift=<boolean>  default False
@@ -2450,14 +2465,14 @@ runners:
       robot_version: 7.5.1
       max_workers: 2
       suite_roots:
-        - robot-pool/../robot-shop/tests
+        - /srv/robot-pool/../robot-shop/tests
       partitions:
         - eu
         - us
       partition_mode: split
       checks:
         [ok  ] Robot Framework installed — Robot Framework 7.5.1
-        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] suite root /srv/robot-pool/../robot-shop/tests — found
         [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
       --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
       --param allow_drift=<boolean>  default False
@@ -2467,14 +2482,14 @@ runners:
       robot_version: 7.5.1
       max_workers: 4
       suite_roots:
-        - robot-pool/../robot-shop/tests
+        - /srv/robot-pool/../robot-shop/tests
       partitions:
         - eu
         - us
       partition_mode: each
       checks:
         [ok  ] Robot Framework installed — Robot Framework 7.5.1
-        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] suite root /srv/robot-pool/../robot-shop/tests — found
         [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
       --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
       --param partition_mode=<choice> ['split', 'each']  default 'each'
@@ -2499,7 +2514,7 @@ them is a `[FAIL]` row and a problem (exit `1`).
 ```console
 $ runcomposer doctor --config envs/broken/config.yaml
 runcomposer 0.2.0
-config: envs/broken/config.yaml
+config: /srv/envs/broken/config.yaml
 installed plugins:
 …
 
@@ -2519,7 +2534,7 @@ runcomposer serve [--host HOST] [--port PORT] [--log-level LEVEL] [--config PATH
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--host HOST` | `core.api.host`, else `127.0.0.1` | Bind address. |
+| `--host HOST` | `core.api.host`, else `127.0.0.1` | Bind address. It also decides which host names are answered while `core.api.hosts` is unset ([below](#the-names-it-answers-to)). |
 | `--port PORT` | `core.api.port`, else `8100` | Bind port. |
 | `--log-level LEVEL` | `info` | `debug`, `info`, `warning` or `error` — what the `runcomposer.*` loggers and the HTTP server print. |
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
@@ -2564,6 +2579,13 @@ While it runs, the server:
 - **expires dispatches that wait for results too long**, when
   `core.dispatch.awaiting_timeout_s` is set ([`gc`](#gc) shows what that
   looks like);
+- **repeats the startup reconciliation** every
+  `core.dispatch.recovery_interval_s` seconds (default `15`; `null` turns
+  it off): a dispatch that another process on the same store — a
+  foreground `runcomposer run` — was executing when it died becomes
+  `STALE` without a restart. A dispatch whose process is alive, or that
+  the server executes itself, is never touched
+  (`tests/test_recovery_periodic.py`);
 - **logs** one line per run event (stderr), next to the HTTP access log:
 
   ```
@@ -2602,10 +2624,44 @@ next startup's reconciliation (`STALE`).
 
 `--host 0.0.0.0` is what you need when something outside the machine has to
 reach the push endpoints — a CI job posting results or progress back, for
-instance. There is no authentication in front of the API beyond the
+instance; set `core.api.hosts` to the names it is reached by ([below](#the-names-it-answers-to)). There is no authentication in front of the API beyond the
 per-dispatch ingest token on the push endpoints (`…/results`, `…/live`,
 `…/log`; [DESIGN.md](../DESIGN.md) §5, §13); put a reverse proxy in front of
 anything public.
+
+### The names it answers to
+
+A request for a host name the server does not answer to is refused `400`
+(`unknown-host`) before anything else sees it, whatever its method — the
+answer to DNS rebinding, where a page on a name its author controls is
+resolved to this server's address ([SECURITY.md](../SECURITY.md) §6).
+`core.api.hosts` lists the names: `runcomposer.shop.example` (any port),
+`localhost:8100` (that port only), `*.shop.example` (every name below it),
+`*` (every name). While it is unset, the address `serve` binds decides: on
+a loopback address, as by default, only `localhost`, `127.0.0.1`, `[::1]`
+and that address are answered; on any other (`--host 0.0.0.0`) every name
+is, until the list is set. With `core.api: { port: 8237 }`:
+
+```console
+$ curl -s localhost:8237/api/v1/health
+{"status":"ok","version":"0.2.0"}
+$ curl -s -H 'Host: runcomposer.shop.example' localhost:8237/api/v1/health
+{"detail":"refused a request for host 'runcomposer.shop.example': it is not a name this server answers to (core.api.hosts; unset, a server bound to a loopback address answers to localhost, 127.0.0.1 and [::1])","code":"unknown-host"}
+```
+
+So a proxy that passes its public name through to a server on a loopback
+address needs that name listed. The list replaces the default — with
+`core.api: { port: 8237, hosts: [runcomposer.shop.example, localhost] }`:
+
+```console
+$ curl -s -H 'Host: runcomposer.shop.example' localhost:8237/api/v1/health
+{"status":"ok","version":"0.2.0"}
+$ curl -s -w ' %{http_code}' 127.0.0.1:8237/api/v1/health
+{"detail":"refused a request for host '127.0.0.1:8237': it is not a name this server answers to (core.api.hosts; unset, a server bound to a loopback address answers to localhost, 127.0.0.1 and [::1])","code":"unknown-host"} 400
+```
+
+An empty list or an entry that is not a host name refuses the start
+(`tests/test_api_hosts.py`).
 
 ---
 
@@ -2621,6 +2677,7 @@ runcomposer-exec SPEC (--simulate | --command TEMPLATE)
                  [--out DIR] [--dispatch ID] [--shard LABEL] [--seed SEED]
                  [--ok-exit-codes CODES]
                  [--callback URL [--token TOKEN] [--push]]
+                 [--ca-bundle PATH] [--verify-tls | --no-verify-tls]
 ```
 
 | Flag | Default | Meaning |
@@ -2636,6 +2693,8 @@ runcomposer-exec SPEC (--simulate | --command TEMPLATE)
 | `--callback URL` | none | The run's results URL (`…/api/v1/runs/<id>/results`, as a runner hands it out): report log lines — and with `--simulate` the live status of every item — while executing. [Below](#talking-back----callback-and---push). |
 | `--token TOKEN` | `$RUNCOMPOSER_INGEST_TOKEN` | The dispatch's ingest token, for `--callback` and `--push`. |
 | `--push` | off | Upload the finished bundle to `--callback` (needs it). Exit `4` when the push is refused or cannot be delivered. |
+| `--ca-bundle PATH` | `$RUNCOMPOSER_CA_BUNDLE` | A file of the CA certificates to trust for an `https` `--callback`, instead of the system's — a server behind a private certificate authority. With `--callback`, a file that does not exist stops it before anything executes, and so does, for an `https` callback, one that holds no certificate. |
+| `--verify-tls`, `--no-verify-tls` | `$RUNCOMPOSER_VERIFY_TLS` (`true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`; unset: verify) | `--no-verify-tls` skips the certificate check of an `https` `--callback` — for a lab server only. The flag wins over the variable; any other value of the variable stops it with an `error:` line. |
 
 It executes exactly `selection.materialized.item_ids` and refuses a spec
 without one; it refuses any `runspec` MAJOR other than `1`. On success it
@@ -2777,6 +2836,15 @@ So the exit codes of `runcomposer-exec` are: `0` the bundle is complete
 command failed and no marker was written; `4` the push was refused or could
 not be delivered; `2` for an unknown or missing flag. A spec it cannot
 execute, or `--push` without `--callback`, exits `1` with an `error:` line.
+
+Over `https` the server's certificate is checked against the system's trust
+store. A server behind a private certificate authority needs `--ca-bundle`
+(or `RUNCOMPOSER_CA_BUNDLE` in the job's environment); without it the
+progress report says once that it could not be delivered, and a `--push`
+exits `4` with the reason and both ways out — `--ca-bundle`, or
+`--no-verify-tls` for a server whose certificate nobody signed
+(`tests/test_remote_tls.py::TestTheConsumerOverHttps`). The Robot listener
+`RemoteLiveStatusListener` reads the same two variables.
 
 ---
 
