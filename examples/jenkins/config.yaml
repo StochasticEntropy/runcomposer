@@ -28,6 +28,13 @@
 # runcomposer with this directory importable (PYTHONPATH=examples/jenkins).
 #
 #   runcomposer plan Payments-Cards --runner jenkins-fanout --param 'regions=[eu,apac]' --config …
+#
+# Values from the environment: addresses and the user name are plain values,
+# `${env-public:NAME}`; the API token is a secret, `${env:NAME}` — blanked out
+# of everything runcomposer records and answers (and refused when shorter
+# than four characters). Behind a private certificate authority add
+# `ca_bundle: <file of its certificates>` to an entry; `verify_tls: false`
+# only for a lab server.
 core:
   artifact_dir: state/artifacts
   ingestion: { inbox: null }
@@ -38,12 +45,12 @@ sources:
 runners:
   jenkins:
     plugin: jenkins
-    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    base_url: "${env-public:JENKINS_URL:-http://localhost:8080}"
     job: runcomposer-consumer
     completion: callback
     # How the Jenkins container reaches `runcomposer serve` on this machine.
-    callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
-    user: "${env:JENKINS_USER:-admin}"
+    callback_base: "${env-public:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
+    user: "${env-public:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
     parameters: &job-parameters
       SPEC_JSON: "{spec_json}"
@@ -56,22 +63,22 @@ runners:
           help: "Seconds the build waits before executing" }
   jenkins-poll:
     plugin: jenkins
-    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    base_url: "${env-public:JENKINS_URL:-http://localhost:8080}"
     job: runcomposer-consumer
     completion: poll
     artifact_paths: ["results/*"]
     poll_interval_s: 2
-    user: "${env:JENKINS_USER:-admin}"
+    user: "${env-public:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
     parameters: *job-parameters
     run_parameters: *run-parameters
   jenkins-fanout:
     plugin: jenkins
-    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    base_url: "${env-public:JENKINS_URL:-http://localhost:8080}"
     job: runcomposer-fanout
     completion: poll
     poll_interval_s: 2
-    user: "${env:JENKINS_USER:-admin}"
+    user: "${env-public:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
     run_parameters: &fanout-run-parameters
       - { name: regions, kind: multi_choice, choices: [eu, us, apac], default: [eu, us],
@@ -89,11 +96,11 @@ runners:
     postprocess: "shop_job:results_from_console"
   jenkins-fanout-push:
     plugin: jenkins
-    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    base_url: "${env-public:JENKINS_URL:-http://localhost:8080}"
     job: runcomposer-fanout
     completion: callback
-    callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
-    user: "${env:JENKINS_USER:-admin}"
+    callback_base: "${env-public:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
+    user: "${env-public:JENKINS_USER:-admin}"
     api_token: "${env:JENKINS_API_TOKEN:-}"
     run_parameters: *fanout-run-parameters
     shards: "{params[regions]}"

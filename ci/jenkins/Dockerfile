@@ -17,12 +17,13 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 curl \
     && rm -rf /var/lib/apt/lists/*
-# Vendor the stdlib-only consumer: one file, no pip, no venv (DESIGN.md §6.2c).
-COPY --chown=jenkins:jenkins src/runcomposer_exec.py /opt/runcomposer/runcomposer_exec.py
 
 USER jenkins
 COPY --chown=jenkins:jenkins ci/jenkins/plugins.txt /usr/share/jenkins/ref/plugins.txt
 RUN jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+# Vendor the stdlib-only consumer: one file, no pip, no venv (DESIGN.md §6.2c).
+# After the plugins, so that a change of the consumer rebuilds only this layer.
+COPY --chown=jenkins:jenkins src/runcomposer_exec.py /opt/runcomposer/runcomposer_exec.py
 COPY --chown=jenkins:jenkins ci/jenkins/casc.yaml /usr/share/jenkins/ref/casc.yaml
 ENV CASC_JENKINS_CONFIG=/usr/share/jenkins/ref/casc.yaml
 ENV JAVA_OPTS="-Djenkins.install.runSetupWizard=false"

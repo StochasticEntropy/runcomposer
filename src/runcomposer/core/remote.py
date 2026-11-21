@@ -12,12 +12,21 @@ Stdlib only, so that a worker or an agent can use it with nothing installed
 but this package. Progress is best-effort by design: what cannot be pushed is
 dropped, never raised into the execution it reports about. Results are not:
 a bundle that cannot be pushed is an error the caller has to see.
+
+Over HTTPS the server's certificate is verified against the system's trust
+store, or against ``ca_bundle`` (a file of the CA certificates to trust,
+as text — a private CA); ``verify_tls=False`` skips the verification, for a
+lab server whose certificate nobody signed. A ``ca_bundle`` that does not
+exist, or holds no certificate, is refused where it is given — never
+discovered as a string of dropped pushes.
 """
 
 from __future__ import annotations
 
+import functools
 import http.client
 import json
+import ssl
 import urllib.error
 import urllib.request
 import uuid
@@ -52,6 +61,54 @@ def results_url(callback_url: str) -> str:
     return f"{_run_url(callback_url)}/results"
 
 
+def _checked_ca_bundle(ca_bundle: str | Path | None) -> str | None:
+    """The CA bundle as a path string, after making sure ``ssl`` can load it:
+    a file that does not exist is a ``FileNotFoundError``, one that holds no
+    certificate a ``ValueError`` — both naming the file."""
+    if ca_bundle is None:
+        return None
+    path = str(ca_bundle)
+    if not Path(path).is_file():
+        raise FileNotFoundError(f"no such CA bundle: {path}")
+    try:
+        _tls_context(path, True)
+    except ssl.SSLError as exc:
+        raise ValueError(f"the CA bundle {path} holds no certificate that can be loaded: {exc}") from None
+    return path
+
+
+@functools.lru_cache(maxsize=8)
+def _tls_context(ca_bundle: str | None, verify_tls: bool) -> ssl.SSLContext:
+    """One TLS context per process and setting — built where it is used, so
+    that nothing unpicklable ever has to travel with a channel."""
+    context = ssl.create_default_context(cafile=ca_bundle)
+    if not verify_tls:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def _open(
+    request: urllib.request.Request, timeout_s: float, ca_bundle: str | None, verify_tls: bool
+) -> Any:
+    context = _tls_context(ca_bundle, verify_tls) if request.full_url.startswith("https:") else None
+    return urllib.request.urlopen(request, timeout=timeout_s, context=context)
+
+
+def _unreachable_reason(exc: BaseException) -> str:
+    """What to say about a push that did not reach the server; for a
+    certificate that could not be verified, also what to do about it."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    text = str(reason)
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        text += (
+            " — the server's certificate is not trusted: give ca_bundle= (a file holding the "
+            "certificate of the CA that signed it), or verify_tls=False for a server whose "
+            "certificate nobody signed"
+        )
+    return text
+
+
 class ResultsPushRefused(RunComposerError, RuntimeError):
     """A results push that did not go through. ``status`` is the HTTP
     status of the refusal (404 an unknown run, 401 no token, 403 a wrong
@@ -78,6 +135,8 @@ def push_results(
     dispatch_id: str | None = None,
     format: str | None = None,
     timeout_s: float = 120.0,
+    ca_bundle: str | Path | None = None,
+    verify_tls: bool = True,
 ) -> dict[str, Any]:
     """Push a results bundle to the run's results endpoint — what a job's
     post step does with ``curl -F files=@…`` — and return the server's
@@ -92,13 +151,18 @@ def push_results(
     ``dispatch_id`` the dispatch it belongs to, ``format`` the results format
     when it should be declared. One multipart ``POST``, never repeated — a
     second delivery of the same bundle is harmless (a duplicate), but a
-    retry policy is the caller's to choose.
+    retry policy is the caller's to choose. Over HTTPS, ``ca_bundle`` is a
+    file of the CA certificates to trust instead of the system's, and
+    ``verify_tls=False`` skips the certificate check.
 
     Not best-effort: a refusal raises :class:`ResultsPushRefused` with the
     status and the server's answer, and so does a server that cannot be
-    reached (``status`` ``None``). A path that does not exist is a
-    ``FileNotFoundError``; nothing to send, or two files of the same name, a
-    ``ValueError`` — both before anything is sent."""
+    reached (``status`` ``None``) — a certificate that cannot be verified
+    among them, its reason in the message. A path that does not exist, or a
+    ``ca_bundle`` that does not, is a ``FileNotFoundError``; nothing to send,
+    two files of the same name, or a ``ca_bundle`` without a certificate a
+    ``ValueError`` — all before anything is sent."""
+    bundle = _checked_ca_bundle(ca_bundle)
     paths = [files] if isinstance(files, (str, Path)) else list(files)
     chosen: list[Path] = []
     for entry in paths:
@@ -138,7 +202,7 @@ def push_results(
     url = results_url(callback_url)
     request = urllib.request.Request(url, data=b"".join(parts), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+        with _open(request, timeout_s, bundle, bool(verify_tls)) as response:
             status, raw = int(response.status), response.read()
     except urllib.error.HTTPError as exc:
         body = _answer(exc.read())
@@ -148,8 +212,9 @@ def push_results(
             status=exc.code, body=body,
         ) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-        raise ResultsPushRefused(f"the results could not be pushed to {url}: {reason}") from None
+        raise ResultsPushRefused(
+            f"the results could not be pushed to {url}: {_unreachable_reason(exc)}"
+        ) from None
     answer = _answer(raw)
     if not isinstance(answer, dict):
         raise ResultsPushRefused(
@@ -171,8 +236,18 @@ def _answer(raw: bytes) -> Any:
 
 class RemoteLiveChannel:
     """A ``LiveChannel`` over HTTP: ``live`` and ``log`` are POSTed to the
-    run's API, authorized by the ingest token of the dispatch. Picklable (its state is four
-    strings and a number). ``failures`` counts what could not be pushed."""
+    run's API, authorized by the ingest token of the dispatch. ``failures``
+    counts what could not be pushed — a certificate that cannot be verified
+    included; nothing is raised into the execution.
+
+    Over HTTPS, ``ca_bundle`` is a file of the CA certificates to trust
+    instead of the system's, and ``verify_tls=False`` skips the
+    certificate check. A ``ca_bundle`` that does not exist, or holds no
+    certificate, is refused here (``FileNotFoundError``, ``ValueError``).
+
+    Picklable — it travels into spawned workers: its state is strings,
+    numbers and a flag, and the TLS context is built in the process that
+    pushes."""
 
     def __init__(
         self,
@@ -181,11 +256,15 @@ class RemoteLiveChannel:
         *,
         dispatch_id: str | None = None,
         timeout_s: float = 5.0,
+        ca_bundle: str | Path | None = None,
+        verify_tls: bool = True,
     ):
         self.live_url, self.log_url = progress_urls(callback_url)
         self.token = token
         self.dispatch_id = dispatch_id
         self.timeout_s = float(timeout_s)
+        self.ca_bundle = _checked_ca_bundle(ca_bundle)
+        self.verify_tls = bool(verify_tls)
         self.failures = 0
 
     def live(
@@ -219,7 +298,7 @@ class RemoteLiveChannel:
             url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            with _open(request, self.timeout_s, self.ca_bundle, self.verify_tls) as response:
                 response.read()
-        except (urllib.error.URLError, OSError, ValueError):
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             self.failures += 1

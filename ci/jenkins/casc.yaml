@@ -15,6 +15,13 @@ jobs:
   - script: |
       freeStyleJob('runcomposer-consumer') {
         description('The thin CI-side consumer stage (runcomposer DESIGN.md §6.2b): runs runcomposer-exec on the passed spec, then POSTs the results bundle back.')
+        // The document is a plain text parameter, shown on the build's
+        // parameters page and in its REST API to whoever can read the job, on
+        // purpose: it holds no credential (the ingest token is never part of
+        // it), and it is the same document runcomposer itself shows for the
+        // run. What it costs is size: Jenkins hands it to the build step as an
+        // environment variable, and one variable must stay under 128 KiB, or
+        // the step cannot start (e2e.py, step 4c).
         parameters {
           textParam('SPEC_JSON', '', 'the rendered runspec document (JSON)')
           stringParam('DISPATCH_ID', '', 'dispatch id minted by runcomposer for this hand-off')
@@ -22,7 +29,11 @@ jobs:
           stringParam('HOLD_SECONDS', '0', 'wait this long before executing (lets a test cancel a running build)')
         }
         // The ingest token travels as a core Jenkins *password* parameter:
-        // masked on the build's parameters page, never a visible plain string.
+        // no value on the parameters page, in the REST API or in the console
+        // log (e2e.py, step 4b). Jenkins does not mask it in the console by
+        // itself, though: a shell step without a shebang runs with "sh -xe"
+        // and traces every expanded command. Keep the "#!/bin/bash -e" line
+        // below, and never echo the token.
         configure { project ->
           project / 'properties' / 'hudson.model.ParametersDefinitionProperty' / 'parameterDefinitions' << 'hudson.model.PasswordParameterDefinition' {
             name('INGEST_TOKEN')
@@ -58,6 +69,8 @@ jobs:
       }
       freeStyleJob('runcomposer-fanout') {
         description('A job that fans out: it runs the passed spec once per region and reports each region as a shard of its own (runcomposer DESIGN.md §6.2b). Without a callback URL it prints the results into its console log and archives nothing; with one, runcomposer-exec pushes each region itself, reporting progress while it works.')
+        // SPEC_B64 is visible for the reasons given at SPEC_JSON above, and
+        // several times smaller; INGEST_TOKEN is a password parameter again.
         parameters {
           textParam('SPEC_B64', '', 'the runspec document, gzip + base64 (the exact bytes)')
           stringParam('REGIONS', 'eu', 'comma-separated regions; each is one shard')

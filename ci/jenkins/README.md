@@ -31,7 +31,8 @@ to end, and the fan-out entries of the example config
 this docker setup — one command, repeatable, cleaning up after itself:
 
 ```bash
-python ci/jenkins/e2e.py            # needs docker; ~1 minute after the first image build
+python ci/jenkins/e2e.py            # needs docker; ~2 minutes after the first image build
+python ci/jenkins/e2e.py --image my-jenkins:e2e --container my-jenkins-e2e   # names of your own
 ```
 
 It builds and starts the instance on a free local port, copies
@@ -45,11 +46,26 @@ script, whose steps 1, 2 and 12 start and stop the containers):
    the server and the job checked;
 4. **callback** — a run completes through the job's POST with its ingest
    token;
+4b. **what Jenkins shows of the parameters** — the REST API lists the
+   build's `INGEST_TOKEN` as a password parameter and gives no value for it,
+   and shows `SPEC_JSON` in full: exactly the bytes whose hash the dispatch
+   recorded, with no token in them. A build given a token value the script
+   knows shows it nowhere — `api/json?depth=1`, `api/xml`, the parameters
+   page, the console log, the build page;
+4c. **one parameter, one environment variable** — a `SPEC_JSON` of 128 000
+   bytes (`max_parameter_bytes`' default) reaches the build step; one of
+   131 072 bytes does not: the step cannot start (`error=7, Argument list
+   too long`);
 5. **poll** — a run started with `runcomposer run` completes through the
    downloaded `results/*`, and the CLI's exit code matches the completion;
 6. **cancel, poll mode** and 7. **cancel, callback mode** — a running build
    is cancelled, the dispatch ending `CANCELLED` and Jenkins reporting the
    build `ABORTED`;
+7b. **cancel while queued** — the job runs one build at a time, so while a
+   held build runs the next dispatch waits in Jenkins' queue (its quiet
+   period first, then behind the running build); cancelling its
+   run cancels the queue item (Jenkins reports it `cancelled`) and no build
+   starts for it;
 8. **plan** — `POST /api/v1/plan` for `jenkins-fanout` with the regions
    `eu` and `apac`: the preview names the two shards and the build
    parameters that would be sent (`REGIONS=eu,apac`, the `INCLUDE` computed
@@ -77,8 +93,9 @@ script, whose steps 1, 2 and 12 start and stop the containers):
    runcomposer's events record a stop of the build — not a cancel of a queue
    item that was no longer there.
 
-It is not part of CI (it needs docker and a minute of Jenkins start-up); run
-it when you change the runner, the jobs or the image.
+CI runs it on every change (the `jenkins` job of
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)); run it
+yourself when you change the runner, the jobs or the image.
 
 **Pinned.** The base image is pinned by version and digest and every plugin
 by version ([`plugins.txt`](plugins.txt)), so a rebuild months from now is
@@ -129,13 +146,31 @@ Other fields a template may use: `{run_id}`, `{item_ids}` (one per line),
 `{title}`, `{labels[key]}`, and `{params[name]}` for per-run parameters
 declared under `run_parameters` — the example config passes
 `{params[hold_s]}` as the job's `HOLD_SECONDS`, which is how `e2e.py` gets a
-build that is still running when it cancels it. The job
-([`casc.yaml`](casc.yaml)) declares `INGEST_TOKEN` as a Jenkins **password
-parameter**: masked on the build's parameters page, never a visible plain
-string. (Configuration-as-Code interpolates `${…}` in that file; the shell
-step writes `^${…}` where the shell must see it.) The spec document itself
-carries no credential. Against a secured Jenkins, add `user:` and
-`api_token: ${env:JENKINS_API_TOKEN}`; for a private CA, `ca_bundle:`.
+build that is still running when it cancels it. (Configuration-as-Code
+interpolates `${…}` in [`casc.yaml`](casc.yaml); the shell step writes
+`^${…}` where the shell must see it.) Against a secured Jenkins, add `user:`
+and `api_token: ${env:JENKINS_API_TOKEN}`; for a private CA, `ca_bundle:`.
+
+**What the build shows of its parameters.** The job declares `INGEST_TOKEN`
+as a Jenkins **password parameter**: the REST API names it without a value,
+and neither the parameters page nor the console log shows it (`e2e.py`, step
+4b). Jenkins does not mask it by itself, though — a shell step that traces
+(`set -x`, or a step without a shebang line, which Jenkins runs with
+`sh -xe`) prints the expanded token. The shipped steps start with
+`#!/bin/bash -e` and never echo it; keep it that way in a job of your own.
+
+The document, `SPEC_JSON` (or `SPEC_B64`), is a plain text parameter that
+everyone who can read the job sees, on the parameters page and in the REST
+API — deliberately. It holds no credential: the ingest token is never part
+of it, and no per-run parameter kind is a secret. Everything in it — the
+title, the labels, the selection and its item ids, the per-run values — is
+what runcomposer itself shows for the run (`GET /api/v1/runs/{id}/spec`).
+And there it is useful: the build page says exactly which document was run.
+Its cost is size. Jenkins hands every build parameter to the build step as
+an environment variable, and on Linux one variable must stay under 128 KiB,
+or the step cannot start (step 4c). `max_parameter_bytes` (default 128 000)
+refuses a larger trigger before it is sent; a job that must not carry the
+document in its parameters at all takes `{spec_url}` and downloads it.
 
 For `runcomposer-fanout`, two more entries show what a job of its own shape
 needs, configured rather than coded:
@@ -147,8 +182,9 @@ needs, configured rather than coded:
   base64, one line of ASCII that survives any form field and shell; the job
   decodes it with `base64 -d | gunzip`. (`{spec_json}`, the default, puts the
   whole document into one build parameter — which the build also receives as
-  an environment variable, with that variable's size limit; `max_parameter_bytes` refuses
-  such a trigger before it is sent and names this way out.)
+  an environment variable, with that variable's size limit, above;
+  `max_parameter_bytes` refuses such a trigger before it is sent and names
+  this way out.)
   `INCLUDE: "{include}"` is computed by a field provider,
   `field_providers: { include: "shop_job:include_tags" }`: the feature tags
   of the selected tests — and a refusal, before anything is triggered, for a
@@ -272,5 +308,11 @@ Two things to get right on the runcomposer side when you switch:
   "tests failed" to `0` the way `run_pytest.py` does. With the marker written
   the stage is green and the verdict is in runcomposer, where it belongs; a
   red stage means the execution itself broke and nothing was delivered.
+
+Over HTTPS, with runcomposer behind a private certificate authority, tell
+the pushing side which certificates to trust: `runcomposer-exec --ca-bundle
+<file>` (or `RUNCOMPOSER_CA_BUNDLE` in the job's environment), and in the
+`curl` post step `--cacert <file>`. `--no-verify-tls`
+(`RUNCOMPOSER_VERIFY_TLS=false`) skips the check — for a lab server only.
 
 The full flag reference for both executables is in [docs/cli.md](../../docs/cli.md).

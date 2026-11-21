@@ -42,15 +42,24 @@ RUNCOMPOSER_INGEST_TOKEN): log lines for the run's event stream, and with
 --push it also uploads the finished bundle to that URL, so no other
 transport is needed. Progress is best-effort: a report that cannot be
 delivered is dropped and the execution goes on; a failed --push is an error.
+
+Over HTTPS the server's certificate is verified against the system's trust
+store, or against --ca-bundle PATH (a file of the CA certificates to
+trust, as text — a private CA; default: the environment variable
+RUNCOMPOSER_CA_BUNDLE). --no-verify-tls skips the check, for a lab server
+whose certificate nobody signed (default: the environment variable
+RUNCOMPOSER_VERIFY_TLS — true or false; unset means true).
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import random
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -119,12 +128,43 @@ def simulate(item_ids: list[str], seed: str) -> list[dict]:
     return verdicts
 
 
+TRUE_WORDS = ("1", "true", "yes", "on")
+FALSE_WORDS = ("0", "false", "no", "off")
+
+
+def tls_context(ca_bundle: str | None, verify_tls: bool) -> ssl.SSLContext:
+    """The TLS context for an https callback: the system's trust store, or
+    the CA bundle given; no verification at all with ``verify_tls`` false."""
+    try:
+        context = ssl.create_default_context(cafile=ca_bundle)
+    except FileNotFoundError:
+        raise SystemExit(f"error: --ca-bundle: no such CA bundle: {ca_bundle}") from None
+    except ssl.SSLError as exc:
+        raise SystemExit(f"error: --ca-bundle: {ca_bundle} holds no certificate that can be loaded: {exc}") from None
+    if not verify_tls:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def unreachable(exc: BaseException) -> str:
+    """What to say about a request that did not reach the server; for a
+    certificate that could not be verified, also what to do about it."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return (f"{reason} — the server's certificate is not trusted: give --ca-bundle (a file "
+                "holding the certificate of the CA that signed it), or --no-verify-tls for a "
+                "server whose certificate nobody signed")
+    return str(exc)
+
+
 class Progress:
     """Reports to a runcomposer API while the execution is under way: live
     status per item (``POST …/live``) and log lines (``POST …/log``). With no
     callback URL every call is a no-op."""
 
-    def __init__(self, callback: str | None, token: str | None, dispatch: str | None, shard: str | None):
+    def __init__(self, callback: str | None, token: str | None, dispatch: str | None, shard: str | None,
+                 ca_bundle: str | None = None, verify_tls: bool = True):
         base = (callback or "").rstrip("/")
         for suffix in ("/results", "/live", "/log"):
             if base.endswith(suffix):
@@ -135,6 +175,11 @@ class Progress:
         self.dispatch = dispatch
         self.shard = shard or "1"
         self.failures = 0
+        # Built now, so that a CA bundle that cannot be used is an error
+        # before anything executes — not a run of silently dropped reports.
+        if base and ca_bundle and not os.path.isfile(ca_bundle):
+            raise SystemExit(f"error: --ca-bundle: no such CA bundle: {ca_bundle}")
+        self.context = tls_context(ca_bundle, verify_tls) if base.startswith("https:") else None
 
     def _post(self, path: str, body: dict) -> None:
         if not self.base:
@@ -148,12 +193,13 @@ class Progress:
             self.base + path, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(request, timeout=10, context=self.context) as response:
                 response.read()
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
             self.failures += 1
             if self.failures == 1:  # say it once; progress never stops the execution
-                print(f"runcomposer-exec: progress could not be reported ({exc})", file=sys.stderr)
+                print(f"runcomposer-exec: progress could not be reported ({unreachable(exc)})",
+                      file=sys.stderr)
 
     def live(self, item_id: str, status: str, duration_ms: int = 0, message: str = "") -> None:
         self._post("/live", {"updates": [{"shard": self.shard, "item_id": item_id, "status": status,
@@ -191,7 +237,7 @@ class Progress:
             self.base + "/results", data=b"".join(parts), headers=headers, method="POST"
         )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120, context=self.context) as response:
                 print(f"runcomposer-exec: bundle pushed: {response.read().decode('utf-8', 'replace')}",
                       file=sys.stderr)
                 return int(response.status)
@@ -199,8 +245,8 @@ class Progress:
             print(f"runcomposer-exec: the push was refused ({exc.code}): "
                   f"{exc.read().decode('utf-8', 'replace')}", file=sys.stderr)
             return int(exc.code)
-        except (urllib.error.URLError, OSError) as exc:
-            print(f"runcomposer-exec: the push failed: {exc}", file=sys.stderr)
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            print(f"runcomposer-exec: the push failed: {unreachable(exc)}", file=sys.stderr)
             return 0
 
 
@@ -248,6 +294,19 @@ def parse_exit_codes(text: str) -> set[int]:
     return codes
 
 
+def verify_tls_setting(flag: bool | None) -> bool:
+    """--verify-tls / --no-verify-tls when given, else RUNCOMPOSER_VERIFY_TLS
+    (true or false), else true."""
+    if flag is not None:
+        return flag
+    word = os.environ.get("RUNCOMPOSER_VERIFY_TLS", "").strip().lower()
+    if not word or word in TRUE_WORDS:
+        return True
+    if word in FALSE_WORDS:
+        return False
+    raise SystemExit(f"error: RUNCOMPOSER_VERIFY_TLS: not true or false: {word!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="runcomposer-exec",
@@ -275,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
                         "environment variable RUNCOMPOSER_INGEST_TOKEN)")
     parser.add_argument("--push", action="store_true",
                         help="upload the finished bundle to --callback (exit 4 if refused)")
+    parser.add_argument("--ca-bundle", default=None, metavar="PATH",
+                        help="a file of the CA certificates to trust for an https "
+                        "--callback, instead of the system's (default: the environment variable "
+                        "RUNCOMPOSER_CA_BUNDLE)")
+    parser.add_argument("--verify-tls", action=argparse.BooleanOptionalAction, default=None,
+                        help="verify the certificate of an https --callback; --no-verify-tls "
+                        "skips the check, for a lab server (default: the environment variable "
+                        "RUNCOMPOSER_VERIFY_TLS, true or false; unset: verify)")
     args = parser.parse_args(argv)
     ok_codes = parse_exit_codes(args.ok_exit_codes)
     if args.push and not args.callback:
@@ -282,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     progress = Progress(
         args.callback, args.token or os.environ.get("RUNCOMPOSER_INGEST_TOKEN"),
         args.dispatch, args.shard,
+        ca_bundle=args.ca_bundle or os.environ.get("RUNCOMPOSER_CA_BUNDLE") or None,
+        verify_tls=verify_tls_setting(args.verify_tls),
     )
 
     spec_path = Path(args.spec)

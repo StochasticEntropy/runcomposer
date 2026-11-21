@@ -2,6 +2,8 @@
 
     python ci/jenkins/e2e.py              # build the image, run everything, clean up
     python ci/jenkins/e2e.py --no-build   # reuse an image built before
+    python ci/jenkins/e2e.py --image my-jenkins:e2e --container my-jenkins-e2e
+                                          # other names, beside another run
 
 What it does, each step waiting on a condition (an HTTP answer, a run
 state), never on a fixed sleep:
@@ -16,6 +18,15 @@ state), never on a fixed sleep:
 4. **callback** — ``POST /api/v1/runs`` dispatching to ``jenkins``: the build
    runs ``runcomposer-exec`` and POSTs the bundle back, authorized by the ingest
    token of its dispatch; the run becomes ``COMPLETE``.
+4b. **what Jenkins shows of the parameters** — the REST API lists the
+    build's ``INGEST_TOKEN`` as a password parameter without a value, and
+    ``SPEC_JSON`` in full (the exact bytes the dispatch hashed, carrying no
+    token); a build given a token this script knows shows it nowhere — REST
+    API, parameters page, console log, build page.
+4c. **one parameter, one environment variable** — a ``SPEC_JSON`` of
+    128 000 bytes (``max_parameter_bytes``' default) reaches the build step;
+    one of 131 072 bytes does not: the step cannot start ("Argument list too
+    long" — the operating system's limit on one environment variable).
 5. **poll** — ``runcomposer run --runner jenkins-poll`` from the command line
    (against the same store): runcomposer follows the queue item to the
    build, downloads the archived results and delivers them.
@@ -25,6 +36,11 @@ state), never on a fixed sleep:
 7. **cancel, callback mode** — a dispatch that waits for its callback is
    cancelled: runcomposer stops the build through a context rebuilt from the
    stored record; ``CANCELLED`` at once, the build ``ABORTED``.
+7b. **cancel while queued** — the job runs one build at a time, so while
+    a held build runs, the next dispatch waits in Jenkins' queue (its quiet
+    period first, then behind the running build); cancelling
+    its run cancels the queue item (Jenkins reports it ``cancelled``), and no
+    build is started for it. The held build is cancelled after it.
 8. **plan** — ``POST /api/v1/plan`` for the fan-out runner: the build
    parameters that would be sent, and nothing sent.
 9. **fan-out, poll** — one build of ``runcomposer-fanout``, one shard per
@@ -53,8 +69,10 @@ test.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -71,7 +89,7 @@ from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = "runcomposer-jenkins:e2e"
-CONTAINER = f"runcomposer-jenkins-e2e-{os.getpid()}"
+CONTAINER_PREFIX = "runcomposer-jenkins-e2e"
 JOB = "runcomposer-consumer"
 FANOUT = "runcomposer-fanout"
 #: Groovy for the script console: empty the cache in which Jenkins keeps the
@@ -125,10 +143,118 @@ def wait_for(what: str, probe: Callable[[], Any], timeout: float, interval: floa
         time.sleep(interval)
 
 
+def finished_build(build_url: str) -> Callable[[], dict[str, Any] | None]:
+    """A probe for :func:`wait_for`: the build's API document once Jenkins
+    reports the build finished, else ``None``."""
+
+    def probe() -> dict[str, Any] | None:
+        _, document = http("GET", f"{build_url.rstrip('/')}/api/json")
+        return document if isinstance(document, dict) and not document.get("building") else None
+
+    return probe
+
+
 def check(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"FAILED: {message}")
     say(f"ok: {message}")
+
+
+def what_jenkins_shows_of_the_parameters(jenkins: str, done: dict[str, Any]) -> None:
+    """Steps 4b and 4c: what the real Jenkins shows of each build parameter of
+    the job, and where the size of one parameter ends."""
+    from runcomposer.sdk.jenkins import JenkinsClient
+
+    client = JenkinsClient(jenkins)
+    dispatch = done["dispatches"][-1]
+
+    def parameters_of(build_url: str) -> dict[str, dict[str, Any]]:
+        document = http("GET", f"{build_url}/api/json?tree=actions[parameters[_class,name,value]]")[1]
+        return {p["name"]: p for a in document["actions"] for p in a.get("parameters", [])}
+
+    def run_build(parameters: dict[str, str]) -> tuple[str, dict[str, Any]]:
+        queue_url = client.trigger(JOB, parameters)
+        assert queue_url is not None
+        build_url = client.wait_for_build(JOB, queue_url, timeout_s=180, poll_interval_s=1)
+        return build_url, client.wait_until_finished(build_url, timeout_s=180, poll_interval_s=1)
+
+    # 4b. the build of the callback run, as Jenkins' REST API shows it
+    build_url = wait_for("the callback run's build", lambda: client.build_of(dispatch["links"]["queue"]), timeout=60)
+    shown = parameters_of(build_url)
+    token = shown["INGEST_TOKEN"]
+    check(token["_class"] == "hudson.model.PasswordParameterValue" and "value" not in token,
+          "the REST API lists INGEST_TOKEN as a password parameter and gives no value for it")
+    spec_text = shown["SPEC_JSON"]["value"]
+    check(shown["SPEC_JSON"]["_class"] == "hudson.model.TextParameterValue"
+          and hashlib.sha256(spec_text.encode("utf-8")).hexdigest() == dispatch["spec_sha256"],
+          "the REST API shows SPEC_JSON in full: exactly the bytes whose hash the dispatch recorded")
+    check("token" not in json.loads(spec_text).get("results", {}),
+          "the document the build received carries no ingest token")
+
+    # A build with a token value this script knows: where does it show?
+    marker = "rct_e2e_" + secrets.token_hex(12)
+    marked, info = run_build({"SPEC_JSON": spec_text, "DISPATCH_ID": dispatch["dispatch_id"],
+                              "CALLBACK_URL": "", "INGEST_TOKEN": marker, "HOLD_SECONDS": "0"})
+    pages = {"REST api/json?depth=1": "/api/json?depth=1", "REST api/xml": "/api/xml",
+             "parameters page": "/parameters/", "console log": "/consoleText", "build page": "/"}
+    texts = {name: str(http("GET", f"{marked}{path}")[1]) for name, path in pages.items()}
+    check(info["result"] == "SUCCESS" and not [name for name, text in texts.items() if marker in text],
+          f"a build given a known token shows it nowhere: {', '.join(pages)}")
+    check(done["id"] in texts["parameters page"] and done["id"] in texts["REST api/xml"],
+          "the parameters page and the REST API show the document (the run id in it)")
+
+    # 4c. one parameter is one environment variable of the build step
+    near, _ = run_build({"SPEC_JSON": "x" * 128_000, "DISPATCH_ID": "", "CALLBACK_URL": "",
+                                 "INGEST_TOKEN": "", "HOLD_SECONDS": "0"})
+    console_near = str(http("GET", f"{near}/consoleText")[1])
+    check("Argument list too long" not in console_near and "is not JSON" in console_near,
+          "a 128 000-byte SPEC_JSON (max_parameter_bytes' default) reaches the build step")
+    over, info_over = run_build({"SPEC_JSON": "x" * 131_072, "DISPATCH_ID": "", "CALLBACK_URL": "",
+                                 "INGEST_TOKEN": "", "HOLD_SECONDS": "0"})
+    console_over = str(http("GET", f"{over}/consoleText")[1])
+    check(info_over["result"] == "FAILURE" and "error=7, Argument list too long" in console_over,
+          "a 131 072-byte SPEC_JSON never starts the build step: 'error=7, Argument list too long'")
+
+
+def cancel_while_queued(api: str, jenkins: str, settle: Callable[..., dict[str, Any]]) -> None:
+    """Step 7b: a dispatch whose build has not started yet — the job runs one
+    build at a time, and one is running — is cancelled in the queue."""
+    from runcomposer.sdk.jenkins import JenkinsClient
+
+    client = JenkinsClient(jenkins)
+
+    def dispatch_held(title: str) -> dict[str, Any]:
+        status, created = http("POST", f"{api}/runs", {
+            "selection": {"tag_filter": "Auth-SSO"}, "title": title,
+            "dispatch": {"runner": "jenkins", "parameters": {"hold_s": 300}}})
+        check(status == 201, f"dispatch {title!r} accepted" + ("" if status == 201 else f" — {created}"))
+        return created
+
+    holder = dispatch_held("Holds the job")
+    wait_for("the held build to start", lambda: client.build_of(holder["dispatch"]["links"]["queue"]), timeout=180)
+    queued = dispatch_held("Waits in the queue")
+    queue_url = queued["dispatch"]["links"]["queue"]
+
+    def waiting() -> dict[str, Any] | None:
+        item = client.get_json(queue_url + "api/json")
+        return item if item.get("why") and not item.get("executable") else None
+
+    item = wait_for("the next build to wait in the queue", waiting, timeout=60)
+    say(f"queue item {queue_url} waits: {item['why']}")
+    status, answer = http("POST", f"{api}/runs/{queued['run']['id']}/cancel")
+    check(status in (200, 202),
+          f"POST /runs/{queued['run']['id']}/cancel answered {status} ({answer['dispatch']['state']})")
+    cancelled = settle(queued["run"]["id"], ("CANCELLED", "COMPLETE", "FAILED"), timeout=60)
+    check(cancelled["state"] == "CANCELLED", "the queued dispatch is CANCELLED")
+    item = client.get_json(queue_url + "api/json")
+    check(item.get("cancelled") is True and not item.get("executable"),
+          "Jenkins reports the queue item cancelled, and no build was started for it")
+    events = [str(e["data"].get("message")) for e in cancelled["events"]]
+    say(f"runcomposer's events of the cancel: {[e for e in events if 'jenkins:' in e]}")
+    http("POST", f"{api}/runs/{holder['run']['id']}/cancel")
+    build = client.build_of(holder["dispatch"]["links"]["queue"])
+    finished = wait_for("the held build to finish", finished_build(str(build)), timeout=120)
+    check(finished["result"] == "ABORTED", f"the held build {build} was stopped: {finished['result']}")
 
 
 def fan_out_and_forgotten_queue_items(api: str, jenkins: str, settle: Callable[..., dict[str, Any]]) -> None:
@@ -174,8 +300,6 @@ def fan_out_and_forgotten_queue_items(api: str, jenkins: str, settle: Callable[.
         f"SPEC_B64 is {len(params['SPEC_B64'])} characters")
     check(params["REGIONS"] == "eu,apac" and params["INCLUDE"] == "Payments-Cards",
           "the build received the shard list and the build parameter computed from the selection")
-    import hashlib
-
     from runcomposer.sdk.jenkins import decode_spec
 
     check(hashlib.sha256(decode_spec(params["SPEC_B64"])).hexdigest() == dispatch["spec_sha256"],
@@ -230,8 +354,7 @@ def fan_out_and_forgotten_queue_items(api: str, jenkins: str, settle: Callable[.
     status, answer_json = http("POST", f"{api}/runs/{run_id}/cancel")
     check(status in (200, 202) and answer_json["dispatch"]["state"] == "CANCELLED",
           f"POST /runs/{run_id}/cancel answered {status} ({answer_json['dispatch']['state']})")
-    aborted = wait_for("Jenkins to report the build finished", lambda: (lambda r: r[1] if r[1] and not r[1].get(
-        "building") else None)(http("GET", f"{build}/api/json")), timeout=120, interval=1)
+    aborted = wait_for("Jenkins to report the build finished", finished_build(build), timeout=120, interval=1)
     check(aborted["result"] == "ABORTED",
           f"the build was stopped although its queue item no longer exists: result {aborted['result']}")
     events = http("GET", f"{api}/runs/{run_id}")[1]["events"]
@@ -243,25 +366,30 @@ def fan_out_and_forgotten_queue_items(api: str, jenkins: str, settle: Callable[.
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--no-build", action="store_true", help=f"reuse the image {IMAGE}")
+    parser.add_argument("--no-build", action="store_true", help="reuse the image built before (--image)")
     parser.add_argument("--keep", action="store_true", help="leave the container running at the end")
+    parser.add_argument("--image", default=IMAGE, help=f"the image to build and run (default: {IMAGE})")
+    parser.add_argument("--container", default=None,
+                        help=f"the container's name (default: {CONTAINER_PREFIX}-<pid>, unique per run)")
     args = parser.parse_args()
+    image = args.image
+    container = args.container or f"{CONTAINER_PREFIX}-{os.getpid()}"
     # A SIGTERM (a CI timeout, a Ctrl-C'd parent) still runs the cleanup below.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 
     if not args.no_build:
-        say(f"docker build -f ci/jenkins/Dockerfile -t {IMAGE} .")
-        subprocess.run(["docker", "build", "-q", "-f", "ci/jenkins/Dockerfile", "-t", IMAGE, "."],
+        say(f"docker build -f ci/jenkins/Dockerfile -t {image} .")
+        subprocess.run(["docker", "build", "-q", "-f", "ci/jenkins/Dockerfile", "-t", image, "."],
                        cwd=REPO, check=True)
     jenkins_port, serve_port = free_port(), free_port()
     jenkins = f"http://127.0.0.1:{jenkins_port}"
     workdir = Path(tempfile.mkdtemp(prefix="runcomposer-jenkins-e2e-"))
     server: subprocess.Popen[str] | None = None
-    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
-    say(f"docker run {IMAGE} on {jenkins}")
-    subprocess.run(["docker", "run", "-d", "--rm", "--name", CONTAINER,
+    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    say(f"docker run --name {container} {image} on {jenkins}")
+    subprocess.run(["docker", "run", "-d", "--rm", "--name", container,
                     "--add-host", "host.docker.internal:host-gateway",
-                    "-p", f"127.0.0.1:{jenkins_port}:8080", IMAGE], check=True, capture_output=True)
+                    "-p", f"127.0.0.1:{jenkins_port}:8080", image], check=True, capture_output=True)
     try:
         version = wait_for(
             "Jenkins and the job to be provisioned",
@@ -313,6 +441,7 @@ def main() -> int:
         check(done["state"] == "COMPLETE" and sum(done["verdict_summary"].values()) == done["planned_count"],
               "callback mode: the job POSTed its bundle back and the run is COMPLETE with every planned item")
         check(any(e["kind"] == "delivery.recorded" for e in done["events"]), "the delivery arrived through the API push")
+        what_jenkins_shows_of_the_parameters(jenkins, done)
 
         # 5. poll, from the command line
         say("runcomposer run Payments-Wallets --runner jenkins-poll --json")
@@ -342,9 +471,10 @@ def main() -> int:
             check(status in (200, 202), f"POST /runs/{run_id}/cancel answered {status} ({answer['dispatch']['state']})")
             cancelled = settle(run_id, ("CANCELLED", "COMPLETE", "FAILED"), timeout=120)
             check(cancelled["state"] == "CANCELLED", f"{runner}: the dispatch is CANCELLED")
-            aborted = wait_for("Jenkins to report the build finished", lambda: (lambda r: r[1] if r[1] and not r[1].get("building") else None)(
-                http("GET", f"{jenkins}/job/{JOB}/{started['number']}/api/json")), timeout=120, interval=1)
+            aborted = wait_for("Jenkins to report the build finished",
+                               finished_build(f"{jenkins}/job/{JOB}/{started['number']}"), timeout=120, interval=1)
             check(aborted["result"] == "ABORTED", f"{runner}: Jenkins build #{started['number']} result is {aborted['result']}")
+        cancel_while_queued(api, jenkins, settle)
         fan_out_and_forgotten_queue_items(api, jenkins, settle)
         say("ALL CHECKS PASSED against a real Jenkins")
         return 0
@@ -359,8 +489,8 @@ def main() -> int:
             if output.strip():
                 say("runcomposer serve said:\n" + output.strip())
         if not args.keep:
-            subprocess.run(["docker", "stop", CONTAINER], capture_output=True)
-            say(f"container {CONTAINER} stopped (started with --rm: removed)")
+            subprocess.run(["docker", "stop", container], capture_output=True)
+            say(f"container {container} stopped (started with --rm: removed)")
         shutil.rmtree(workdir, ignore_errors=True)
 
 
