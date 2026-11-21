@@ -117,6 +117,102 @@ where the member, field or behaviour did not exist or worked differently.
   an attribute), and `live_updates` keeps the whole stream in order —
   `RUNNING` included, and kept after the shard delivered; what a store would
   hold is `live_now`.
+- **Values from the environment.** An `${env:…}` value is a secret, and a
+  secret of fewer than four characters now refuses startup (it used to stay
+  silently unblanked): write a value that is no secret — an address, a
+  region, a port — as `${env-public:…}`. Secrets are blanked out of free
+  text and runner-defined data only; shard, group and runner names, ids,
+  states, kinds, parameter names, mapping keys and links in events and
+  answers are recorded as they are (they used to be blanked too). A path
+  option from the environment, and a value converted to a number or a
+  boolean, are no secrets. An option the constructor annotates as `int`,
+  `float` or `bool` receives an environment value converted, and one that
+  does not convert is a `ConfigError` — a plugin that compared such a value
+  as text (`== "true"`) now receives the converted value.
+- **A runner's `InvalidParameter` is a `400 invalid-parameter`** naming the
+  parameter: from `POST /api/v1/plan` and `POST /runs/{id}/plan` (they used
+  to answer `200` with `refused: true`), and from `POST /runs`,
+  `/runs/{id}/dispatch` and `/rerun` (they used to answer `409
+  dispatch-refused`). A client that told the two apart by status reads
+  `code`; `runcomposer run` and `plan` print `error: parameter '…': …` and
+  exit `1`.
+- **A string filter is filter text** wherever a filter is one string — a
+  selection's `tag_filter` over the API, the CLI's `FILTER`,
+  `ui.quick_filters`, `ui.presets`, `ui.default_filter`, a taxonomy leaf's
+  `filter`, `FakeDispatchContext.from_source(selection=…)`. A tag spelled
+  like an expression is quoted now (`'"Auth OR Cart"'`, `'"AND"'`); `*` is
+  every item (it was the tag `*`); `(Auth)` is `Auth`; outer whitespace is
+  dropped; a blank string is refused; a string with a double quote or an
+  operator word that does not parse is a `400 filter-syntax` (CLI exit `2`).
+  A string that is not filter text and has neither still names that one
+  pattern (`regex:^Cart(V2)?$`, `Sprint 12`), with a warning. On the CLI a
+  YAML-quoted or numeric `FILTER` is no longer YAML-processed. A taxonomy
+  leaf whose text reads as an expression is refused. `format_filter`, and
+  the `text` of configured selections, now quote what needs it, so the text
+  reads back to the same filter; a bare-string quick filter is labelled
+  with its pattern.
+- **`robot-pool` checks a single suite root.** A catalog item the root does
+  not hold refuses the preview and the dispatch before the hand-off
+  (naming the item and the root) instead of ending `MISSING`;
+  `attribute_roots([root], ids)` raises `LookupError` for it instead of
+  returning every id unchecked. `PlanPreview.data["partition_mode"]` is the
+  effective mode.
+- **Record, then deliver.** `deliver_shard` records a shard's artifacts
+  before it delivers, so they exist when `run.completed` is written; a
+  runner of your own that recorded after its last delivery should record
+  first.
+- **The `RunStore` port gained `atomic()`** (a block of calls taken as one
+  unit); `StoreBase`'s default guarantees nothing, and `check_store` fails
+  a store that keeps it (`store.atomic`). The sqlite store refuses to open
+  on SQLite older than 3.24.0 or without the JSON functions.
+- **`DispatchContext` and `PlanContext` gained `connector_settings(name)`.**
+- **Artifacts over HTTP name no server path:** `url_or_path` of a run
+  detail's artifact is the URL, a path relative to the artifact directory,
+  or a bare file name — never where the file lies on the server (the CLI
+  still shows the recorded path).
+- **Live rows of a dispatch that is over** — `COMPLETE`, `FAILED`,
+  `CANCELLED`, `STALE` — are no longer listed as `RUNNING` (nor counted in
+  `live_summary`); what was last seen stays on the `MISSING` row as
+  `last_live`.
+- **A cancel that loses to a completion** is a `409` saying the run
+  completed before the cancel took effect.
+- **`/docs` and `/redoc` are off by default** (`core.api.docs: true` turns
+  them on); `/openapi.json` is always served, and `/api/v1/meta` says which
+  (`api.docs`).
+- **The results, live and log pushes authorize before they read.** An
+  unauthenticated push with a malformed body answers `401` / `403` / `404`
+  (it used to answer `400`), with `Connection: close`; `/live` and `/log`
+  have a size limit (`max_upload_mb` plus 64 KiB, `413`); a results push
+  without a file under `files` is a `400` saying so (without a `fields`
+  list), a body that is not multipart a `400`, a file name that is not one
+  (`..`, `.`, empty, a control character) a `400`; at most 1000 files, 4 KiB
+  per text field and 16 KiB of part headers.
+- **A refused bundle is named by its files:** the `422` detail and the
+  quarantine entry name the files of a push (and a file drop by its
+  directory's name), never a server path.
+- **A state-changing request a browser sends for another site is refused**
+  (`403 cross-site-request`); a proxy that rewrites `Host` needs the public
+  origin in `core.api.cors`.
+- **The `command` runner** starts each shard's command in a supervised
+  worker process: `timeout_s` counts from the worker's start, a stop also
+  kills what the command left behind, its "command started" line comes
+  through the live channel (which creates `<workdir>/.live`), and a cancel
+  that lands before the command starts runs nothing. **Robot workers** run
+  in a session of their own, stop with a second `SIGTERM` after
+  `grace_s`, then `SIGKILL` (about three times `grace_s` at worst), and
+  each shard adds a start and an end line to the event stream.
+- **CLI:** `runs`, `show` and `watch` flag a dispatch whose owner process
+  is gone (`RUNNING (owner gone)` and a line saying how to reconcile it;
+  `owner_gone` in `--json`); `show`'s count of what shards that never
+  delivered last streamed includes `last_live`; the values of a `mapping`
+  given with `--param` are text as typed; `catalog --manifest` goes through
+  the deployment's `sources.manifest` entry when there is one.
+- **Responses gained fields:** a parameter's `key_pattern` (`null` when not
+  declared, in `GET /runners` and `/meta`), `text_language` (`/meta`,
+  `/ui-config`), `api.docs` (`/meta`), `token` on a `filter-syntax` error,
+  `warnings` on the resolved taxonomy (whose written nodes' `filter` is now
+  the resolved pattern), `robot-pool`'s health `data.checks` (also in a
+  `down` answer) and its plan `data.durations` / `partition_estimates_ms`.
 
 **Configuration**
 
@@ -156,6 +252,10 @@ where the member, field or behaviour did not exist or worked differently.
   instead of `spec_document`. Download the document from `spec_url` — those
   are the exact bytes the marker hash is verified against.
 - **`GET /runs/{id}/spec` no longer contains `results.token`.**
+- **The rows of `GET /api/v1/runs` no longer carry `deliveries`** (0.1.7's
+  did): a row is the run's headline, verdict counts, planned count,
+  duration and its `dispatches`. Read deliveries from the run detail,
+  `GET /api/v1/runs/{id}`.
 - `GET /runs` returns `total` / `limit` / `offset`; `GET /runners` returns
   the configured id (not the plugin's own), parameters and health.
 
@@ -369,6 +469,71 @@ where the member, field or behaviour did not exist or worked differently.
 - **`ruff` and `mypy`** configured and clean; the version single-sourced in
   `runcomposer/__init__.py`.
 
+- **Filter text in the core.** `core.filtertext` reads the one-line text
+  form — `AND` / `OR` / `NOT`, parentheses, double-quoted patterns, `*` for
+  every item, `AND (x)` / `OR (x)` for a group of one — and `format_filter`
+  writes text that reads back to the same AST: `runcomposer compile 'Auth
+  OR Cart'` selects the union. Unreadable text is a `400 filter-syntax`
+  (`problem`, `position`, `token`) or CLI exit `2` with the column marked.
+  The core and the web UI are held to the same cases,
+  `tests/fixtures/filter-text.json`. The SDK exports `parse_filter_text`,
+  `read_filter_string`, `quote_pattern` and `FilterSyntaxError`.
+- **`supervise_workers`, `WorkerPayload`, `WorkerOutcome`** in the SDK:
+  worker-process supervision for any framework — lanes, a bound, a timeout,
+  the result handed back, one stop protocol that reaches what a worker
+  started. The Robot toolkit's `supervise` and the `command` runner are
+  built on it; a guide example runs plain Python checks in it
+  (`tests/shop_check_runner.py`).
+- **`${env-public:NAME}`** for a value from the environment that is no
+  secret; numbers and booleans from the environment converted by the
+  constructor's annotation.
+- **`ConfiguredCall` (`{call, with}`)**: wherever an option names a
+  callable it may hand it settings, received as `settings=`;
+  `configured_calls` parses a list of them. `ctx.connector_settings(name)`
+  on dispatch and plan contexts (and the fake).
+- **`Parameter.key_pattern`** for the keys of a `mapping`; a runner may
+  raise `InvalidParameter("<name>", "<detail>")`.
+- **`push_results` and `ResultsPushRefused`** in the SDK: an executor's
+  results bundle pushed to the API, the refusal with its status and the
+  server's answer.
+- **`robot-pool`**: `partition_mode_per_run` (the per-run parameter
+  `partition_mode`), `max_chunks_per_partition`, `protected_variables`,
+  `plan_checks`, `health_checks`, `merge_groups`; `pre_dispatch`,
+  `worker_setup` and the new callables take `{call, with}`; the plan
+  preview says how many durations were known, what the others weigh, the
+  estimate per partition, and names an item that alone outweighs an even
+  share; `runcomposer doctor` checks the catalog against each runner's
+  suite roots. Example entry `robot-regions`.
+- **Robot toolkit**: `ShardPayload.cwd`, `.env`, `.worker_data` (seen by
+  `worker_setup` as `info["data"]`); `run_shard(payload, stop=None)`;
+  `supervise(…, log=None, grace_s=5.0)`; `merge_outputs(…,
+  rebot_options=None)`; `MergePayload`, `MergeResult`, `run_merge`,
+  `spawn_merge` (a merge in a spawned process); `NameTopSuites`;
+  `root_mismatches`.
+- **`jenkins`**: `plan_provider` / `plan_fields` (a plan of its own for a
+  job that cannot say which item goes where), `check_parameters` (the job's
+  declared parameters held against `parameters` in the health check),
+  `outage_tolerance_s`; shard groups; `field_providers` and `postprocess`
+  take `{call, with}`. **Jenkins toolkit**: `JenkinsClient.job_parameters`,
+  `outage_tolerance_s` on the waits and on `follow`,
+  `JenkinsQueueCancelled`.
+- **Kit**: `check_store` rule `store.atomic`; `check_observer(kinds=…)` for
+  an observer that passes on only some kinds; `FakeJenkins.add_job(…,
+  parameters=…)` (undeclared form fields dropped, as Jenkins does, and
+  recorded in `ignored_parameters`), `down()` / `up()`;
+  `ConnectorHarness(advertise_host=…)`, `harness.port`, `harness.local_url`
+  and `RUNCOMPOSER_HARNESS_PORT`.
+- **`core.text_language`**, the BCP 47 tag of the free text the server and
+  its runners write; **`core.api.docs`**.
+- **A minimal install for an executing machine**: `pip install --no-deps
+  runcomposer` imports the SDK, both push clients and `runcomposer-exec`
+  without the YAML reader, the document validator or the web stack
+  (`tests/test_minimal_imports.py`).
+- **Guards**: the structure guards walk sub-packages; the example-world
+  guard reads every text file of the tree — prose against a reviewed
+  vocabulary, `tests/example_world_words.txt` — and
+  `ci/check_commit_messages.py` holds commit messages to the same rules.
+
 ### Fixed
 
 - A run completed green without its planned items; a refused re-dispatch
@@ -411,6 +576,55 @@ where the member, field or behaviour did not exist or worked differently.
 - On Windows, a live process another user owns read as gone (now treated
   like `EPERM` on POSIX); tests that need a POSIX shell skip there.
 - The project image ran as root.
+- Two processes delivering to one dispatch could record a completion that
+  contradicted its verdicts; a delivery racing a cancel recorded by another
+  process got into the cancelled dispatch; two processes recovering one
+  store both tried to mark a dispatch `STALE`; deleting a run and
+  cancelling raced a dispatch recorded in between; an expiry that lost to a
+  completion logged a traceback.
+- Labels with a quote in their key missed in `list_runs` on some SQLite
+  versions (labels are matched with `json_each` now).
+- A `FAILED` or `STALE` dispatch lost its `MISSING` rows from the summary
+  after a partial late delivery.
+- A runner that noticed `ctx.cancelled` and returned on its own could have
+  its dispatch closed as `CANCELLED` before its `cancel(ctx)` was called,
+  leaving what it started running.
+- A process that ended but was not reaped (a zombie under a container's
+  process 1 without an init) counted as a live dispatch owner.
+- The dispatch context lost links and the kit's fake duplicated worker lines
+  when several threads used them at once.
+- A refused dispatch left its work and private directories behind.
+- `import runcomposer.sdk` needed the YAML reader and the document
+  validator.
+- `${env:…}` gave text to numeric and boolean options (`max_workers: 4`
+  from the environment was refused).
+- Identifiers in events (shard and group names, `mode`) were blanked when a
+  secret happened to spell the same.
+- A test that ran in under a millisecond counted as "duration unknown" and
+  skewed the balance (`robot-pool`).
+- `catalog --manifest` named one plugin directly instead of the configured
+  `sources.manifest` entry.
+- The Jenkins client let a dropped connection escape as a raw exception,
+  outside its retries and its `cancel`.
+
+### Security
+
+- Results, live and log pushes are authorized from the path and the headers
+  before a byte of the body is read, and `max_upload_mb` is counted while
+  the body streams — a chunked upload without a declared length included.
+  An unauthenticated push could be made to hold a connection and fill the
+  temporary directory.
+- State-changing requests a browser marks as coming from another site are
+  refused (`403 cross-site-request`), on every route.
+- A NUL byte or an over-long name in an artifact path, and an upload named
+  `..`, `.` or nothing, caused a `500` (or a file silently renamed); they
+  are a `404` and a `400`.
+- A refused push and the quarantine entry no longer show server paths, and
+  an artifact listing over HTTP names no server path.
+- `/docs` and `/redoc`, which load script from a public CDN, are off unless
+  `core.api.docs: true`.
+- SECURITY.md quotes the headers every artifact is served with, and a test
+  holds the two together.
 
 ### Web UI
 
@@ -537,9 +751,18 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
 
 - Declined: a taxonomy leaf holding a full filter expression; a per-runner
   custom "actions" endpoint; a catalog cache shared across CLI invocations;
-  a `source.root` the executor would read from the run spec.
-- Values shorter than four characters taken from the environment are not
-  redacted; links a runner records are stored as given.
+  a `source.root` the executor would read from the run spec; a filter node
+  of its own for "every item" (`runspec/1.0` stores `{"not": "regex:^$"}`,
+  DESIGN.md §3.1).
+- What is stable for 0.2.x: the names in `__all__` of the SDK, of its two
+  toolkits and of the kit, the run-spec document, the error codes and the
+  reference runners' documented options. Provisional: `Service` and
+  `Config` beyond the members the connector guide names, members the
+  `RunStore` protocol (33 today) may gain in a minor release — with a
+  `StoreBase` default where one can be right — and fields a response may
+  gain ([docs/connectors.md](docs/connectors.md#1-the-surface)).
+- A secret from the environment needs four characters (a shorter one is
+  refused); links a runner records are stored as given.
 - Restart recovery cannot tell a reused process id from the process that
   owned a dispatch; `cancel --force` closes such a dispatch.
 - One instance owns a store: dispatching one run twice is refused across

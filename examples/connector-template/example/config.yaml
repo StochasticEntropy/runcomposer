@@ -18,10 +18,12 @@ core:
   ingestion: { inbox: null }
 connectors:
   # Settings the package's plugins share (the runner declares
-  # CONNECTOR = "shop-checks" and receives this mapping). ${env:…} works here
-  # too, for anything secret.
+  # CONNECTOR = "shop-checks" and receives this mapping). Values from the
+  # environment work here too: ${env-public:…} for one that is no secret,
+  # like an address; ${env:…} for a secret, which is then blanked out of
+  # every message, health detail and log line that quotes it.
   shop-checks:
     user_agent: runcomposer-shop-connector/0.1
     environments:
-      local: "${env:SHOP_LOCAL_URL:-http://127.0.0.1:18765}"
+      local: "${env-public:SHOP_LOCAL_URL:-http://127.0.0.1:18765}"
       staging: "http://staging.shop.example"

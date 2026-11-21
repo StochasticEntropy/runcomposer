@@ -72,3 +72,10 @@ store options there; connect to things in `dispatch` and `health` — not in
 
 Read what the person starting a run chose from `ctx.parameters`;
 `ctx.options` is the runner's config entry as written and nothing else.
+
+In `example/config.yaml`, an address from the environment is written
+`${env-public:…}`; `${env:…}` is for a secret, which runcomposer then
+blanks out of whatever it records, and which needs at least four
+characters. The runner records its report before it delivers — the last
+delivery completes the run — and its threads share one context, which is
+safe for that (the connector guide's §3.3).

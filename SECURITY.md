@@ -176,8 +176,8 @@ normal issue, but they will not get an advisory:
   you. That is the feature. (A run *spec* is not config — see 4 above.)
 - **`--simulate` fabricates verdicts.** It is a transport test. It is documented
   as such wherever it is used, and it never claims a test ran.
-- **`runcomposer demo` writes a database in the working directory.** It is a
-  demo; it says so.
+- **`runcomposer demo` writes a database under the working directory**
+  (`./runcomposer-demo/`, or `--workspace DIR`). It is a demo; it says so.
 - Findings from an automated scanner with no demonstrated impact on the above.
 
 ## Handling a report about your own corpus

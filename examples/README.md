@@ -37,8 +37,9 @@
 - **`robot-pool/`, `jenkins/`, `pytest-shop/`** — three of the "four ways to
   execute" ([connector guide §8](../docs/connectors.md#8-four-ways-to-execute)),
   each a config file run end to end by `tests/test_four_ways.py`. The
-  `robot-lanes` entry of `robot-pool/config.yaml` and the `jenkins-fanout`
-  entries of `jenkins/config.yaml` (with their callables in
+  `robot-lanes` and `robot-regions` entries of `robot-pool/config.yaml`
+  (`robot-regions` run by `tests/test_robot_pool_options.py`) and the
+  `jenkins-fanout` entries of `jenkins/config.yaml` (with their callables in
   `jenkins/shop_job.py`) show the reference runners' switches — configured,
   not coded ([§9](../docs/connectors.md#9-composing-the-reference-runners)).
   Try, without running anything:

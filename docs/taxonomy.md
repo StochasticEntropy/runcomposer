@@ -40,7 +40,7 @@ possible keys:
 | Key | Required | Meaning |
 |---|---|---|
 | `label` | yes | The text shown in the tree. Displayed verbatim — it is your string, not a translation key, and it is the same in every locale. Keep sibling labels distinct — the validator requires it, and it is what lets the resolved tree number nodes by their position in the file. |
-| `filter` | no | **One** pattern string in the tag-filter grammar. A node that has it is a **leaf**: selectable in the picker, and applying a selection puts its pattern into the filter. |
+| `filter` | no | **One** pattern in the tag-filter grammar, written as filter text: a bare tag or `prefix:` pattern, or a quoted one (`'"Sprint 12"'`, `'"regex:^Cart(V2)?$"'`). A node that has it is a **leaf**: selectable in the picker, and applying a selection puts its pattern into the filter. |
 | `children` | no | A list of further nodes. Nesting is arbitrarily deep. |
 
 A node with `children` and no `filter` is a **group** — a heading that only
@@ -64,17 +64,22 @@ taxonomy:
       - { label: Payments, filter: "Payments" }      # literal tag — matched case-INsensitively
       - { label: Checkout, filter: "prefix:Checkout-" }   # every tag starting "Checkout-" (case-sensitive)
       - label: Cart                                  # both: clickable AND a parent
-        filter: "regex:^Cart(V2)?$"
+        filter: '"regex:^Cart(V2)?$"'                # quoted: a regex with ( ) in it
         children:
           - { label: Cart v2 only, filter: "CartV2" }
   - label: Suites
     children:
       - { label: Smoke, filter: "Smoke" }
       - { label: Regression, filter: "Regression" }
-      - { label: Payment methods, filter: "regex:^(Visa|Mastercard|Paypal)$" }   # "any of these" — one regex
+      - { label: Payment methods, filter: '"regex:^(Visa|Mastercard|Paypal)$"' }   # "any of these" — one regex
   - label: Quarantine                                # a leaf needs no children, at any level
     filter: "prefix:Quarantine-"
 ```
+
+The YAML quotes go around the whole string; the double quotes inside are
+the filter text's own, and they are needed wherever a pattern holds
+whitespace, a parenthesis, a double quote or a backslash, or is one of the
+words `AND`, `OR`, `NOT` ([below](#the-pattern-in-a-leaf)).
 
 A shipped, working file lives in the package at
 `src/runcomposer/demo/taxonomy.yaml` — that is what `runcomposer demo` and a
@@ -99,6 +104,23 @@ and `prefix:` do not. A pattern written in the wrong case is still a valid
 pattern: its leaf can be clicked and selects nothing. The opt-out is inline:
 `regex:(?i)^checkout-`.
 
+The string is read as **filter text** (DESIGN.md §3.1), the same way a
+string `tag_filter` is read over the API, and it must name one pattern:
+
+- A pattern that holds whitespace, a parenthesis, a double quote or a
+  backslash, or that is an operator word, is written in double quotes:
+  `'"Sprint 12"'`, `'"regex:^Cart(V2)?$"'`, `'"AND"'`.
+- Text that reads as an expression — `Cart OR Checkout`, `NOT Smoke`, `*`
+  — is refused: a leaf is one pattern ([below](#known-limitation-one-pattern-per-leaf-and-only-a-pattern)).
+  A tag that is really spelled like that is quoted: `'"Cart OR Checkout"'`.
+- A string that is not filter text and contains neither an operator word
+  nor a double quote — `regex:^Cart(V2)?$` unquoted — still means the
+  pattern it spells, and the resolved taxonomy lists it under `warnings`
+  with the quoted spelling to use instead.
+
+In the resolved taxonomy a written node's `filter` is the pattern itself,
+without the quotes.
+
 ---
 
 ## Known limitation: one pattern per leaf, and only a pattern
@@ -117,7 +139,7 @@ content, are not usable here:
 So "any of these tags" is written as one alternation regex:
 
 ```yaml
-- { label: Payment methods, filter: "regex:^(Visa|Mastercard|Paypal)$" }
+- { label: Payment methods, filter: '"regex:^(Visa|Mastercard|Paypal)$"' }
 ```
 
 Anything with real boolean structure — an AND across two tags, an exclusion —
@@ -174,7 +196,10 @@ result is itself a valid taxonomy document — plus additive metadata:
 Alongside `taxonomy`, the response carries a `resolved` summary:
 `tags_total`, `tags_claimed`, `tags_selectable`, `tags_unassigned`,
 `items_total`, `items_claimed`, `nodes_written`, `nodes_dropped`,
-`nodes_total`.
+`nodes_total` — and, as a key of its own, `warnings`: one sentence per leaf whose `filter` was
+read as one pattern only by the fallback for strings that are not filter
+text ([above](#the-pattern-in-a-leaf)); empty for a file written as filter
+text throughout, such as the bundled one.
 
 ### The three rules worth knowing
 
@@ -184,7 +209,7 @@ different things.
 
 ```yaml
 - label: Cart
-  filter: "regex:^Cart(V2)?$"
+  filter: '"regex:^Cart(V2)?$"'
   children:
     - { label: Cart v2 only, filter: "CartV2" }
 ```
@@ -339,7 +364,7 @@ rendering as an empty panel. The rules:
 | the document is a mapping with a top-level `taxonomy` key | `nodes:`, `tree:`, `groups:` at the top; a bare list of nodes; an empty file |
 | `taxonomy` holds a **list** of nodes | `taxonomy: {label: Areas}` |
 | every node is a mapping with a non-empty **`label`** string | `taxonomy: ["Payments"]` |
-| `filter`, when present, is **one pattern string** the grammar can parse | `filter: ["Visa", "MC"]`, `filter: {op: OR, …}`, `filter: "regex:^(unclosed"` |
+| `filter`, when present, is a **string** whose filter text names **one pattern** the grammar can parse | `filter: ["Visa", "MC"]`, `filter: {op: OR, …}`, `filter: "Cart OR Checkout"`, `filter: '"regex:^(unclosed"'` |
 | `children`, when present, is a **list** | `children: {}` |
 | sibling labels are **distinct** | two `- {label: Payments, …}` under one parent |
 | every node has `filter`, `children`, or both | `- {label: Payments, pattern: "Payments"}` |

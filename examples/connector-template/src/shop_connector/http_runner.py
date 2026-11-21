@@ -167,7 +167,9 @@ class HttpCheckRunner(RunnerBase):
         )
 
         # 3. Execute. From here on an exception is a FAILED dispatch whose
-        #    delivered results are kept.
+        #    delivered results are kept. The context is safe to use from the
+        #    pool's threads at once (live, log, add_artifact, deliver); what
+        #    stays ours to order is one delivery per shard, after declare().
         def run_one(item_id: str) -> Verdict | None:
             if ctx.cancelled:
                 return None
@@ -182,7 +184,8 @@ class HttpCheckRunner(RunnerBase):
         ctx.raise_if_cancelled()  # a cancelled dispatch delivers nothing
         verdicts = [verdict for verdict in results if verdict is not None]
 
-        # 4. Record and deliver.
+        # 4. Record, then deliver: the last delivery completes the run, and
+        #    what is recorded after it arrives after run.completed.
         report = ctx.workdir / "report.json"
         report.write_text(
             json.dumps(

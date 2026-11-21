@@ -13,7 +13,7 @@ git clone https://github.com/StochasticEntropy/runcomposer
 cd runcomposer
 
 pip install -e ".[dev]"          # Python 3.10 – 3.13
-pytest                           # ~1200 tests, green in about a minute
+pytest                           # a few thousand tests, green in a couple of minutes
 ruff check src tests             # lint
 mypy                             # type check (strict, configured in pyproject.toml)
 
@@ -79,6 +79,20 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
    a slow machine.
 7. **A `[planned]` clause in DESIGN.md has no implementation.** If you implement
    one, delete its marker in the same change. If you add an unbuilt idea, mark it.
+8. **Only the example world appears in the repository.** Code, tests, docs,
+   examples and commit messages speak of the invented web shop and nothing
+   else: hosts under `shop.example`, item ids like
+   `Shop.Checkout.Cards.Pay By Card`, the demo corpus's tags, tickets
+   `SHOP-12xx`. A guard test (`tests/test_example_world.py`) reads every text
+   file of the tree — prose included — and fails on a host, an absolute
+   path, a ticket key, a tag or a capitalised word it does not know. A new
+   word is added to `tests/example_world_words.txt`, under the heading it
+   belongs to, in the same change — an English word, a technical term or a
+   name of the example world; never the name of a person, or of a company,
+   product or system from outside this project. `python
+   ci/check_commit_messages.py [RANGE]` (default `origin/main..HEAD`) holds
+   the messages of your commits to the same rules; it exits `1` naming each
+   violation, `2` for a range it cannot read.
 
 ## Pull requests
 

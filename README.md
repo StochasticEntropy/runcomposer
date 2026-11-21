@@ -62,8 +62,9 @@ JSON or YAML list, zero dependencies, the adoption path for any framework) and
 **Compose.** Navigate a curated taxonomy, build a filter, watch the preview
 recompile. The filter language is small and lossless: a bare word is a literal
 tag, `prefix:Checkout-` is sugar for an anchored regex, `regex:` is the escape
-hatch, and the operators are `AND`, `OR`, `NOT`. Available in the web UI and
-from the CLI.
+hatch, and the operators are `AND`, `OR`, `NOT`. One line of text says it —
+`runcomposer compile 'Payments AND NOT (Smoke OR prefix:Quarantine-)'` — read
+alike by the web UI, the CLI and the API.
 
 **Freeze.** The filter is compiled against the catalog snapshot and the
 resulting item list is written *into* a versioned run spec document — so a
@@ -89,12 +90,17 @@ The two reference runners have modes beyond the basics:
 
 - `robot-pool` can *distribute* a selection over its partitions instead of
   repeating it on each (`partition_mode: split`), make every bounded piece a
-  shard of its own that delivers when done (`chunk_shards`), and run
-  preparation steps that see the plan before anything starts (`pre_dispatch`).
+  shard of its own that delivers when done (`chunk_shards`), run
+  preparation steps that see the plan before anything starts (`pre_dispatch`),
+  keep a partition to one chunk at a time (`max_chunks_per_partition`),
+  protect variables a run must not set, and merge each group's results and
+  the whole run's into one log (`merge_groups`).
 - `jenkins` can drive a job that fans out into several shards in one build,
   pass the document compressed (`{spec_b64}`), compute build parameters from
   the selection (`field_providers`), and read results from any URL below the
-  build, such as its console log (`result_urls`, `postprocess`).
+  build, such as its console log (`result_urls`, `postprocess`), ride out a
+  Jenkins restart (`outage_tolerance_s`), and check that the job declares
+  every parameter it is sent (`check_parameters`).
 
 **Look before you start.** `runcomposer plan Cart --runner robot-lanes
 --config examples/robot-pool/config.yaml` (or `POST /api/v1/plan`) shows
@@ -112,8 +118,10 @@ runner, parser, store or observer against the contract and runs it inside
 a real runcomposer for your tests; and
 [examples/connector-template](examples/connector-template) is an installable
 connector package to copy. Configuration validates every plugin's options at
-startup, takes secrets as `${env:NAME}`, merges several sources into one
-catalog, and keeps a `connectors:` namespace for your package's own settings.
+startup, takes values from the environment as `${env:NAME}` (a secret,
+blanked out of whatever is recorded) or `${env-public:NAME}`, merges several
+sources into one catalog, and keeps a `connectors:` namespace for your
+package's own settings.
 
 **Ingest.** Results return over a token-guarded HTTP push, a watched file-drop
 directory, or `runcomposer ingest` on the command line. Redelivery rules are
@@ -136,9 +144,14 @@ CTRF; `robot-output-xml` and `junit-xml` parse results coming the other way
 (both refuse documents carrying entity or DTD declarations).
 
 The web UI ships pre-built inside the wheel in English and German, so
-evaluating it needs no Node toolchain. Persistence is sqlite by default (safe
-for the threads of a server and for several processes on one file), and
-`runcomposer gc` keeps runs, quarantine and artifacts bounded.
+evaluating it needs no Node toolchain. `/openapi.json` describes the API; the
+`/docs` and `/redoc` viewers are off unless `core.api.docs: true`, since they
+load their script from a public CDN. Persistence is sqlite by default — safe
+for the threads of a server and for several processes on one file, because
+every lifecycle decision is one write transaction; it needs SQLite 3.24.0 or
+newer with the JSON functions, and refuses to open on an older one, naming
+both versions — and `runcomposer gc` keeps runs, quarantine and
+artifacts bounded.
 
 ## The export round trip
 
@@ -170,7 +183,7 @@ neutral template a private adopter package copies.
 | | |
 |---|---|
 | [examples/robot-shop](examples/robot-shop) | 58 Robot Framework tests over a fictional web shop — the corpus behind the screenshot and the specs on the homepage. |
-| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions — once each (`robot-pool`), or distributed over them in two-test shards (`robot-lanes`). |
+| [examples/robot-pool](examples/robot-pool) | Those tests executed by `robot-pool` on two partitions — once each (`robot-pool`), distributed over them in two-test shards (`robot-lanes`), or per region, one chunk of a region at a time, with merged logs (`robot-regions`). |
 | [examples/pytest-shop](examples/pytest-shop) | The same world as pytest, catalogued through `manifest` with node ids and executed by the `command` runner — the framework-agnosticism proof. |
 | [examples/jenkins](examples/jenkins) · [ci/jenkins](ci/jenkins) | The `jenkins` runner in both completion modes, also against a job that fans out into one shard per region, and a pinned Jenkins-in-Docker whose jobs run the vendored consumer; `ci/jenkins/e2e.py` drives one against the other. |
 | [examples/remote-agent](examples/remote-agent) | The full remote round trip on one machine. |
@@ -182,6 +195,12 @@ Executing Robot Framework in-process needs one extra:
 ```bash
 pip install "runcomposer[robot]"
 ```
+
+A machine that only executes what runcomposer hands out — a build agent —
+can do with `pip install --no-deps runcomposer` (plus `robotframework` for
+the Robot toolkit): the SDK, the push clients and `runcomposer-exec` import
+without the reading and serving dependencies
+([the connector guide, §1](docs/connectors.md#1-the-surface)).
 
 ## Developing
 

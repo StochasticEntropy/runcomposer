@@ -370,7 +370,7 @@ runcomposer catalog [--manifest FILE] [--tags] [--limit N] [--json] [--config PA
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--manifest FILE` | — | Read this manifest catalog (JSON or YAML) directly, instead of the configured sources. |
+| `--manifest FILE` | — | Read this manifest catalog (JSON or YAML) instead of the configured sources — through the deployment's own `sources.manifest` entry when it has one (its `plugin:` / `module:` and options apply, and a typo in them is refused with exit `2`), else the plugin installed as `manifest`. A relative `FILE` is read from the working directory. |
 | `--tags` | off | List every tag with the number of items carrying it, instead of the items. |
 | `--limit N` | `0` (all) | Show at most N items — or, with `--tags`, the N most common tags. `0` means no limit. |
 | `--json` | off | [One JSON document](#--json--one-document-for-a-script): counts, snapshot, duplicate ids, entries. |
@@ -985,8 +985,10 @@ To start a run and *not* stay attached to it, use the server:
 ### `--param` — per-run runner parameters
 
 `NAME=VALUE`, repeatable. The value is read as YAML, so a list is a list and a
-boolean is a boolean. [`doctor`](#doctor) prints what each configured runner
-accepts. Here a `robot-pool` runner configured with two partitions:
+boolean is a boolean — except the values of a mapping, which are text as
+typed: `--param 'variables={ORDER_LIMIT: 1300, STRICT: true}'` passes the
+texts `1300` and `true`, as a `mapping` parameter wants them.
+[`doctor`](#doctor) prints what each configured runner accepts. Here a `robot-pool` runner configured with two partitions:
 
 ```yaml
 # shop/config.yaml
@@ -1009,7 +1011,7 @@ robot-pool plan: 13 item(s) × 2 partition(s) → 2 chunk(s)/partition, max_work
   chunk 2: 6 item(s), est 0ms
   env1: 2 shard(s), 13 item(s)
   env2: 2 shard(s), 13 item(s)
-run 01M7X9FG96HQ6X5QCDSM6ZNPV4: dispatch 01M7X9FG972JJ5R9FVM0EPR98A via 'robot-pool' (4 shard(s))
+run 01M7XRKA4YGXM1EDKQNT4Q130Z: dispatch 01M7XRKA5RH5MNAY3JTAAEJ3E8 via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
   group env1: FAIL — 12 PASS, 1 FAIL
   group env2: FAIL — 12 PASS, 1 FAIL
@@ -1020,13 +1022,13 @@ state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
 
 $ runcomposer run Payments --runner robot-pool --param 'partitions=[env1]' --title "Payments on env1" --config shop/config.yaml
 robot-pool plan: 13 item(s) × 1 partition(s) → 4 chunk(s)/partition, max_workers=4
-  duration-balanced chunking: history for 7/13 item(s)
-  chunk 1: 4 item(s), est 1ms
-  chunk 2: 3 item(s), est 2ms
-  chunk 3: 3 item(s), est 2ms
-  chunk 4: 3 item(s), est 2ms
-  env1: 4 shard(s), 13 item(s)
-run 01M7X9FS7FZ2S4E71MN2JNCM52: dispatch 01M7X9FS7H6GVWV5EB0R753Z3Y via 'robot-pool' (4 shard(s))
+  duration-balanced chunking: history for 13/13 item(s)
+  chunk 1: 4 item(s), est 4ms
+  chunk 2: 3 item(s), est 3ms
+  chunk 3: 3 item(s), est 3ms
+  chunk 4: 3 item(s), est 3ms
+  env1: 4 shard(s), 13 item(s), est ~0.0s
+run 01M7XRKGFV0DQBBC9EQK0GNJK4: dispatch 01M7XRKGGF4SGCJJYA61AH01X4 via 'robot-pool' (4 shard(s))
 state: COMPLETE (FAIL) — 12 PASS, 1 FAIL
   group env1: FAIL — 12 PASS, 1 FAIL
   shard env1-1 [env1]: PASS — 4 PASS
@@ -1040,9 +1042,10 @@ error: parameter 'partitions' must be a list drawn from ['env1', 'env2'], got ['
 
 Thirteen items on two partitions is twenty-six verdicts, rolled up per shard
 and per partition — "green on `env1-1`, red on `env1-2`" is read, not
-computed. The second run plans from the first one's durations (a test that
-reported 0 ms counts as unknown, which is why history covers only some of
-the items). The third never became a run.
+computed. The second run plans from the first one's durations — these
+tests take a millisecond or less, and one that ran in under a millisecond is
+recorded as 1 ms, so history covers all of them. The third never became a
+run.
 
 **`run` leaves nothing behind when nothing ran.** If the runner id or a
 parameter is wrong, the request is refused before a run exists. If the runner
@@ -1115,8 +1118,8 @@ plan for this selection on runner robot-lanes: 8 item(s); parameters {'partition
     chunk 1: 4 item(s), est 29000ms
     chunk 2: 4 item(s), est 29000ms
     at most 2 test(s) per execution, each execution a shard of its own
-    eu: 2 shard(s), 4 item(s)
-    us: 2 shard(s), 4 item(s)
+    eu: 2 shard(s), 4 item(s), est ~29.0s
+    us: 2 shard(s), 4 item(s), est ~29.0s
 group eu: 2 shard(s), 4 item(s), est 29.0s
 group us: 2 shard(s), 4 item(s), est 29.0s
 shard eu-01 [eu]: 2 item(s), est 20.0s
@@ -1134,19 +1137,65 @@ shard us-02 [us]: 2 item(s), est 9.0s
 nothing was executed, stored or triggered
 ```
 
+**The preview says what the split was balanced on.** An item without a
+known duration weighs the mean of the known ones, and an uneven count of
+items per partition is often the balance working: with durations known for
+six of the eight tests, one of them far longer than the rest, the plan says
+how many were known, what the other two were weighed as, the estimate per
+partition, and that the long test outweighs an even share on its own:
+
+```console
+$ cat cart-partial.csv
+item,duration_s
+Tests.Cart.Add To Cart Increases The Count,80
+Tests.Cart.Quantity Cannot Go Below One,4
+Tests.Cart.Promo Code Reduces The Total,9
+Tests.Cart.Two Promo Codes Do Not Stack,8
+Tests.Cart.Remove From Cart Decreases The Count,11
+Tests.Cart.Cart Subtotal Sums Line Items,3
+
+$ runcomposer history import cart-partial.csv --config robot-pool/config.yaml
+imported 6 duration(s)
+
+$ runcomposer plan Cart --runner robot-lanes --config robot-pool/config.yaml
+plan for this selection on runner robot-lanes: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False, 'browser': 'firefox'}
+  robot-pool plan: 8 item(s) distributed over 2 of 2 partition(s) — each test once, max_workers=2
+    duration-balanced chunking: history for 6/8 item(s); the other 2 weigh the mean of the known durations, 19167ms each
+    chunk 1: 1 item(s), est 80000ms
+    chunk 2: 7 item(s), est 35000ms measured + 2 without history → balanced on 73333ms
+    Tests.Cart.Add To Cart Increases The Count alone weighs 80000ms, more than an even share of 76667ms per chunk: its chunk is the longest whatever the split, and the other items are balanced around it
+    at most 2 test(s) per execution, each execution a shard of its own
+    eu: 1 shard(s), 1 item(s), est ~80.0s
+    us: 4 shard(s), 7 item(s), est ~73.3s
+group eu: 1 shard(s), 1 item(s), est 80.0s
+group us: 4 shard(s), 7 item(s)
+shard eu-01 [eu]: 1 item(s), est 80.0s
+shard us-01 [us]: 2 item(s)
+shard us-02 [us]: 2 item(s), est 20.0s
+shard us-03 [us]: 2 item(s), est 12.0s
+shard us-04 [us]: 1 item(s), est 3.0s
+note: duration history for 6 of 8 item(s); the other 2 are weighed with the mean of the known durations, 19.2s each — the estimates per partition assume they take that long
+note: Tests.Cart.Add To Cart Increases The Count alone takes 80.0s, more than an even share of the selection: the partition holding it is the longest whatever the split, and the other items are balanced around it — an uneven count of items per partition is the balance working, not a fault
+nothing was executed, stored or triggered
+```
+
+(A shard or group holding an item of unknown duration shows no estimate of
+its own.) Robot Framework reports whole milliseconds, so a test that passed
+or failed in under one is recorded as 1 ms — known to be fast, not unknown.
+
 **A refusal is an answer** — the one the dispatch would meet — and exits
 `1`. A run composed before the corpus changed, planned by id, before and
 after a test was renamed:
 
 ```console
-$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --config robot-pool/config.yaml
-plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
+$ runcomposer plan --run 01M7XRFKXW5B6KBPNXDPRWZQF8 --runner robot-pool --config robot-pool/config.yaml
+plan for run 01M7XRFKXW5B6KBPNXDPRWZQF8 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
   robot-pool plan: 8 item(s) × 2 partition(s) → 2 chunk(s)/partition, max_workers=4
     duration-balanced chunking: history for 8/8 item(s)
     chunk 1: 4 item(s), est 29000ms
     chunk 2: 4 item(s), est 29000ms
-    eu: 2 shard(s), 8 item(s)
-    us: 2 shard(s), 8 item(s)
+    eu: 2 shard(s), 8 item(s), est ~29.0s
+    us: 2 shard(s), 8 item(s), est ~29.0s
     failures are re-executed up to 1 time(s)
 group eu: 2 shard(s), 8 item(s), est 58.0s
 group us: 2 shard(s), 8 item(s), est 58.0s
@@ -1156,31 +1205,35 @@ shard us-1 [us]: 4 item(s), est 29.0s
 shard us-2 [us]: 4 item(s), est 29.0s
 nothing was executed, stored or triggered
 
-$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --config robot-pool/config.yaml
-plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
-would be refused: live corpus snapshot differs from source.snapshot in the spec — refusing (§3.3 drift check; composed sha256:21ee74fed1fcf5e66b71b3d4b6f4845c96d3acb4d3a9bfd4bcb58603bb1e95e4, live sha256:783b37438fc9b1716546e6b0a35420e5474b20fe10ef29f953623509a786cec1). Set the allow_drift parameter to execute the intersection.
+$ runcomposer plan --run 01M7XRFKXW5B6KBPNXDPRWZQF8 --runner robot-pool --config robot-pool/config.yaml
+plan for run 01M7XRFKXW5B6KBPNXDPRWZQF8 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu', 'us'], 'allow_drift': False}
+would be refused: live corpus snapshot differs from source.snapshot in the spec — refusing (§3.3 drift check; composed sha256:21ee74fed1fcf5e66b71b3d4b6f4845c96d3acb4d3a9bfd4bcb58603bb1e95e4, live sha256:b61d4defb1f8f38933d1dc2c34296c66b03a1fc69945d7f56d07517f12379572). Set the allow_drift parameter to execute the intersection.
 $ echo $?
 1
 
-$ runcomposer plan --run 01M7X9A44Z2EEKT43W6H944TW4 --runner robot-pool --param allow_drift=true --param 'partitions=[eu]' --config robot-pool/config.yaml
-plan for run 01M7X9A44Z2EEKT43W6H944TW4 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu'], 'allow_drift': True}
+$ runcomposer plan --run 01M7XRFKXW5B6KBPNXDPRWZQF8 --runner robot-pool --param allow_drift=true --param 'partitions=[eu]' --config robot-pool/config.yaml
+plan for run 01M7XRFKXW5B6KBPNXDPRWZQF8 on runner robot-pool: 8 item(s); parameters {'partitions': ['eu'], 'allow_drift': True}
   robot-pool plan: 7 item(s) × 1 partition(s) → 4 chunk(s)/partition, max_workers=4
     duration-balanced chunking: history for 7/7 item(s)
     chunk 1: 1 item(s), est 12000ms
-    chunk 2: 2 item(s), est 15000ms
-    chunk 3: 2 item(s), est 14000ms
+    chunk 2: 2 item(s), est 14000ms
+    chunk 3: 2 item(s), est 13000ms
     chunk 4: 2 item(s), est 14000ms
-    eu: 4 shard(s), 7 item(s)
+    eu: 4 shard(s), 7 item(s), est ~14.0s
     failures are re-executed up to 1 time(s)
     drift: 1 planned item(s) no longer exist — reported as SKIP
-group eu: 4 shard(s), 7 item(s), est 55.0s
+group eu: 4 shard(s), 7 item(s), est 53.0s
 shard eu-1 [eu]: 1 item(s), est 12.0s
-shard eu-2 [eu]: 2 item(s), est 15.0s
-shard eu-3 [eu]: 2 item(s), est 14.0s
+shard eu-2 [eu]: 2 item(s), est 14.0s
+shard eu-3 [eu]: 2 item(s), est 13.0s
 shard eu-4 [eu]: 2 item(s), est 14.0s
 shard drift: 1 item(s)
 nothing was executed, stored or triggered
 ```
+
+The estimate per partition (`~`) is what the balancer weighed it at — in
+`split` its lane, in `each` the longest of its chunks, which run side by
+side; a group's estimate is the sum of its shards'.
 
 A runner that hands the work to somebody else previews what it would hand
 over: the `jenkins` runner shows the build parameters a trigger would send —
@@ -1218,7 +1271,13 @@ nothing was executed, stored or triggered
 ```
 
 A wrong runner id or parameter is an error (exit `1`), exactly as for
-[`run`](#run).
+[`run`](#run) — and so is a value the runner's own plan refuses as an
+invalid parameter, such as a variable the `robot-regions` entry protects:
+
+```console
+$ runcomposer plan Cart --runner robot-regions --param 'variables={shop_url: https://test.shop.example}' --config robot-pool/config.yaml
+error: parameter 'variables': the Robot variable 'shop_url' cannot be set per run — this runner protects 'SHOP_URL' (protected_variables)
+```
 
 ---
 
@@ -1539,7 +1598,19 @@ own events are not consecutive). Without `--no-follow` the command stays until
 the run is in a terminal state — `COMPLETE`, `FAILED`, `CANCELLED`, `STALE` —
 or back to `COMPOSED` after a refusal, and **exits with the run's code**: `0`
 for `PASS`, `1` for any other completion, `3` for no result. That makes
-`watch` the way to block a script on a run somebody else started.
+`watch` the way to block a script on a run somebody else started. When the
+process executing the run is gone ([`show`](#show)), `watch` says so once
+on stderr and keeps following — until somebody reconciles the dispatch, or
+`--timeout`:
+
+```console
+$ runcomposer watch 01M7XRJCMQKS9MGQSZEZK9CSQG --timeout 1 --config slow/config.yaml
+2026-11-21T00:37:15Z  #1    run.composed
+2026-11-21T00:37:15Z  #2    run.dispatched  state=DISPATCHED
+2026-11-21T00:37:15Z  #3    run.running  state=RUNNING
+warning: 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
+timed out
+```
 
 ```console
 $ runcomposer watch 01M7X3BQGZF71M0YWCBJ9W0EJD --no-follow --json | tail -1
@@ -1561,20 +1632,20 @@ shard group and per shard of the latest dispatch, and the artifacts recorded
 for the run:
 
 ```console
-$ runcomposer show 01M7X9FG96HQ6X5QCDSM6ZNPV4 --config shop/config.yaml
-run 01M7X9FG96HQ6X5QCDSM6ZNPV4  Payments on both environments
+$ runcomposer show 01M7XRKA4YGXM1EDKQNT4Q130Z --config shop/config.yaml
+run 01M7XRKA4YGXM1EDKQNT4Q130Z  Payments on both environments
 state: COMPLETE (FAIL) — 24 PASS, 2 FAIL
-planned: 13 item(s); created 2026-11-20T20:13:31Z; origin cli; labels {}
-dispatch 01M7X9FG972JJ5R9FVM0EPR98A  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
+planned: 13 item(s); created 2026-11-21T00:37:45Z; origin cli; labels {}
+dispatch 01M7XRKA5RH5MNAY3JTAAEJ3E8  robot-pool  COMPLETE (FAIL)  24 PASS, 2 FAIL
   group env1: FAIL — 12 PASS, 1 FAIL
   group env2: FAIL — 12 PASS, 1 FAIL
   shard env1-1 [env1]: PASS — 7 PASS
   shard env1-2 [env1]: FAIL — 5 PASS, 1 FAIL
   shard env2-1 [env2]: PASS — 7 PASS
   shard env2-2 [env2]: FAIL — 5 PASS, 1 FAIL
-  artifact log.html (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/log.html
-  artifact report.html (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/report.html
-  artifact output.xml (env1-1): /artifacts/01M7X9FG96HQ6X5QCDSM6ZNPV4/01M7X9FG972JJ5R9FVM0EPR98A/env1-1/output.xml
+  artifact log.html (env1-2): /artifacts/01M7XRKA4YGXM1EDKQNT4Q130Z/01M7XRKA5RH5MNAY3JTAAEJ3E8/env1-2/log.html
+  artifact report.html (env1-2): /artifacts/01M7XRKA4YGXM1EDKQNT4Q130Z/01M7XRKA5RH5MNAY3JTAAEJ3E8/env1-2/report.html
+  artifact output.xml (env1-2): /artifacts/01M7XRKA4YGXM1EDKQNT4Q130Z/01M7XRKA5RH5MNAY3JTAAEJ3E8/env1-2/output.xml
 …
 ```
 
@@ -1614,7 +1685,36 @@ those shards delivering, a last line counts what they had streamed
 ([`cancel`](#cancel) shows both). `--json` prints everything the API's run
 detail has: verdicts with shard, attempt and duration (`last_live` on a
 `MISSING` row), groups, `live_summary`, `rerun_of`, deliveries, events, and
-the selection the run was composed from.
+the selection the run was composed from — and `owner_gone`, on the run and
+on each dispatch (below). An artifact's `url_or_path` there is the path as
+it was recorded, since the CLI runs where the files are; over HTTP it is
+never a server path ([DESIGN.md](../DESIGN.md) §6.4).
+
+**A dispatch whose process is gone.** A dispatch is executed by one process
+— a `runcomposer run`, or a `serve`. When that process was killed, nothing
+will finish the dispatch, though it still says `RUNNING` until somebody
+reconciles it. `show`, `runs` and `watch` only read, so they do not mark it
+`STALE`; they flag it, and say how to reconcile it. A `run` of a `demo`
+runner configured with `delay_s: 3`, killed with `kill -9` while it
+executed:
+
+```console
+$ runcomposer show 01M7XRJCMQKS9MGQSZEZK9CSQG --config slow/config.yaml
+run 01M7XRJCMQKS9MGQSZEZK9CSQG  Refunds, slowly
+state: RUNNING (owner gone) — no verdicts
+planned: 4 item(s); created 2026-11-21T00:37:15Z; origin cli; labels {}
+dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z  demo  RUNNING (owner gone)  no verdicts
+  shard 1: outstanding — no verdicts
+  running now: 1 item(s)
+  live: 1 item(s) reported so far by shards still executing
+# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
+```
+
+The owner is `host:pid:token`; it is gone when that process is dead (on
+Linux, also when it ended and was never reaped) or ran on another host.
+[`doctor`](#doctor), or starting [`serve`](#serve), marks such a dispatch
+`STALE`; [`cancel --force`](#cancel) closes it as `CANCELLED`
+(`tests/test_cli_owner_gone.py`).
 
 ---
 
@@ -1638,7 +1738,7 @@ runcomposer runs [--state STATE] [--label KEY=VALUE ...] [-q TEXT]
 | `--limit N` | `20` | Maximum rows. |
 | `--offset N` | `0` | Skip this many rows — the next page. |
 | `--failed-in SELECTOR` | — | Switch modes: print the **item ids** that FAILED in the selected run. |
-| `--json` | off | `{"runs": […], "total", "limit", "offset"}` — each row with verdict counts, planned count, duration and the latest dispatch's mode. |
+| `--json` | off | `{"runs": […], "total", "limit", "offset"}` — each row with verdict counts, planned count, duration, the latest dispatch's mode, and `owner_gone` (on the row, for its latest dispatch, and on each of its `dispatches`). |
 | `--config PATH` | `./config.yaml` if present | [See above](#--config--the-only-way-to-point-at-another-config-file). |
 
 In the demo workspace of the [`rerun`](#rerun) samples — the seeded nightly
@@ -1674,6 +1774,17 @@ RUN ID                      STATE             RESULT      MODE          CREATED 
 01M7X3BR8KEPYEHH3H5Y4DH6XJ  COMPLETE          PASS        demo          2026-11-20T18:26:37Z  Catalog check
 01M7X3BR2XJ1AGCYK6YNRNVER3  COMPOSED          -           -             2026-11-20T18:26:37Z  Rerun failures
 # 2 of 9 run(s) — page with --limit / --offset
+```
+
+A dispatch whose executing process is gone ([`show`](#show)) reads
+`RUNNING (owner gone)` — the column widens only when one does — followed by
+a line that says how to reconcile it:
+
+```console
+$ runcomposer runs --config slow/config.yaml
+RUN ID                      STATE                 RESULT      MODE          CREATED               TITLE
+01M7XRJCMQKS9MGQSZEZK9CSQG  RUNNING (owner gone)  -           demo          2026-11-21T00:37:15Z  Refunds, slowly
+# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
 ```
 
 A state that does not exist, or a time that is not one, is an error rather
@@ -2285,7 +2396,8 @@ What it checks, in order:
    carries are a problem.
 4. **Runners** — each configured runner under the id it is dispatched by, its
    health probed now, and the per-run parameters it accepts, spelled as the
-   `--param` flags you would type.
+   `--param` flags you would type; for a `robot-pool` runner, whether every
+   catalog item lies under its suite roots.
 5. **Taxonomy drift** — the counts of [`taxonomy-check`](#taxonomy-check); a
    problem only for a taxonomy you configured.
 
@@ -2296,11 +2408,14 @@ process which no longer exists left `DISPATCHED` or `RUNNING` is marked
 ### `-v` — what the runners' health checks found
 
 A runner's health carries data of its own, shown verbatim: `robot-pool` its
-Robot Framework version, workers, suite roots and partitions; `jenkins` the
-server version, the job URL and a list of checks, which reads as a
+Robot Framework version, workers, suite roots, partitions and a list of
+checks — Robot Framework installed, each suite root found, the rows of its
+`health_checks`, and, added by `doctor`, whether every catalog item lies
+under the suite roots; `jenkins` the
+server version, the job URL and its checks. A list of checks reads as a
 checklist (`[ok  ] server reachable`, `[FAIL] job … readable`). The
 [`examples/robot-pool`](../examples/robot-pool/config.yaml) config, which
-configures the plugin twice:
+configures the plugin three times:
 
 ```console
 $ runcomposer doctor -v --config robot-pool/config.yaml
@@ -2313,6 +2428,7 @@ configured (what this deployment loads):
   sources    robot-shop             runcomposer.plugins.robot_source:RobotFrameworkSource  runcomposer 0.2.0
   runners    robot-pool             runcomposer.plugins.robot_pool:RobotPoolRunner  runcomposer 0.2.0
   runners    robot-lanes            runcomposer.plugins.robot_pool:RobotPoolRunner  runcomposer 0.2.0
+  runners    robot-regions          runcomposer.plugins.robot_pool:RobotPoolRunner  runcomposer 0.2.0
 catalog: 58 items, 50 tags, sources ['robot-shop'], snapshot sha256:21ee74fed1fc…
 runners:
   robot-pool (robot-pool): ok — Robot Framework 7.5.1
@@ -2324,6 +2440,10 @@ runners:
         - eu
         - us
       partition_mode: each
+      checks:
+        [ok  ] Robot Framework installed — Robot Framework 7.5.1
+        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
       --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
       --param allow_drift=<boolean>  default False
   robot-lanes (robot-pool): ok — Robot Framework 7.5.1
@@ -2335,10 +2455,31 @@ runners:
         - eu
         - us
       partition_mode: split
+      checks:
+        [ok  ] Robot Framework installed — Robot Framework 7.5.1
+        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
       --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
       --param allow_drift=<boolean>  default False
       --param variables=<mapping>  default None
       --param browser=<choice> ['firefox', 'chromium']  default 'firefox'
+  robot-regions (robot-pool): ok — Robot Framework 7.5.1
+      robot_version: 7.5.1
+      max_workers: 4
+      suite_roots:
+        - robot-pool/../robot-shop/tests
+      partitions:
+        - eu
+        - us
+      partition_mode: each
+      checks:
+        [ok  ] Robot Framework installed — Robot Framework 7.5.1
+        [ok  ] suite root robot-pool/../robot-shop/tests — found
+        [ok  ] catalog items under the suite roots — all 58 catalog item(s) are under the suite roots
+      --param partitions=<multi_choice> ['eu', 'us']  default ['eu', 'us']
+      --param partition_mode=<choice> ['split', 'each']  default 'each'
+      --param allow_drift=<boolean>  default False
+      --param variables=<mapping>  default None
 taxonomy: bundled demo taxonomy, 11 leaf pattern(s); 39 unclaimed tag(s), 0 dead leaf/leaves
 
 no problems found
@@ -2346,7 +2487,12 @@ no problems found
 
 The `--param` lines name every kind a runner may declare — `string`, `text`,
 `integer`, `boolean`, `choice`, `multi_choice`, `mapping`; a `mapping` is
-given as YAML: `--param 'variables={LOCALE: de}'`.
+given as YAML, its values as text: `--param 'variables={LOCALE: de}'`.
+
+The suite-root row is `doctor`'s own: for every `robot-pool` runner it holds
+the whole catalog against the runner's suite roots — the check a preview and
+a dispatch make for their selection — and an item that lies under none of
+them is a `[FAIL]` row and a problem (exit `1`).
 
 `doctor` exits `1` when it found a problem, with the list at the end:
 
@@ -2433,9 +2579,21 @@ runner, so the UI is never empty on a fresh install:
 $ curl -s localhost:8100/api/v1/health
 {"status":"ok","version":"0.2.0"}
 $ curl -s localhost:8100/api/v1/runners
-[{"id":"demo","plugin":"demo","title":"Demo (simulated)","description":"Simulates an execution: no test is run, verdicts are derived from a seed.","capabilities":["simulated","live_status","cancel","plan"],"result_format":"runcomposer-verdicts","parameters":[{"name":"seed","kind":"string","label":"Seed","help":"Same seed, same simulated verdicts; change it to see results flip.","default":"demo","choices":[],"required":false,"pattern":null}],"health":{"status":"ok","detail":"simulated — always available","data":{}}}]
+[{"id":"demo","plugin":"demo","title":"Demo (simulated)","description":"Simulates an execution: no test is run, verdicts are derived from a seed.","capabilities":["simulated","live_status","cancel","plan"],"result_format":"runcomposer-verdicts","parameters":[{"name":"seed","kind":"string","label":"Seed","help":"Same seed, same simulated verdicts; change it to see results flip.","default":"demo","choices":[],"required":false,"pattern":null,"key_pattern":null}],"health":{"status":"ok","detail":"simulated — always available","data":{}}}]
 $ curl -s localhost:8100/api/v1/presets
 {"presets":[],"default_filter":null,"quick_filters":[]}
+```
+
+`/openapi.json` describes the API and is always served; the `/docs` and
+`/redoc` viewers answer `404` unless `core.api.docs: true`, since they load
+their script from a public CDN ([DESIGN.md](../DESIGN.md) §9). A
+state-changing request a browser sends for another site's page is refused
+before any route sees it — curl, the CLI and an executor pushing with its
+token send no `Origin` and are unaffected:
+
+```console
+$ curl -s -X POST -H 'Origin: https://elsewhere.example' -H 'Content-Type: application/json' localhost:8100/api/v1/runs -d '{"selection":{"tag_filter":"Smoke"}}'
+{"detail":"refused a state-changing request from a page on 'https://elsewhere.example': it is neither this server's own origin nor listed in core.api.cors","code":"cross-site-request"}
 ```
 
 `Ctrl-C` shuts down in order: dispatches still executing are cancelled, the

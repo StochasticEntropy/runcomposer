@@ -37,16 +37,38 @@ references are given where it matters.
 
 | Import | When | What |
 |---|---|---|
-| `runcomposer.sdk` | at run time, in your plugins (worker processes included) | the protocols, the base classes, the records, the errors, the helpers, and `Service` / `load_config` for driving runcomposer from Python |
+| `runcomposer.sdk` | at run time, in your plugins (worker processes included) | the protocols, the base classes, the records, the errors, the helpers — the worker supervisor for any framework among them ([§9.2](#92-compose-when-configuration-is-not-enough)) — and `Service` / `load_config` for driving runcomposer from Python |
 | `runcomposer.sdk.robot` | in a runner that executes Robot Framework its own way | the building blocks of `robot-pool`: exact-id selection, the live listener (local and remote), the shard worker and its supervisor, delivery and merging ([§9.2](#92-compose-when-configuration-is-not-enough)) |
 | `runcomposer.sdk.jenkins` | in a runner that drives a Jenkins job its own way | `JenkinsClient`, the HTTP client of the `jenkins` runner, and the compressed form a document travels in |
 | `runcomposer.testing` | in your tests | the conformance checks, `FakeDispatchContext`, `ConnectorHarness` |
 
-All four keep their names and meaning within a minor line
-(`runcomposer>=0.2,<0.3`); a removal is a breaking change listed in the
-changelog. Their names are frozen in `tests/test_sdk.py::TestSurface` (the SDK
+**What is stable for the 0.2.x series** (`runcomposer>=0.2,<0.3`):
+
+- the names in `runcomposer.sdk.__all__`, in the two toolkits' `__all__`
+  and in the kit's (`runcomposer.testing`, `runcomposer.testing.jenkins`),
+  with the meaning this guide gives them;
+- the run-spec document (`runspec/1.0`) and the error codes;
+- the reference runners' options as this guide and DESIGN.md §6.2 document
+  them.
+
+A removal or a change of meaning is a breaking change listed in the
+changelog. The names are frozen in `tests/test_sdk.py::TestSurface` (the SDK
 and both toolkits) and `tests/test_testing_kit.py::TestSurface`, so no change
-to any of them is accidental. **Import nothing else of runcomposer** — every
+to any of them is accidental.
+
+**What is provisional**, said plainly:
+
+- `Service` and `Config` are exported whole, but only the members this
+  guide names are stable — `load_config(path)`,
+  `config.connector_settings(name)`, and `Service(config)` with
+  `compose_run`, `dispatch`, `plan`, `wait`, `cancel`, `list_runs` and
+  `close`; everything else on them may change in a minor release;
+- the `RunStore` protocol is wide — 33 members — and may gain members in a
+  minor release, with a default in `StoreBase` wherever a default can be
+  right ([§4](#runstore--persistence));
+- a response may gain fields: read what you know and ignore the rest.
+
+**Import nothing else of runcomposer** — every
 other module may change in any release. runcomposer holds its own reference
 plugins to that rule, and the toolkits to a stricter one: they import nothing
 of runcomposer but `runcomposer.sdk`, and the `robot-pool` and `jenkins`
@@ -60,6 +82,19 @@ in a worker process; `runcomposer.sdk.robot` imports Robot Framework only
 inside the functions that execute it, so it and `robot-pool` import without it
 (`tests/test_sdk.py::TestLazyEmbedding`).
 
+**A minimal install for a machine that only executes.** A build agent that
+only executes what runcomposer hands out needs none of what reading,
+validating and serving need. `pip install --no-deps runcomposer` gives
+`import runcomposer.sdk` with nothing else installed — `RemoteLiveChannel`
+and `push_results` for reporting back, `supervise_workers` — and the
+`runcomposer-exec` consumer; add `robotframework` and the Robot toolkit's
+`run_shard` executes a shard. Reading a YAML spec, validating a document
+and every `runcomposer` command need the full install (`pip install
+runcomposer`); reaching one of them on a minimal install raises an error
+naming the missing package
+(`tests/test_minimal_imports.py::test_an_executor_imports_and_works_without_the_reading_and_serving_packages`,
+`::test_reading_yaml_or_validating_names_the_missing_package`).
+
 ---
 
 ## 2. The ports and their base classes
@@ -72,7 +107,7 @@ class that supplies its optional members:
 | `TestSource` | `SourceBase` | `provider_id`, `items()`, `snapshot()`, `resolve()` | `fingerprint()` → `None`, `duplicate_ids` → `()` | `manifest`, `robotframework`, `demo-corpus` |
 | `Runner` | `RunnerBase` | `describe()`, `dispatch(ctx)` | `plan(ctx)` (says it offers no preview), `cancel(ctx)` (nothing more to stop), `health()` → `unknown` | `robot-pool`, `jenkins`, `command`, `demo` |
 | `ResultParser` | `ParserBase` | `format_id`, `parse(path)` | — | `runcomposer-verdicts`, `junit-xml`, `robot-output-xml` |
-| `RunStore` | `StoreBase` | every member but `close()` | `close()` | `sqlite` |
+| `RunStore` | `StoreBase` | every other member | `close()`, `store_id`, and an `atomic()` that guarantees nothing of its own ([§4](#runstore--persistence)) | `sqlite` |
 | `RunObserver` | `ObserverBase` | `notify(event)` | — | `webhook`, `jsonl`, `command` |
 
 All five bases derive from `PluginBase`, which supplies the configuration
@@ -85,7 +120,7 @@ built object for every member of its role's protocol. A plugin that lacks one
 does not start:
 
 ```text
-error: runners.bare: RunnerWithoutCancel does not provide ['cancel'] of the Runner contract —
+error: runners.bare: RunnerWithoutCancel does not provide ['plan', 'cancel'] of the Runner contract —
 derive it from runcomposer.sdk.RunnerBase, which supplies the optional members, or define them
 ```
 
@@ -165,7 +200,7 @@ is really executed).
 
 `parameters` are the **per-run options** whoever starts a run may set — a
 `Parameter` has `name`, `kind`, `label`, `help`, `default`, `choices`,
-`required` and `pattern`. Seven kinds:
+`required`, `pattern` and `key_pattern`. Seven kinds:
 
 | Kind | Value |
 |---|---|
@@ -184,7 +219,25 @@ name=value`, and every submitted value is validated against them — an
 unknown, missing, ill-typed or non-matching value is a `400` naming the
 parameter, before a run exists (`tests/test_api.py::…per_run_parameters`,
 `tests/test_dispatch.py::TestParameters`). Accepted values are written into
-`runner.<id>` of the run's document.
+`runner.<id>` of the run's document. `key_pattern` does for every *key* of a
+`mapping` what `pattern` does for its values —
+`Parameter("variables", kind="mapping", key_pattern="[A-Z][A-Z0-9_]*")`
+refuses `{locale: de}`, saying that key `locale` does not match the key
+pattern — and is served with the declaration, `null` when not declared
+(`tests/test_parameter_refusals.py::TestKeyPattern`).
+
+**A value only your runner can judge.** What a declaration cannot express —
+a region no build agent serves, a variable the suite must not be handed —
+the runner refuses itself by raising `InvalidParameter("region", "no build
+agent serves 'ap'")` (message: `parameter 'region': no build agent serves
+'ap'`). Raised from `plan`, or from `dispatch` before `declare`, it is the
+request's `400 invalid-parameter` naming the parameter, as if the
+declaration had refused the value: no dispatch remains, and `runcomposer
+run` / `plan` print `error: parameter 'region': …` and exit `1`. Raised
+after `declare` it fails the dispatch with that message
+(`tests/test_parameter_refusals.py::TestARunnerRefusesAParameter`). Raise it
+from the planning function `plan` and `dispatch` share, so a preview says it
+first.
 
 **Options and parameters are two things.** `ctx.options` is the runner's
 config entry as written — the options its constructor received, paths
@@ -209,7 +262,8 @@ configures `jenkins` four times).
 `plan(ctx)` answers "what would a dispatch of this run do?" — every item with the
 shard it would land in — and does nothing else: no execution, no record, no trigger. It gets
 a `PlanContext`: `run_id`, `runner_id`, `spec`, `item_ids`, `options`,
-`parameters`, `source`, `history`, `refuse(reason)` and `export_spec()`. Each
+`parameters`, `source`, `history`, `connector_settings(name)`,
+`refuse(reason)` and `export_spec()`. Each
 of them is a member of `DispatchContext` too, with the same meaning, and
 nothing else is there — no `declare`, `deliver`, `log`, `live`, artifact,
 token, link or work directory. So one planning function serves both: `plan`
@@ -245,9 +299,48 @@ Who asks, and what they get:
   [{group, shards, count, estimate_ms}], notes, data}` or `null`. A refusal is
   a `200` with `refused: true`. What a dispatch request is refused for up
   front — an unknown runner, an invalid parameter, a selection with nothing to
-  execute — is a `400` here too, and so is a runner without the `plan`
+  execute — is a `400` here too, and so are an `InvalidParameter` your `plan`
+  raises and a runner without the `plan`
   capability (`tests/test_runner_contract.py::TestPlanApi`, including
   `test_every_reference_runner_previews`).
+
+  A `selection` is what `POST /api/v1/runs` takes, every key optional:
+  `tag_filter` — filter text (`"Auth OR Cart"`, DESIGN.md §3.1) or the AST
+  (`{"op": "AND", "items": ["Payments", {"not": "Smoke"}]}`) — `item_ids`
+  (explicit picks; with a filter, the intersection), and `history` — a
+  query such as `"failed@latest?suite=nightly"`, or `{"query":
+  "failed@latest", "labels": {"suite": "nightly"}}` — for the items that
+  failed in a run (DESIGN.md §7). Against the demo workspace (`runcomposer
+  demo`, then `runcomposer serve --config runcomposer-demo/config.yaml`),
+  with its `demo` runner — each answer is one line, wrapped here:
+
+  ```console
+  $ curl -s -X POST http://127.0.0.1:8100/api/v1/plan -H 'Content-Type: application/json' \
+      -d '{"selection": {"tag_filter": "Auth OR Cart",
+                         "item_ids": ["Shop.Auth.Login.T001", "Shop.Cart.Core.T001"]},
+           "runner": "demo"}'
+  {"runner": "demo", "run_id": null, "item_count": 2, "parameters": {"seed": "demo"},
+   "refused": false, "refusal": null,
+   "plan": {"text": "demo runner: simulating 2 item(s) with seed 'demo'",
+            "shards": [{"shard": "1", "group": null, "count": 2,
+                        "item_ids": ["Shop.Cart.Core.T001", "Shop.Auth.Login.T001"],
+                        "estimate_ms": 6125.0}],
+            "groups": [], "notes": ["simulated: no test would be executed"], "data": {}},
+   "warnings": []}
+  ```
+
+  Filter text that cannot be read is a `400` before anything is planned:
+
+  ```console
+  $ curl -s -X POST http://127.0.0.1:8100/api/v1/plan -H 'Content-Type: application/json' \
+      -d '{"selection": {"tag_filter": "Payments AND (Smoke"}, "runner": "demo"}'
+  {"detail": "cannot read the filter text at column 14: the '(' opened here is not closed — expected AND, OR or ')'",
+   "code": "filter-syntax", "problem": "unbalanced-open", "position": 13}
+  ```
+
+  A string that is not filter text but one pattern — `"regex:^Cart(V2)?$"`,
+  which runs into `(` unquoted — still selects that pattern, and the answer's
+  `warnings` say how to write it unambiguously: `"\"regex:^Cart(V2)?$\""`.
 - `runcomposer plan [FILTER | --run ID] --runner ID [--param k=v] [--items]
   [--json]` prints the same and exits `1` when the dispatch would be refused
   (`tests/test_runner_contract.py::TestPlanCommand`).
@@ -270,7 +363,7 @@ through `ctx.links`, which also survive a restart.
 
 | Phase | Calls | If you raise |
 |---|---|---|
-| **prepare** | read `ctx.item_ids`, `ctx.spec`, `ctx.options`, `ctx.parameters`, `ctx.source`, `ctx.history`; check drift, readiness; `ctx.refuse(reason)` | before `declare`: a **refusal** — no dispatch remains, the run is as it was, the reason is a `dispatch.refused` event and the answer to the request |
+| **prepare** | read `ctx.item_ids`, `ctx.spec`, `ctx.options`, `ctx.parameters`, `ctx.source`, `ctx.history`, `ctx.connector_settings(name)`; check drift, readiness; `ctx.refuse(reason)`, or `raise InvalidParameter(name, detail)` for a value you cannot carry out | before `declare`: a **refusal** — no dispatch remains, the run is as it was, the reason is a `dispatch.refused` event and the answer to the request (`400` for an `InvalidParameter`, [§3.1](#31-describe--who-it-is-and-what-a-run-may-choose)) |
 | **hand-off** | `ctx.declare(shards, plan=…, links=…, groups=…)` — exactly once | — |
 | **execute** | `ctx.live(…)`, `ctx.set_link(…)`, `ctx.add_artifact(…)`, `ctx.log(…)`, `ctx.raise_if_cancelled()` | after `declare`: the dispatch is **FAILED** with the error text; whatever was delivered is kept |
 | **deliver** | `ctx.deliver(shard, verdicts=… \| bundle=…)` per declared shard | |
@@ -356,6 +449,42 @@ use, removed with the run and swept by `runcomposer gc`
 `ctx.log(message, level="info")` appends a line to the run's event stream;
 `level="warning"` makes it a warning event.
 
+How a client reads what you recorded: each artifact of a run detail
+(`GET /api/v1/runs/{id}`) has a `kind` — `url` (a link; `href` is the URL),
+`local` (a recorded file; `href` is the path it is served under),
+`directory` (a recorded directory; no `href`, its files are servable) or
+`external-path` (a path outside the run's artifact directory; listed, never
+served) — and a `url_or_path` that never says where a file lies on the
+server's machine: the URL for a link, the path *relative to the artifact
+directory* for a file or directory inside it, the bare file name for one
+outside. The CLI (`runcomposer show`), which runs on that machine, prints
+the recorded path (`tests/test_api.py`).
+
+**Record, then deliver.** The delivery of the last outstanding shard
+completes the dispatch, and `run.completed` is written with it. What a
+runner records after its last delivery — an artifact, a log line — arrives
+after the run completed: an observer reacting to `run.completed`, or a
+client reading the finished run, does not see it. Record a shard's
+artifacts before you deliver it, as the Robot toolkit's `deliver_shard`
+does (`tests/test_robot_pool_options.py::TestRecordBeforeDelivering`).
+
+**Threads.** Your executor's threads may all use the context at once:
+`declare`, `set_link`, `deliver`, `log`, `add_artifact`, `live` and
+`live_channel` are safe to call concurrently, on the real context and on
+`FakeDispatchContext` — nothing is lost or recorded twice, and a link set
+while another thread declares is part of the hand-off or stored after it.
+What stays yours to order: one shard is delivered by one thread (two
+deliveries of a shard are two deliveries, the later replacing the earlier),
+and `declare` comes before the deliveries it announces
+(`tests/test_context_threads.py`).
+
+**A refusal leaves nothing behind.** A dispatch that ends without a record
+— refused, an `InvalidParameter`, an exception or a return before
+`declare` — leaves no files either: the `workdir` and `private_dir` that
+attempt created are removed. A cancel before the hand-off keeps them, since
+a `CANCELLED` record remains
+(`tests/test_dispatch_leftovers.py::test_a_refused_attempt_leaves_nothing_under_the_work_and_private_directories`).
+
 **Your own dispatch.** `ctx.set_link(name, url)` records a link only known
 after the hand-off — the URL of the build a queued job became. Set before
 `declare`, it joins the hand-off's links; after, it is stored at once (and
@@ -392,10 +521,17 @@ as `X-Runcomposer-Token` or `Authorization: Bearer`:
 
 A token reports for its own dispatch only (`403` otherwise)
 (`tests/test_runner_contract.py::TestPushedProgress`). The client side ships
-in three forms (`tests/test_runner_contract.py::TestTheRemoteChannelAndTheConsumer`):
+in four forms (`tests/test_runner_contract.py::TestTheRemoteChannelAndTheConsumer`):
 `RemoteLiveChannel(callback_url, token, dispatch_id=…)` in the SDK is a
 `LiveChannel` over HTTP — best-effort: what cannot be pushed is counted in
 `failures`, never raised into the execution;
+`push_results(callback_url, token, files, shard=…, dispatch_id=…,
+format=…)` in the SDK pushes a finished bundle (one multipart POST) and
+returns the server's answer — a refusal raises `ResultsPushRefused` with the
+HTTP `status` (`None` when the server could not be reached) and the
+server's error document as `body`, and a missing file or two files with one
+name are refused before anything is sent
+(`tests/test_jenkins_followup.py::TestPushResults`);
 `runcomposer.sdk.robot.RemoteLiveStatusListener` is the Robot listener for an
 execution runcomposer did not start (`robot --listener
 runcomposer.sdk.robot.RemoteLiveStatusListener tests/`, configured from
@@ -437,8 +573,12 @@ a planner sees (`tests/test_runner_contract.py::TestDurationHistory`).
 Cancellation is cooperative first: runcomposer sets `ctx.cancelled`, then
 calls your `cancel(ctx)` from another thread while `dispatch` may still run.
 Check `ctx.cancelled` / call `ctx.raise_if_cancelled()` between units of
-work; stop processes or remote builds in `cancel`. The dispatch becomes
-`CANCELLED` when `dispatch` returns. A dispatch that only awaits results
+work; stop processes or remote builds in `cancel`. `cancel(ctx)` is called
+exactly once however the cancel came — made in this process, made in
+another one, or a `dispatch` that noticed `ctx.cancelled` and gave up first
+— and the dispatch becomes `CANCELLED` once both `dispatch` and `cancel`
+have returned, so what you started is never left running behind a closed
+dispatch (`tests/test_cancel_paths.py`). A dispatch that only awaits results
 (your `dispatch` returned long ago) is cancelled at once: runcomposer calls
 `cancel` with a context rebuilt from the stored record — `ctx.links`, those
 given to `declare` and those set with `set_link`, are how you find the build;
@@ -460,7 +600,8 @@ It is cached for 30 s in the runner list and shown by `runcomposer doctor`;
 ### 3.5 What a refusal means to the person who started the run
 
 A refusal that happens within `core.dispatch.handoff_wait_s` (default 2 s)
-of the request is the request's answer (`409 dispatch-refused`), and a run
+of the request is the request's answer (`409 dispatch-refused`; `400
+invalid-parameter` for an `InvalidParameter`), and a run
 that request composed is removed again unless it asked for `keep_run`. The
 answer to a dispatch request says `handoff: done` or `handoff: pending`; a
 refusal after a `pending` answer leaves the run — which the answer has named
@@ -546,6 +687,29 @@ durations above 0 and falls back to the seed for an item nothing was measured
 for. `check_store` runs all of it, concurrency included, against your
 implementation.
 
+`atomic()` is a block of store calls taken as one unit: inside it, no other
+writer — another thread, or another process sharing the store — writes
+between the block's reads and its writes, an exception undoes what the
+block wrote, and nested blocks join the outermost. runcomposer takes every
+lifecycle decision (read the delivered shards and verdicts, evaluate, write
+the completion) inside one, and a delivery's cancel check too, so the
+decision is never taken on facts another process has since changed.
+`StoreBase.atomic` guarantees nothing beyond each call; a store that more
+than one process shares provides its own — the `sqlite` store opens one
+`BEGIN IMMEDIATE` transaction for the block — and `check_store` holds it to
+the rule (`store.atomic`: writes read back inside the block, undone by an
+exception, no other thread's write in between;
+`tests/test_store_atomic.py`, `tests/test_two_processes.py`). The `sqlite`
+store needs SQLite 3.24.0 or newer with the JSON functions and refuses to
+open otherwise, naming both versions
+(`tests/test_store_sqlite_version.py`).
+
+The protocol has 33 members — `close`, `store_id` and `atomic` with
+defaults in `StoreBase` — and may gain members in a minor release, with a
+`StoreBase` default wherever a default can be right
+([§1](#1-the-surface)); a store that lacks one is refused at startup naming
+it, and `check_store` in your tests says so first.
+
 ### `RunObserver` — the completion hook
 
 `notify(event)` is called on a thread of its own, in event order, for the
@@ -583,7 +747,8 @@ observers:
   summary:  { plugin: run-summary, path: state/summary.txt, events: ["run.*"] }
 connectors:                    # free-form: your package's shared settings
   shop-checks:
-    environments: { local: "http://127.0.0.1:18765", staging: "${env:SHOP_STAGING_URL}" }
+    environments: { local: "http://127.0.0.1:18765", staging: "${env-public:SHOP_STAGING_URL}" }
+    api_key: "${env:SHOP_API_KEY}"          # a secret: blanked out of whatever is recorded
 ui:                            # selections people start from
   default_filter: { not: "prefix:Quarantine-" }
   quick_filters:
@@ -621,14 +786,59 @@ ui:                            # selections people start from
   share (`tests/test_contract.py::TestConnectorSettings`). Embedding code
   reads the same mapping with `config.connector_settings("shop-checks")`.
   Any other unknown top-level key is an error that names `connectors:`.
-- **Secrets.** A string option `${env:NAME}` or `${env:NAME:-default}` — at
-  any depth, in plugin entries and under `connectors:` — is replaced from the
-  environment when the plugin is built; a missing variable is a `ConfigError`
-  naming it. Configured options never travel into a spec or an API response,
-  and where your plugin quotes one anyway — a refusal reason, an error, its
-  health, a log line, a plan — every value that came from the environment is
-  blanked out first (`tests/test_hardening.py`). See [§10](#10-known-limits)
-  for the edges of that.
+- **Values from the environment.** A string option `${env:NAME}` or
+  `${env:NAME:-default}` — at any depth, in plugin entries and under
+  `connectors:` — is replaced from the environment when the plugin is built;
+  a missing variable is a `ConfigError` naming it.
+  - *What is a secret.* An `${env:…}` value is, unless it is written
+    `${env-public:NAME}` (or `${env-public:NAME:-default}`: the same
+    substitution, for an address, a region, a port), used as a path (an
+    option in `PATH_OPTIONS`), or converted to a number or a boolean; a
+    `:-default` is written in the file and is no secret.
+  - *What is blanked.* Configured options never travel into a spec or an
+    API response; where your plugin quotes one anyway, secrets are blanked
+    out of free text — messages, refusal reasons, errors, plan text and
+    notes, health details, error documents, log lines — and out of the
+    string values of your health and plan `data`. Never out of identifiers:
+    shard, group and runner names, item, run and dispatch ids, states, event
+    kinds, parameter names, mapping keys and links are recorded as they are,
+    so a region that is a secret and also names a shard stays the shard's
+    name (`tests/test_env_values.py`, `tests/test_hardening.py`).
+  - *A secret needs four characters.* A shorter `${env:…}` value is refused
+    at startup, naming the option and the variable — blanking `eu` would
+    mangle ordinary text; write a value that is no secret as
+    `${env-public:…}`.
+  - *Types.* An environment value is text. An option your constructor
+    annotates as `int`, `float` or `bool` (optionally `| None`) receives it
+    converted — `true`/`yes`/`on`/`1`, `false`/`no`/`off`/`0`, an empty
+    value as `None` where allowed — and `ctx.options` holds the converted
+    value; one that does not convert is a `ConfigError` naming the option
+    and the variable, not the value
+    (`tests/test_env_values.py::TestNumbersAndBooleansFromTheEnvironment`).
+    Any other annotation, or none, receives the text.
+- **Options that name a callable.** Where an option of a reference runner
+  names a callable — `robot-pool`'s `worker_setup`, `pre_dispatch`,
+  `plan_checks`, `health_checks`; `jenkins`'s `field_providers`,
+  `postprocess`, `plan_provider` — it takes two spellings:
+
+  ```yaml
+  pre_dispatch:
+    - "shop_connector.hooks:reserve"                  # the callable
+    - call: "shop_connector.hooks:reserve"            # the callable …
+      with: { pool: staging, hold_minutes: 30 }       # … and its settings
+  ```
+
+  The `with:` mapping reaches the callable as the keyword argument
+  `settings` (without it nothing is added, so a callable that takes no
+  `settings` keeps working), in a spawned worker too. For your own plugin's
+  options, `ConfiguredCall.parse(entry, where)` and
+  `configured_calls(entries, where)` from the SDK accept both spellings and
+  refuse anything else as a `ConfigError` naming `where`; the result is
+  called like the callable. What a callable needs from your connector
+  package's shared settings it reads with `ctx.connector_settings(name)` —
+  on a dispatch and on a plan context alike
+  (`tests/test_robot_pool_options.py::TestConfiguredCallablesWithSettings`,
+  `tests/test_jenkins_followup.py::TestConfiguredCallables`).
 - **Dispatching.** `core.dispatch` holds `max_concurrent` (default 2
   dispatches at once), `handoff_wait_s` (default 2 s,
   [§3.5](#35-what-a-refusal-means-to-the-person-who-started-the-run)) and
@@ -636,15 +846,35 @@ ui:                            # selections people start from
   expires — [§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
 - **Selections people start from.** `ui:` carries three that runcomposer
   validates at startup: `quick_filters` — `{label, filter}` entries whose
-  `filter` is one pattern or a whole filter expression (a bare string is
-  shorthand for a pattern labelled by itself); `default_filter` — the
+  `filter` is filter text (`Smoke`, `Auth OR Cart`, `'"Sprint 12"'`) or a
+  filter AST (a bare string entry is shorthand for that filter, labelled
+  with itself); `default_filter` — the
   expression a new selection starts from; `presets` — named, complete
   starting points `{name, label?, description?, filter, runner?,
   parameters?, title?, labels?}`, whose runner must be configured and whose
   parameters must validate against it. They are served normalized — each with
   `tag_filter`, `text` and `kind` — by `GET /api/v1/ui-config`,
-  `GET /api/v1/meta` and `GET /api/v1/presets`; any other key under `ui:` is
+  `GET /api/v1/meta` and `GET /api/v1/presets`; `text` is the filter's
+  canonical text form, which reads back to the same `tag_filter`
+  (DESIGN.md §3.1). Any other key under `ui:` is
   served as it is (`tests/test_deployment_options.py::TestUiSelections`).
+- **A filter given as one string** — a `filter` above, a taxonomy leaf's
+  `filter`, a selection's `tag_filter` over the API, the CLI's filter
+  argument, the kit's `FakeDispatchContext.from_source(source, selection)` —
+  is filter text: `AND`, `OR`, `NOT` (upper case), parentheses, `*` for
+  every item, and double quotes around a pattern that holds whitespace, a
+  parenthesis, a quote, a backslash or an operator word. A string that is
+  not filter text and contains neither an operator word nor a double quote
+  is still the one pattern it spells, with a warning showing how to quote it
+  (a startup warning for a `ui:` entry, `warnings` of the resolved taxonomy
+  for a leaf, `warnings` in an answer, a `UserWarning` in the kit); text
+  that cannot be read is a `ConfigError`, a `TaxonomyError`, a `400
+  filter-syntax` or CLI exit `2`. A connector or script that composes
+  through `Service` passes a string `tag_filter` as text, or the AST to
+  state the structure explicitly. The grammar, and the cases the core and
+  the web UI are both held to (`tests/fixtures/filter-text.json`), are in
+  DESIGN.md §3.1; the CLI reference shows it at work
+  ([docs/cli.md](cli.md#filter-text)).
 - **Several entries of one plugin** are independent instances; `runcomposer
   doctor --config …` lists what is installed and what is configured, with the
   distribution and version each class comes from, and every runner's health;
@@ -695,8 +925,8 @@ Each raises `AssertionError` whose message begins with the violated rule:
 | `check_source` | contract members; `provider_id`; items are `Item`s with string tags, stable across calls; `duplicate_ids` lists exactly the duplicated ids; snapshot and fingerprint stable; every id resolves to itself; an unknown name resolves to `None`; the native names you give resolve; a rebuilt instance agrees |
 | `check_parser` | contract; `format_id` is a name; `parse` returns `ParsedVerdict`s with reportable statuses, non-negative durations, attempts ≥ 1; deterministic; non-empty; `expected` statuses; every bad bundle is a `ParseError` |
 | `check_runner` | contract; `describe` well-formed, parameter defaults validate; `health` well-formed; the dispatch keeps the hand-off order; declares at least one shard; delivers only declared shards and only planned items; a `complete` dispatch reports every planned item under names the catalog resolves (`allow_missing=True` for a runner that reports partially on purpose); ends as `expect`ed; outstanding shards only with `external_delivery`; with `cancel_after_declare`, returns within `cancel_within` seconds of the cancel and does not go on to deliver every shard. With the `plan` capability, first a preview: a `PlanPreview` listing only planned items and labelling only its own shards (`runner.plan`), that declares, delivers, records, exports and logs nothing and reaches for nothing a `PlanContext` lacks (`runner.plan-is-read-only`), and that names exactly the shards the dispatch then declares (`runner.plan-matches-dispatch`); a preview that refuses is accepted |
-| `check_store` | contract; runs, documents, paging/filtering/search; dispatches incl. the exclusive claim and shard groups (`store.shard-groups`); spec bytes; token hashes; the delivery idempotency contract; shard and attempt on read-back; live status, `RUNNING` included (`store.live-running`); artifacts, with their group; the event cursor and `latest_events`; history queries, restricted by status (`store.duration-statuses`) and falling back to seeds (`store.duration-seeds`); delete and prune; concurrent deliveries leave exactly one |
-| `check_observer` | contract; every event kind accepted, `None` returned; concurrent calls; with `seen`, every notification arrives exactly once |
+| `check_store` | contract; runs, documents, paging/filtering/search; dispatches incl. the exclusive claim and shard groups (`store.shard-groups`); spec bytes; token hashes; the delivery idempotency contract; shard and attempt on read-back; live status, `RUNNING` included (`store.live-running`); artifacts, with their group; the event cursor and `latest_events`; history queries, restricted by status (`store.duration-statuses`) and falling back to seeds (`store.duration-seeds`); delete and prune; concurrent deliveries leave exactly one; `atomic()` — writes read back inside the block, undone by an exception, no other writer in between (`store.atomic`) |
+| `check_observer` | contract; every event kind accepted, `None` returned; concurrent calls; with `seen`, every notification arrives exactly once. With `kinds=["run.completed", "run.f*"]` — for an observer that passes on only some kinds by its own decision — `seen` must grow by exactly the notifications of those kinds, and the others must leave no trace (`tests/test_kit_additions.py::TestObserverKinds`) |
 
 ### `FakeDispatchContext` — unit tests for a runner
 
@@ -758,9 +988,11 @@ what its `Item.meta` holds — needs real items, and gets them with
 `FakeDispatchContext.from_source(source, selection=None, **kwargs)`: the
 planned items are the source's own `Item` objects, `ctx.source` is the source,
 and the document carries its snapshot, so there is no drift. `selection` is
-`None` for every item, a filter expression (`"Smoke"`, `{"op": "AND", …}`) or a
-list of ids (an id the source does not have is a `ValueError`); everything
-else goes to the constructor:
+`None` for every item, a filter — as text (`"Smoke"`, `"Auth OR Cart"`,
+read like a string `tag_filter` over the API; a single pattern that is not
+filter text still selects that pattern, with a `UserWarning`) or as an AST
+(`{"op": "AND", …}`) — or a list of ids (an id the source does not have is
+a `ValueError`); everything else goes to the constructor:
 
 ```python
 source = HttpChecksSource("example/checks.yaml")
@@ -780,7 +1012,7 @@ same misuse raises the same error with the same message
 with ConnectorHarness(
     sources={"checks": {"plugin": "http-checks", "path": str(CHECKS)}},   # an absolute path
     runners={"shop": {"plugin": "http-checks"}},
-    connectors={"shop-checks": {"environments": {"local": "${env:SHOP_URL}"}}},
+    connectors={"shop-checks": {"environments": {"local": "${env-public:SHOP_URL}"}}},
     env={"SHOP_URL": url},
 ) as harness:
     assert harness.plan("Smoke", runner="shop").preview.shards     # nothing is stored
@@ -826,11 +1058,19 @@ known" — and fails with an `AssertionError` saying where the run stood;
 
 **An executor that pushes.** `ConnectorHarness(serve=True, …)` also serves the
 HTTP API of the deployment on a free port of 127.0.0.1: `harness.url` is its
-base address, `harness.api` the API root. The address is known before the
-plugins are built, so an entry refers to it as
-`${env:RUNCOMPOSER_HARNESS_URL}` — a `callback_base`, say — and an executor
-that pushes results or progress is tested against the real endpoints
-(`tests/test_kit_additions.py::TestTheServingHarness`).
+base address, `harness.api` the API root, `harness.port` the port. The
+address is known before the plugins are built, so an entry refers to it as
+`${env-public:RUNCOMPOSER_HARNESS_URL}` — a `callback_base`, say — or puts a
+host of its own in front of `${env-public:RUNCOMPOSER_HARNESS_PORT}`: the
+public spelling, since an address is no secret (as `${env:…}` it would be
+blanked out of every recorded text, the port number included). An executor
+that pushes results or progress is then tested against the real endpoints
+(`tests/test_kit_additions.py::TestTheServingHarness`). For an executor in
+a container, serve on every interface and advertise the name the container
+reaches this machine by — `ConnectorHarness(serve=True, host="0.0.0.0",
+advertise_host="host.docker.internal")`: `harness.url` and the variables
+carry that name, and `harness.local_url` is the address the test itself
+uses (`tests/test_jenkins_followup.py::TestHarnessAddress`).
 `harness.artifacts(run_id)` lists a run's artifacts as the API does — `name`,
 `kind`, `shard`, `group`, `href` — so the address of a served file is
 `harness.url + href`, and a test can ask for it, and for a file beside it
@@ -863,6 +1103,14 @@ finally:
     fake.close()
 ```
 
+A job may declare its parameters — `fake.add_job("shop-nightly", nightly,
+parameters=["SPEC_B64", "REGIONS"])` — and then, as Jenkins does, drops
+any other form field at trigger time, recording it in
+`fake.ignored_parameters` as `(job, name)` (`fake.triggers()[0].form` keeps
+the whole form that was sent). `fake.down()` makes the server answer `503` to everything —
+`down(status=None)` closes each connection without an answer — until
+`fake.up()`: how a runner that rides out a restart is tested
+(`tests/test_jenkins_followup.py::TestFollowingThroughAnOutage`).
 It is the stand-in runcomposer's own `jenkins` runner is tested with
 (`tests/test_jenkins.py`, `tests/test_kit_additions.py::TestSmallHelpers::test_the_jenkins_stand_in_is_part_of_the_kit`);
 what no stand-in covers is a real server's own behaviour.
@@ -956,27 +1204,49 @@ options in [ADOPTING.md §2](../ADOPTING.md#2-start-with-configuration-not-code)
 | Option | What it does |
 |---|---|
 | `partition_mode: each \| split` | `each` (default): the selection runs once *per* chosen partition — the same tests against every environment. `split`: every test runs *once*; the chosen partitions are parallel lanes the selection is distributed over, balanced by duration history |
+| `partition_mode_per_run: true` | the mode is also a per-run parameter `partition_mode` (a choice of `split` / `each`, default the configured mode), honoured alike by preview and dispatch. Without it, a run that sends `partition_mode` is refused as an invalid parameter |
+| `max_chunks_per_partition: N` | at most `N` chunks of one partition are cut, and so run at once; `1`: a partition that is one environment never executes two chunks at the same time (`split` is one lane per partition already) |
 | `max_tests_per_chunk: N`, `chunk_shards: true` | a chunk is executed in pieces of at most `N` tests, one after another. With `chunk_shards` every piece is a declared shard of its own, `<lane>-NN`, delivered as soon as it is done instead of merged into one result per chunk; shards are grouped by partition. `chunk_shards` without `max_tests_per_chunk` is a `ConfigError` |
-| `pre_dispatch: ["pkg.mod:callable"]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`; a mapping it returns is added to the Robot variables of every shard |
-| `worker_setup: ["pkg.mod:callable"]` | called in each worker process before its first execution as `callable(info)`; `info` is `{shard, partition, run_id, dispatch_id, out_dir, variables}`; a mapping it returns is added to that shard's variables |
+| `plan_checks: [callable]` | checks free of side effects, run for a preview and for a dispatch alike, after the plan stands and before any readiness step, as `check(ctx, info)`; `info` is `{partitions, partition_mode, parameters, shards, groups, item_ids, plan}`. A check may raise `InvalidParameter` (a `400`) or refuse; a preview whose checks passed notes it |
+| `pre_dispatch: [callable]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`; a mapping it returns is added to the Robot variables of every shard |
+| `worker_setup: [callable]` | called in each worker process before its first execution as `callable(info)`; `info` is `{shard, partition, run_id, dispatch_id, out_dir, variables, data}` (`out_dir` absolute; `data` is the payload's `worker_data`, which `robot-pool` leaves empty); a mapping it returns is added to that shard's variables |
+| `health_checks: [callable]` | called by `health()` as `check(info)` with `{options, robot_version, suite_roots, partitions, partition_mode, max_workers}`; each returns a `{check, ok, detail}` row or a list of them, appended to `data.checks` after the built-in rows. A failing row makes the health `degraded`; a check that raises is a failed row with the exception's type and message |
 | `run_parameters: [{name, kind, …}]` | further per-run parameters, declared with the fields of `Parameter` — beside the runner's own `partitions` and `allow_drift` |
 | `parameter_variables: {param: VARIABLE}` | a per-run parameter as a Robot variable (a list comma-joined); `"*"` for a `mapping` parameter makes each of its entries a variable |
+| `protected_variables: [NAME, …]` | Robot variables a per-run mapping may not set, matched as Robot matches names — case, spaces, underscores and `${…}` ignored, so `shop_url` and `${Shop Url}` both hit `SHOP_URL`. Refused as an invalid parameter by preview and dispatch; a `parameter_variables` entry aiming a scalar parameter at a protected name is a `ConfigError` |
+| `merge_groups: true` | one merged `output.xml` / `log.html` / `report.html` per group (`… (group eu)`) and one for the run (`… (run)`), each merged in a spawned process as soon as its shards are in and recorded before the last shard delivers; a failed merge is a warning line, a cancelled dispatch merges nothing more, no verdict depends on it |
 | `rpa: true \| false \| null` | the execution mode. `null` (default) lets Robot decide — and Robot refuses a selection that keeps both tests and tasks, so a root that mixes them needs `false` (everything executed as tests) or `true`; otherwise the dispatch fails with Robot's own message and that hint |
 | `robot_options: {…}` | further keyword options for `robot.run` (`{loglevel: DEBUG, variablefile: [env.py]}`); the options the runner sets itself win |
 | `history_statuses: [PASS]` | balance by the durations of executions that ended with these statuses only |
 
+A `callable` above is `"pkg.mod:callable"` or `{call: "pkg.mod:callable",
+with: {…}}`, the `with:` mapping arriving as `settings=`
+([§5](#5-configuration)).
+
 What it does on its own: `RUNNING` streams when a test starts, workers log
-their progress into the run's event stream, each shard's directory is
+their progress into the run's event stream and a line when each shard
+starts and ends, each shard's directory is
 recorded as a directory artifact `files (<shard>)` so that what a log refers
-to is servable, and outputs of several executions are merged without "added
-from merged output" notes. Its `plan` preview shows lanes, shards, groups and
-estimates, and notes the readiness steps (`pre_run_hooks`, `pre_dispatch`)
-that only a dispatch runs. Its health `data` carries `robot_version`,
-`max_workers`, `suite_roots`, `partitions` and `partition_mode`. Pinned by
+to is servable — a shard's artifacts recorded before it is delivered — and
+outputs of several executions are merged without "added
+from merged output" notes. Every item is checked against the suite roots,
+a single root included: an item belongs when its id begins with the root
+suite's name and its recorded source lies under the root, and a mismatch
+refuses preview and dispatch before the hand-off, naming the item and the
+root; `runcomposer doctor` runs the same check over the whole catalog. Its
+`plan` preview shows lanes, shards, groups and
+estimates — how many items had a known duration, what the others weigh,
+the estimate per partition, and an item that alone takes more than an even
+share — and notes the readiness steps (`pre_run_hooks`, `pre_dispatch`)
+that only a dispatch runs ([docs/cli.md](cli.md#plan) shows both). Its
+health `data` carries `robot_version`, `max_workers`, `suite_roots`,
+`partitions`, `partition_mode` and `checks` — "Robot Framework installed",
+a row per suite root, then your `health_checks` rows. Pinned by
 `tests/test_robot_toolkit.py` (`TestPartitionModeSplit`, `TestChunkShards`,
 `TestPreDispatchAndRunParameters`, `TestExecutionMode`, `TestPlanPreview`,
-`TestTheWorker::test_robot_options_reach_the_execution_and_the_toolkits_own_win`)
-and `tests/test_robot_pool.py::TestWorkerSetup`. The example's second entry,
+`TestTheWorker::test_robot_options_reach_the_execution_and_the_toolkits_own_win`),
+`tests/test_robot_pool.py::TestWorkerSetup`, `tests/test_robot_pool_options.py`
+and `tests/test_planning_weights.py`. The example's second entry,
 run end to end by `tests/test_four_ways.py::test_1b_the_pool_configured_as_lanes`:
 
 ```yaml
@@ -995,6 +1265,35 @@ run end to end by `tests/test_four_ways.py::test_1b_the_pool_configured_as_lanes
     history_statuses: [PASS]      # balance by how long tests take when they pass
 ```
 
+Its third entry runs each region as one environment that never executes
+two chunks at once, lets a run choose the mode, keeps the region's address
+out of reach of a per-run mapping, and merges each region's results and the
+whole run's (`tests/test_robot_pool_options.py::TestTheShippedExample`):
+
+```yaml
+  robot-regions:
+    plugin: robot-pool
+    suite_root: ../robot-shop/tests
+    max_workers: 4
+    partitions: [eu, us]
+    partition_mode: each
+    partition_mode_per_run: true
+    max_chunks_per_partition: 1
+    partition_variables:
+      eu: { CURRENCY: EUR, SHOP_URL: "https://eu.shop.example" }
+      us: { CURRENCY: USD, SHOP_URL: "https://us.shop.example" }
+    run_parameters:
+      - { name: variables, kind: mapping, label: "Extra variables" }
+    parameter_variables: { variables: "*" }
+    protected_variables: [SHOP_URL, CURRENCY]
+    merge_groups: true
+```
+
+```console
+$ runcomposer plan Cart --runner robot-regions --param 'variables={shop_url: https://test.shop.example}' --config robot-pool/config.yaml
+error: parameter 'variables': the Robot variable 'shop_url' cannot be set per run — this runner protects 'SHOP_URL' (protected_variables)
+```
+
 **`jenkins`** (`src/runcomposer/plugins/jenkins.py`). Beside `base_url`,
 `job`, `completion`, `callback_base` and the credentials:
 
@@ -1003,10 +1302,19 @@ run end to end by `tests/test_four_ways.py::test_1b_the_pool_configured_as_lanes
 | `parameters: {NAME: template}` | the build parameters of *your* job. Fields: the document as `{spec_b64}` (the exact document, gzipped, as base64 — one line of ASCII that survives any form or shell; `base64 -d \| gunzip` restores it, `decode_spec` in Python), `{spec_url}` (where the job downloads the exact bytes; needs `callback_base`) or `{spec_json}` (as text — small documents only); `{run_id}`, `{dispatch_id}`, `{title}`, `{labels[key]}`; `{callback_url}`, `{token}`; `{item_ids}` (one per line), `{shards}` (comma-joined), `{params[name]}` (a list comma-joined, a `mapping` as `name=value` lines) |
 | `shards` | what the build reports separately: a list of names, or a template rendering to a comma- or newline-separated list (`"{params[regions]}"`); default `["1"]`. A template that renders to nothing, or to duplicates, refuses the dispatch |
 | `artifact_paths`, `result_urls` | with `completion: poll`, what is downloaded per shard: archived files matching `artifact_paths` (globs), and paths below the build's URL listed in `result_urls` (`consoleText`, `robot/report/output.xml` — what a publisher serves without archiving it). `{shard}` in either tells several shards' results apart. `artifact_paths` defaults to `["results/*"]` only when no `result_urls` are given. Several shards with `poll` and neither `{shard}` nor a `postprocess` are refused before the trigger |
-| `postprocess: "pkg.mod:callable"` | called as `callable(ctx, shard, directory) -> Path \| None` over what was downloaded for one shard, before parsing; the path it returns is what is delivered, `None` delivers the directory as it is |
-| `field_providers: {name: "pkg.mod:callable"}` | each called as `callable(ctx, fields) -> str` with the fields computed so far; its text is the template field `{name}`. It may `ctx.refuse` before anything is triggered. It is called for a plan preview too, with a `PlanContext` — so it must be free of side effects |
+| `postprocess: callable` | called as `callable(ctx, shard, directory) -> Path \| None` over what was downloaded for one shard, before parsing; the path it returns is what is delivered, `None` delivers the directory as it is |
+| `field_providers: {name: callable}` | each called as `callable(ctx, fields) -> str` with the fields computed so far; its text is the template field `{name}`. It may `ctx.refuse` before anything is triggered. It is called for a plan preview too, with a `PlanContext` — so it must be free of side effects |
+| `plan_provider: callable`, `plan_fields: [names]` | for a job that cannot say which item goes where: called by the preview and the dispatch as `callable(ctx, fields)` with the built-in fields, it returns any of `{"shards": {name: [item ids]}, "groups": {shard: label}, "fields": {name: text}}`. Its shards replace what `shards` says, are declared with their items and groups and shown in the preview; `{shards}` renders from their names. `plan_fields` lists the fields it yields, so templates can be checked at startup (one it does not yield renders empty). Free of side effects; it may `ctx.refuse`; a return of the wrong shape, or an item that is not planned, fails the dispatch or the preview naming it; `None` changes nothing |
+| `check_parameters: true` | the health check compares the names under `parameters` with the parameters the job declares — Jenkins ignores a build parameter its job does not declare, silently. A name the job would drop, or a job that declares none, makes the runner `degraded`; a job that is not readable is "not checked" |
+| `outage_tolerance_s: N` | with `poll`, following the build rides out a Jenkins that has not answered for up to `N` seconds (a restart); without it, a request that still fails after the bounded retries fails the dispatch. It does not extend `timeout_s`. A queue item cancelled in Jenkins fails the dispatch either way |
 | `max_parameter_bytes`, `max_request_bytes` | a trigger with one build parameter over `max_parameter_bytes` (default 128 000) or a whole request over `max_request_bytes` (default 1 000 000) is refused before anything is sent, with a message naming the way out (`{spec_b64}`, `{spec_url}`, or a higher limit); `null` lifts a limit |
 | `run_parameters: [{name, kind, …}]` | the per-run parameters, declared with the fields of `Parameter` |
+
+A `callable` is `"pkg.mod:callable"` or `{call: …, with: {…}}`, its
+settings arriving as `settings=` ([§5](#5-configuration))
+(`tests/test_jenkins_followup.py`: `TestConfiguredCallables`,
+`TestPlanProvider`, `TestDeclaredParameters`,
+`TestTheRunnerThroughAnOutage`).
 
 How it cancels: once a polled build has started, its URL is recorded as the
 link `build` (`ctx.set_link`) and `cancel` stops that build directly — also
@@ -1021,7 +1329,7 @@ it was polled is not downloaded again. Its `plan` preview shows the build
 parameters that would be sent — long values as `‹N bytes›`, the token and the
 dispatch id as `‹at dispatch›` — and triggers nothing; its health `data`
 carries `version`, `job_url`, `completion` and a `checks` list for
-`doctor -v`. Pinned by `tests/test_jenkins_toolkit.py`
+`doctor -v` (with `check_parameters`, one row more). Pinned by `tests/test_jenkins_toolkit.py`
 (`TestTheScenarioByConfiguration`, `TestShards`,
 `TestTheDocumentAsABuildParameter`, `TestCancelBeyondTheQueueItem`) against
 the protocol stand-in. The example's fan-out entries — one build, one shard
@@ -1031,7 +1339,7 @@ per region — with their two callables in
 ```yaml
   jenkins-fanout:
     plugin: jenkins
-    base_url: "${env:JENKINS_URL:-http://localhost:8080}"
+    base_url: "${env-public:JENKINS_URL:-http://localhost:8080}"   # an address: no secret
     job: runcomposer-fanout
     completion: poll
     run_parameters:
@@ -1048,7 +1356,7 @@ per region — with their two callables in
   jenkins-fanout-push:                # the same job, pushing each region's bundle itself
     plugin: jenkins
     completion: callback
-    callback_base: "${env:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
+    callback_base: "${env-public:RUNCOMPOSER_CALLBACK_BASE:-http://host.docker.internal:8100}"
     # base_url, job, run_parameters, shards, field_providers as above, and the
     # parameters plus CALLBACK_URL: "{callback_url}" and INGEST_TOKEN: "{token}"
 ```
@@ -1072,14 +1380,15 @@ test's longname):
 | Name | What |
 |---|---|
 | `ExactSelection(ids, tag=None)` | a pre-run modifier keeping exactly the tests whose longname is in `ids` — an id is never read as a pattern; `kept` counts what was found |
-| `attribute_roots(suite_roots, item_ids, items=())` | which suite root each item is executed from |
+| `attribute_roots(suite_roots, item_ids, items=())`, `root_mismatches(…)` | which suite root each item is executed from — checked, a single root included: an item belongs when its id begins with the root suite's name and its recorded source (`Item.meta["source"]`) lies under the root. `attribute_roots` raises `LookupError` naming the first mismatches and how many there are; `root_mismatches` returns them as sentences (empty when all belong) |
 | `LiveStatusListener(channel, shard, stopped=None)`, `RemoteLiveStatusListener(...)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start. A test cut short by a stop is not reported as failed: what stays is that it was `RUNNING` |
-| `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup`, `rerun_failed`, `rpa`, `robot_options`, … |
-| `run_shard(payload)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `read_shard_result(out_dir)` reads that back as a `ShardResult` of `ShardOutput`s |
-| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None)` | runs payloads on spawned worker processes: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol; `on_done(outcome)` is called with a `ShardOutcome` in the calling thread as each payload ends |
+| `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup` (configured callables), `rerun_failed`, `rpa`, `robot_options`, `cwd` and `env` (the working directory and environment the worker executes in — `%{SHOP_REGION}` in a suite), `worker_data` (a picklable mapping its `worker_setup` sees as `info["data"]`), … |
+| `run_shard(payload, stop=None)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `stop()` (or `STOP_FILE`) asks it to end early; `cwd` and `env` apply for the call only. `read_shard_result(out_dir)` reads the result back as a `ShardResult` of `ShardOutput`s |
+| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; a line when a shard starts and ends through `log` (default: the payloads' channel); `on_done(outcome)` is called with a `ShardOutcome` in the calling thread as each payload ends |
 | `stop_worker(process, out_dir)`, `STOP_FILE` | the stop protocol on its own: no further execution, Robot ends the one in flight, then terminate and kill |
-| `deliver_shard(ctx, outcome, *, format="robot-output-xml", group=None)`, `collect_verdicts(ctx, outcome, *, format)` | parse a finished shard through `ctx.parse`, label every attempt, deliver, record `log.html` / `report.html` / `output.xml` and the shard's directory as artifacts; returns the reason when there is nothing to deliver |
-| `merge_outputs(outputs, out_dir, ...)`, `MergeNoiseRemover` | several `output.xml` merged into one, without merge notes |
+| `deliver_shard(ctx, outcome, *, format="robot-output-xml", group=None)`, `collect_verdicts(ctx, outcome, *, format)` | parse a finished shard through `ctx.parse`, label every attempt, record `log.html` / `report.html` / `output.xml` and the shard's directory as artifacts, then deliver; returns the reason when there is nothing to deliver |
+| `merge_outputs(outputs, out_dir, ..., rebot_options=None)`, `MergeNoiseRemover`, `NameTopSuites` | several `output.xml` merged into one, without merge notes; `rebot_options` are further options for Robot's `rebot` (one the function sets itself is a `ValueError` naming it). `NameTopSuites` names the top suites of outputs put side by side (`merge=False`) — `eu`, `us` instead of twice the same suite |
+| `MergePayload(...)`, `spawn_merge(payload, *, timeout_s=None, cancelled=…)`, `run_merge`, `MergeResult` | the same merge in a spawned process, waited for: the calling process loads nothing of Robot Framework, so a server can merge while it serves; options are checked before anything starts, a merge over its timeout or cancelled is stopped, and a failure comes back as `MergeResult.error` with Robot's own complaint (`tests/test_robot_merge.py`) |
 | `robot_version()` | the installed version, `None` without Robot Framework |
 
 **`runcomposer.sdk.jenkins`** — stdlib `urllib`, no dependency:
@@ -1087,10 +1396,11 @@ test's longname):
 | Name | What |
 |---|---|
 | `JenkinsClient(base_url, *, user, api_token, verify_tls, ca_bundle, request_timeout_s, retries, retry_backoff_s)` | one server: a session whose crumb belongs to it, bounded retry on transient errors (a trigger is repeated only when it provably did not take effect), TLS with an optional CA bundle; thread-safe |
-| `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by |
+| `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…, outage_tolerance_s=None)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by. With `outage_tolerance_s` (also on the waits) it rides out a Jenkins that has not answered for up to that long, probing with single attempts; `timeout_s` applies to each of its two waits (to start, then to finish) and is not extended by an outage |
 | `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now |
+| `job_parameters(job)` | the names of the parameters a job declares, `None` when it declares none — what to compare a trigger's parameters with, since Jenkins drops an undeclared one silently |
 | `artifacts`, `download_artifact`, `download_build_file`, `download`, `get_json`, `request`, `version`, `job_exists`, `job_url` | results — archived artifacts and any URL below the build — and the plumbing |
-| `JenkinsError` (`.status`), `JenkinsTimeout` (`.what`, `.timeout_s`) | what went wrong; `status == 404` for something Jenkins no longer knows |
+| `JenkinsError` (`.status`), `JenkinsTimeout` (`.what`, `.timeout_s`), `JenkinsQueueCancelled` | what went wrong; `status == 404` for something Jenkins no longer knows; a connection dropped without an answer is a `JenkinsError` too. `JenkinsQueueCancelled` (`.queue_url`) is a queue item cancelled before it became a build — final, also during an outage |
 | `encode_spec`, `decode_spec`, `queue_id_of` | the compressed document form, and the id in a queue item URL |
 
 Two composed runners, each written against the SDK and one toolkit only.
@@ -1253,6 +1563,116 @@ while its build runs — and during its trigger, where the build is taken back
 (`tests/test_jenkins_toolkit.py::TestAComposedRunner`). The results it
 delivers are in the reference format ([§4](#resultparser--native-artifacts-in-native-names-out)).
 
+**A runner for any framework:** shards in supervised worker processes. Not
+every connector executes Robot Framework or triggers Jenkins.
+`supervise_workers` in `runcomposer.sdk` is the supervisor the Robot
+toolkit's `supervise` and the `command` runner are both built on, for
+whatever executes inside the worker:
+
+- one spawned process per shard; shards of one `lane` one after another,
+  lanes side by side, at most `max_workers` at once;
+- `target(payload, stop)` — a module-level function — runs in the worker,
+  in `payload.cwd` with `payload.env` set, and what it returns comes back as
+  `outcome.result` (`payload.data` carries what it needs, picklable);
+- `on_done(payload, outcome)` is called in your thread as each shard ends:
+  `outcome.status` is `finished`, `raised` (the traceback in
+  `outcome.error`), `died` (no result, `outcome.exitcode`) or `timed out`,
+  and `outcome.problem` says what went wrong in one sentence, or is `None`;
+- `log` gets a line when a shard starts and one when it ends;
+- `cancelled()` and `timeout_s` stop a worker by the stop protocol:
+  `stop()` becomes true, `.stop-requested` appears in `out_dir`, and the
+  worker's process group gets `SIGTERM`, so what the worker started ends
+  too; after `grace_s` the group is terminated, after another `grace_s`
+  killed, and whatever is left of it is killed before the worker is
+  reaped. Cancelled and never-started shards are not reported;
+- a payload or target that cannot be sent to a spawned process is refused
+  with `TypeError` before anything starts.
+
+Each check of the shop below is a plain Python function of the item id:
+
+```python
+import time
+from collections.abc import Callable
+
+from runcomposer.sdk import (
+    DispatchContext,
+    PlanContext,
+    PlanPreview,
+    RunnerBase,
+    RunnerInfo,
+    Verdict,
+    WorkerOutcome,
+    WorkerPayload,
+    load_import_path,
+    plan_chunks,
+    supervise_workers,
+)
+
+
+def run_checks(payload: WorkerPayload, stop: Callable[[], bool]) -> list[dict]:
+    """In the worker process: each item is one call of the configured check."""
+    check = load_import_path(payload.data["check"])
+    results = []
+    for item_id in payload.item_ids:
+        if stop():
+            break
+        started = time.monotonic()
+        try:
+            check(item_id)
+            status, message = "PASS", ""
+        except AssertionError as exc:
+            status, message = "FAIL", str(exc)
+        results.append({"item_id": item_id, "status": status, "message": message,
+                        "duration_ms": int((time.monotonic() - started) * 1000)})
+    return results
+
+
+class CheckRunner(RunnerBase):
+    def __init__(self, check: str, shards: int = 2, timeout_s: float | None = None):
+        self.check, self.shards, self.timeout_s = check, int(shards), timeout_s
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="checks", capabilities=("cancel", "plan", "shards"),
+                          result_format="runcomposer-verdicts")
+
+    def plan(self, ctx: PlanContext) -> PlanPreview:
+        chunks = plan_chunks(ctx.item_ids, self.shards, ctx.history.durations()).chunks
+        shards = {str(index): list(chunk) for index, chunk in enumerate(chunks, start=1)}
+        return PlanPreview(text=f"{len(ctx.item_ids)} check(s) in {len(shards)} shard(s)", shards=shards)
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        preview = self.plan(ctx)
+        ctx.declare(preview.shards, plan=preview.text)
+        payloads = [WorkerPayload(shard=shard, out_dir=str(ctx.workdir / shard), item_ids=tuple(items),
+                                  data={"check": self.check})
+                    for shard, items in preview.shards.items()]
+        problems: list[str] = []
+
+        def finished(payload: WorkerPayload, outcome: WorkerOutcome) -> None:
+            if outcome.problem:
+                problems.append(outcome.problem)
+            else:
+                ctx.deliver(payload.shard, verdicts=[Verdict(**result) for result in outcome.result])
+
+        supervise_workers(payloads, run_checks, max_workers=self.shards, on_done=finished,
+                          cancelled=lambda: ctx.cancelled, timeout_s=self.timeout_s, log=ctx.log)
+        ctx.raise_if_cancelled()
+        if problems:
+            raise RuntimeError("; ".join(problems))
+```
+
+Configured as `checks: {module: "shop_connector.checks:CheckRunner",
+check: "shop_connector.checks:card_check"}`, where `card_check(item_id)`
+returns, or fails with an `AssertionError`. `run_checks` and the check must
+be importable by a spawned process: module level, in an installed package
+(and, in a script that drives the runner directly, behind the usual `if
+__name__ == "__main__":` guard). Its twin, `tests/shop_check_runner.py`,
+imports nothing but `runcomposer.sdk`, passes `check_runner`, runs in a
+real deployment and is cancelled there while a check hangs, keeping the
+shard that was delivered
+(`tests/test_worker_supervisor.py::TestAComposedRunner`); the supervisor on
+its own is pinned by the rest of that file.
+
 ---
 
 > **Migrating a connector written against an earlier 0.2 state.** The 0.2
@@ -1276,6 +1696,54 @@ delivers are in the reference format ([§4](#resultparser--native-artifacts-in-n
 > - Only recorded artifacts are served: a file in `ctx.workdir` is
 >   downloadable once `ctx.add_artifact` recorded it, or a directory above
 >   it — not because it is there ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
+> - An `${env:…}` value is a secret, blanked out of free text. Write an
+>   address, a region or a port that is no secret as `${env-public:…}`; a
+>   secret of fewer than four characters now refuses startup. Identifiers are
+>   never blanked any more, and paths and numbers from the environment are
+>   no secrets ([§5](#5-configuration)).
+> - An option your constructor annotates as `int`, `float` or `bool`
+>   receives an environment value converted; drop your own `int(...)` of
+>   such a value — or keep it, it is harmless — and expect a `ConfigError`
+>   for one that does not convert.
+> - `robot-pool` with a single suite root now refuses a catalog item that
+>   root does not hold, before the hand-off, instead of ending it `MISSING`;
+>   `attribute_roots([root], ids)` raises `LookupError` for it instead of
+>   returning every id unchecked ([§9.1](#91-configure-before-you-code)).
+> - Record a shard's artifacts **before** you deliver it — what is recorded
+>   after the last delivery arrives after `run.completed`
+>   ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
+> - An `InvalidParameter` your runner raises is answered `400
+>   invalid-parameter` — from `POST /plan` too, which used to answer `200`
+>   with `refused: true` — and from the dispatch routes, which used to
+>   answer `409`. A client that told the two apart by status reads `code`.
+> - A string `tag_filter` (and a string `ui:` filter, taxonomy leaf or
+>   `from_source` selection) is filter text: a tag spelled like an
+>   expression is quoted (`'"Auth OR Cart"'`), and `*` is every item.
+>   Send the AST to say the structure explicitly.
+> - A `RunStore` of your own implements `atomic()` — `StoreBase`'s default
+>   guarantees nothing, and `check_store` fails it (`store.atomic`)
+>   ([§4](#runstore--persistence)).
+> - `ctx.connector_settings(name)` is a member of `DispatchContext` and
+>   `PlanContext`: a context of your own (a test double) adds it.
+>
+> What your own code no longer needs to do, because the SDK does it:
+>
+> - supervise worker processes — lanes, a bound, a timeout, the stop
+>   protocol and reaping: `supervise_workers` ([§9.2](#92-compose-when-configuration-is-not-enough));
+> - merge Robot outputs in the dispatching process: `spawn_merge`, or
+>   `robot-pool`'s `merge_groups`;
+> - push a results bundle by hand: `push_results`, `ResultsPushRefused`;
+> - ride out a Jenkins restart with a loop of your own: `follow(…,
+>   outage_tolerance_s=…)` and the runner's `outage_tolerance_s`; tell a
+>   cancelled queue item apart: `JenkinsQueueCancelled`;
+> - ask a job which parameters it declares: `job_parameters`, or the
+>   runner's `check_parameters`;
+> - pass settings to a configured callable through the environment or a
+>   wrapper: `{call, with}`, and `ctx.connector_settings(name)`;
+> - check catalog ids against a suite root, lock a region against two
+>   chunks, guard Robot variables a run must not set, or add health checks
+>   in code: `robot-pool`'s suite-root check, `max_chunks_per_partition`,
+>   `protected_variables`, `health_checks`.
 
 ---
 
@@ -1318,13 +1786,17 @@ Edges you should know:
   trigger request are guesses on the safe side. Raise them, or set `null`,
   when your Jenkins and its agents take more
   (`tests/test_jenkins_toolkit.py::TestTheDocumentAsABuildParameter`).
-- **Short secrets are not redacted.** A value of fewer than four characters
-  taken from the environment is not blanked out of recorded text, since
-  blanking `4` would mangle ordinary text; a `:-default` written in the file
+- **A secret needs four characters.** A shorter `${env:…}` value is refused
+  at startup, since blanking `eu` would mangle ordinary text; give a value
+  that is no secret as `${env-public:…}`. A `:-default` written in the file
   is not a secret either. Links a runner records (`declare(links=…)`,
   `set_link`) are kept as given — `cancel` needs them — so do not put a
   secret into a link
-  (`tests/test_config.py::test_values_shorter_than_four_characters_are_not_redacted`).
+  (`tests/test_config.py::test_a_secret_shorter_than_four_characters_is_refused`).
+- **Not everything exported is stable.** `Service` and `Config` beyond the
+  members [§1](#1-the-surface) names, members the `RunStore` protocol may
+  gain, and fields a response may gain are provisional for the 0.2.x
+  series; the rest of the surface is not ([§1](#1-the-surface)).
 - **Restart recovery cannot tell a reused process id** from the process that
   owned a dispatch; `cancel --force` closes such a dispatch.
 - **One instance owns a store.** The store refuses a second in-flight dispatch

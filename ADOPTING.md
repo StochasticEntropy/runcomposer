@@ -106,7 +106,15 @@ the plugin sections are the same everywhere:
   names who is told about run events (`webhook`, `jsonl`, `command` ship).
 - **Secrets stay out of the file**: a string option written `${env:NAME}` (or
   `${env:NAME:-default}`) is taken from the environment when the plugin is
-  built; a missing variable fails startup naming it.
+  built; a missing variable fails startup naming it. Such a value is a
+  secret, blanked out of every message, health detail and log line that
+  quotes it, and must have at least four characters; a value from the
+  environment that is no secret — an address, a region, a port — is written
+  `${env-public:NAME}`. A number or a boolean is converted for an option
+  that takes one ([connector guide §5](docs/connectors.md#5-configuration)).
+- **A callable named in an option** (a hook, a provider, a check) is
+  `"pkg.mod:callable"`, or `{call: "pkg.mod:callable", with: {…}}` to hand
+  it settings, which it receives as `settings=`.
 - **`connectors:`** is yours: `connectors.<name>` is a free-form mapping the
   core never interprets, for your connector package's own settings. A plugin
   class that declares `CONNECTOR = "<name>"` receives it as the keyword
@@ -364,9 +372,13 @@ Ships: `runcomposer-verdicts` (a trivial JSON format any executor can emit),
 ### `RunStore` — where runs live
 
 The widest protocol, and the one you almost certainly do not need. `sqlite`
-ships and is zero-setup (safe for several threads and processes on one file,
-with a versioned schema that migrates a 0.1 database in place). Implement your
-own only if you must live in an existing database.
+ships and is zero-setup (safe for several threads and processes on one file —
+every lifecycle decision is one write transaction — needs SQLite 3.24.0 or
+newer with the JSON functions, and has a versioned schema that migrates a
+0.1 database in place). Implement your own only if you must live in an
+existing database; it then provides `atomic()`, the block of calls
+runcomposer takes each lifecycle decision in
+([connector guide §4](docs/connectors.md#runstore--persistence)).
 
 What it holds: runs and their spec documents, dispatches (each with its own
 lifecycle state, declared shards, plan, links, the exact document bytes handed
@@ -543,6 +555,17 @@ execution started with `--listener runcomposer.sdk.robot.RemoteLiveStatusListene
 streams which test is running — that one needs runcomposer installed where
 Robot runs ([connector guide
 §3.3](docs/connectors.md#33-dispatchctx--prepare-declare-execute-deliver)).
+
+**A minimal install for a machine that only executes.** Where runcomposer
+itself must be installed on the executing side — for the Robot listener, the
+Robot toolkit's worker, or `push_results` from a script of yours —
+`pip install --no-deps runcomposer` is enough: the SDK, `RemoteLiveChannel`,
+`push_results` and `runcomposer-exec` import without the reading and
+serving dependencies, and `pip install robotframework` beside it lets the
+Robot toolkit execute a shard. Reading a YAML spec, validating a document
+and every other `runcomposer` command need the full install; on a minimal
+one they raise an error naming the missing package
+(`tests/test_minimal_imports.py`).
 
 A worked, runnable version of this whole loop ships in
 [`examples/remote-agent/`](examples/remote-agent). Start from there.

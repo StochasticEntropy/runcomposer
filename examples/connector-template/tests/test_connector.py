@@ -222,7 +222,9 @@ def test_end_to_end_in_a_real_deployment(shop, tmp_path):
         sources={"shop-checks": {"plugin": "http-checks", "path": str(CHECKS)}},
         runners={"shop": {"plugin": "http-checks"}},
         observers={"summary": {"plugin": "run-summary", "path": str(tmp_path / "summary.txt")}},
-        connectors={"shop-checks": {"environments": {"local": "${env:SHOP_TEST_URL}"}}},
+        # An address is no secret: `${env-public:…}`. As `${env:…}` it would be
+        # blanked out of every recorded line that quotes it.
+        connectors={"shop-checks": {"environments": {"local": "${env-public:SHOP_TEST_URL}"}}},
         env={"SHOP_TEST_URL": shop},
     ) as harness:
         preview = harness.plan("Smoke", runner="shop").preview  # `runcomposer plan`: nothing is stored
@@ -231,7 +233,7 @@ def test_end_to_end_in_a_real_deployment(shop, tmp_path):
         assert (result.state, result.completion) == ("COMPLETE", "PASS")
         assert {v.item_id for v in result.verdicts} == {"shop.home", "shop.cart.add"}
         assert result.event_kinds[0] == "run.composed" and result.event_kinds[-1] == "run.completed"
-        assert any("check(s) executed against" in line for line in result.logs())
+        assert any(f"check(s) executed against {shop.rstrip('/')}" in line for line in result.logs())
         assert [a.name for a in result.artifacts] == ["report.json"]
         assert harness.flush_observers()
     summary = (tmp_path / "summary.txt").read_text(encoding="utf-8")
