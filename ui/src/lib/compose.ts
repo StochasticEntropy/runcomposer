@@ -16,14 +16,27 @@
 // screen belongs to the selection in the builder right now. `PreviewController`
 // is the one place that decides that.
 
+import { quotePattern } from "./filter.ts";
 import { Latest, asApiError } from "./request.ts";
 import type { ApiError } from "./request.ts";
 import type { CatalogItem, CompileResult, FilterAst, Selection } from "./types.ts";
 
+/**
+ * A filter as `selection.tag_filter` takes it. The API takes the AST — with
+ * one exception: a lone string is read as filter TEXT (`Auth OR Cart` is a
+ * union), so a filter that is a single pattern travels as its quoted text.
+ * `quotePattern` leaves an ordinary tag as it is (`Payments`) and quotes
+ * what would otherwise read as something else: a tag spelled `Auth OR Cart`,
+ * a tag named `AND` or `*`, a pattern with a space, a quote or parentheses
+ * (`"regex:^Cart(V2)?$"`). The server reads it back to that one pattern, and
+ * the run spec stores the pattern — never the quotes.
+ */
+export const wireFilter = (filter: FilterAst): FilterAst => (typeof filter === "string" ? quotePattern(filter) : filter);
+
 /** What the preview is compiled from: the filter and the pinned ids. */
 export function previewSelection(filter: FilterAst | null, pinned: string[] | null): Selection | null {
   const selection: Selection = {};
-  if (filter != null) selection.tag_filter = filter;
+  if (filter != null) selection.tag_filter = wireFilter(filter);
   if (pinned && pinned.length > 0) selection.item_ids = pinned;
   return selection.tag_filter === undefined && selection.item_ids === undefined ? null : selection;
 }

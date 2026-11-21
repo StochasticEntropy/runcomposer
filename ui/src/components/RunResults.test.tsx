@@ -20,7 +20,8 @@ const artifact = (shard: string, file: string, media: string): Artifact => ({
   media_type: media,
   dispatch_id: DISPATCH,
   shard,
-  url_or_path: `/somewhere/${shard}/${file}`,
+  // Over HTTP: relative to the artifact directory, never a server path.
+  url_or_path: `r-1/${DISPATCH}/${shard}/${file}`,
   kind: "local",
   href: `/artifacts/r-1/${DISPATCH}/${shard}/${file}`,
 });
@@ -93,6 +94,44 @@ function run(count: number, options: { failing: number; pending: number | null; 
 const show = (detail: RunDetail) => renderWithI18n(<RunResults run={detail} query={{}} onQuery={() => undefined} />);
 const cardsOf = (scope: Element) => [...scope.querySelectorAll(".shard-card")].map((card) => card.getAttribute("data-shard"));
 
+describe("artifacts", () => {
+  it("are linked by the URL the server serves them under, and the rest is named without a server path", () => {
+    const detail = run(1, { failing: 1, pending: null, state: "COMPLETE" });
+    detail.artifacts.push(
+      { name: "console.txt", media_type: "text/plain", dispatch_id: DISPATCH, shard: lane(1), url_or_path: "console.txt", kind: "external-path", href: null },
+      { name: "agent log", media_type: "text/plain", dispatch_id: DISPATCH, shard: lane(1), url_or_path: "agent.log", kind: "external-path", href: null },
+      { name: "build", media_type: "text/html", dispatch_id: DISPATCH, shard: lane(1), url_or_path: "https://ci.shop.example/job/shop-nightly/7/", kind: "url", href: "https://ci.shop.example/job/shop-nightly/7/" },
+      { name: "screenshots", media_type: "inode/directory", dispatch_id: DISPATCH, shard: lane(1), url_or_path: `r-1/${DISPATCH}/${lane(1)}/screenshots`, kind: "directory", href: null },
+    );
+    const { container } = show(detail);
+    const card = container.querySelector(`.shard-card[data-shard="${lane(1)}"]`)!;
+    expect(within(card as HTMLElement).getByRole("link", { name: /^log\.html/ }).getAttribute("href")).toBe(`/artifacts/r-1/${DISPATCH}/${lane(1)}/log.html`);
+    expect(within(card as HTMLElement).getByRole("link", { name: /^build/ }).getAttribute("href")).toBe("https://ci.shop.example/job/shop-nightly/7/");
+    const external = [...card.querySelectorAll('[data-artifact-kind="external-path"]')].map((entry) => entry.textContent);
+    // A bare file name that is the name is said once; another one is shown beside it.
+    expect(external).toEqual(["console.txt", "agent log: agent.log"]);
+    expect(card.querySelector('[data-artifact-kind="directory"]')!.textContent).toBe("screenshots");
+    expect(card.textContent).not.toContain("/somewhere");
+  });
+});
+
+describe("a dispatch that is over", () => {
+  it("lists what an item was last seen doing on its MISSING row, and nothing as running", () => {
+    const detail = run(1, { failing: 0, pending: 1, state: "CANCELLED" });
+    // As the server answers now: no live rows, no RUNNING in the live summary — what was seen is `last_live`.
+    detail.verdicts = [
+      { item_id: "shop.checkout.lane-01.check 1", status: "MISSING", duration_ms: 0, message: "", shard: lane(1), attempt: 1, live: false, last_live: { status: "RUNNING", duration_ms: 0, message: "", shard: lane(1) } },
+      { item_id: "shop.checkout.lane-01.check 2", status: "MISSING", duration_ms: 0, message: "", shard: lane(1), attempt: 1, live: false, last_live: null },
+    ];
+    detail.live_summary = {};
+    const { container } = show(detail);
+    const rows = [...container.querySelectorAll(".verdict-table tbody tr[data-item-id]")];
+    expect(rows.map((row) => row.getAttribute("data-status"))).toEqual(["MISSING", "MISSING"]);
+    expect(container.textContent).toContain(translator.t("run.lastLiveRunning"));
+    expect(container.querySelector(".live-dot")).toBeNull();
+  });
+});
+
 describe("what needs a look comes first", () => {
   it("ranks a part: something failed or never came, then still at work, then all well", () => {
     expect(attention({ summary: { PASS: 3, FAIL: 1 }, done: true }, false)).toBe(0);
@@ -138,7 +177,7 @@ describe("a run of fifty shards", () => {
     expect(within(folded).getByText(translator.t("run.passedShards", { count: 48 }))).toBeTruthy();
     expect([...section.querySelectorAll(":scope > ul .shard-card")].map((card) => card.getAttribute("data-shard"))).toEqual([lane(37), lane(12)]);
 
-    // The first result row is the failure, and it carries the log and the report of ITS shard.
+    // The first result row is the failure, and it carries the log and the report of its own shard.
     const first = container.querySelector(".verdict-table tbody tr[data-item-id]")!;
     expect(first.getAttribute("data-status")).toBe("FAIL");
     const links = [...first.querySelectorAll(".col-files a")] as HTMLAnchorElement[];

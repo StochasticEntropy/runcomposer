@@ -4,22 +4,27 @@
 //
 //     Payments AND (Smoke OR Regression) AND NOT prefix:Quarantine-
 //
-// Grammar of the text form:
+// Grammar of the text form — one grammar, the run spec's (DESIGN.md §3.1),
+// read alike by the server (`runcomposer.core.filtertext`) and here; the
+// cases in tests/fixtures/filter-text.json hold both readers to it:
 //
 //     expr    := and ("OR" and)*
 //     and     := unary ("AND" unary)*
-//     unary   := "NOT" unary | "(" expr ")" | pattern
+//     unary   := "NOT" unary | "(" expr ")" | ("AND" | "OR") "(" expr ")" | "*" | pattern
 //     pattern := bare | "quoted"
 //
 // AND binds tighter than OR. A pattern is quoted when it contains a space, a
-// parenthesis or a quote, or would read as an operator — `"regex:^Cart(V2)?$"`.
-// Operators are upper case only, so a tag called `and` needs no quotes.
+// parenthesis, a quote or a backslash, or would read as an operator or as
+// `*` — `"regex:^Cart(V2)?$"`. Operators are upper case only, so a tag
+// called `and` needs no quotes. `AND (x)` / `OR (x)` is a group of exactly
+// one item, the one shape infix notation cannot spell otherwise.
 //
 // `*` stands for every item of the catalog. The run spec's grammar has no
-// node that says "everything" (an empty AND is refused), so on the wire it is
-// the one expression that is true for every item — NOT of a pattern no tag
-// can match. That encoding is a detail of the wire: the text form, the URL
-// and the editor say `*`, and read `*`.
+// node that says "everything" (an empty AND is refused, and the closed
+// runspec/1.0 schema takes no new node shape), so on the wire it is the one
+// expression that is true for every item — NOT of a pattern no tag can
+// match. That encoding is a detail of the wire: the text form, the URL and
+// the editor say `*`, and read `*`; the server's text form does the same.
 
 import type { FilterAst } from "./types.ts";
 
@@ -48,16 +53,19 @@ export function quotePattern(pattern: string): string {
   return `"${pattern.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
+/** AST → text: the canonical spelling, the server's own (`format_filter`). */
 export function formatFilter(node: FilterAst | null): string {
   if (node == null) return "";
   if (typeof node === "string") return quotePattern(node);
   if (isEverything(node)) return EVERYTHING;
-  if (isNot(node)) {
-    const inner = formatFilter(node.not);
-    return isGroup(node.not) ? `NOT (${inner})` : `NOT ${inner}`;
-  }
-  return node.items.map((child) => (isGroup(child) ? `(${formatFilter(child)})` : formatFilter(child))).join(` ${node.op} `);
+  if (isNot(node)) return `NOT ${operand(node.not)}`;
+  // A group of one item has no infix spelling: its operator applied to it.
+  if (node.items.length === 1) return `${node.op} (${formatFilter(node.items[0]!)})`;
+  return node.items.map(operand).join(` ${node.op} `);
 }
+
+/** A node as an operand of NOT, AND or OR: a group of several is parenthesized. */
+const operand = (node: FilterAst): string => (isGroup(node) && node.items.length > 1 ? `(${formatFilter(node)})` : formatFilter(node));
 
 export type ParseProblem =
   | "empty"
@@ -69,17 +77,51 @@ export type ParseProblem =
   | "unterminated-quote"
   | "needs-quotes";
 
+// Positions. The text form counts where reading stopped in Unicode code
+// points — the unit of the server's `filter-syntax` errors and of the shared
+// conformance cases, and what a person counts as characters. A JavaScript
+// string, a text field's selection and this reader index UTF-16 code units,
+// which differ after an emoji or any other character that takes two
+// UTF-16 units. These two functions are the one place that converts.
+
+/** The code-point position of a UTF-16 offset into `text`. */
+export function codePointPosition(text: string, utf16Offset: number): number {
+  let position = 0;
+  for (let index = 0; index < utf16Offset && index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    // A surrogate pair is one code point: count it at its first half.
+    if (unit >= 0xdc00 && unit <= 0xdfff && index > 0 && isHighSurrogate(text.charCodeAt(index - 1))) continue;
+    position += 1;
+  }
+  return position;
+}
+
+/** The UTF-16 offset of a code-point position in `text` — to place the caret where the server says. */
+export function utf16Offset(text: string, codePoints: number): number {
+  let offset = 0;
+  for (let counted = 0; counted < codePoints && offset < text.length; counted += 1) {
+    offset += isHighSurrogate(text.charCodeAt(offset)) && offset + 1 < text.length ? 2 : 1;
+  }
+  return offset;
+}
+
+const isHighSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
+
 export class FilterParseError extends Error {
   readonly problem: ParseProblem;
-  /** Offset into the text where reading stopped. */
+  /** Where reading stopped, in code points from 0 — as the server and the shared cases count. */
   readonly position: number;
+  /** The same place as a UTF-16 offset into the text — for a text field's caret. */
+  readonly offset: number;
   readonly token: string;
 
-  constructor(problem: ParseProblem, position: number, token = "") {
+  constructor(problem: ParseProblem, text: string, offset: number, token = "") {
+    const position = codePointPosition(text, offset);
     super(`${problem} at ${position}`);
     this.name = "FilterParseError";
     this.problem = problem;
     this.position = position;
+    this.offset = offset;
     this.token = token;
   }
 }
@@ -118,7 +160,7 @@ function tokenize(text: string): Token[] {
           index += 1;
         }
       }
-      if (!closed) throw new FilterParseError("unterminated-quote", start);
+      if (!closed) throw new FilterParseError("unterminated-quote", text, start);
       tokens.push({ type: "pattern", value, at: start });
     } else {
       const start = index;
@@ -126,7 +168,7 @@ function tokenize(text: string): Token[] {
       const word = text.slice(start, index);
       // `regex:(a|b)` typed bare: the pattern runs into a parenthesis or a quote.
       if (/^(regex|prefix):/.test(word) && index < text.length && /[("]/.test(text[index]!)) {
-        throw new FilterParseError("needs-quotes", start, word);
+        throw new FilterParseError("needs-quotes", text, start, word);
       }
       if (word === EVERYTHING) tokens.push({ type: "all", at: start });
       else if (OPERATORS.has(word)) tokens.push({ type: "op", value: word as "AND" | "OR" | "NOT", at: start });
@@ -142,29 +184,37 @@ export function parseFilter(text: string): FilterAst | null {
   if (tokens.length === 0) return null;
   let cursor = 0;
   const peek = () => tokens[cursor];
-  const end = text.length;
+  const fail = (problem: ParseProblem, at: number, token = "") => new FilterParseError(problem, text, at, token);
+
+  const group = (opening: Token): FilterAst => {
+    const inner = or();
+    const closing = peek();
+    if (!closing || closing.type !== "close") throw fail("unbalanced-open", opening.at);
+    cursor += 1;
+    return inner;
+  };
 
   const unary = (): FilterAst => {
     const token = peek();
-    if (!token) throw new FilterParseError("unexpected-end", end);
+    if (!token) throw fail("unexpected-end", text.length);
     cursor += 1;
     if (token.type === "all") return { not: NO_TAG };
     if (token.type === "pattern") {
-      if (token.value === "") throw new FilterParseError("empty", token.at);
+      if (token.value === "") throw fail("empty", token.at);
       return token.value;
     }
     if (token.type === "op") {
       if (token.value === "NOT") return { not: unary() };
-      throw new FilterParseError("unexpected-operator", token.at, token.value);
+      const following = peek();
+      if (following?.type === "open") {
+        // `AND (x)`: a group of one item.
+        cursor += 1;
+        return { op: token.value, items: [group(following)] };
+      }
+      throw fail("unexpected-operator", token.at, token.value);
     }
-    if (token.type === "open") {
-      const inner = or();
-      const closing = peek();
-      if (!closing || closing.type !== "close") throw new FilterParseError("unbalanced-open", token.at);
-      cursor += 1;
-      return inner;
-    }
-    throw new FilterParseError("unbalanced-close", token.at);
+    if (token.type === "open") return group(token);
+    throw fail("unbalanced-close", token.at);
   };
 
   const chain = (op: "AND" | "OR", operand: () => FilterAst): FilterAst => {
@@ -176,13 +226,13 @@ export function parseFilter(text: string): FilterAst | null {
     return items.length === 1 ? items[0]! : { op, items };
   };
   const and = () => chain("AND", unary);
-  const or = () => chain("OR", and);
+  const or = (): FilterAst => chain("OR", and);
 
   const ast = or();
   const rest = peek();
   if (rest) {
-    if (rest.type === "close") throw new FilterParseError("unbalanced-close", rest.at);
-    throw new FilterParseError("missing-operator", rest.at, rest.type === "pattern" || rest.type === "op" ? rest.value : rest.type === "all" ? EVERYTHING : "(");
+    if (rest.type === "close") throw fail("unbalanced-close", rest.at);
+    throw fail("missing-operator", rest.at, rest.type === "pattern" || rest.type === "op" ? rest.value : rest.type === "all" ? EVERYTHING : "(");
   }
   return ast;
 }

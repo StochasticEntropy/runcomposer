@@ -123,8 +123,16 @@ function ArtifactLinks({ artifacts }: { artifacts: Artifact[] }) {
               {artifact.name}
             </span>
           ) : (
-            <span title={t("run.artifactNoLink")}>
-              {artifact.name}: <code>{artifact.url_or_path}</code>
+            // Not served: the server gives a path relative to the artifact
+            // directory, or for a file outside it the bare file name — never
+            // where it lies on the server's machine.
+            <span title={t("run.artifactNoLink")} data-artifact-kind={artifact.kind}>
+              {artifact.name}
+              {artifact.url_or_path && artifact.url_or_path !== artifact.name && (
+                <>
+                  : <code>{artifact.url_or_path}</code>
+                </>
+              )}
             </span>
           )}
         </li>

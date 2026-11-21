@@ -92,6 +92,10 @@ export interface PlanResult {
 export interface Meta {
   version: string;
   locale_default: string;
+  /** The language the server and its runners write free text in (`core.text_language`, a BCP 47 tag). */
+  text_language?: string;
+  /** Whether the API documentation viewers (`/docs`, `/redoc`) are served; `/openapi.json` always is. */
+  api?: { docs: boolean };
   runners: RunnerInfo[];
   catalog: { items: number; tags: number; snapshot: string; loaded_at?: string; sources?: string[] };
   taxonomy: { configured: boolean };
@@ -105,6 +109,7 @@ export interface Meta {
 export interface TaxonomyNode {
   id: string;
   label: string;
+  /** A resolved leaf's one pattern, as the AST holds it (not filter text). */
   filter?: string;
   origin: "file" | "tag" | "unassigned" | string;
   tag_count: number;
@@ -115,6 +120,8 @@ export interface TaxonomyNode {
 export interface ResolvedTaxonomy {
   taxonomy: TaxonomyNode[];
   tags: string[];
+  /** Leaves read as one pattern only by the fallback for text that is not filter text. */
+  warnings?: string[];
 }
 
 export interface TagCount {

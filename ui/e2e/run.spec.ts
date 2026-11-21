@@ -130,7 +130,7 @@ test("a refused dispatch is explained where the run was started and leaves no ru
   const alert = page.locator(".run-bar").getByRole("alert");
   await expect(alert).toContainText(msg("error.code.dispatch-refused"));
   await expect(runButton(page, 3)).toBeFocused();
-  await expect(alert).toContainText("pre_run_hook failed");
+  await expect(alert).toContainText("do not belong to the configured suite roots");
   await expect(page).toHaveURL(/#\/compose/);
   expect(await api.runs()).toHaveLength(0);
   // The selection is untouched and can go to another runner at once.

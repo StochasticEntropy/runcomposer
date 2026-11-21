@@ -50,6 +50,8 @@ export function App() {
     document.documentElement.lang = locale;
   }, [locale]);
 
+  // The language the server's own free text is in — what it is marked with.
+  const textLanguage = meta.data?.text_language ?? "en";
   const i18n: I18nValue = useMemo(
     () => ({
       ...translator,
@@ -57,13 +59,14 @@ export function App() {
         writePref(LOCALE_KEY, next);
         setChosenLocale(next);
       },
+      textLanguage,
       theme,
       setTheme: (next) => {
         writePref(THEME_KEY, next);
         setThemeState(next);
       },
     }),
-    [translator, theme],
+    [translator, textLanguage, theme],
   );
 
   return (
@@ -214,14 +217,23 @@ function Shell({ meta }: { meta: AppContextValue["meta"] }) {
 
       <footer className="app-footer">
         <span>runcomposer {meta.version}</span>
-        <a href="/docs" target="_blank" rel="noreferrer noopener">
-          {t("nav.apiDocs")}
-        </a>
+        <ApiLink docs={meta.api?.docs === true} />
       </footer>
       <div className="sr-only" role="status" aria-live="polite" data-testid="announcer">
         {spoken}
       </div>
     </AppContext.Provider>
+  );
+}
+
+/** The API reference: the documentation viewer where the server serves it
+ * (`core.api.docs`), else the OpenAPI description it always serves. */
+export function ApiLink({ docs }: { docs: boolean }) {
+  const { t } = useI18n();
+  return (
+    <a href={docs ? "/docs" : "/openapi.json"} target="_blank" rel="noreferrer noopener" data-testid="api-link">
+      {docs ? t("nav.apiDocs") : t("nav.apiSchema")}
+    </a>
   );
 }
 

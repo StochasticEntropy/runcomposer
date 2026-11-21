@@ -574,6 +574,18 @@ Shop.Payments.Wallets.T001  [Payments, Payments-Wallets, Smoke, Sprint-12, SHOP-
 - `AND (x)` and `OR (x)` are a group of a single item — the one filter shape
   that infix notation cannot write otherwise; you will only meet it in the
   text of a stored filter that has one.
+- `*` is every item of the catalog. The run spec has no node of its own
+  for that: `*` is stored as `{"not": "regex:^$"}` — NOT of a pattern no tag
+  matches, true of every item — and that node is written `*` wherever a
+  filter is shown as text. Only the bare word is: `Cart*` is a pattern, and
+  `'"*"'` is a tag literally named `*`.
+
+  ```console
+  $ runcomposer compile '*'
+  # 60 item(s) matched
+  $ runcomposer compile '* AND NOT Regression'
+  # 14 item(s) matched
+  ```
 
 Text that cannot be read is a mistake on the command line: exit `2`, with
 the column where reading stopped and what was expected there.
@@ -600,6 +612,17 @@ warning: the filter 'regex:^Cart(V2)?$' is not filter text (needs-quotes at colu
 A tag that is itself spelled like an expression — a tag literally named
 `Auth OR Cart` — is the one case that reads differently now: unquoted it is
 the union of two tags, so write it as `'"Auth OR Cart"'`.
+
+The same reading applies wherever a filter is configured or handed over as
+one string: the `filter` of `ui.quick_filters`, `ui.presets` and
+`ui.default_filter` (a string that needs the single-pattern fallback works,
+and is named in a warning when the configuration is loaded), a taxonomy
+leaf's `filter` (which must read as one pattern — quote a tag spelled like
+an expression; a leaf that needs the fallback is listed under `warnings`
+of the resolved taxonomy), and the testing kit's
+`FakeDispatchContext.from_source(source, selection="Auth OR Cart")`. The SDK
+exports the text form: `parse_filter_text`, `read_filter_string`,
+`quote_pattern` and `FilterSyntaxError`.
 
 ### A filter as a YAML/JSON AST
 

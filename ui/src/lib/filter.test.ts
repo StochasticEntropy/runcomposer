@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { FilterParseError, MATCH_ALL, errorPath, formatFilter, isEverything, leaves, parseFilter, quotePattern } from "./filter.ts";
+import {
+  FilterParseError,
+  MATCH_ALL,
+  codePointPosition,
+  errorPath,
+  formatFilter,
+  isEverything,
+  leaves,
+  parseFilter,
+  quotePattern,
+  utf16Offset,
+} from "./filter.ts";
 import type { FilterAst } from "./types.ts";
 
 const problemOf = (text: string): string => {
@@ -102,6 +113,51 @@ describe("parseFilter", () => {
       expect((error as FilterParseError).position).toBe(9);
       expect((error as FilterParseError).token).toBe("Smoke");
     }
+  });
+});
+
+describe("a group of one item", () => {
+  it("is written as its operator applied to it, and read back to the same AST", () => {
+    const cases: [FilterAst, string][] = [
+      [{ op: "AND", items: ["Auth"] }, "AND (Auth)"],
+      [{ not: { op: "OR", items: ["Cart"] } }, "NOT OR (Cart)"],
+      [{ op: "OR", items: ["Auth", { op: "AND", items: ["Cart"] }] }, "Auth OR AND (Cart)"],
+      [{ op: "AND", items: [{ op: "OR", items: [{ op: "AND", items: ["Auth", "Cart"] }] }] }, "AND (OR (Auth AND Cart))"],
+    ];
+    for (const [ast, text] of cases) {
+      expect(formatFilter(ast)).toBe(text);
+      expect(parseFilter(text)).toEqual(ast);
+    }
+  });
+
+  it("left open is unbalanced at its parenthesis", () => {
+    try {
+      parseFilter("AND (Auth");
+      expect.unreachable();
+    } catch (error) {
+      expect([(error as FilterParseError).problem, (error as FilterParseError).position]).toEqual(["unbalanced-open", 4]);
+    }
+    expect(problemOf("AND Auth")).toBe("unexpected-operator");
+  });
+});
+
+describe("positions", () => {
+  it("are counted in code points, and a caret offset is in UTF-16 units", () => {
+    const text = 'Auth OR 🛒 "Cart';
+    try {
+      parseFilter(text);
+      expect.unreachable();
+    } catch (error) {
+      const problem = error as FilterParseError;
+      expect(problem.problem).toBe("unterminated-quote");
+      expect(problem.position).toBe(10); // 🛒 is one character…
+      expect(problem.offset).toBe(11); // …and two UTF-16 units
+      expect(text.slice(problem.offset, problem.offset + 1)).toBe('"');
+    }
+    expect(codePointPosition("🛒🛒x", 4)).toBe(2);
+    expect(utf16Offset("🛒🛒x", 2)).toBe(4);
+    expect(utf16Offset("abc", 2)).toBe(2);
+    expect(utf16Offset("ab", 9)).toBe(2);
   });
 });
 

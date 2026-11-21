@@ -22,6 +22,19 @@ export interface Translator {
 
 export const AVAILABLE_LOCALES = ["en", "de"] as const;
 
+/** The primary language subtag of a BCP 47 tag, lower case: `de` for `de-CH`. */
+export const primaryLanguage = (tag: string): string => (tag.split("-")[0] ?? "").toLowerCase();
+
+/**
+ * Whether free text the server or a runner wrote — in the deployment's
+ * `text_language` (`core.text_language`, served by `/ui-config` and
+ * `/meta`) — is marked as not translated on a page in `uiLocale`: when the
+ * two are different languages. Regions and scripts do not count: text in
+ * `de-CH` on a page in `de` is in the page's language.
+ */
+export const marksUntranslated = (uiLocale: string, textLanguage: string): boolean =>
+  primaryLanguage(uiLocale) !== primaryLanguage(textLanguage);
+
 export function lookup(messages: Messages, key: string): unknown {
   let node: unknown = messages;
   for (const part of key.split(".")) {

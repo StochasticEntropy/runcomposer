@@ -390,6 +390,7 @@ function TextEditor({
 }) {
   const { t } = useI18n();
   const [problem, setProblem] = useState<FilterParseError | null>(null);
+  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const fieldId = useId();
   const errorId = useId();
   const setText = onText;
@@ -398,8 +399,11 @@ function TextEditor({
     try {
       onApply(parseFilter(text));
     } catch (error) {
-      if (error instanceof FilterParseError) setProblem(error);
-      else throw error;
+      if (error instanceof FilterParseError) {
+        setProblem(error);
+        // The caret goes where reading stopped (a UTF-16 offset, as the field counts).
+        fieldRef.current?.setSelectionRange(error.offset, error.offset);
+      } else throw error;
     }
   };
 
@@ -413,6 +417,7 @@ function TextEditor({
     >
       <label htmlFor={fieldId}>{t("filter.textLabel")}</label>
       <textarea
+        ref={fieldRef}
         id={fieldId}
         className="input mono"
         rows={3}

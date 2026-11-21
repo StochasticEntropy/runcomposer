@@ -79,12 +79,19 @@ const SCRIPTED = {
   ],
 };
 
+// Declares its one shard, then raises RuntimeError with this key in its
+// message — the runner of tests/test_api_runner_error.py, imported from the
+// repository root.
+const EXPLODING = { module: "tests.test_api_runner_error:ExplodingRunner", gateway_key: "k-shop-e2e" };
+export const EXPLODING_ERROR = "RuntimeError: the staging shop gateway refused key k-shop-e2e";
+
 /** Deployments the tests run against. Paths in a config are relative to the config file. */
 export const CONFIGS = {
   // The bundled demo corpus (60 items). `demo` answers at once; `slow` takes
   // long enough per item to be watched and cancelled; `scripted` declares one
-  // parameter of every kind; `strict` refuses every dispatch through a
-  // failing readiness hook; `offline` reports itself unhealthy, with a reason.
+  // parameter of every kind; `strict` refuses every dispatch — the demo
+  // catalog does not lie under its suite root; `offline` reports itself
+  // unhealthy, with a reason.
   demo: {
     store: STORE,
     core: { artifact_dir: "artifacts" },
@@ -92,7 +99,7 @@ export const CONFIGS = {
       demo: {},
       slow: { plugin: "demo", delay_s: 0.4 },
       scripted: SCRIPTED,
-      strict: { plugin: "robot-pool", suite_root: ROBOT_SHOP, pre_run_hooks: ["exit 3"] },
+      strict: { plugin: "robot-pool", suite_root: ROBOT_SHOP },
       offline: { plugin: "robot-pool", suite_root: "no-such-directory" },
       // Refuses already when asked for a plan: its working directory is not there.
       closed: { plugin: "command", format: "runcomposer-verdicts", command: "true", cwd: "no-such-directory" },
@@ -160,6 +167,12 @@ export const CONFIGS = {
   },
   // The server's default language is German.
   german: { store: STORE, core: { locale_default: "de" }, runners: { demo: {} } },
+  // A runner that declares its shard and then raises: the dispatch fails
+  // with the exception's text.
+  failing: { store: STORE, runners: { exploding: EXPLODING } },
+  // A deployment whose server and runners write German (`core.text_language`)
+  // and that serves the API documentation viewers (`core.api.docs`).
+  germanText: { store: STORE, core: { text_language: "de", api: { docs: true } }, runners: { exploding: EXPLODING } },
   // Results may be pushed without a token, and no runner is configured:
   // a selection can only be exported.
   open: { store: STORE, core: { ingestion: { tokens: "disabled" } }, runners: {} },

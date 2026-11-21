@@ -1660,9 +1660,12 @@ neither is a degraded version of the other:
    server's text as the fallback. **What it cannot word it does not
    pretend to:** a sentence a runner, a tool or the server wrote at run time
    (an error's detail, a health reason, a plan's notes and text, a refusal)
-   is shown as written, carries `lang="en"` — the server and the reference
-   plugins write English — and, while the page is in another language, a
-   small mark in front, the same everywhere. Translating it would mean
+   is shown as written, carries the language the deployment says such text
+   is in — `core.text_language` (§8), served as `text_language` by
+   `/ui-config` and `/meta`; `en` by default, since the server and the
+   reference plugins write English — and, while the page is in another
+   language (the primary subtags differ: `de-CH` text on a German page is
+   not marked), a small mark in front, the same everywhere. Translating it would mean
    guessing at text the UI has never seen; leaving it unmarked would let it
    pass for a gap in the translation. Names and data are not marked: tags,
    item names, test messages, and what a deployment declares itself — a
@@ -1676,7 +1679,8 @@ neither is a degraded version of the other:
    from `default_filter` — only when the URL carries no selection and the
    session has no draft to come back to — and offers `presets` (read from
    `GET /api/v1/presets`), each of which fills selection, runner, the
-   runner's options, title and labels. Next to them, under a heading of
+   runner's options, title and labels. Each is taken from its
+   `tag_filter`; its `text` is the canonical filter text, shown as it is. Next to them, under a heading of
    their own, are the **selections a person saved** ("Save selection…":
    filter, unticked items, runner, options, title, labels under a name; use,
    rename, delete). Those live in the browser's `localStorage` — per browser
@@ -1721,7 +1725,26 @@ into one line once there are many, and each result row linking to the log
 and report of its own shard — cancel, rerun (all, or what
 did not pass, optionally with a title; the new run links back through
 `rerun_of`), a plan for the stored run (`POST /runs/{id}/plan`) and delete.
-Inbox: attach, promote, discard.
+Inbox: attach, promote, discard. The footer links the API documentation
+viewer when the server serves it (`meta.api.docs`), else the OpenAPI
+description (`/openapi.json`), which it always serves.
+
+**How a filter travels.** The UI sends a selection's `tag_filter` as the
+AST, except a filter that is one pattern: a lone string is filter text to
+the server (§9), so a single pattern is sent as its quoted text
+(`quotePattern`) — a tag spelled `Auth OR Cart`, a tag named `AND` or `*`,
+`"regex:^Cart(V2)?$"` — which the server reads back to that one pattern; a
+run spec stores the pattern, never the quotes. Server text it receives
+(`text` of a configured filter) is canonical text, and what it acts on is
+the entry's `tag_filter`. The text editor checks text locally before
+applying it; a `filter-syntax` refusal (`problem`, `position`, `token`) is
+worded by the UI where it is shown. Positions are counted in code points,
+as the server and the shared cases count them; the UI converts to UTF-16
+offsets in one place (`codePointPosition` / `utf16Offset` in
+`ui/src/lib/filter.ts`) to put the caret there. An artifact is linked by
+its served `href`, never by `url_or_path`; a recorded directory is listed
+by name, and a file outside the run's artifact directory by name and the
+file name the server gives — never a path of the server's machine.
 
 Not in the UI: uploading results (§5), and the label-scoped history picker
 of §7 — a rerun is an action of one run.
@@ -1733,13 +1756,17 @@ what depends on getting it exactly right: an expression editor over the run
 spec's own filter grammar (a rule is a chip, a group a box with its
 operator, NOT a switch on either, and the same expression can be typed as
 text — the grammar of §3.1 rather than a widget's model translated through
-an adapter; the one spelling of its own is `*` for "every item", which
-the grammar can only say as the negation of a pattern nothing matches —
-that is what is sent, and the UI never shows it); dialogs on the native `<dialog>` element (focus trap,
+an adapter — one grammar, read alike by the server and the UI and held to
+the same cases, `tests/fixtures/filter-text.json`, on both sides; `*` for
+"every item" is part of it, and on the wire it is the negation of a
+pattern nothing matches, `{"not": "regex:^$"}`, which is what is sent and
+what the UI never shows); dialogs on the native `<dialog>` element (focus trap,
 `Escape`, return of focus); and its own windowing for long lists, so the
 resolved tag tree — which grows with the catalog — the selection preview and
 the run's results keep only the rows in view in the DOM. Vite builds it
-into the wheel. Unit tests run with vitest; browser end-to-end tests with
+into the wheel; its development server proxies `/api` and `/artifacts` to
+a local `runcomposer serve` with `Host` passed through, so the server's
+refusal of cross-site writes (§9) takes the page as same-origin. Unit tests run with vitest; browser end-to-end tests with
 Playwright (`npm run e2e`, which builds first); `npm run lint` is eslint plus
 the TypeScript check. Per-item *live* state requires a runner that streams
 it (§6.2a) or an executor that pushes it (§5); without it the grid shows

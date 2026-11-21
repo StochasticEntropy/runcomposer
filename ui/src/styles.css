@@ -1489,7 +1489,7 @@ main {
  * the page speaks another language than those words, they carry the language
  * they are in — a small mark in front, the same everywhere.
  */
-:root:not([lang="en"]) .foreign::before {
+.foreign.is-marked::before {
   content: attr(lang);
   content: attr(lang) / "";
   display: inline-block;

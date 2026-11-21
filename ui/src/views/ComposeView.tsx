@@ -34,7 +34,7 @@ import {
 import type { ComposeLink, PreviewState } from "../lib/compose.ts";
 import { ROOT_ID, addNode, addTag, emptyRoot, fromAst, nodeFromAst, toAstWithPaths } from "../lib/editor.ts";
 import type { GroupNode } from "../lib/editor.ts";
-import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter } from "../lib/filter.ts";
+import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter, quotePattern } from "../lib/filter.ts";
 import { setFlash } from "../lib/flash.ts";
 import { parseLabel } from "../lib/format.ts";
 import { fromPayload, mergeValues, toPayload, validateValues } from "../lib/params.ts";
@@ -103,13 +103,16 @@ function initialDraft(query: Record<string, string>, defaultFilter: string): { d
 function quickStarts(taxonomy: TaxonomyNode[], configured: QuickFilter[]): QuickFilter[] {
   const starts: QuickFilter[] = [];
   // What the deployment configured is offered above the filter at all times; no need to repeat it here.
+  // Compared as canonical text: a configured entry's `text` is the server's own.
   const seen = new Set(configured.map((start) => start.text));
   const walk = (nodes: TaxonomyNode[]) => {
     for (const node of nodes) {
       if (starts.length >= 12) return;
-      if (node.origin === "file" && isSelectable(node) && !seen.has(node.filter!)) {
-        seen.add(node.filter!);
-        starts.push({ label: node.label, tag_filter: node.filter!, text: node.filter!, kind: "pattern" });
+      // A resolved leaf's filter is one pattern, as the AST holds it.
+      const text = node.filter === undefined ? "" : quotePattern(node.filter);
+      if (node.origin === "file" && isSelectable(node) && !seen.has(text)) {
+        seen.add(text);
+        starts.push({ label: node.label, tag_filter: node.filter!, text, kind: "pattern" });
       }
       if (node.origin === "file" && node.children) walk(node.children);
     }
@@ -123,7 +126,8 @@ export function ComposeView({ route }: { route: Route }) {
   const i18n = useI18n();
   const { t } = i18n;
 
-  const defaultFilter = meta.ui.default_filter?.text ?? "";
+  // The deployment's default filter, from its AST: exact, whatever the text says.
+  const defaultFilter = meta.ui.default_filter ? formatFilter(meta.ui.default_filter.tag_filter) : "";
   const [initial] = useState(() => initialDraft(route.query, defaultFilter));
   const [root, setRoot] = useState<GroupNode>(initial.root);
   const [unreadableLink, setUnreadableLink] = useState(initial.unreadable);
@@ -201,7 +205,7 @@ export function ComposeView({ route }: { route: Route }) {
   const matched = useMemo(() => (fresh ? (preview.result?.items ?? []) : []), [fresh, preview.result]);
   const selectedCount = useMemo(() => matched.filter((item) => !excluded.has(item.id)).length, [matched, excluded]);
   const filterError =
-    preview.status === "error" && preview.error && ["invalid-filter", "invalid-selection"].includes(preview.error.code)
+    preview.status === "error" && preview.error && ["invalid-filter", "filter-syntax", "invalid-selection"].includes(preview.error.code)
       ? preview.error
       : null;
   const errorNodeId = useMemo(() => {

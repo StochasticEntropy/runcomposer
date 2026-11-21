@@ -130,7 +130,7 @@ test("cancel a real run in flight", async ({ page, open, api }) => {
   expect(cancelled.completion).toBeNull();
 });
 
-test("a run in lanes: the plan and the results per group as well as per shard", async ({ page, open, api }) => {
+test("a run in lanes: the plan, and each region has its own results, and so has each shard", async ({ page, open, api }) => {
   await open("#/compose?f=Checkout");
   await expectPreview(page, 13, 58);
   await page.getByRole("combobox", { name: msg("runner.label") }).selectOption("robot-lanes");

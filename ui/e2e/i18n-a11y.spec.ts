@@ -183,8 +183,9 @@ test.describe("a browser that asks for German", () => {
     await expect(status.locator(".runner-health")).toContainText(/Robot Framework \d/);
     await expect(form.getByRole("checkbox", { name: de("builtin.param.robot-pool.allow_drift.label") })).toBeVisible();
     await expect(form).toContainText(de("builtin.param.robot-pool.allow_drift.help"));
-    // None of that is anybody else's wording: nothing here is marked.
-    await expect(page.locator(".run-panel .foreign")).toHaveCount(0);
+    // None of that is anybody else's wording: nothing here is marked — except
+    // the rows of the runner's own health checks, which are its words.
+    await expect(page.locator(".run-panel .foreign:not(.health-checks .foreign)")).toHaveCount(0);
 
     // A reason only the runner can give — in its words, said to be English, and marked for the eye.
     await runner.selectOption("offline");

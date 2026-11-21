@@ -32,6 +32,8 @@ export function useApp(): AppContextValue {
 
 export interface I18nValue extends Translator {
   setLocale: (locale: string) => void;
+  /** The language the server and its runners write free text in (`text_language`); `en` until the server said. */
+  textLanguage: string;
   theme: Theme;
   setTheme: (theme: Theme) => void;
 }

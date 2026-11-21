@@ -14,6 +14,7 @@ import {
   tristate,
 } from "./compose.ts";
 import type { PreviewState } from "./compose.ts";
+import { parseFilter, quotePattern } from "./filter.ts";
 import { naturalCompare } from "./format.ts";
 import { ApiError } from "./request.ts";
 import type { CatalogItem, CompileResult, Selection } from "./types.ts";
@@ -37,6 +38,22 @@ describe("what is sent", () => {
     expect(previewSelection("Payments", null)).toEqual({ tag_filter: "Payments" });
     expect(previewSelection("Payments", ["a"])).toEqual({ tag_filter: "Payments", item_ids: ["a"] });
     expect(previewSelection(null, ["a"])).toEqual({ item_ids: ["a"] });
+  });
+
+  it("sends a single pattern as its quoted text, which the server reads back to exactly that pattern", () => {
+    // A lone string is filter text to the server: `Auth OR Cart` would be a union.
+    for (const pattern of ["Auth OR Cart", "AND", "*", "regex:^Cart(V2)?$", 'Cart "V2"', "Sprint 12", "Checkout (Gift)"]) {
+      const sent = previewSelection(pattern, null)!.tag_filter as string;
+      expect(sent).toBe(quotePattern(pattern));
+      expect(sent.startsWith('"')).toBe(true);
+      expect(parseFilter(sent)).toBe(pattern);
+    }
+    // An ordinary tag needs no quotes and is sent as it is.
+    expect(previewSelection("Payments-Cards", null)).toEqual({ tag_filter: "Payments-Cards" });
+    // An expression is sent as the AST, patterns inside it untouched.
+    const ast = { op: "OR" as const, items: ["Auth OR Cart", "regex:^Cart(V2)?$"] };
+    expect(dispatchSelection(ast, null, CARDS, new Set())).toEqual({ tag_filter: ast });
+    expect(dispatchSelection("Auth OR Cart", null, CARDS, new Set())).toEqual({ tag_filter: '"Auth OR Cart"' });
   });
 
   it("dispatches the filter as it is while nothing matched is unticked", () => {

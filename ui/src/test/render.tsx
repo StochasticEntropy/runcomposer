@@ -11,10 +11,11 @@ import en from "../locales/en.json";
 
 export const translator = createTranslator(en, "en");
 
-const i18n: I18nValue = { ...translator, setLocale: () => undefined, theme: "system", setTheme: () => undefined };
+const i18n: I18nValue = { ...translator, setLocale: () => undefined, textLanguage: "en", theme: "system", setTheme: () => undefined };
 
-export function renderWithI18n(ui: ReactElement, app?: Partial<AppContextValue>) {
-  const tree = <I18nContext.Provider value={i18n}>{ui}</I18nContext.Provider>;
+/** Render `ui` in English — or, with `i18nOverrides`, another language or text language. */
+export function renderWithI18n(ui: ReactElement, app?: Partial<AppContextValue>, i18nOverrides: Partial<I18nValue> = {}) {
+  const tree = <I18nContext.Provider value={{ ...i18n, ...i18nOverrides }}>{ui}</I18nContext.Provider>;
   if (!app) return render(tree);
   return render(<AppContext.Provider value={app as AppContextValue}>{tree}</AppContext.Provider>);
 }

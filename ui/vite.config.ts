@@ -31,10 +31,16 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2022",
   },
+  // The dev server passes the API through to `runcomposer serve` on its
+  // default port. The `Host` header is passed through unchanged
+  // (`changeOrigin: false` — Vite's string shorthand would rewrite it): the
+  // server refuses a state-changing request whose `Origin` is not its own
+  // `Host` (or listed in `core.api.cors`), and the page's origin is the dev
+  // server's.
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8100",
-      "/artifacts": "http://127.0.0.1:8100",
+      "/api": { target: "http://127.0.0.1:8100", changeOrigin: false },
+      "/artifacts": { target: "http://127.0.0.1:8100", changeOrigin: false },
     },
   },
   test: {

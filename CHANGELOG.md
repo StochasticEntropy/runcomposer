@@ -425,6 +425,11 @@ run-time dependencies.
   a labelled switch, and the same expression as text. Rules are chips that
   wrap, with the operator said once per group; a long group scrolls inside
   itself. "Every item" is one plain rule, written `*` in text and links.
+  The text is the run spec's one filter grammar, read alike by the server
+  (`runcomposer.core.filtertext`) and the UI, and both are tested against
+  the same cases (`tests/fixtures/filter-text.json`, none set aside): `*`,
+  a group of one item written `AND (x)` / `OR (x)`, positions of a problem
+  counted in characters (code points) as the server counts them.
   While text is typed and not applied, the filter in effect stays in view
   and nothing can be run, planned or exported. The third-party filter
   widget is gone.
@@ -445,7 +450,13 @@ run-time dependencies.
   checks one by one.
 - A deployment's presets fill selection, runner, options, title and labels;
   its default filter is where a new selection starts; quick filters are
-  always at hand, and one may be a whole expression.
+  always at hand, and one may be a whole expression. The UI takes each of
+  them from its `tag_filter`; their `text` is canonical filter text.
+- A filter that is a single pattern is sent as its quoted text (a lone
+  string `tag_filter` is filter text to the server): a tag spelled `Auth OR
+  Cart`, a tag named `AND` or `*`, and `regex:^Cart(V2)?$` select exactly
+  that pattern, with no warning on the preview; an expression is sent as the
+  AST. A `filter-syntax` refusal is worded by the UI, with its column.
 - "Save selection…" keeps what Compose holds — filter, unticked items,
   runner, options, title, labels — under a name, listed next to the presets;
   use, rename, delete. Saved selections are per browser (`localStorage`),
@@ -472,6 +483,16 @@ run-time dependencies.
   the reference runners' own titles, descriptions, options and health. The
   page starts in the viewer's choice, else the browser's language, else the
   deployment's default, and `<html lang>` says which.
+- Text the server or a runner wrote carries the language the deployment
+  says it is in (`core.text_language`, `en` by default, served as
+  `text_language`), and is marked as not translated only while the page is
+  in another language (primary subtags compared: `de-CH` text on a German
+  page is not marked).
+- The footer links the API documentation viewer when the server serves it
+  (`meta.api.docs`, `core.api.docs: true`), else the OpenAPI description at
+  `/openapi.json`.
+- The development server's proxy passes `Host` through, so the server's
+  refusal of cross-site writes takes the proxied page as same-origin.
   Keyboard operation of the main flow, phone-sized screens, light and dark.
 - Browser end-to-end tests (`npm run e2e`) drive the built UI against real
   servers; unit and component tests run under vitest; `npm run lint` is
@@ -482,15 +503,24 @@ Known limits of the UI:
 - Sentences a runner, a tool or the server writes at run time — an error's
   detail, a health reason, a plan's notes and text, a refusal — are not
   translated: the UI has never seen them and will not guess. They are shown
-  as written, carry `lang="en"`, and are marked as such while the page is in
-  another language. A plugin that writes another language than English is
-  mislabelled by that; runners do not declare the language they write.
+  as written, in the deployment's `core.text_language`, and are marked as
+  such while the page is in another language. That is one language per
+  deployment: runners do not declare the language they write.
 - A parameter's label and help, presets and quick filters are the
   deployment's own wording and are shown as written in every language.
-- `*` for "every item" is the UI's spelling. The run spec says it as
-  `{"not": "regex:^$"}`, which is what the API receives and returns.
+- `*` for "every item" is a spelling of the text form, on the server and in
+  the UI. The run spec says it as `{"not": "regex:^$"}` — `runspec/1.0`'s
+  filter grammar is closed and has no other node for it — and that is what
+  the API receives and returns and a stored spec holds; every `text` field
+  shows `*`.
 
 API additions that came with it:
+
+- `GET /api/v1/ui-config` and `GET /api/v1/meta` carry `text_language`.
+- The resolved taxonomy (`GET /api/v1/taxonomy?resolve=true`) carries
+  `warnings`: leaves read as one pattern only by the fallback for strings
+  that are not filter text. A `filter-syntax` error carries `token` where
+  reading stopped at a word.
 
 - A dispatch reports `planned_verdicts`; each shard of a run's roll-up
   reports `planned` (both null when a runner declared shard names only).

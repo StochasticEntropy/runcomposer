@@ -9,7 +9,8 @@
       "one": "Lieferung wartet",
       "other": "Lieferungen warten"
     },
-    "apiDocs": "API-Referenz"
+    "apiDocs": "API-Referenz",
+    "apiSchema": "API-Beschreibung (OpenAPI)"
   },
   "prefs": {
     "language": "Sprache",
@@ -50,6 +51,9 @@
       "client-error": "Die Seite konnte das nicht ausführen.",
       "invalid-request": "Die Anfrage wurde nicht angenommen.",
       "invalid-filter": "Der Filter ist ungültig.",
+      "filter-syntax": "Der Filtertext ist nicht lesbar.",
+      "cross-site-request": "Der Server hat eine Anfrage abgelehnt, die er für eine von einer anderen Website hielt.",
+      "results-push-refused": "Das Übertragen der Ergebnisse wurde abgelehnt.",
       "invalid-selection": "Die Auswahl ist ungültig.",
       "invalid-parameter": "Dieser Wert wurde nicht angenommen.",
       "unknown-runner": "Dieser Runner ist nicht konfiguriert.",
@@ -794,6 +798,10 @@
           "label": "Partitionen",
           "help_each": "Die Auswahl läuft einmal je gewählter Partition.",
           "help_split": "Die Auswahl wird auf die gewählten Partitionen verteilt (jeder Test läuft einmal)."
+        },
+        "partition_mode": {
+          "label": "Partitionsmodus",
+          "help": "split: jeder Test einmal, verteilt auf die gewählten Partitionen; each: alles auf jeder gewählten Partition."
         },
         "allow_drift": {
           "label": "Abweichung zulassen",

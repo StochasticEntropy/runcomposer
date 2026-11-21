@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { useI18n } from "../hooks/context.tsx";
 import { useNow } from "../hooks/usePage.ts";
 import { absoluteTime, relativeTime } from "../lib/format.ts";
+import { marksUntranslated } from "../lib/i18n.ts";
 import type { Translator } from "../lib/i18n.ts";
 import type { ApiError } from "../lib/request.ts";
 
@@ -15,14 +16,16 @@ import type { ApiError } from "../lib/request.ts";
 // The UI words everything it knows a code or a field for. What reaches it as
 // free text — a connector's description, a runner's plan, a tool's message, the
 // detail of a server error — it cannot translate. Such text is shown as it
-// was written and is marked: `lang="en"` for assistive technology (the
-// reference plugins and the server write English), and — while the UI itself
-// is in another language — set apart visually (styles: `.foreign`).
+// was written and carries the language it is written in, for assistive
+// technology: the deployment's `text_language` (`core.text_language`, `en`
+// unless configured). While the page is in another language, it is also set
+// apart visually by a small mark (styles: `.foreign.is-marked`).
 export function Foreign({ children, block = false, className = "" }: { children: ReactNode; block?: boolean; className?: string }) {
-  const { t } = useI18n();
+  const { t, locale, textLanguage } = useI18n();
+  const marked = marksUntranslated(locale, textLanguage);
   const Tag = block ? "pre" : "span";
   return (
-    <Tag lang="en" className={`foreign ${className}`.trim()} title={block ? undefined : t("foreign.hint")}>
+    <Tag lang={textLanguage} className={["foreign", marked ? "is-marked" : "", className].filter(Boolean).join(" ")} title={block || !marked ? undefined : t("foreign.hint")}>
       {children}
     </Tag>
   );
@@ -31,23 +34,33 @@ export function Foreign({ children, block = false, className = "" }: { children:
 // -- errors -----------------------------------------------------------------------
 
 /** An error in the viewer's language: what happened (by the API's stable
- * code), and the server's own words as the detail. */
-export function describeError(t: Translator, error: ApiError): { title: string; detail: string } {
+ * code), and the server's own words as the detail — or, where the UI knows
+ * the problem by its code, its own words (`own`). */
+export function describeError(t: Translator, error: ApiError): { title: string; detail: string; own?: boolean } {
   const title = t.tOr(`error.code.${error.code}`, t.t("error.generic"));
-  if (error.code === "network") return { title, detail: t.t("error.networkDetail") };
+  if (error.code === "network") return { title, detail: t.t("error.networkDetail"), own: true };
+  if (error.code === "filter-syntax") {
+    // Filter text the server could not read: the problem and where, in
+    // code points as the server counts them — the column a person counts.
+    const { problem, position, token } = error.extra;
+    const key = `filter.parse.${String(problem)}`;
+    if (typeof position === "number" && t.has(key)) {
+      return { title, detail: t.t(key, { position: position + 1, token: typeof token === "string" ? token : "" }), own: true };
+    }
+  }
   return { title, detail: error.detail };
 }
 
 export function ErrorText({ error }: { error: ApiError }) {
   const i18n = useI18n();
-  const { title, detail } = describeError(i18n, error);
+  const { title, detail, own } = describeError(i18n, error);
   return (
     <>
       <strong>{title}</strong>
       {detail && detail !== title && (
         <>
           {" "}
-          {error.code === "network" ? <span className="error-detail">{detail}</span> : <Foreign className="error-detail">{detail}</Foreign>}
+          {own ? <span className="error-detail">{detail}</span> : <Foreign className="error-detail">{detail}</Foreign>}
         </>
       )}
     </>

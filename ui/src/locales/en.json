@@ -9,7 +9,8 @@
       "one": "delivery waiting",
       "other": "deliveries waiting"
     },
-    "apiDocs": "API reference"
+    "apiDocs": "API reference",
+    "apiSchema": "API description (OpenAPI)"
   },
   "prefs": {
     "language": "Language",
@@ -50,6 +51,9 @@
       "client-error": "The page could not do that.",
       "invalid-request": "The request was not accepted.",
       "invalid-filter": "The filter is not valid.",
+      "filter-syntax": "The filter text cannot be read.",
+      "cross-site-request": "The server refused a request it took for one from another site.",
+      "results-push-refused": "The results push was refused.",
       "invalid-selection": "The selection is not valid.",
       "invalid-parameter": "This value was not accepted.",
       "unknown-runner": "This runner is not configured.",
@@ -794,6 +798,10 @@
           "label": "Partitions",
           "help_each": "Run the selection once per chosen partition.",
           "help_split": "Distribute the selection over the chosen partitions (every test runs once)."
+        },
+        "partition_mode": {
+          "label": "Partition mode",
+          "help": "split: every test once, distributed over the chosen partitions; each: everything on every chosen partition."
         },
         "allow_drift": {
           "label": "Allow drift",
