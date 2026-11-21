@@ -480,6 +480,36 @@ def test_the_commit_check_reads_a_range_and_leaves_trailers_alone(tmp_path):
     assert check.main(["check", "HEAD~1"], repo) == 0  # the first commit alone passes
 
 
+def test_the_commit_check_binds_from_the_commit_that_introduced_it(tmp_path):
+    """A message written before the check existed is not held to it; the
+    commit that adds the check and every later one are."""
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    check = commit_check()
+    repo = tmp_path / "repo"
+    (repo / "ci").mkdir(parents=True)
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=shop", "-c", "user.email=ci@shop.example", "-c", "commit.gpgsign=false", *args],
+            cwd=repo, check=True, capture_output=True,
+        )
+
+    git("init", "-q")
+    git("commit", "-q", "--allow-empty", "-m", "Add the cart page")
+    git("commit", "-q", "--allow-empty", "-m", f"Point the job at {FOREIGN_HOST}")
+    (repo / "ci" / "check_commit_messages.py").write_text("# the check\n", encoding="utf-8")
+    git("add", "ci/check_commit_messages.py")
+    git("commit", "-q", "-m", "Check the messages of commits")
+    assert check.check("HEAD~2..HEAD", repo) == []  # the older message is not held to the rule
+    git("commit", "-q", "--allow-empty", "-m", f"Talk to {FOREIGN_HOST} again")
+    found = {(f.rule, f.token) for f in check.check("HEAD~3..HEAD", repo)}
+    assert found == {("host", FOREIGN_HOST)}
+    assert len(check.commits("HEAD~3..HEAD", repo)) == 2  # the introducing commit and the one after
+
+
 def test_the_commit_check_skips_outside_a_checkout(tmp_path, capsys):
     check = commit_check()
     assert check.main(["check"], tmp_path) == 0

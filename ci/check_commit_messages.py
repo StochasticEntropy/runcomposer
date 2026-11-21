@@ -69,9 +69,29 @@ def without_trailers(message: str) -> str:
     return "\n\n".join(paragraphs) + "\n"
 
 
+SCRIPT = "ci/check_commit_messages.py"
+
+
+def rule_start(cwd: Path) -> str | None:
+    """The commit that added this check to the history of ``cwd``, if any.
+
+    A rule binds from the commit that introduces it: messages written before
+    the check existed are not held to it (they cannot be changed once
+    published), every commit from that one on is.
+    """
+    try:
+        added = git(cwd, "log", "--diff-filter=A", "--format=%H", "--", SCRIPT).split()
+    except subprocess.CalledProcessError:
+        return None
+    return added[-1] if added else None
+
+
 def commits(rev_range: str, cwd: Path = REPO) -> list[tuple[str, str]]:
-    """(short hash, message) of every commit in the range, oldest first."""
-    out = git(cwd, "log", "--reverse", "--format=%h%x00%B%x1e", rev_range)
+    """(short hash, message) of every commit in the range, oldest first —
+    without the commits that came before the check itself (``rule_start``)."""
+    start = rule_start(cwd)
+    older = ["--not", f"{start}^@"] if start else []
+    out = git(cwd, "log", "--reverse", "--format=%h%x00%B%x1e", rev_range, *older)
     found = []
     for record in out.split("\x1e"):
         record = record.lstrip("\n")
