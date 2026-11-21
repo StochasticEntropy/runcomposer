@@ -15,10 +15,8 @@ quarantine it and move on.
 
 from __future__ import annotations
 
-import hmac
 import logging
 import os
-import secrets
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -27,10 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 from runcomposer.core import events as kinds
 from runcomposer.core.errors import (
-    AuthRequired,
     ConfigError,
     Conflict,
-    Forbidden,
     IngestError,
     InvalidRequest,
     ParseError,
@@ -38,7 +34,7 @@ from runcomposer.core.errors import (
     UnknownRun,
 )
 from runcomposer.core.handoff import check_reportable, correlate
-from runcomposer.core.hashing import bundle_hash, sha256_hex, verdicts_hash
+from runcomposer.core.hashing import bundle_hash, verdicts_hash
 from runcomposer.core.lifecycle import ACTIVE_STATES
 from runcomposer.core.marker import read_marker
 from runcomposer.core.model import LIVE_STATUSES, DispatchRecord, LiveStatus, RunRecord, Verdict
@@ -46,6 +42,7 @@ from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
 from .quarantine import QuarantineEntry
+from .tokens import authorize_push, mint_token
 
 if TYPE_CHECKING:
     from .service import Service
@@ -61,7 +58,6 @@ __all__ = [
 log = logging.getLogger("runcomposer.ingestion")
 
 REFERENCE_FORMAT = "runcomposer-verdicts"
-TOKEN_PREFIX = "rct_"
 
 
 @dataclass
@@ -613,28 +609,14 @@ class Ingestion:
     # -- the ingest token (§5 security floor) -------------------------------------------
 
     def mint_token(self, run_id: str, dispatch_id: str | None) -> str | None:
-        """Mint a token for a dispatch (or for the run). Only its hash is
-        stored; the plaintext exists in the return value and nowhere else.
-        ``None`` when the deployment disabled tokens."""
-        if not self._service.config.tokens_required:
-            return None
-        token = TOKEN_PREFIX + secrets.token_urlsafe(24)
-        self._service.store.set_ingest_token(run_id, dispatch_id, sha256_hex(token.encode("utf-8")))
-        return token
+        """Mint a token for a dispatch (or for the run); ``None`` when the
+        deployment disabled tokens (``app.tokens``)."""
+        return mint_token(self._service, run_id, dispatch_id)
 
     def authorize_push(self, run_id: str, token: str | None) -> str | None:
-        """Check a push's token **before anything is read or written**.
-        Returns the dispatch the token is bound to (``None`` for a run-level
-        token, or when tokens are disabled)."""
-        if not self._service.config.tokens_required:
-            return None
-        if not token:
-            raise AuthRequired("an ingest token is required to push results (DESIGN.md §5)")
-        presented = sha256_hex(token.encode("utf-8"))
-        for stored, dispatch_id in self._service.store.ingest_tokens(run_id).items():
-            if hmac.compare_digest(stored, presented):
-                return dispatch_id
-        raise Forbidden("the ingest token does not match this run")
+        """Check a push's token **before anything is read or written**
+        (``app.tokens``). Returns the dispatch the token is bound to."""
+        return authorize_push(self._service, run_id, token)
 
     # -- internals ------------------------------------------------------------------------
 

@@ -34,7 +34,14 @@ from runcomposer.core.errors import (
 )
 from runcomposer.core.taxonomy import TaxonomyError
 
-__all__ = ["CrossSiteRequest", "error_body", "error_response", "install_error_handlers", "status_of"]
+__all__ = [
+    "CrossSiteRequest",
+    "UnknownHost",
+    "error_body",
+    "error_response",
+    "install_error_handlers",
+    "status_of",
+]
 
 log = logging.getLogger("runcomposer.http")
 
@@ -70,6 +77,14 @@ class CrossSiteRequest(Forbidden):
     here rather than in the domain's error taxonomy."""
 
     code = "cross-site-request"
+
+
+class UnknownHost(InvalidRequest):
+    """A request for a host name the server does not answer to
+    (``core.api.hosts``, see ``crosssite``). A refusal of the HTTP transport,
+    like :class:`CrossSiteRequest`."""
+
+    code = "unknown-host"
 
 
 def status_of(exc: BaseException) -> int:

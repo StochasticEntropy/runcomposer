@@ -57,9 +57,9 @@ secret. Secrets are blanked out of free text — messages, reasons, errors,
 plan text and notes, health details, error documents, log lines — and out of
 the string values of runner-defined data (health ``data``, plan ``data``);
 never out of mapping keys or identifiers (shard, group and item names, ids,
-states, kinds, parameter names, links). A secret shorter than
-:data:`MIN_SECRET_LENGTH` characters is refused at startup: it could not be
-blanked out without mangling ordinary text.
+states, kinds, parameter names, links) — ``app.redaction`` does the
+blanking. A secret shorter than ``MIN_SECRET_LENGTH`` characters is refused
+at startup: it could not be blanked out without mangling ordinary text.
 
 With no config file at all, runcomposer runs on built-in defaults — the
 sqlite store in ``./runcomposer.db``, the bundled demo corpus and taxonomy,
@@ -81,8 +81,6 @@ from typing import Any
 import yaml
 
 from runcomposer.core.errors import ConfigError, PluginError
-from runcomposer.core.filter import FilterError, format_filter, parse_filter, to_data
-from runcomposer.core.filtertext import read_filter_string
 from runcomposer.core.ports import (
     Configurable,
     ResultParser,
@@ -102,18 +100,17 @@ from runcomposer.core.registry import (
     load_import_path,
 )
 
+from .hosts import parse_host_pattern
+from .redaction import MIN_SECRET_LENGTH, redact
+from .uiconfig import ui_selections
+
 __all__ = [
-    "FREE_TEXT_KEYS",
-    "MIN_SECRET_LENGTH",
-    "REDACTED",
     "Config",
     "ConfigError",
     "PluginSpec",
     "load_config",
     "option_types",
     "plugin_secrets",
-    "redact",
-    "redact_free_text",
     "resolve_options",
 ]
 
@@ -157,7 +154,7 @@ _ROLES: dict[str, tuple[type, str]] = {
 #: Keys of a plugin entry that select the plugin rather than configure it.
 _SELECTOR_KEYS = ("module", "plugin")
 
-_DEFAULT_API = {"host": "127.0.0.1", "port": 8100, "cors": [], "docs": False}
+_DEFAULT_API = {"host": "127.0.0.1", "port": 8100, "cors": [], "docs": False, "hosts": None}
 _DEFAULT_INGESTION = {
     "tokens": "required",
     "inbox": "results_inbox",
@@ -168,7 +165,12 @@ _DEFAULT_INGESTION = {
     "settle_s": None,
 }
 _DEFAULT_RETENTION = {"max_age_days": 90, "max_runs": None}
-_DEFAULT_DISPATCH = {"max_concurrent": 2, "handoff_wait_s": 2.0, "awaiting_timeout_s": None}
+_DEFAULT_DISPATCH = {
+    "max_concurrent": 2,
+    "handoff_wait_s": 2.0,
+    "awaiting_timeout_s": None,
+    "recovery_interval_s": 15.0,
+}
 
 #: What a missing config file means. Spelled as configuration, so the
 #: zero-config mode is one more config and not a set of special cases.
@@ -194,9 +196,6 @@ _LANGUAGE_TAG = re.compile(
 #: optional ``:-default``. Groups: form, name, default.
 _ENV_REF = re.compile(r"\$\{(env|env-public):([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _PUBLIC_FORM = "env-public"
-#: A secret shorter than this cannot be blanked out of recorded text without
-#: mangling it (blanking "4" would rewrite every 4) — refused at startup.
-MIN_SECRET_LENGTH = 4
 
 
 @dataclass(frozen=True)
@@ -222,6 +221,17 @@ class PluginSpec:
 class Config:
     data: dict[str, Any]
     path: Path | None = None
+    #: Where relative paths resolve, fixed when the configuration is made:
+    #: an absolute directory, so a path anchored to it means the same file
+    #: after a change of working directory and in a worker process.
+    _base_dir: Path = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self.path is not None:
+            # Made absolute, not resolved: a config file reached through a
+            # symbolic link keeps the directory it was named in.
+            self.path = Path(self.path).absolute()
+        self._base_dir = self.path.parent if self.path is not None else Path.cwd()
 
     # -- core section (validated here) --------------------------------------
 
@@ -279,7 +289,7 @@ class Config:
         except the three that carry selections — ``quick_filters``,
         ``default_filter`` and ``presets`` — which are validated against the
         filter grammar and served in one normalized shape (see
-        :func:`ui_selections`)."""
+        ``app.uiconfig.ui_selections``)."""
         section = self.data.get("ui") or {}
         if not isinstance(section, Mapping):
             raise ConfigError("'ui' must be a mapping")
@@ -298,8 +308,9 @@ class Config:
     @property
     def base_dir(self) -> Path:
         """Where relative paths resolve: the config file's directory, or the
-        working directory when running on built-in defaults."""
-        return self.path.parent if self.path else Path(".")
+        working directory when running on built-in defaults — absolute
+        either way, taken when the configuration was loaded."""
+        return self._base_dir
 
     def resolve_path(self, value: Any) -> Any:
         """Anchor one configured relative path to :attr:`base_dir`.
@@ -307,7 +318,9 @@ class Config:
         Total and conservative — the *caller* decides what is a path, this
         only decides where a relative one points: non-strings, empty strings
         and absolute paths come back untouched; a list is resolved entry by
-        entry. Returns ``str``, never ``Path``.
+        entry. A relative path comes back absolute, so a later change of
+        working directory, or a worker process started elsewhere, finds the
+        same file. Returns ``str``, never ``Path``.
         """
         if isinstance(value, (list, tuple)):
             return [self.resolve_path(entry) for entry in value]
@@ -694,44 +707,6 @@ def resolve_options(spec: PluginSpec) -> dict[str, Any]:
 
 # -- secrets ---------------------------------------------------------------------------
 
-REDACTED = "‹from the environment›"
-
-#: The keys of an event's data that hold free text — what a runner or a
-#: parser wrote — and are therefore blanked; every other key holds an
-#: identifier or a record the core composed (shards, groups, states, kinds,
-#: ids, links, counts) and is never rewritten.
-FREE_TEXT_KEYS = ("message", "reason", "error", "plan", "detail")
-
-
-def redact(value: Any, secrets: frozenset[str] | set[str]) -> Any:
-    """``value`` with every secret blanked out — in a string, and in the
-    string values inside mappings and lists. Mapping keys are never
-    rewritten."""
-    if not secrets:
-        return value
-    if isinstance(value, str):
-        for secret in secrets:
-            if secret in value:
-                value = value.replace(secret, REDACTED)
-        return value
-    if isinstance(value, Mapping):
-        return {key: redact(entry, secrets) for key, entry in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [redact(entry, secrets) for entry in value]
-    return value
-
-
-def redact_free_text(data: Mapping[str, Any], secrets: frozenset[str] | set[str]) -> dict[str, Any]:
-    """An event's data with the secrets blanked out of its free-text fields
-    (:data:`FREE_TEXT_KEYS`) only: identifiers and structured records pass
-    unchanged, so a shard named like an environment value stays that
-    shard."""
-    return {
-        key: redact(entry, secrets) if key in FREE_TEXT_KEYS else entry
-        for key, entry in data.items()
-    }
-
-
 def _env_secrets(value: Any, where: str) -> set[str]:
     """The secrets an option value takes from the environment: the values
     of its ``${env:…}`` references, at any depth. ``${env-public:…}`` is no
@@ -773,111 +748,6 @@ def plugin_secrets(spec: PluginSpec) -> set[str]:
             continue
         found |= _env_secrets(value, f"{spec.where}.{name}")
     return found
-
-
-# -- the ui section: selections a deployment offers ----------------------------------
-
-_PRESET_KEYS = ("name", "label", "description", "filter", "runner", "parameters", "title", "labels")
-
-
-def _selection_entry(raw: Any, where: str, warnings: list[str] | None = None) -> dict[str, Any]:
-    """One configured filter — filter text or a whole expression — as
-    ``{tag_filter, text, kind}``: the expression in the grammar a run spec
-    uses, its canonical one-line text, and whether it is a single pattern.
-    A string is filter text (``Auth OR Cart``, ``"Sprint 12"``), read like a
-    string ``tag_filter`` over the API — a single pattern that is not text
-    still means that pattern, and what to write instead goes to
-    ``warnings``."""
-    try:
-        if isinstance(raw, str):
-            raw, note = read_filter_string(raw)
-            if note and warnings is not None:
-                warnings.append(f"{where}: {note}")
-        node = parse_filter(raw, where)
-    except FilterError as exc:
-        raise ConfigError(f"{where}: {exc}" if not str(exc).startswith(where) else str(exc)) from None
-    return {
-        "tag_filter": to_data(node),
-        "text": format_filter(node),
-        "kind": "pattern" if isinstance(raw, str) else "expression",
-    }
-
-
-def ui_selections(section: Mapping[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
-    """Validate and normalize the selections of a ``ui:`` section.
-
-    - ``quick_filters``: ``[{label, filter}]`` — ``filter`` is filter text
-      (``Checkout``, ``prefix:Payments-``, ``Auth OR Cart``, ``"Sprint
-      12"``) or a full filter expression (``{op: AND, items: […]}``,
-      ``{not: …}``); a bare string is short for a filter labelled with
-      itself (a single pattern: the pattern). Served as ``{label, filter}``
-      with ``filter`` as written plus ``tag_filter`` / ``text`` / ``kind``.
-    - ``default_filter``: the expression a new selection starts from.
-    - ``presets``: named, complete starting points — ``name`` and ``filter``,
-      optionally ``label``, ``description``, ``title``, ``labels``, and a
-      ``runner`` with its per-run ``parameters``.
-
-    A ``filter`` string is read as a string ``tag_filter`` is over the API;
-    one that only the fallback for single patterns reads appends what to
-    write instead to ``warnings``.
-    """
-    result: dict[str, Any] = {}
-    quick = section.get("quick_filters")
-    if quick is not None:
-        if not isinstance(quick, list):
-            raise ConfigError("ui.quick_filters must be a list of {label, filter} entries")
-        entries = []
-        for index, entry in enumerate(quick):
-            where = f"ui.quick_filters[{index}]"
-            if isinstance(entry, str):
-                entry = {"filter": entry}
-            if not isinstance(entry, Mapping) or "filter" not in entry:
-                raise ConfigError(f"{where} must be a mapping with a 'filter' (and a 'label')")
-            normalized = _selection_entry(entry["filter"], f"{where}.filter", warnings)
-            pattern = normalized["tag_filter"] if normalized["kind"] == "pattern" else None
-            entries.append(
-                {**entry, "label": str(entry.get("label") or pattern or normalized["text"]), **normalized}
-            )
-        result["quick_filters"] = entries
-    default = section.get("default_filter")
-    if default is not None:
-        result["default_filter"] = _selection_entry(default, "ui.default_filter", warnings)
-    presets = section.get("presets")
-    if presets is not None:
-        if not isinstance(presets, list):
-            raise ConfigError("ui.presets must be a list of {name, filter, …} entries")
-        seen: set[str] = set()
-        entries = []
-        for index, entry in enumerate(presets):
-            where = f"ui.presets[{index}]"
-            if not isinstance(entry, Mapping) or not entry.get("name") or "filter" not in entry:
-                raise ConfigError(f"{where} must be a mapping with a 'name' and a 'filter'")
-            unknown = sorted(set(entry) - set(_PRESET_KEYS))
-            if unknown:
-                raise ConfigError(f"{where} has unknown key(s) {unknown} (known: {list(_PRESET_KEYS)})")
-            name = str(entry["name"])
-            if name in seen:
-                raise ConfigError(f"{where}: preset name {name!r} is used twice")
-            seen.add(name)
-            for key in ("parameters", "labels"):
-                if entry.get(key) is not None and not isinstance(entry[key], Mapping):
-                    raise ConfigError(f"{where}.{key} must be a mapping")
-            if entry.get("parameters") and not entry.get("runner"):
-                raise ConfigError(f"{where}: 'parameters' need a 'runner' to belong to")
-            entries.append(
-                {
-                    "name": name,
-                    "label": str(entry.get("label") or name),
-                    "description": str(entry.get("description") or ""),
-                    **_selection_entry(entry["filter"], f"{where}.filter", warnings),
-                    "runner": str(entry["runner"]) if entry.get("runner") else None,
-                    "parameters": dict(entry.get("parameters") or {}),
-                    "title": str(entry.get("title") or entry.get("label") or name),
-                    "labels": {str(k): str(v) for k, v in (entry.get("labels") or {}).items()},
-                }
-            )
-        result["presets"] = entries
-    return result
 
 
 # -- loading ----------------------------------------------------------------------
@@ -971,6 +841,14 @@ def _check_core_values(config: Config, file_path: Path) -> None:
             f"{file_path}: core.dispatch.awaiting_timeout_s must be a positive number of "
             f"seconds or null (null = wait until someone finalizes or cancels), got {expiry!r}"
         )
+    recovery = dispatch.get("recovery_interval_s")
+    if recovery is not None and (
+        isinstance(recovery, bool) or not isinstance(recovery, (int, float)) or recovery <= 0
+    ):
+        raise ConfigError(
+            f"{file_path}: core.dispatch.recovery_interval_s must be a positive number of "
+            f"seconds or null (null = recover only when the server starts), got {recovery!r}"
+        )
     concurrent = dispatch.get("max_concurrent")
     if isinstance(concurrent, bool) or not isinstance(concurrent, int) or concurrent < 1:
         raise ConfigError(
@@ -986,3 +864,23 @@ def _check_core_values(config: Config, file_path: Path) -> None:
             f"{file_path}: core.api.docs must be true or false (serve /docs and /redoc), "
             f"got {config.api.get('docs')!r}"
         )
+    _check_api_hosts(config.api.get("hosts"), file_path)
+
+
+def _check_api_hosts(hosts: Any, file_path: Path) -> None:
+    """``core.api.hosts``: null, or a non-empty list of host entries."""
+    if hosts is None:
+        return
+    if not isinstance(hosts, list) or not hosts:
+        raise ConfigError(
+            f"{file_path}: core.api.hosts must be a non-empty list of the host names the server "
+            f"answers to (such as runcomposer.shop.example, *.shop.example, localhost:8100), "
+            f"or null for every name, got {hosts!r}"
+        )
+    for index, entry in enumerate(hosts):
+        if not isinstance(entry, str):
+            raise ConfigError(f"{file_path}: core.api.hosts[{index}] must be a string, got {entry!r}")
+        try:
+            parse_host_pattern(entry)
+        except ValueError as exc:
+            raise ConfigError(f"{file_path}: core.api.hosts[{index}] {entry!r}: {exc}") from None

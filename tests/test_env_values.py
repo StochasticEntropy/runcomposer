@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.app.config import REDACTED
+from runcomposer.app.redaction import REDACTED
 from runcomposer.cli.main import main as cli_main
 from runcomposer.sdk import (
     ConfigError,

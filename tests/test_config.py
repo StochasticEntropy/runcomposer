@@ -189,7 +189,7 @@ class TestZeroConfig:
         config_at(tmp_path, {"core": {"locale_default": "de"}})
         monkeypatch.chdir(tmp_path)
         config = load_config(None)
-        assert config.path == Path("config.yaml") and config.locale_default == "de"
+        assert config.path == Path.cwd() / "config.yaml" and config.locale_default == "de"
 
     def test_a_config_file_without_runners_has_nothing_to_dispatch_to(self, tmp_path):
         """Regression: with only a store configured, the bundled demo runner
@@ -329,6 +329,7 @@ class TestCoreValues:
     def test_dispatch_defaults(self, tmp_path):
         assert load(tmp_path, {}).dispatch == {
             "max_concurrent": 2, "handoff_wait_s": 2.0, "awaiting_timeout_s": None,
+            "recovery_interval_s": 15.0,
         }
 
     @pytest.mark.parametrize("value", [0, -2, "two", 1.5, True, None])
@@ -966,8 +967,8 @@ class TestOnePathBase:
         """Built-in defaults have no file to anchor to (§8)."""
         monkeypatch.chdir(tmp_path)
         config = load_config(None)
-        assert config.base_dir == Path(".")
-        assert config.resolve_path("runcomposer.db") == "runcomposer.db"
+        assert config.base_dir == Path.cwd()
+        assert config.resolve_path("runcomposer.db") == str(Path.cwd() / "runcomposer.db")
         config.build(config.store_spec()).close()
         assert (tmp_path / "runcomposer.db").exists()
 

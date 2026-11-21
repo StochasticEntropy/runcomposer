@@ -330,6 +330,28 @@ class Composer:
         )
         return result
 
+    def compose_rerun(
+        self,
+        run: RunRecord,
+        *,
+        runner_id: str,
+        parameters: Mapping[str, Any] | None = None,
+        title: str | None = None,
+    ) -> ComposeResult:
+        """The run a failed-rerun dispatches: composed from what did not pass
+        (FAIL, ERROR, MISSING) in ``run`` — with ``derived_from`` provenance
+        and origin ``rerun``. Its title is ``title``, else the source run's:
+        that it is a rerun is data (origin, ``derived_from``), not prose in a
+        title."""
+        return self.compose_run(
+            {"history": f"failed+error+missing@run:{run.id}"},
+            title=title or run.title,
+            labels=dict(run.labels),
+            origin="rerun",
+            runner_id=runner_id,
+            parameters=parameters,
+        )
+
     def import_spec(self, doc: Mapping[str, Any], *, origin: str) -> str:
         """Register a spec document composed elsewhere. A document carrying a
         ``results.token`` (as 0.1 wrote them) has the token's hash kept for

@@ -269,7 +269,7 @@ def _owner_gone(service: Service, dispatch: DispatchRecord | None) -> bool:
     it ran on another host). Only read: marking it ``STALE`` is recovery's
     job (``serve``, ``doctor``, the dispatching commands), never a reader's,
     so a reader cannot race the process that owns the state."""
-    from runcomposer.app.dispatching import owner_alive
+    from runcomposer.app.liveness import owner_alive
 
     return (
         dispatch is not None

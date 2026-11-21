@@ -14,21 +14,30 @@ another host — one instance owns a store, so that is a replaced container.
   complete it;
 - already past that (awaiting results, or terminal) → only the stale owner
   mark is cleared.
+
+A served deployment does not stop at startup: another process on the same
+store — a foreground ``runcomposer run`` — may die while the server is up,
+and its dispatch would stay ``RUNNING`` in every answer the server gives.
+:class:`PeriodicRecovery` reconciles again every
+``core.dispatch.recovery_interval_s`` seconds. Each pass decides per
+dispatch inside the ledger's unit, so it never marks a dispatch whose owner
+is alive or is this process, and never one that moved on meanwhile.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from runcomposer.core.model import DispatchRecord
 
-from .dispatching import owner_alive
+from .liveness import owner_alive
 
 if TYPE_CHECKING:
     from .service import Service
 
-__all__ = ["recover"]
+__all__ = ["PeriodicRecovery", "recover"]
 
 log = logging.getLogger("runcomposer.recovery")
 
@@ -62,3 +71,38 @@ def recover(service: Service) -> list[DispatchRecord]:
         else:
             service.ledger.release(dispatch.dispatch_id, owner=owner)
     return stale
+
+
+class PeriodicRecovery:
+    """A background loop inside ``serve``: :func:`recover` every
+    ``core.dispatch.recovery_interval_s`` seconds. Starts no thread while
+    the option is ``null``."""
+
+    def __init__(self, service: Service):
+        self._service = service
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def interval_s(self) -> float | None:
+        interval = self._service.config.dispatch.get("recovery_interval_s")
+        return None if interval is None else float(interval)
+
+    def start(self) -> None:
+        if self.interval_s() is None or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._loop, name="runcomposer-recovery", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        interval = self.interval_s() or 15.0
+        while not self._stop.wait(interval):
+            try:
+                recover(self._service)
+            except Exception:
+                log.exception("recovering dispatches of processes that are gone failed")
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from runcomposer.app.dispatching import owner_alive, parse_owner, pid_alive
+from runcomposer.app.liveness import owner_alive, parse_owner, pid_alive
 from runcomposer.sdk import Service, load_config
 
 from .conftest import compose, wait_until, write_config

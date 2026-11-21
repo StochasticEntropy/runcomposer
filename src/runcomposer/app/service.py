@@ -25,15 +25,11 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Generic, TypeVar, overload
 
-import yaml
-
-from runcomposer.core import events as kinds
 from runcomposer.core import lifecycle
 from runcomposer.core.errors import (
     ConfigError,
     Conflict,
     InvalidRequest,
-    InvalidTransition,
     NotFound,
     RunActive,
     UnknownRun,
@@ -43,20 +39,24 @@ from runcomposer.core.model import DispatchRecord, RunPage, RunRecord
 from runcomposer.core.parameters import Parameter, validate_parameters
 from runcomposer.core.ports import Health, RunnerInfo
 from runcomposer.core.registry import installed_plugins
-from runcomposer.core.taxonomy import TaxonomyError, resolve_taxonomy, validate_taxonomy
-from runcomposer.core.timeutil import epoch_ms, normalize_time
+from runcomposer.core.taxonomy import resolve_taxonomy
+from runcomposer.core.timeutil import normalize_time
 
 from .artifacts import Artifacts
 from .catalog import Catalog
 from .compose import Composer, ComposeResult, ExportResult, Preview
-from .config import Config, _resolve_env, redact, redact_free_text, resolve_options
+from .config import Config, _resolve_env, resolve_options
+from .ctrf import export_ctrf
 from .dispatching import DispatchManager, Outcome, PlanOutcome
 from .eventbus import EventBus, ObserverBinding
+from .expiry import expire_awaiting
 from .housekeeping import collect_garbage, remove_run_artifacts
 from .ingestion import Ingestion, IngestReport, QuarantineReport
 from .ledger import Ledger
 from .quarantine import Quarantine
 from .recovery import recover
+from .redaction import redact, redact_free_text
+from .taxonomy import read_taxonomy
 
 __all__ = ["Service", "parameter_json"]
 
@@ -463,76 +463,8 @@ class Service:
 
     def expire_awaiting(self, *, now_ms: int | None = None) -> list[DispatchRecord]:
         """Close dispatches that have waited for results longer than
-        ``core.dispatch.awaiting_timeout_s`` (DESIGN.md §4): they become
-        ``FAILED`` with a ``run.failed`` event saying so and naming the
-        shards that never delivered. What was delivered is kept, and results
-        that still arrive may complete the dispatch — exactly as for any
-        other failed dispatch. Nothing happens while the option is unset.
-
-        The clock starts when the dispatch began to wait and restarts with
-        every delivery: a job that reports shard after shard is not expired
-        between two of them."""
-        timeout = self.config.dispatch.get("awaiting_timeout_s")
-        if not timeout:
-            return []
-        now = int(time.time() * 1000) if now_ms is None else int(now_ms)
-        waiting: list[RunRecord] = []
-        offset = 0
-        while True:
-            page = self.store.list_runs(state="AWAITING_RESULTS", limit=200, offset=offset)
-            waiting.extend(page.runs)
-            offset += len(page.runs)
-            if not page.runs or offset >= page.total:
-                break
-        expired: list[DispatchRecord] = []
-        for run in waiting:
-            dispatch = run.latest_dispatch
-            if dispatch is None or dispatch.state != "AWAITING_RESULTS":
-                continue
-            since = epoch_ms(dispatch.created_at) or 0
-            for event in self.store.latest_events(run.id, limit=500):
-                if event.dispatch_id == dispatch.dispatch_id and event.kind in (
-                    kinds.RUN_AWAITING, kinds.DELIVERY_RECORDED
-                ):
-                    since = max(since, epoch_ms(event.at) or 0)
-            waited_s = (now - since) / 1000.0
-            if waited_s < float(timeout):
-                continue
-            outstanding = lifecycle.outstanding_shards(
-                dispatch.shards, self.store.delivered_shards(run.id, dispatch.dispatch_id)
-            )
-            try:
-                # The ledger re-reads the state inside its own unit: a
-                # dispatch another process completed (or cancelled) since it
-                # was found waiting is not moved — that race is lost
-                # benignly, the results came after all.
-                moved = self.ledger.move(
-                    dispatch.dispatch_id,
-                    "FAILED",
-                    error=(
-                        f"expired: no results for {waited_s:.0f}s, longer than "
-                        f"core.dispatch.awaiting_timeout_s ({float(timeout):g}s) — "
-                        f"outstanding shard(s): {outstanding or 'none'}. Results that still "
-                        "arrive are taken in and may complete it"
-                    ),
-                    extra={
-                        "expired": True,
-                        "waited_s": round(waited_s, 1),
-                        "awaiting_timeout_s": float(timeout),
-                        "outstanding_shards": outstanding,
-                    },
-                )
-            except InvalidTransition:
-                current = self.store.get_dispatch(dispatch.dispatch_id)
-                log.info(
-                    "dispatch %s of run %s was not expired: it is %s by now",
-                    dispatch.dispatch_id, run.id, current.state if current else "gone",
-                )
-                continue
-            expired.append(moved)
-            log.warning("dispatch %s of run %s expired while awaiting results",
-                        dispatch.dispatch_id, run.id)
-        return expired
+        ``core.dispatch.awaiting_timeout_s`` (DESIGN.md §4; ``app.expiry``)."""
+        return expire_awaiting(self, now_ms=now_ms)
 
     def import_durations(
         self, durations: Mapping[str, float], *, labels: Mapping[str, str] | None = None
@@ -593,13 +525,8 @@ class Service:
             raise InvalidRequest(f"rerun scope must be 'all' or 'failed', got {scope!r}")
         if run.state not in lifecycle.TERMINAL_STATES:
             raise RunActive(f"run {run_id} is {run.state} — its failures are not known yet")
-        composed = self.compose_run(
-            {"history": f"failed+error+missing@run:{run_id}"},
-            title=title or run.title,
-            labels=dict(run.labels),
-            origin="rerun",
-            runner_id=runner,
-            parameters=parameters,
+        composed = self.composer.compose_rerun(
+            run, runner_id=runner, parameters=parameters, title=title
         )
         assert composed.run is not None
         try:
@@ -730,66 +657,16 @@ class Service:
 
     def export_ctrf(self, run_id: str) -> dict[str, Any]:
         """A normalized cross-tool result document (CTRF) of the run's latest
-        dispatch — effective verdicts, ``MISSING`` reported as ``other``."""
-        run = self.require_run(run_id)
-        dispatch = run.latest_dispatch
-        verdicts = (
-            lifecycle.effective_verdicts(self.ledger.scored_verdicts(dispatch)) if dispatch else []
-        )
-        status_map = {
-            "PASS": "passed", "FAIL": "failed", "SKIP": "skipped", "ERROR": "other",
-            "MISSING": "other",
-        }
-        tests = []
-        for verdict in verdicts:
-            test: dict[str, Any] = {
-                "name": verdict.item_id,
-                "status": status_map[verdict.status],
-                "duration": verdict.duration_ms,
-            }
-            if verdict.status in ("ERROR", "MISSING"):
-                test["rawStatus"] = verdict.status
-            if verdict.message:
-                test["message"] = verdict.message
-            if verdict.shard:
-                test["extra"] = {"shard": verdict.shard, "attempt": verdict.attempt}
-            tests.append(test)
-        counts = dict.fromkeys(("passed", "failed", "skipped", "pending", "other"), 0)
-        for test in tests:
-            counts[test["status"]] += 1
-        return {
-            "results": {
-                "tool": {"name": "runcomposer"},
-                "summary": {
-                    "tests": len(tests),
-                    **counts,
-                    "start": epoch_ms(run.created_at),
-                    "stop": epoch_ms(run.completed_at),
-                },
-                "tests": tests,
-                "extra": {"run_id": run.id, "state": run.state, "completion": run.completion},
-            }
-        }
+        dispatch (``app.ctrf``)."""
+        return export_ctrf(self, run_id)
 
     # -- taxonomy -------------------------------------------------------------------------
 
     def taxonomy(self) -> dict[str, Any]:
         """Read and validate the configured taxonomy file (DESIGN.md §2, §8)
-        — on every read, because the file can change under a running server."""
-        source = self.config.taxonomy_source
-        origin = str(source)
-        try:
-            text = source.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise TaxonomyError(
-                f"{origin}: taxonomy file cannot be read ({exc.strerror or exc}) — "
-                "core.taxonomy_file is resolved relative to the config file's directory"
-            ) from None
-        try:
-            document = yaml.safe_load(text)
-        except yaml.YAMLError as exc:
-            raise TaxonomyError(f"{origin}: taxonomy file is not valid YAML: {exc}") from None
-        return validate_taxonomy(document, origin=origin)
+        — on every read, because the file can change under a running server
+        (``app.taxonomy``)."""
+        return read_taxonomy(self.config)
 
     def resolved_taxonomy(self) -> dict[str, Any]:
         """The taxonomy resolved against the live catalog (DESIGN.md §2)."""

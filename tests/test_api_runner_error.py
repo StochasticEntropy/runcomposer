@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from runcomposer.app.config import REDACTED
+from runcomposer.app.redaction import REDACTED
 from runcomposer.sdk import DispatchContext, RunnerBase, RunnerInfo
 
 from .conftest import wait_until

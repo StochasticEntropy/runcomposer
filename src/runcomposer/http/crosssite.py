@@ -24,6 +24,15 @@ scheme's default port being implied when either leaves it out. The scheme is
 not compared, so a TLS-terminating reverse proxy that passes the ``Host``
 through needs no configuration; one that rewrites ``Host`` must have the
 public origin listed in ``core.api.cors`` (SECURITY.md).
+
+That comparison trusts ``Host``, which is whatever name the browser reached
+the server by. A page on a name its author controls that resolves to this
+server's address (DNS rebinding) is, to the browser, the same origin as the
+server. :class:`HostGuard` closes that: it answers only to the names in
+``core.api.hosts`` — by default, when the server is bound to a loopback
+address, to the loopback names (``runcomposer.app.hosts``) — and refuses
+every request for another name, whatever its method, with ``400``
+(``unknown-host``) before any route sees it.
 """
 
 from __future__ import annotations
@@ -35,9 +44,11 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .errors import CrossSiteRequest, error_body, status_of
+from runcomposer.app.hosts import HostPattern, parse_host
 
-__all__ = ["SAFE_METHODS", "CrossSiteGuard"]
+from .errors import CrossSiteRequest, UnknownHost, error_body, status_of
+
+__all__ = ["SAFE_METHODS", "CrossSiteGuard", "HostGuard"]
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -102,6 +113,45 @@ class CrossSiteGuard:
             reason = self.refusal(Headers(scope=scope))
             if reason is not None:
                 exc = CrossSiteRequest(reason)
+                response = JSONResponse(
+                    status_code=status_of(exc), content=error_body(reason, exc.code)
+                )
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+#: How much of a refused ``Host`` value an error document quotes.
+_QUOTED_HOST = 200
+_ANSWERS_TO = (
+    "it is not a name this server answers to (core.api.hosts; unset, a server bound to a "
+    "loopback address answers to localhost, 127.0.0.1 and [::1])"
+)
+
+
+class HostGuard:
+    """ASGI middleware: a request for a host name the server does not answer
+    to is refused, whatever its method or route."""
+
+    def __init__(self, app: ASGIApp, *, hosts: Iterable[HostPattern]):
+        self.app = app
+        self.hosts = tuple(hosts)
+
+    def refusal(self, scope: Scope) -> str | None:
+        """Why this request is refused, or ``None``."""
+        value = Headers(scope=scope).get("host")
+        parsed = parse_host(value, _DEFAULT_PORTS.get(str(scope.get("scheme")), 80))
+        if parsed is not None and any(pattern.matches(*parsed) for pattern in self.hosts):
+            return None
+        if value is None:
+            return f"refused a request without a Host header: {_ANSWERS_TO}"
+        return f"refused a request for host {value[:_QUOTED_HOST]!r}: {_ANSWERS_TO}"
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            reason = self.refusal(scope)
+            if reason is not None:
+                exc = UnknownHost(reason)
                 response = JSONResponse(
                     status_code=status_of(exc), content=error_body(reason, exc.code)
                 )

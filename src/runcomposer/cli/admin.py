@@ -120,10 +120,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     configure_logging(level=getattr(logging, args.log_level.upper()), server=True)
     config = load_config(args.config)
-    # Builds every plugin AND validates the taxonomy; fails loudly (§8).
-    app = create_app(config)
     host = args.host or config.api["host"]
     port = args.port or config.api["port"]
+    # Builds every plugin AND validates the taxonomy; fails loudly (§8). The
+    # address it is served on decides the default of core.api.hosts.
+    app = create_app(config, bind_host=host)
     uvicorn.run(app, host=host, port=port, log_level=args.log_level)
     return EXIT_OK
 

@@ -18,10 +18,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from runcomposer import __version__
 from runcomposer.app.config import Config
 from runcomposer.app.expiry import AwaitingExpiry
+from runcomposer.app.hosts import effective_hosts
 from runcomposer.app.inbox import InboxWatcher
+from runcomposer.app.recovery import PeriodicRecovery
 from runcomposer.app.service import Service
 
-from .crosssite import CrossSiteGuard
+from .crosssite import CrossSiteGuard, HostGuard
 from .errors import install_error_handlers
 from .routers import files, ingestion, meta, plan, runs, selection
 
@@ -35,10 +37,18 @@ def api_docs_enabled(config: Config) -> bool:
     return config.api.get("docs") is True
 
 
-def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
+def create_app(
+    config: Config, *, service: Service | None = None, bind_host: str | None = None
+) -> FastAPI:
     """Raises ``ConfigError`` / ``TaxonomyError`` for a deployment that is
     not startable — a server that boots healthy and fails on first touch is
-    exactly what startup validation exists to prevent."""
+    exactly what startup validation exists to prevent.
+
+    ``bind_host`` is the address the app is served on, when the caller
+    knows it (``serve`` does): bound to a loopback address and without
+    ``core.api.hosts``, the app answers only to the loopback names
+    (``runcomposer.app.hosts``). An app built without it answers to the
+    names ``core.api.hosts`` lists, or to every name."""
     service = service or Service(config)
     service.validate()
     for dispatch in service.recover():
@@ -61,9 +71,14 @@ def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
         # allows are closed here (§4) — only when the option is set.
         expiry = AwaitingExpiry(service)
         expiry.start()
+        # A dispatch whose owner — another process on this store — died while
+        # the server is up is marked STALE without a restart (§4).
+        recovery = PeriodicRecovery(service)
+        recovery.start()
         try:
             yield
         finally:
+            recovery.stop()
             expiry.stop()
             if watcher is not None:
                 watcher.stop()
@@ -91,6 +106,11 @@ def create_app(config: Config, *, service: Service | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware, allow_origins=cors, allow_methods=["*"], allow_headers=["*"]
         )
+    # Outermost: a request for a host name this server does not answer to
+    # (DNS rebinding) is refused before anything else sees it (crosssite.py).
+    hosts = effective_hosts(config.api.get("hosts"), bind_host)
+    if hosts is not None:
+        app.add_middleware(HostGuard, hosts=hosts)
     install_error_handlers(app)
     for module in (meta, selection, plan, runs, ingestion, files):
         app.include_router(module.router)

@@ -352,7 +352,7 @@ class TestReaping:
         collects it — a container whose process 1 is not an init — it stays
         a zombie, and a liveness check must not take it for a running
         process (an owner of a dispatch, a command that was stopped)."""
-        from runcomposer.app.dispatching import pid_alive
+        from runcomposer.app.liveness import pid_alive
 
         child = subprocess.Popen([sys.executable, "-c", "pass"])
         wait_until(lambda: process_state(child.pid) == "Z", what="the child to have ended, unreaped")

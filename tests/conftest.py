@@ -43,7 +43,7 @@ posix_only = pytest.mark.skipif(
 def process_gone(pid: int) -> bool:
     """Whether ``pid`` no longer runs — through runcomposer's own portable
     probe. (``os.kill(pid, 0)`` would *terminate* the process on Windows.)"""
-    from runcomposer.app.dispatching import pid_alive
+    from runcomposer.app.liveness import pid_alive
 
     return not pid_alive(pid)
 
