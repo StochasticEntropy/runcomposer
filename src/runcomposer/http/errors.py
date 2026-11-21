@@ -11,13 +11,16 @@ errors add context of their own (``run_kept``, ``quarantine_entry``,
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Receive, Scope, Send
 
 from runcomposer.core.errors import (
     AuthRequired,
@@ -100,11 +103,53 @@ def error_body(detail: str, code: str, **extra: Any) -> dict[str, Any]:
     return {"detail": detail, "code": code, **extra}
 
 
-def error_response(request: Request, exc: RunComposerError, *, close: bool = False) -> JSONResponse:
+# How long a refusal that ends the connection goes on discarding what the
+# client still sends, so that the client reads the answer instead of a reset.
+LINGER_S = 2.0
+
+
+class ClosingJSONResponse(JSONResponse):
+    """An answer after which the connection ends although the request body
+    was not read to its end.
+
+    Closing at once would lose the answer: a client that is still sending
+    when the server closes gets a connection reset, and with it whatever of
+    the answer it had not read yet. So the whole answer goes out first, then
+    what still arrives is discarded — unparsed, unstored — until the client
+    stops, goes away, or ``LINGER_S`` has passed, and only then does the
+    response end and the connection with it. ``unread=False`` says the body
+    was read to its end: there is nothing to wait for."""
+
+    def __init__(self, *args: Any, unread: bool = True, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._unread = unread
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self._unread:
+            await super().__call__(scope, receive, send)
+            return
+        await send(
+            {"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers}
+        )
+        await send({"type": "http.response.body", "body": self.body, "more_body": True})
+        with anyio.move_on_after(LINGER_S):
+            while True:
+                message = await receive()
+                if message["type"] != "http.request" or not message.get("more_body", False):
+                    break
+        with contextlib.suppress(OSError):
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+def error_response(
+    request: Request, exc: RunComposerError, *, close: bool = False, unread: bool = True
+) -> JSONResponse:
     """The answer to a domain error. ``close`` ends the connection after
-    the answer — for a refusal given before the request body was read: the
-    rest of that body is never wanted, and a keep-alive connection could
-    only go on reading it."""
+    the answer — for a refusal given before the request body was read to its
+    end: the rest of that body is never wanted, and a keep-alive connection
+    could only go on reading it. Such an answer is a
+    :class:`ClosingJSONResponse`: the client gets it even while it is still
+    sending (``unread`` — whether any of the body is still outstanding)."""
     extra = dict(exc.extra or {})
     # Which per-run parameter was refused — so a form can put the message
     # on the field instead of reading it out of the text.
@@ -113,11 +158,13 @@ def error_response(request: Request, exc: RunComposerError, *, close: bool = Fal
     # A runner may have quoted a configured option in what it raised.
     service = getattr(request.app.state, "service", None)
     detail = service.redact(str(exc)) if service is not None else str(exc)
-    return JSONResponse(
-        status_code=status_of(exc),
-        content=error_body(detail, str(exc.code), **extra),
-        headers={"Connection": "close"} if close else None,
-    )
+    content = error_body(detail, str(exc.code), **extra)
+    if close:
+        return ClosingJSONResponse(
+            status_code=status_of(exc), content=content, headers={"Connection": "close"},
+            unread=unread,
+        )
+    return JSONResponse(status_code=status_of(exc), content=content)
 
 
 def install_error_handlers(app: FastAPI) -> None:

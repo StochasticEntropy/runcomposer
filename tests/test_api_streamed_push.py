@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import select
 import shutil
 import socket
 import tempfile
@@ -32,6 +33,8 @@ SSO = ["Shop.Auth.SSO.T001", "Shop.Auth.SSO.T002", "Shop.Auth.SSO.T003"]
 CAP_MB = 1
 CAP = CAP_MB * 1024 * 1024
 CHUNK = 64 * 1024
+# Send what fits and come back, where the platform can say so per call.
+_DONTWAIT = getattr(socket, "MSG_DONTWAIT", 0)
 
 
 def results_json() -> bytes:
@@ -74,6 +77,21 @@ class RawRequest:
     def send_chunk(self, data: bytes) -> None:
         self.sock.sendall(b"%x\r\n" % len(data) + data + b"\r\n")
         self.sent += len(data)
+
+    def send_chunk_until(self, data: bytes, stop: threading.Event) -> bool:
+        """Send one chunk from a thread of its own, giving up when ``stop``
+        is set: it never sits in a send the test can no longer end (closing
+        a socket does not reliably wake a thread blocked in sending on it).
+        False when it gave up."""
+        left = memoryview(b"%x\r\n" % len(data) + data + b"\r\n")
+        while left:
+            if stop.is_set():
+                return False
+            _, writable, _ = select.select([], [self.sock], [], 0.05)
+            if writable:
+                left = left[self.sock.send(left, _DONTWAIT):]
+        self.sent += len(data)
+        return True
 
     def end(self) -> None:
         self.sock.sendall(b"0\r\n\r\n")
@@ -212,11 +230,10 @@ class TestTheLimitIsCountedWhileReading:
         def pump() -> None:
             try:
                 for chunk in body:
-                    if stop.is_set():
+                    if not request.send_chunk_until(chunk, stop):
                         return
-                    request.send_chunk(chunk)
-            except OSError:
-                return  # the server ended the connection
+            except (OSError, ValueError):
+                return  # the server ended the connection, or the test closed it
 
         sender = threading.Thread(target=pump, daemon=True)
         sender.start()
@@ -321,3 +338,31 @@ class TestAPushStillWorks:
             request.close()
         assert (status, answer["code"]) == (400, "invalid-request")
         assert "multipart/form-data" in answer["detail"]
+
+
+class TestARefusalReachesAClientThatIsStillSending:
+    """The server answers a refused push without reading its body and ends
+    the connection. A client that is in the middle of sending must still be
+    able to read that answer — not find the connection reset under it."""
+
+    @pytest.mark.parametrize("route", EXECUTOR_ROUTES)
+    def test_the_client_sends_on_after_the_refusal_and_then_reads_it(self, served, route):
+        harness, run_id, _token = served
+        request = RawRequest(
+            harness.port, f"/api/v1/runs/{run_id}/{route}",
+            {"Content-Type": f"multipart/form-data; boundary={BOUNDARY}", "Authorization": "Bearer rct_wrong"},
+        )
+        try:
+            # Four megabytes more, sent without looking for an answer first:
+            # the refusal is long out when the last of them leaves.
+            try:
+                request.send_chunk(file_part("output.xml"))
+                for _ in range(4 * 1024 * 1024 // CHUNK):
+                    request.send_chunk(b"x" * CHUNK)
+            except OSError:
+                pass  # the server stopped taking it in; the answer is still wanted
+            status, headers, answer = request.response()
+        finally:
+            request.close()
+        assert (status, answer["code"]) == (403, "token-rejected")
+        assert headers.get("connection") == "close"

@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
-from starlette.types import Message
+from starlette.types import Message, Receive
 
 from runcomposer.app.ingestion import QuarantineReport, expected_format
 from runcomposer.app.service import Service
@@ -67,6 +67,21 @@ def _authorize(service: Service, run_id: str, headers: Mapping[str, str]) -> str
     return service.ingestion.authorize_push(run_id, token)
 
 
+class _Body:
+    """The request body as the server hands it out, remembering whether its
+    end was reached — a refusal lingers only for a body still outstanding."""
+
+    def __init__(self, receive: Receive):
+        self._receive = receive
+        self.ended = False
+
+    async def __call__(self) -> Message:
+        message = await self._receive()
+        if message["type"] != "http.request" or not message.get("more_body", False):
+            self.ended = True
+        return message
+
+
 class TokenFirstRoute(APIRoute):
     """A route an executor writes to with a dispatch's ingest token.
 
@@ -87,6 +102,9 @@ class TokenFirstRoute(APIRoute):
         reads_body = self.body_field is not None
 
         async def authorized_first(request: Request) -> Response:
+            incoming = _Body(request.receive)
+            request = Request(request.scope, incoming)
+            request.state.ingest_body = incoming
             service = service_of(request)
             max_bytes, too_large = _max_upload(service)
             limit = max_bytes + ENVELOPE_BYTES
@@ -111,7 +129,9 @@ class TokenFirstRoute(APIRoute):
             except PayloadTooLarge as exc:
                 return error_response(request, exc, close=True)
             except ClientDisconnect:
-                return error_response(request, InvalidRequest("the client went away"), close=True)
+                return error_response(
+                    request, InvalidRequest("the client went away"), close=True, unread=False
+                )
             replayed = bytes(body)
 
             async def replay() -> Message:
@@ -206,7 +226,8 @@ async def push_results(
             )
         except RunComposerError as exc:
             # Refused while reading: the rest of the body is not wanted.
-            return error_response(request, exc, close=True)
+            incoming: _Body = request.state.ingest_body
+            return error_response(request, exc, close=True, unread=not incoming.ended)
         dispatch = received.fields.get("dispatch") or None
         shard = received.fields.get("shard") or None
         declared_format = received.fields.get("format") or None
