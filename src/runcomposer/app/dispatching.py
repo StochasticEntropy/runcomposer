@@ -395,22 +395,24 @@ class _Context:
     def _drain_live(self) -> None:
         if self._tail is None:
             return
+        # One reader at a time, and the lock is held until what was read is
+        # in the stream: a delivery drains before it records, and must not
+        # overtake a line the follower thread has read but not yet emitted.
         with self._live_lock:
-            entries = list(self._tail.read())
-        for entry in entries:
-            if "log" in entry:
-                self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
-                continue
-            try:
-                self.live(
-                    str(entry["shard"]),
-                    str(entry["item_id"]),
-                    str(entry["status"]),
-                    duration_ms=int(entry.get("duration_ms") or 0),
-                    message=str(entry.get("message") or ""),
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
+            for entry in self._tail.read():
+                if "log" in entry:
+                    self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
+                    continue
+                try:
+                    self.live(
+                        str(entry["shard"]),
+                        str(entry["item_id"]),
+                        str(entry["status"]),
+                        duration_ms=int(entry.get("duration_ms") or 0),
+                        message=str(entry.get("message") or ""),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
 
     def parse(self, bundle: str | Path, *, format: str | None = None) -> list[Verdict]:
         verdicts, warnings = self._service.ingestion.parse(

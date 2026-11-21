@@ -430,20 +430,21 @@ class FakeDispatchContext:
         if self._tail is None:
             return
         # One reader at a time: two threads draining at once would read the
-        # same lines twice. The lock is re-entrant, so recording inside is fine.
+        # same lines twice. The lock is held until what was read is recorded,
+        # so a delivery never overtakes a line another reader holds (the lock
+        # is re-entrant: recording inside is fine).
         with self._lock:
-            entries = list(self._tail.read())
-        for entry in entries:
-            if "log" in entry:
-                self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
-                continue
-            try:
-                self._record_live(
-                    str(entry["shard"]), str(entry["item_id"]), str(entry["status"]),
-                    int(entry.get("duration_ms") or 0), str(entry.get("message") or ""),
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
+            for entry in self._tail.read():
+                if "log" in entry:
+                    self.log(str(entry["log"]), level=str(entry.get("level") or "info"))
+                    continue
+                try:
+                    self._record_live(
+                        str(entry["shard"]), str(entry["item_id"]), str(entry["status"]),
+                        int(entry.get("duration_ms") or 0), str(entry.get("message") or ""),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
 
     def parse(self, bundle: str | Path, *, format: str | None = None) -> list[Verdict]:
         format_id = format or self._expect_format
