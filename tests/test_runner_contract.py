@@ -651,6 +651,29 @@ class TestShardGroups:
         eu = client.get(f"{API}/runs/{run_id}").json()["groups"][0]
         assert (eu["delivered_shards"], eu["summary"], eu["completion"]) == (2, {"FAIL": 1, "PASS": 1}, "FAIL")
 
+    def test_a_group_and_its_shards_count_reported_items_alike_also_after_a_cancel(self, awaiting, tmp_path):
+        """``count`` is "items with a reported result" for a shard and for a
+        group: an item nobody reported is ``MISSING`` in the summary and in
+        no ``count``, so a group never reads "all reported" over shards that
+        reported nothing."""
+        client, service, run_id, _dispatch_id, _secret = awaiting
+        service.ingest(results_bundle(tmp_path / "eu-1", [SSO[0]], "FAIL"), run_id=run_id, shard="eu-1")
+        assert client.post(f"{API}/runs/{run_id}/cancel").status_code == 202
+        detail = client.get(f"{API}/runs/{run_id}").json()
+        assert detail["state"] == "CANCELLED"
+        shards = {entry["shard"]: entry for entry in detail["shards"]}
+        assert {name: (entry["count"], entry["planned"], entry["summary"]) for name, entry in shards.items()} == {
+            "eu-1": (1, 1, {"FAIL": 1}),
+            "eu-2": (0, 1, {"MISSING": 1}),
+            "us-1": (0, 1, {"MISSING": 1}),
+        }
+        eu, us = detail["groups"]
+        assert (eu["count"], eu["planned"], eu["summary"]) == (1, 2, {"FAIL": 1, "MISSING": 1})
+        assert (us["count"], us["planned"], us["summary"]) == (0, 1, {"MISSING": 1})
+        for group in detail["groups"]:
+            assert group["count"] == sum(shards[name]["count"] for name in group["shards"])
+            assert group["count"] == sum(group["summary"].values()) - group["summary"].get("MISSING", 0)
+
     def test_an_artifact_may_belong_to_a_group_and_a_label_needs_a_declared_shard(self, scripted):
         problems: list[str] = []
 
