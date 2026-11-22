@@ -49,14 +49,14 @@ class TestExpansion:
     """The point of the exercise: a pattern's tags become their own nodes."""
 
     def test_a_family_pattern_gains_one_node_per_matching_tag(self):
-        tree = resolve({"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]})
+        tree = resolve({"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]})
         cart = tree["taxonomy"][0]
         assert cart["filter"] == "regex:^Cart(V2)?$"  # the written node is untouched
         assert [child["label"] for child in cart["children"]] == ["Cart", "CartV2"]
         assert [child["filter"] for child in cart["children"]] == ["Cart", "CartV2"]
 
     def test_every_tag_node_selects_exactly_its_own_tag(self):
-        tree = resolve({"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]})
+        tree = resolve({"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]})
         tags = {tag for item in ITEMS for tag in item.tags}
         for node in walk(tree["taxonomy"]):
             if node["origin"] != "tag":
@@ -76,7 +76,7 @@ class TestExpansion:
                 "taxonomy": [
                     {
                         "label": "Cart",
-                        "filter": "regex:^Cart(V2)?$",
+                        "filter": '"regex:^Cart(V2)?$"',
                         "children": [{"label": "Cart v2 only", "filter": "CartV2"}],
                     }
                 ]
@@ -186,7 +186,7 @@ class TestCounts:
                     {
                         "label": "Areas",
                         "children": [
-                            {"label": "Cart", "filter": "regex:^Cart(V2)?$"},
+                            {"label": "Cart", "filter": '"regex:^Cart(V2)?$"'},
                             {"label": "Payments", "filter": "Payments"},
                         ],
                     }
@@ -200,7 +200,7 @@ class TestCounts:
 
     def test_an_item_carrying_two_tags_of_one_node_is_counted_once(self):
         items = [Item(id="only", tags=("Smoke", "Regression"))]
-        tree = resolve({"taxonomy": [{"label": "Suites", "filter": "regex:^(Smoke|Regression)$"}]}, items)
+        tree = resolve({"taxonomy": [{"label": "Suites", "filter": '"regex:^(Smoke|Regression)$"'}]}, items)
         assert tree["taxonomy"][0]["item_count"] == 1
         assert tree["taxonomy"][0]["tag_count"] == 2
 
@@ -224,10 +224,13 @@ class TestTheResolvedTreeIsATaxonomyDocument:
     needs no second vocabulary, and the format's own validator can say so."""
 
     def test_the_result_validates_as_a_taxonomy_document(self):
+        # A resolved leaf's filter is its pattern as such (what a client adds
+        # as one rule), so the tree reads back as a document when every
+        # pattern is one word of the filter grammar — as here.
         tree = resolve(
             {
                 "taxonomy": [
-                    {"label": "Cart", "filter": "regex:^Cart(V2)?$"},
+                    {"label": "Cart", "filter": "regex:^Cart$|^CartV2$"},
                     {"label": "Suites", "children": [{"label": "Smoke", "filter": "Smoke"}]},
                 ]
             }
@@ -240,7 +243,7 @@ class TestTheResolvedTreeIsATaxonomyDocument:
                 "taxonomy": [
                     {
                         "label": "Cart",
-                        "filter": "regex:^Cart(V2)?$",
+                        "filter": "regex:^Cart$|^CartV2$",
                         # a written child named exactly like one of the tags
                         "children": [{"label": "CartV2", "filter": "Smoke"}],
                     }
@@ -258,7 +261,7 @@ class TestTheResolvedTreeIsATaxonomyDocument:
 
 class TestResolutionFollowsTheCatalog:
     def test_the_same_document_resolves_differently_against_a_different_catalog(self):
-        document = {"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]}
+        document = {"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]}
         before = resolve(document, [Item(id="a", tags=("Cart",))])
         after = resolve(document, [Item(id="a", tags=("Cart",)), Item(id="b", tags=("CartV2",))])
         assert "children" not in before["taxonomy"][0]
@@ -278,7 +281,7 @@ class TestTheTagUniverse:
         # that tag's node and gets no tag child — so "CartV2", reachable only
         # through this regex, is spelled nowhere in the nodes. A client
         # deriving completion candidates from the tree would silently miss it.
-        document = {"taxonomy": [{"label": "Second cart", "filter": "regex:^Cart(V2)$"}]}
+        document = {"taxonomy": [{"label": "Second cart", "filter": '"regex:^Cart(V2)$"'}]}
         resolved = resolve_taxonomy(document, ITEMS)
         labels = {node["label"] for node in walk(resolved["taxonomy"])}
         assert "CartV2" not in labels
@@ -471,7 +474,7 @@ class TestValidation:
             ({"taxonomy": ["Payments"]}, "must be a node mapping"),
             ({"taxonomy": [{"filter": "Payments"}]}, "needs a non-empty 'label'"),
             ({"taxonomy": [{"label": "A", "filter": ["Payments", "Cart"]}]}, "single pattern string"),
-            ({"taxonomy": [{"label": "A", "filter": "regex:^(unclosed"}]}, "invalid regular"),
+            ({"taxonomy": [{"label": "A", "filter": '"regex:^(unclosed"'}]}, "invalid regular"),
             ({"taxonomy": [{"label": "A", "filter": "x", "children": {}}]}, "must be a list"),
             ({"taxonomy": [{"label": "A", "pattern": "Payments"}]}, "did you mean 'filter'?"),
             ({"taxonomy": [{"label": "A", "filter": "x"}, {"label": "A", "filter": "y"}]},

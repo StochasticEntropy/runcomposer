@@ -1,8 +1,9 @@
 """Every place a filter is configured or handed over as one string reads it
 as filter text, like a string ``tag_filter`` over the API: the selections of
 the ``ui:`` section, the leaves of a taxonomy, and the testing kit's
-``FakeDispatchContext.from_source``. A single pattern that is not filter
-text keeps meaning that pattern, with the API's warning. Also the language
+``FakeDispatchContext.from_source``. A string that does not parse is
+refused there as it is over the API, naming the entry and the column. Also
+the language
 the server's own free text is written in (``core.text_language``)."""
 
 from __future__ import annotations
@@ -61,22 +62,20 @@ class TestConfiguredSelections:
         assert (everything["tag_filter"], everything["text"]) == (MATCH_ALL, "*")
         assert (cards["tag_filter"], cards["text"]) == ({"op": "AND", "items": ["Payments-Cards"]}, "AND (Payments-Cards)")
 
-    def test_a_single_pattern_that_is_not_text_works_and_warns_once_at_load_naming_the_entry(self, tmp_path, caplog):
+    def test_a_pattern_that_does_not_parse_unquoted_refuses_the_start_naming_the_entry(self, tmp_path, caplog):
+        with pytest.raises(ConfigError, match=r"ui\.quick_filters\[0\]\.filter: cannot read the filter text at column 1: "
+                                               r"the pattern 'regex:\^Cart' runs into '\('"):
+            _load(tmp_path, ui={"quick_filters": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]})
         with caplog.at_level(logging.WARNING, logger="runcomposer"):
-            config = _load(tmp_path, ui={"quick_filters": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]})
+            config = _load(tmp_path, ui={"quick_filters": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]})
         entry = config.ui["quick_filters"][0]
         assert (entry["tag_filter"], entry["kind"], entry["text"]) == ("regex:^Cart(V2)?$", "pattern", '"regex:^Cart(V2)?$"')
-        warnings = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        assert "ui.quick_filters[0].filter" in warnings[0] and '"regex:^Cart(V2)?$"' in warnings[0]
-        caplog.clear()
-        _ = config.ui
-        assert caplog.records == [], "the warning is said at load, not on every read of the section"
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [], "quoted, it is simply read"
 
     def test_text_that_cannot_be_read_is_a_config_error_naming_the_entry(self, tmp_path):
         with pytest.raises(ConfigError, match=r"ui\.presets\[0\]\.filter: cannot read the filter text at column 1"):
             _load(tmp_path, ui={"presets": [{"name": "broken", "filter": "AND Smoke"}]})
-        with pytest.raises(ConfigError, match=r"ui\.default_filter: the filter text is empty"):
+        with pytest.raises(ConfigError, match=r"ui\.default_filter: cannot read the filter text at column 3: the filter text is empty"):
             _load(tmp_path, ui={"default_filter": "  "})
 
     def test_the_api_serves_the_normalized_entries(self, make_client):
@@ -147,23 +146,26 @@ class TestTaxonomyLeaves:
         with pytest.raises(TaxonomyError, match=r"taxonomy\[0\] \('Cart'\) filter: cannot read the filter text"):
             validate_taxonomy({"taxonomy": [{"label": "Cart", "filter": "Cart AND"}]})
 
-    def test_a_single_pattern_that_is_not_text_still_resolves_and_says_how_to_write_it(self):
-        document = {"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]}
-        resolved = resolve_taxonomy(document, _items())
+    def test_a_pattern_that_does_not_parse_unquoted_is_refused_with_the_column(self):
+        with pytest.raises(TaxonomyError, match=r"taxonomy\[0\] \('Cart'\) filter: cannot read the filter text at column 1: "
+                                                r"the pattern 'regex:\^Cart' runs into"):
+            resolve_taxonomy({"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]}, _items())
+        with pytest.raises(TaxonomyError, match=r"\('Sprint'\) filter: cannot read the filter text at column 8"):
+            validate_taxonomy({"taxonomy": [{"label": "Sprint", "filter": "Sprint 12"}]})
+        resolved = resolve_taxonomy({"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]}, _items())
         cart = resolved["taxonomy"][0]
         assert cart["filter"] == "regex:^Cart(V2)?$" and cart["tag_count"] == 2
-        [warning] = resolved["warnings"]
-        assert "taxonomy[0] ('Cart')" in warning and '"regex:^Cart(V2)?$"' in warning
+        assert resolved["warnings"] == []
 
-    def test_the_resolved_taxonomy_over_http_carries_the_warnings(self, make_client, tmp_path):
+    def test_the_resolved_taxonomy_over_http_reads_a_quoted_leaf_without_a_warning(self, make_client, tmp_path):
         (tmp_path / "taxonomy.yaml").write_text(
-            "taxonomy:\n  - { label: Cart, filter: 'regex:^Cart(V2)?$' }\n  - { label: Smoke, filter: Smoke }\n",
+            "taxonomy:\n  - { label: Cart, filter: '\"regex:^Cart(V2)?$\"' }\n  - { label: Smoke, filter: Smoke }\n",
             encoding="utf-8",
         )
         client, _service = make_client(core={"taxonomy_file": "taxonomy.yaml"})
         body = client.get(f"{API}/taxonomy", params={"resolve": "true"}).json()
-        assert len(body["warnings"]) == 1 and "('Cart')" in body["warnings"][0]
-        assert client.get(f"{API}/taxonomy").json()["taxonomy"][0]["filter"] == "regex:^Cart(V2)?$", "the file is served as written"
+        assert body["warnings"] == [] and body["taxonomy"][0]["tag_count"] >= 1
+        assert client.get(f"{API}/taxonomy").json()["taxonomy"][0]["filter"] == '"regex:^Cart(V2)?$"', "the file is served as written"
 
 
 # -- the testing kit ------------------------------------------------------------------------
@@ -175,10 +177,11 @@ class TestFakeFromSource:
         assert FakeDispatchContext.from_source(ListSource(_items()), '"Auth OR Cart"').item_ids == ("Shop.Auth.T001",)
         assert len(FakeDispatchContext.from_source(ListSource(_items()), "*").item_ids) == 4
 
-    def test_a_single_pattern_that_is_not_text_selects_it_with_a_warning(self):
-        with pytest.warns(UserWarning, match=r'write it as "Sprint 12"'):
-            ctx = FakeDispatchContext.from_source(ListSource(_items()), "Sprint 12")
-        assert ctx.item_ids == ("Shop.Sprint.T001",)
+    def test_a_string_that_does_not_parse_is_refused_as_over_the_api(self):
+        with pytest.raises(sdk.FilterSyntaxError) as caught:
+            FakeDispatchContext.from_source(ListSource(_items()), "Sprint 12")
+        assert (caught.value.problem, caught.value.position) == ("missing-operator", 7)
+        assert FakeDispatchContext.from_source(ListSource(_items()), '"Sprint 12"').item_ids == ("Shop.Sprint.T001",)
 
 
 # -- the SDK ----------------------------------------------------------------------------------
@@ -186,7 +189,7 @@ class TestFakeFromSource:
 
 def test_the_sdk_exports_the_text_form():
     assert sdk.parse_filter_text("Auth OR Cart") == {"op": "OR", "items": ["Auth", "Cart"]}
-    assert sdk.read_filter_string("regex:^Cart(V2)?$")[1] is not None
+    assert sdk.read_filter_string('"regex:^Cart(V2)?$"') == ("regex:^Cart(V2)?$", None)
     assert sdk.quote_pattern("Sprint 12") == '"Sprint 12"'
     with pytest.raises(sdk.FilterSyntaxError) as caught:
         sdk.parse_filter_text("Auth OR (Cart")
@@ -195,7 +198,6 @@ def test_the_sdk_exports_the_text_form():
 
 
 def test_a_syntax_error_over_http_carries_problem_position_and_the_word_found(client):
-    # An operator word in it: filter text, not the fallback for single patterns.
     answer = client.post(f"{API}/selection/compile", json={"tag_filter": "Payments AND Smoke Cart"})
     assert answer.status_code == 400
     body = answer.json()
@@ -231,7 +233,7 @@ class TestTheDriftCheckReadsLeavesAsTheTreeDoes:
         assert "leaves that match nothing (clickable, selects nothing): 1" in out
         assert 'Returns  →  "Returns"' in out
 
-    def test_the_bundled_demo_taxonomy_needs_no_fallback(self, tmp_path):
+    def test_the_bundled_demo_taxonomy_reads_without_a_warning(self, tmp_path):
         from runcomposer.sdk import Service, load_config
 
         from .conftest import write_config

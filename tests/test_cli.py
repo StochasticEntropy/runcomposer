@@ -224,7 +224,7 @@ class TestLooking:
         assert code == 1 and err.startswith("error: tag_filter.op: unknown operator 'XOR'")
         code, _out, err = cli("compile", "--id", "Shop.Ghost.T404")
         assert code == 1 and "unknown item ids" in err
-        code, _out, err = cli("compile", "regex:(")
+        code, _out, err = cli("compile", '"regex:("')
         assert code == 1 and "invalid regular expression" in err
 
     def test_compile_from_history_says_which_run(self, cli):

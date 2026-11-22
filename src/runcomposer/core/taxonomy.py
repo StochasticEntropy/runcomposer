@@ -70,10 +70,12 @@ def validate_taxonomy(
     """Validate a parsed taxonomy document; return it unchanged, or raise.
 
     ``origin`` is the file name used in messages — the reader needs to know
-    *which* taxonomy is wrong when a deployment has several. A leaf whose
-    ``filter`` is read as one pattern only by the fallback for strings that
-    are not filter text (``regex:^Cart(V2)?$``) is valid; what to write
-    instead is appended to ``warnings`` when a list is given.
+    *which* taxonomy is wrong when a deployment has several. A leaf's
+    ``filter`` is filter text that names one pattern: a pattern holding a
+    space, a parenthesis or a quote is written quoted
+    (``'"regex:^Cart(V2)?$"'``), and one that does not parse is refused with
+    the column. ``warnings`` (a list) receives what is valid but worth
+    saying.
     """
     if document is None:
         raise TaxonomyError(
@@ -166,7 +168,7 @@ def _validate_filter(
             "'\"regex:^(Visa|Mastercard)$\"' (docs/taxonomy.md)"
         )
     try:
-        pattern, note = read_filter_string(value)
+        pattern, _ = read_filter_string(value)
     except FilterError as exc:
         raise TaxonomyError(f"{origin}: {named} filter: {exc}") from None
     if not isinstance(pattern, str):
@@ -180,14 +182,11 @@ def _validate_filter(
         parse_filter(pattern, path=f"{named} filter")
     except FilterError as exc:
         raise TaxonomyError(f"{origin}: {exc}") from None
-    if note and warnings is not None:
-        warnings.append(f"{origin}: {named}: {note}")
 
 
 def leaf_pattern(value: str) -> str:
     """The one pattern a validated leaf's ``filter`` names: the string read
-    as filter text (``'"Sprint 12"'`` is the tag ``Sprint 12``), or — by the
-    fallback for strings that are not filter text — the pattern it spells."""
+    as filter text (``'"Sprint 12"'`` is the tag ``Sprint 12``)."""
     pattern, _ = read_filter_string(value)
     if not isinstance(pattern, str):
         raise TaxonomyError(f"the leaf filter {value!r} names more than one pattern")

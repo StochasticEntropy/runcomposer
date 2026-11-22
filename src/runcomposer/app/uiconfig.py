@@ -21,14 +21,11 @@ def _selection_entry(raw: Any, where: str, warnings: list[str] | None = None) ->
     ``{tag_filter, text, kind}``: the expression in the grammar a run spec
     uses, its canonical one-line text, and whether it is a single pattern.
     A string is filter text (``Auth OR Cart``, ``"Sprint 12"``), read like a
-    string ``tag_filter`` over the API — a single pattern that is not text
-    still means that pattern, and what to write instead goes to
-    ``warnings``."""
+    string ``tag_filter`` over the API: one that does not parse is a
+    ``ConfigError`` naming the entry and the column."""
     try:
         if isinstance(raw, str):
-            raw, note = read_filter_string(raw)
-            if note and warnings is not None:
-                warnings.append(f"{where}: {note}")
+            raw, _ = read_filter_string(raw)
         node = parse_filter(raw, where)
     except FilterError as exc:
         raise ConfigError(f"{where}: {exc}" if not str(exc).startswith(where) else str(exc)) from None
@@ -54,8 +51,7 @@ def ui_selections(section: Mapping[str, Any], warnings: list[str] | None = None)
       ``runner`` with its per-run ``parameters``.
 
     A ``filter`` string is read as a string ``tag_filter`` is over the API;
-    one that only the fallback for single patterns reads appends what to
-    write instead to ``warnings``.
+    one that does not parse is a ``ConfigError`` naming the entry.
     """
     result: dict[str, Any] = {}
     quick = section.get("quick_filters")

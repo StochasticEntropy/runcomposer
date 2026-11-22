@@ -20,6 +20,7 @@ Grammar::
   word, or contains whitespace, a parenthesis or a quote, is written quoted.
 - A bare ``regex:``/``prefix:`` pattern that runs into a parenthesis or a
   quote is refused rather than cut short: ``"regex:^Cart(V2)?$"`` is quoted.
+  A ``regex:``/``prefix:`` with nothing after it is refused, bare or quoted.
 - ``AND (x)`` / ``OR (x)`` is a group of exactly one item — the one AST shape
   infix notation cannot spell otherwise.
 - ``*`` is every item of the catalog. The AST has no node of its own for
@@ -48,7 +49,6 @@ from .filter import (
     FilterError,
     format_filter,
     parse_filter,
-    quote_pattern,
 )
 
 __all__ = [
@@ -143,6 +143,9 @@ def _tokenize(text: str) -> list[_Token]:
 
 
 _OPERAND = 'a pattern, *, NOT or "("'
+#: A pattern kind's marker on its own: ``prefix:`` / ``regex:`` with nothing
+#: after it is no pattern.
+_BARE_KINDS = ("prefix:", "regex:")
 
 
 class _Parser:
@@ -164,6 +167,13 @@ class _Parser:
         if token.kind == "pattern":
             if token.value == "":
                 raise FilterSyntaxError("empty", token.at, 'an empty pattern ("") — a pattern needs a character')
+            if token.value in _BARE_KINDS:
+                raise FilterSyntaxError(
+                    "empty", token.at,
+                    f"{token.value!r} with nothing after it — a {token.value[:-1]} pattern needs "
+                    f"{'an expression' if token.value == 'regex:' else 'a text'}",
+                    token.value,
+                )
             return token.value
         if token.kind == "op":
             if token.value == "NOT":
@@ -240,43 +250,26 @@ def format_filter_text(data: Any) -> str:
 
 def read_filter_string(text: str) -> tuple[Any, str | None]:
     """A filter given as one string where a filter is taken (a selection's
-    ``tag_filter``, the command line's filter argument) → ``(AST data,
-    warning)``.
+    ``tag_filter``, the command line's filter argument, a configured quick
+    filter or taxonomy leaf) → ``(AST data, None)``.
 
-    The string is read as filter text. One exception keeps every string
-    that named a single pattern before the text form existed meaning that
-    pattern: a string that cannot be read as text, and contains neither an
-    operator word nor a double quote, is the one pattern it spells
-    (``Sprint 12``, ``regex:^Cart(V2)?$``) — with a warning saying how to
-    write it unambiguously. Blank text is refused: leave the filter out to
-    select without one.
-    """
+    The string is filter text, read by :func:`parse_filter_text` and by
+    nothing else — one grammar, one answer, the same as the web UI's text
+    editor: a single tag or ``prefix:``/``regex:`` pattern is a single
+    token of that grammar and reads as itself; anything that does not parse
+    (``Sprint 12``, ``(Payments``, a bare ``regex:^Cart(V2)?$``) is refused
+    with :class:`FilterSyntaxError`, naming the position and what was
+    expected there — quote a pattern that holds whitespace, a parenthesis or
+    a quote (:func:`.filter.quote_pattern`). Empty or blank text is refused
+    too (problem ``empty``): leave the filter out to select without one.
+
+    The second element is always ``None``: there is no reading with a
+    warning any more. It stays so that the signature does not change."""
     if not isinstance(text, str):
         raise FilterError(f"filter text must be a string, got {type(text).__name__}")
-    try:
-        data = parse_filter_text(text)
-    except FilterSyntaxError as exc:
-        pattern = text.strip(TEXT_WHITESPACE)
-        if '"' in text or _has_operator_word(text):
-            raise
-        warning = (
-            f"the filter {text!r} is not filter text ({exc.problem} at column {exc.position + 1}) "
-            f"and was read as the single pattern {pattern!r} — write it as "
-            f"{quote_pattern(pattern)} to say so, or put AND/OR between patterns"
-        )
-        return pattern, warning
+    data = parse_filter_text(text)
     if data is None:
-        raise FilterError("the filter text is empty — leave the filter out to select without one")
+        raise FilterSyntaxError(
+            "empty", len(text), "the filter text is empty — leave the filter out to select without one"
+        )
     return data, None
-
-
-def _has_operator_word(text: str) -> bool:
-    word: list[str] = []
-    for char in text + " ":
-        if char in _SPACE or char in "()":
-            if "".join(word) in OPERATOR_WORDS:
-                return True
-            word = []
-        else:
-            word.append(char)
-    return False

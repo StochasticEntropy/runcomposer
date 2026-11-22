@@ -607,17 +607,29 @@ error: cannot read the filter text at column 14: the '(' opened here is not clos
                ^
 ```
 
-A filter that named one pattern before filter text existed still names that
-pattern: a `FILTER` that is not readable as text, and contains neither an
-operator word nor a double quote, is taken as the single pattern it spells,
-with a warning that shows how to write it unambiguously:
+There is one grammar and one answer, here, in the API and in the web UI's
+text editor alike: a single tag or `prefix:`/`regex:` pattern is one word
+of the grammar and reads as itself, and a string that does not parse is
+refused — whatever it might have meant as one pattern. Quote a pattern
+that holds whitespace, a parenthesis or a quote:
 
 ```console
 $ runcomposer compile 'regex:^Cart(V2)?$'
-warning: the filter 'regex:^Cart(V2)?$' is not filter text (needs-quotes at column 1) and was read as the single pattern 'regex:^Cart(V2)?$' — write it as "regex:^Cart(V2)?$" to say so, or put AND/OR between patterns
+error: cannot read the filter text at column 1: the pattern 'regex:^Cart(V2)?$' runs into '(' — a pattern containing a parenthesis or a quote is written in double quotes, e.g. "regex:^Cart(V2)?$"
+  regex:^Cart(V2)?$
+  ^
+$ runcomposer compile '"regex:^Cart(V2)?$"'
 # 9 item(s) matched
-…
 ```
+
+`Payments Smoke`, `Payments and Smoke` (`and` is a tag, not the operator),
+`(Payments` and `Payments)` are refused the same way, with the column. So
+are an empty or blank filter (`empty` — leave the filter out to select
+without one) and a `prefix:` or `regex:` with nothing after it (`empty`,
+at that word). Over the API the same strings are a `400 filter-syntax`
+whose body carries `problem`, `position` (0-based, in characters) and,
+where there is one, `token`
+(`tests/test_filter_text.py::test_a_filter_string_reads_as_the_shared_cases_say`).
 
 A tag that is itself spelled like an expression — a tag literally named
 `Auth OR Cart` — is the one case that reads differently now: unquoted it is
@@ -625,11 +637,10 @@ the union of two tags, so write it as `'"Auth OR Cart"'`.
 
 The same reading applies wherever a filter is configured or handed over as
 one string: the `filter` of `ui.quick_filters`, `ui.presets` and
-`ui.default_filter` (a string that needs the single-pattern fallback works,
-and is named in a warning when the configuration is loaded), a taxonomy
-leaf's `filter` (which must read as one pattern — quote a tag spelled like
-an expression; a leaf that needs the fallback is listed under `warnings`
-of the resolved taxonomy), and the testing kit's
+`ui.default_filter` (a string that does not parse refuses startup, naming
+the entry), a taxonomy leaf's `filter` (which must read as one pattern —
+quote a tag spelled like an expression or holding a space), and the
+testing kit's
 `FakeDispatchContext.from_source(source, selection="Auth OR Cart")`. The SDK
 exports the text form: `parse_filter_text`, `read_filter_string`,
 `quote_pattern` and `FilterSyntaxError`.

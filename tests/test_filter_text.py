@@ -183,14 +183,29 @@ def test_a_string_is_read_as_filter_text():
     assert read_filter_string("Payments-Cards") == ("Payments-Cards", None)
 
 
+@pytest.mark.parametrize("case", CASES["strings"], ids=_label)
+def test_a_filter_string_reads_as_the_shared_cases_say(case):
+    """One grammar, one answer — the API, the command line, configured
+    filters and the web UI's text editor (which reads the same cases)."""
+    if "error" in case:
+        with pytest.raises(FilterSyntaxError) as caught:
+            read_filter_string(case["text"])
+        want = case["error"]
+        assert (caught.value.problem, caught.value.position) == (want["problem"], want["position"])
+        assert caught.value.token == want.get("token", "")
+    else:
+        assert read_filter_string(case["text"]) == (case["ast"], None)
+
+
 @pytest.mark.parametrize(
     "text",
     ["Sprint 12", "regex:^Cart(V2)?$", "regex:^(Auth|Cart)-", "Checkout (Gift)", " Cart V2 ", ")"],
 )
-def test_a_single_pattern_that_is_not_filter_text_keeps_meaning_that_pattern(text):
-    data, warning = read_filter_string(text)
-    assert data == text.strip()
-    assert warning is not None and quote_pattern(text.strip()) in warning
+def test_a_string_that_does_not_parse_is_refused_however_it_reads_as_one_pattern(text):
+    with pytest.raises(FilterSyntaxError):
+        read_filter_string(text)
+    quoted = quote_pattern(text.strip())
+    assert read_filter_string(quoted) == (text.strip(), None), "quoted, it is that one pattern"
 
 
 @pytest.mark.parametrize(

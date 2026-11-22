@@ -189,7 +189,7 @@ class TestUiSelections:
             ({"presets": [{"filter": "x"}]}, r"ui\.presets\[0\] must be a mapping with a 'name' and a 'filter'"),
             ({"presets": [{"name": "a", "filter": "x", "colour": "red"}]}, r"unknown key\(s\) \['colour'\]"),
             ({"presets": [{"name": "a", "filter": "x", "parameters": {"seed": "s"}}]}, "'parameters' need a 'runner'"),
-            ({"presets": [{"name": "a", "filter": "regex:("}]}, r"ui\.presets\[0\]\.filter: invalid regular expression"),
+            ({"presets": [{"name": "a", "filter": '"regex:("'}]}, r"ui\.presets\[0\]\.filter: invalid regular expression"),
         ],
     )
     def test_a_selection_that_does_not_parse_refuses_the_start_naming_where(self, tmp_path, ui, message):
@@ -259,12 +259,12 @@ class TestMappingParametersOnTheCommandLine:
 
     def test_scalars_in_a_mapping_are_text_as_typed(self, tmp_path, capsys):
         code = cli_main(["plan", "Cart", "--runner", "pytest", "--json", "--config", self.config(tmp_path),
-                         "--param", "overrides={PRICE: 1300, VAT: 19.0, GIFT: true, NOTE: as is}",
+                         "--param", "overrides={PRICE: 1300, VAT: 7.5, GIFT: true, NOTE: as is}",
                          "--param", "retries=2"])
         answer = json.loads(capsys.readouterr().out)
         assert code == 0, answer
         assert answer["parameters"] == {
-            "overrides": {"PRICE": "1300", "VAT": "19.0", "GIFT": "true", "NOTE": "as is"}, "retries": 2,
+            "overrides": {"PRICE": "1300", "VAT": "7.5", "GIFT": "true", "NOTE": "as is"}, "retries": 2,
         }
 
     def test_what_is_not_a_mapping_is_still_refused_naming_the_parameter(self, tmp_path, capsys):

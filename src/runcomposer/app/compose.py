@@ -210,9 +210,7 @@ class Composer:
         # A filter given as one string is filter text (`Auth OR Cart`); what
         # the spec stores, and what is compiled, is the AST it reads to.
         if isinstance(data.get("tag_filter"), str):
-            data["tag_filter"], note = read_filter_string(data["tag_filter"])
-            if note:
-                warnings.append(note)
+            data["tag_filter"], _ = read_filter_string(data["tag_filter"])
         history = data.pop("history", None)
         if history:
             if isinstance(history, Mapping):

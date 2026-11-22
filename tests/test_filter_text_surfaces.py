@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 
 from runcomposer.cli.main import main
-from runcomposer.core.filter import parse_filter
+from runcomposer.core.filter import parse_filter, quote_pattern
+from runcomposer.core.filtertext import parse_filter_text
 from runcomposer.sdk import Service, load_config
 
 from .conftest import write_config
@@ -137,14 +138,23 @@ class TestCommandLine:
                 assert code == 0
                 assert [item["id"] for item in json.loads(out)["items"]] == _ids(service, ast), argument
 
-    def test_a_single_pattern_means_what_it_meant_before(self, cli):
+    def test_a_single_pattern_is_one_word_of_the_grammar_and_anything_else_must_parse(self, cli):
         with cli.service() as service:
-            for argument in ("Payments", "prefix:Checkout-", "regex:^Cart(V2)?$", "regex:(?i)^cart-"):
+            for argument in ("Payments", "prefix:Checkout-", "regex:^Sprint-1[23]$"):
                 code, out, _err = cli("compile", argument, "--json")
                 assert code == 0
                 assert [item["id"] for item in json.loads(out)["items"]] == _ids(service, argument)
-        code, out, _err = cli("compile", "regex:^Cart(V2)?$", "--json")
-        assert any('write it as "regex:^Cart(V2)?$"' in warning for warning in json.loads(out)["warnings"])
+                assert json.loads(out)["warnings"] == []
+            for pattern in ("regex:^Cart(V2)?$", "regex:(?i)^cart-"):
+                code, out, _err = cli("compile", quote_pattern(pattern), "--json")
+                assert code == 0
+                assert [item["id"] for item in json.loads(out)["items"]] == _ids(service, pattern)
+        code, _out, err = cli("compile", "regex:^Cart(V2)?$")
+        assert code == 2
+        assert "error: cannot read the filter text at column 1: the pattern 'regex:^Cart' runs into '('" in err
+        assert err.rstrip().endswith("regex:^Cart(V2)?$\n  ^")
+        code, _out, err = cli("compile", "Payments Smoke")
+        assert code == 2 and "at column 10: 'Smoke' where AND, OR or the end of the text was expected" in err
 
 
 # -- over HTTP --------------------------------------------------------------------------
@@ -202,13 +212,24 @@ class TestHttp:
         assert created.status_code == 201, created.text
         assert service.require_spec(created.json()["run"]["id"])["selection"]["tag_filter"] == ast
 
-    def test_a_single_pattern_string_means_what_it_meant_before(self, make_client):
+    def test_a_single_pattern_reads_as_itself_and_anything_else_must_parse(self, make_client):
         client, service = make_client()
-        for pattern in ("Auth-SSO", "prefix:Payments-", "regex:^Cart(V2)?$", "regex:^(Auth|Cart)-", "Sprint 12"):
+        for pattern in ("Auth-SSO", "prefix:Payments-", '"regex:^Cart(V2)?$"', '"Sprint 12"'):
             body = client.post(f"{API}/selection/compile", json={"tag_filter": pattern}).json()
-            assert [item["id"] for item in body["items"]] == _ids(service, pattern), pattern
-        warned = client.post(f"{API}/selection/compile", json={"tag_filter": "regex:^Cart(V2)?$"}).json()
-        assert any("read as the single pattern" in warning for warning in warned["warnings"])
+            assert [item["id"] for item in body["items"]] == _ids(service, parse_filter_text(pattern)), pattern
+            assert not [w for w in body["warnings"] if "pattern" in w], body["warnings"]
+        for text, problem, position in (
+            ("regex:^Cart(V2)?$", "needs-quotes", 0),
+            ("regex:^(Auth|Cart)-", "needs-quotes", 0),
+            ("Sprint 12", "missing-operator", 7),
+            ("(Payments", "unbalanced-open", 0),
+            ("", "empty", 0),
+            ("prefix:", "empty", 0),
+        ):
+            answer = client.post(f"{API}/selection/compile", json={"tag_filter": text})
+            assert answer.status_code == 400, text
+            body = answer.json()
+            assert (body["code"], body["problem"], body["position"]) == ("filter-syntax", problem, position), text
 
     def test_a_tag_spelled_like_an_expression_is_written_quoted(self, make_client, oddly_tagged):
         client, service = make_client(**oddly_tagged)

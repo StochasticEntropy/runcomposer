@@ -1,5 +1,5 @@
 {
-  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1), read by the core (tests/test_filter_text.py) and by the web UI (ui/src/lib/filter.fixture.test.ts) alike, every case on both sides. parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. `*` is every item: it reads as {\"not\": \"regex:^$\"}, which is written `*`; the quoted \"*\" is the tag spelled so.",
+  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1), read by the core (tests/test_filter_text.py) and by the web UI (ui/src/lib/filter.fixture.test.ts) alike, every case on both sides. parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. `*` is every item: it reads as {\"not\": \"regex:^$\"}, which is written `*`; the quoted \"*\" is the tag spelled so. strings: what a filter given as one string yields \u2014 a selection's `tag_filter` over the API, the command line's FILTER, a configured filter, and the web UI's text editor when it applies its text: `ast`, or `error` with `problem`, `position` and, where given, `token`. One grammar, one answer: a single tag or pattern is one word of the grammar and reads as itself; a string that does not parse is refused, whatever it might mean as one pattern; an empty or blank string, and a `prefix:` or `regex:` with nothing after it, are refused (problem `empty`; for blank text the position is its end).",
   "parse": [
     {
       "text": "Payments",
@@ -967,6 +967,376 @@
       "error": {
         "problem": "unbalanced-open",
         "position": 3
+      }
+    }
+  ],
+  "strings": [
+    {
+      "text": "Payments",
+      "ast": "Payments"
+    },
+    {
+      "text": "Payments AND Smoke",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "Payments",
+          "Smoke"
+        ]
+      }
+    },
+    {
+      "text": "Payments OR Cart AND Smoke",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Payments",
+          {
+            "op": "AND",
+            "items": [
+              "Cart",
+              "Smoke"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "text": "(Payments OR Cart) AND Smoke",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "op": "OR",
+            "items": [
+              "Payments",
+              "Cart"
+            ]
+          },
+          "Smoke"
+        ]
+      }
+    },
+    {
+      "text": "NOT Payments",
+      "ast": {
+        "not": "Payments"
+      }
+    },
+    {
+      "text": "NOT Payments AND Smoke",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "not": "Payments"
+          },
+          "Smoke"
+        ]
+      }
+    },
+    {
+      "text": "NOT (Payments OR Cart)",
+      "ast": {
+        "not": {
+          "op": "OR",
+          "items": [
+            "Payments",
+            "Cart"
+          ]
+        }
+      }
+    },
+    {
+      "text": "prefix:Sprint-",
+      "ast": "prefix:Sprint-"
+    },
+    {
+      "text": "regex:^Sprint-1[23]$",
+      "ast": "regex:^Sprint-1[23]$"
+    },
+    {
+      "text": "\"regex:^Cart(V2)?$\"",
+      "ast": "regex:^Cart(V2)?$"
+    },
+    {
+      "text": "*",
+      "ast": {
+        "not": "regex:^$"
+      }
+    },
+    {
+      "text": "* AND NOT Smoke",
+      "ast": {
+        "op": "AND",
+        "items": [
+          {
+            "not": "regex:^$"
+          },
+          {
+            "not": "Smoke"
+          }
+        ]
+      }
+    },
+    {
+      "text": "NOT *",
+      "ast": {
+        "not": {
+          "not": "regex:^$"
+        }
+      }
+    },
+    {
+      "text": "\"Payments\"",
+      "ast": "Payments"
+    },
+    {
+      "text": "'Payments'",
+      "ast": "'Payments'"
+    },
+    {
+      "text": "Payments and Smoke",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "and"
+      }
+    },
+    {
+      "text": "payments",
+      "ast": "payments"
+    },
+    {
+      "text": "NOT NOT Payments",
+      "ast": {
+        "not": {
+          "not": "Payments"
+        }
+      }
+    },
+    {
+      "text": "((Payments))",
+      "ast": "Payments"
+    },
+    {
+      "text": "Payments AND NOT prefix:Quarantine- OR Smoke",
+      "ast": {
+        "op": "OR",
+        "items": [
+          {
+            "op": "AND",
+            "items": [
+              "Payments",
+              {
+                "not": "prefix:Quarantine-"
+              }
+            ]
+          },
+          "Smoke"
+        ]
+      }
+    },
+    {
+      "text": "\"Auth OR Cart\"",
+      "ast": "Auth OR Cart"
+    },
+    {
+      "text": "\"AND\"",
+      "ast": "AND"
+    },
+    {
+      "text": "\"*\"",
+      "ast": "*"
+    },
+    {
+      "text": "Payments AND",
+      "error": {
+        "problem": "unexpected-end",
+        "position": 12
+      }
+    },
+    {
+      "text": "(Payments",
+      "error": {
+        "problem": "unbalanced-open",
+        "position": 0
+      }
+    },
+    {
+      "text": "Payments)",
+      "error": {
+        "problem": "unbalanced-close",
+        "position": 8
+      }
+    },
+    {
+      "text": "",
+      "error": {
+        "problem": "empty",
+        "position": 0
+      }
+    },
+    {
+      "text": "regex:(",
+      "error": {
+        "problem": "needs-quotes",
+        "position": 0,
+        "token": "regex:"
+      }
+    },
+    {
+      "text": "Payments OR OR Cart",
+      "error": {
+        "problem": "unexpected-operator",
+        "position": 12,
+        "token": "OR"
+      }
+    },
+    {
+      "text": "prefix:",
+      "error": {
+        "problem": "empty",
+        "position": 0,
+        "token": "prefix:"
+      }
+    },
+    {
+      "text": "Payments Smoke",
+      "error": {
+        "problem": "missing-operator",
+        "position": 9,
+        "token": "Smoke"
+      }
+    },
+    {
+      "text": "\"unterminated",
+      "error": {
+        "problem": "unterminated-quote",
+        "position": 0
+      }
+    },
+    {
+      "text": "Zahlungen-pr\u00fcfen",
+      "ast": "Zahlungen-pr\u00fcfen"
+    },
+    {
+      "text": "\"a \\\"quoted\\\" tag\"",
+      "ast": "a \"quoted\" tag"
+    },
+    {
+      "text": "  Payments   OR\tCart  ",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Payments",
+          "Cart"
+        ]
+      }
+    },
+    {
+      "text": "NOT",
+      "error": {
+        "problem": "unexpected-end",
+        "position": 3
+      }
+    },
+    {
+      "text": "AND Payments",
+      "error": {
+        "problem": "unexpected-operator",
+        "position": 0,
+        "token": "AND"
+      }
+    },
+    {
+      "text": "prefix:Sprint- AND regex:3$",
+      "ast": {
+        "op": "AND",
+        "items": [
+          "prefix:Sprint-",
+          "regex:3$"
+        ]
+      }
+    },
+    {
+      "text": "Sprint-12 OR Sprint-13 AND NOT Payments",
+      "ast": {
+        "op": "OR",
+        "items": [
+          "Sprint-12",
+          {
+            "op": "AND",
+            "items": [
+              "Sprint-13",
+              {
+                "not": "Payments"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "text": "   ",
+      "error": {
+        "problem": "empty",
+        "position": 3
+      }
+    },
+    {
+      "text": "\t",
+      "error": {
+        "problem": "empty",
+        "position": 1
+      }
+    },
+    {
+      "text": "regex:",
+      "error": {
+        "problem": "empty",
+        "position": 0,
+        "token": "regex:"
+      }
+    },
+    {
+      "text": "\"prefix:\"",
+      "error": {
+        "problem": "empty",
+        "position": 0,
+        "token": "prefix:"
+      }
+    },
+    {
+      "text": "Payments AND prefix:",
+      "error": {
+        "problem": "empty",
+        "position": 13,
+        "token": "prefix:"
+      }
+    },
+    {
+      "text": "Auth-SSO",
+      "ast": "Auth-SSO"
+    },
+    {
+      "text": "NOT regex:^Cart(V2)?$",
+      "error": {
+        "problem": "needs-quotes",
+        "position": 4,
+        "token": "regex:^Cart"
+      }
+    },
+    {
+      "text": "\"Sprint 12\"",
+      "ast": "Sprint 12"
+    },
+    {
+      "text": "Sprint 12",
+      "error": {
+        "problem": "missing-operator",
+        "position": 7,
+        "token": "12"
       }
     }
   ]
