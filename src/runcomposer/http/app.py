@@ -106,8 +106,9 @@ def create_app(
         app.add_middleware(
             CORSMiddleware, allow_origins=cors, allow_methods=["*"], allow_headers=["*"]
         )
-    # Outermost: a request for a host name this server does not answer to
-    # (DNS rebinding) is refused before anything else sees it (crosssite.py).
+    # Before any route or other guard: a request for a host name this server
+    # does not answer to (DNS rebinding) is refused (crosssite.py). Only the
+    # layer that answers what nothing else did lies outside it (errors.py).
     hosts = effective_hosts(config.api.get("hosts"), bind_host)
     if hosts is not None:
         app.add_middleware(HostGuard, hosts=hosts)

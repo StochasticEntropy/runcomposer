@@ -340,6 +340,46 @@ class TestErrorBody:
         assert "the store refused the token" in logged[0].getMessage() and "Traceback" in logged[0].getMessage()
         assert "pool-token-example-77" not in "\n".join(record.getMessage() for record in caplog.records)
 
+    def test_a_response_that_fails_after_it_started_ends_the_connection_and_says_nothing(self, caplog):
+        """Part of the answer is out, so no 500 can follow; returning would
+        leave the client waiting. The layer logs the failure blanked and
+        raises an exception of its own that carries the type only."""
+        import asyncio
+        import traceback
+        from types import SimpleNamespace
+
+        from runcomposer.http.errors import UnfinishedResponse, UnhandledErrors
+
+        async def half_an_answer(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            raise OSError("the disk at basket-token-example went away")
+
+        def blank(value):
+            return str(value).replace("basket-token-example", "‹blanked›")
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/artifacts/one",
+            "app": SimpleNamespace(state=SimpleNamespace(service=SimpleNamespace(redact=blank))),
+        }
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():  # pragma: no cover - never asked
+            return {"type": "http.disconnect"}
+
+        with caplog.at_level("ERROR", logger="runcomposer"), pytest.raises(UnfinishedResponse) as interrupted:
+            asyncio.run(UnhandledErrors(half_an_answer)(scope, receive, send))
+        assert str(interrupted.value) == "OSError after the response had started"
+        printed = "".join(traceback.format_exception(interrupted.value))
+        assert "basket-token-example" not in printed and "the disk at" not in printed
+        assert [message["type"] for message in sent] == ["http.response.start"]
+        logged = [record.getMessage() for record in caplog.records]
+        assert len(logged) == 1 and "unhandled error on GET /artifacts/one: OSError: the disk at ‹blanked›" in logged[0]
+
     def test_every_request_body_is_checked_for_lone_surrogates_in_one_place(self):
         from runcomposer.http import models
 

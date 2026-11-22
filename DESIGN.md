@@ -1879,7 +1879,8 @@ Rules:
   values of
   runner-defined data (health and plan `data`), never out of identifiers:
   shard, group and runner names, item, run and dispatch ids, states, event
-  kinds, parameter names, mapping keys and links are recorded as they are
+  kinds, parameter names, mapping keys, links, and the names and file
+  paths of artifacts are recorded as they are
   (tests/test_env_values.py). A secret shorter than four characters cannot
   be blanked without mangling ordinary text and is refused at startup,
   naming the option and the variable — write `${env-public:…}` if it is no

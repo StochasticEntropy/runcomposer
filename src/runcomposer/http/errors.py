@@ -42,6 +42,7 @@ from runcomposer.core.taxonomy import TaxonomyError
 
 __all__ = [
     "CrossSiteRequest",
+    "UnfinishedResponse",
     "UnhandledErrors",
     "UnknownHost",
     "error_body",
@@ -173,10 +174,17 @@ def error_response(
     return JSONResponse(status_code=status_of(exc), content=content)
 
 
+class UnfinishedResponse(RuntimeError):
+    """A response failed after it had started. Raised for the server to end
+    the connection; it carries the type of what failed and none of its
+    text, which is in runcomposer's own log line."""
+
+
 class UnhandledErrors:
     """An exception no handler answered: logged once, as text with the
     configured secrets blanked out (``log_failure``), and answered ``500
-    internal-error`` naming its type only.
+    internal-error`` naming its type only — or, when part of an answer was
+    already sent, ended with ``UnfinishedResponse``.
 
     Done as a layer of its own and not as a handler for ``Exception``: such
     a handler's exception is raised again for the server to log, and the
@@ -207,7 +215,13 @@ class UnhandledErrors:
                 scope["app"].state.service.redact,
             )
             if started:
-                return  # an answer is already on its way: there is nothing to add to it
+                # Part of an answer is out: nothing can be added to it, and
+                # the server ends the connection only for an exception —
+                # returning would leave the client waiting for the rest. So
+                # one is raised that says nothing but the type.
+                raise UnfinishedResponse(
+                    f"{type(exc).__name__} after the response had started"
+                ) from None
             response = JSONResponse(
                 status_code=500,
                 content=error_body(
