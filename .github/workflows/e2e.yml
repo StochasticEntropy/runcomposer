@@ -21,7 +21,7 @@ jobs:
       # The servers these tests start are configured with stand-in runners
       # from the test suite (tests/test_api.py and others), which import
       # pytest: hence the dev extra beside the robot one.
-      - name: Install runcomposer with the dev and robot extras
+      - name: Install runcomposer with the dev extra and the robot extra
         run: python -m pip install -e ".[dev,robot]"
       - uses: actions/setup-node@v4
         with:
