@@ -23,32 +23,44 @@ def workdir(tmp_path, monkeypatch):
 
 
 def split_command_line(line: str) -> list[str]:
-    """``line`` as the program it starts receives it: split by POSIX shell
-    rules, or on Windows by Windows itself (``CommandLineToArgvW``, the
-    rules a program there reads its command line by) — the line a person
-    pastes there is not shell syntax, and a backslash is not an escape."""
+    """``line`` as the shell the demo prints it for reads it: POSIX shell
+    rules, or on Windows PowerShell's for the words the demo writes — bare,
+    or in single quotes with ``''`` for a quote. (What a real shell makes of
+    the lines is ``test_the_printed_lines_mean_the_same_in_the_real_shell``.)"""
     if os.name != "nt":
         return shlex.split(line)
-    import ctypes
-    from ctypes import wintypes
+    words, i = [], 0
+    while i < len(line):
+        if line[i] == " ":
+            i += 1
+            continue
+        if line[i] == "'":
+            word, i = "", i + 1
+            while True:
+                end = line.index("'", i)
+                word += line[i:end]
+                if line[end + 1 : end + 2] == "'":
+                    word, i = word + "'", end + 2
+                    continue
+                i = end + 1
+                break
+        else:
+            end = line.find(" ", i)
+            end = len(line) if end < 0 else end
+            word, i = line[i:end], end
+        words.append(word)
+    return words
 
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)  # type: ignore[attr-defined]
-    shell32.CommandLineToArgvW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
-    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-    count = ctypes.c_int()
-    argv = shell32.CommandLineToArgvW(line, ctypes.byref(count))
-    try:
-        return [argv[index] for index in range(count.value)]
-    finally:
-        kernel32.LocalFree(argv)
+
+def steps_heading(lines: list[str]) -> int:
+    return next(index for index, line in enumerate(lines) if line.startswith("Next steps"))
 
 
 def next_steps(out: str) -> list[list[str]]:
     """The commands the demo tells the reader to paste, as argv lists."""
     lines = out.splitlines()
     steps = []
-    for line in lines[lines.index("Next steps:") + 1 :]:
+    for line in lines[steps_heading(lines) + 1 :]:
         if not line.startswith("  "):
             break
         argv = split_command_line(line.strip())
@@ -221,6 +233,39 @@ class TestDemoSeedsRealHistory:
         assert main(steps[0]) == 0
         removal = next(line for line in out.splitlines() if line.startswith("Delete the workspace"))
         assert split_command_line(removal.split(":  ", 1)[1])[-1] == "nightly demo"
+
+    def test_the_printed_lines_mean_the_same_in_the_real_shell(self, workdir, capsys):
+        """The lines go through the shell they are printed for — ``sh``, or
+        PowerShell on Windows — with ``runcomposer`` replaced by a program
+        that prints the arguments it received: a workspace whose name holds
+        a space, a quote and a ``$`` arrives as one argument, unexpanded."""
+        import json
+        import shutil
+        import subprocess
+        import sys
+
+        workspace = "it's $HOME x"
+        assert main(["demo", "--workspace", workspace]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        steps = [line.strip() for line in lines[steps_heading(lines) + 1 :] if line.startswith("  ")]
+        echo = workdir / "echo_args.py"
+        echo.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+        if os.name == "nt":
+            shell = shutil.which("pwsh") or shutil.which("powershell")
+            assert shell, "no PowerShell on this Windows machine"
+            program = f"& '{sys.executable}' '{echo}'"
+        else:
+            shell = shutil.which("sh")
+            program = f"{shlex.quote(sys.executable)} {shlex.quote(str(echo))}"
+        for line in steps:
+            command = program + line[len("runcomposer"):]
+            argv = [shell, "-NoProfile", "-NonInteractive", "-Command", command] if os.name == "nt" else [
+                shell, "-c", command]
+            done = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=workdir)
+            assert done.returncode == 0, done.stderr
+            received = json.loads(done.stdout)
+            assert received == split_command_line(line)[1:], (line, received)
+            assert Path(received[received.index("--config") + 1]) == Path(workspace) / "config.yaml"
 
     def test_it_refuses_to_seed_into_somebody_elses_config_directory(self, workdir, capsys):
         deployment = workdir / "deployment"
@@ -429,3 +474,50 @@ class TestQuickstartRoundTrip:
         assert main(["ingest", str(bundle), "--config", str(config)]) == 0
         out = capsys.readouterr().out
         assert "run state: COMPLETE" in out and "warning" not in out
+
+
+#: A word, and how the demo writes it for PowerShell.
+POWERSHELL_WORDS = [
+    ("runcomposer-demo\\config.yaml", "runcomposer-demo\\config.yaml"),
+    ("C:\\config.yaml", "C:\\config.yaml"),
+    ("nightly demo", "'nightly demo'"),
+    ("it's", "'it''s'"),
+    ('say "cheese"', "'say \"cheese\"'"),
+    ("$HOME", "'$HOME'"),
+    ("a`b", "'a`b'"),
+    ("cart&pay", "'cart&pay'"),
+    ("50%off", "'50%off'"),
+    ("C:\\shop demo\\", "'C:\\shop demo\\'"),
+    ("-flag", "'-flag'"),
+    ("", "''"),
+]
+
+
+@pytest.mark.parametrize(("word", "written"), POWERSHELL_WORDS, ids=[repr(w) for w, _ in POWERSHELL_WORDS])
+def test_a_word_is_quoted_for_powershell(word, written):
+    from runcomposer.demo.demo import powershell_word
+
+    assert powershell_word(word) == written
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell is the shell of Windows machines")
+def test_powershell_reads_every_quoted_word_back(tmp_path):
+    """The table through a real PowerShell: each written word arrives as the
+    word it was, a trailing backslash included."""
+    import json
+    import shutil
+    import subprocess
+    import sys
+
+    from runcomposer.demo.demo import powershell_word
+
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "no PowerShell on this Windows machine"
+    echo = tmp_path / "echo_args.py"
+    echo.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+    words = [word for word, _ in POWERSHELL_WORDS if word]
+    command = f"& '{sys.executable}' '{echo}' " + " ".join(powershell_word(word) for word in words)
+    done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command],
+                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == words

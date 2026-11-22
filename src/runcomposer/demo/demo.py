@@ -24,8 +24,8 @@ complete uninstall.
 from __future__ import annotations
 
 import os
+import re
 import shlex
-import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -184,19 +184,34 @@ def _compose_and_run(
     return result.spec, result.run.id, verdicts
 
 
+#: The shell the printed commands are for: a POSIX shell, or on Windows the
+#: shell it opens by default.
+SHELL = "PowerShell" if os.name == "nt" else "sh"
+
+_POWERSHELL_PLAIN = re.compile(r"[A-Za-z0-9_.:/\\][A-Za-z0-9_.:/\\-]*")
+
+
+def powershell_word(text: str) -> str:
+    """``text`` as one argument in PowerShell: as it is when it holds nothing
+    PowerShell reads, else in single quotes — inside them only ``'`` is
+    special, written twice; ``$``, a backtick, ``"``, ``&`` and ``%`` are
+    plain text there, which in double quotes they are not."""
+    if _POWERSHELL_PLAIN.fullmatch(text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
 def shell_word(value: object) -> str:
-    """``value`` as one word of a command line pasted into this platform's
-    shell: quoted the POSIX way, or the way a Windows program reads its
-    command line — so a workspace whose path holds a space is still one
-    argument, and a Windows path keeps its backslashes."""
+    """``value`` as one word of a command line pasted into :data:`SHELL` —
+    so a workspace whose path holds a space, a quote or a ``$`` is still the
+    one argument it is, and a Windows path keeps its backslashes."""
     text = str(value)
-    return subprocess.list2cmdline([text]) if os.name == "nt" else shlex.quote(text)
+    return powershell_word(text) if os.name == "nt" else shlex.quote(text)
 
 
 def removal_command(directory: Path) -> str:
-    """The command that deletes ``directory`` and everything in it, in the
-    shell a person on this platform has open: ``rm -rf`` on POSIX,
-    ``Remove-Item`` in the shell Windows opens by default."""
+    """The command that deletes ``directory`` and everything in it, in
+    :data:`SHELL`: ``rm -rf`` or ``Remove-Item -Recurse -Force``."""
     if os.name == "nt":
         return f"Remove-Item -Recurse -Force {shell_word(directory)}"
     return f"rm -rf {shell_word(directory)}"
@@ -318,9 +333,10 @@ def _narrate(service: Service, out: Out, workspace_dir: Path, note: str, config_
         f"{sum(len(service.store.verdicts_for(r.id)) for r in stored)} verdicts are in "
         f"{workspace_dir / 'runcomposer.db'} — history features are live there."
     )
-    out(f"Delete the workspace to undo all of it:  {removal_command(workspace_dir)}")
+    in_shell = f" ({SHELL})" if os.name == "nt" else ""
+    out(f"Delete the workspace to undo all of it{in_shell}:  {removal_command(workspace_dir)}")
     out("")
-    out("Next steps:")
+    out(f"Next steps{in_shell}:")
     out(f"  runcomposer runs --config {config_arg}")
     out(f"  runcomposer runs --config {config_arg} --failed-in latest --label suite=nightly")
     out(f"  runcomposer compile --config {config_arg} Payments")
