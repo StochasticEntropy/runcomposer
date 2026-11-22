@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ExportDialog } from "../components/ExportDialog.tsx";
-import { ExpressionEditor } from "../components/ExpressionEditor.tsx";
+import { ExpressionEditor, textListId } from "../components/ExpressionEditor.tsx";
 import { PreviewTable } from "../components/PreviewTable.tsx";
 import { PlanView } from "../components/PlanView.tsx";
 import { SavedSelections } from "../components/SavedSelections.tsx";
@@ -521,7 +521,7 @@ export function ComposeView({ route }: { route: Route }) {
             ? started
             : `${started} ${t("compose.countChanged", { expected: selectedCount, count: response.run.planned_count })}`,
       });
-      announce(started);
+      announce(started, { forNextView: true });
       setTitle(""); // the title went with that run
       navigate(runHref(response.run.id));
     } catch (caught) {
@@ -740,6 +740,13 @@ export function ComposeView({ route }: { route: Route }) {
         <datalist id={tagListId}>
           {(tags.data?.tags ?? []).map((entry) => (
             <option key={entry.tag} value={entry.tag}>
+              {t("picker.items", { count: entry.count })}
+            </option>
+          ))}
+        </datalist>
+        <datalist id={textListId(tagListId)}>
+          {(tags.data?.tags ?? []).map((entry) => (
+            <option key={entry.tag} value={quotePattern(entry.tag)}>
               {t("picker.items", { count: entry.count })}
             </option>
           ))}

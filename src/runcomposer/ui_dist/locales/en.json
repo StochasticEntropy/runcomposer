@@ -88,7 +88,8 @@
       "internal-error": "The server ran into an internal error.",
       "nothing-planned": "Nothing in the delivery is for an item of this run.",
       "filter-too-deep": "The filter nests too deeply.",
-      "dispatch-queue-full": "Too many runs are waiting to start — try again in a moment."
+      "dispatch-queue-full": "Too many runs are waiting to start — try again in a moment.",
+      "runner-unavailable": "This runner cannot say what it is right now — nothing can be planned or run with it. The server log says why."
     }
   },
   "runState": {

@@ -370,6 +370,30 @@ test("every control has a name, and status changes are announced", async ({ page
   await expect(page.locator(".verdict-table thead th[scope=col]")).toHaveCount(7);
 });
 
+test.describe("on a narrow phone (360 px), in German", () => {
+  test.use({ viewport: { width: 360, height: 780 } });
+
+  test("a run with two dispatches does not scroll sideways: the dispatch picker shrinks", async ({ page, open, api }) => {
+    const run = await api.finishedRun("Payments", "b", { title: "Nightly regression" });
+    await api.post(`/runs/${run.id}/dispatch`, { runner: "demo", parameters: { seed: "b" } });
+    await api.waitFor(run.id, ["COMPLETE"]);
+    await expect.poll(async () => (await api.get<{ dispatches: unknown[] }>(`/runs/${run.id}`)).dispatches.length).toBe(2);
+    await open(`#/runs/${run.id}`);
+    await page.getByRole("combobox", { name: msg("prefs.language") }).selectOption("de");
+    await expect(page.locator("html")).toHaveAttribute("lang", "de");
+    const picker = page.getByRole("combobox", { name: de("run.showDispatch") });
+    await expect(picker).toBeVisible();
+    await expect(picker.locator("option")).toHaveCount(2);
+    await expectNoSidewaysScroll(page);
+    const box = (await picker.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(360);
+    // The selection tab carries the same picker.
+    await page.getByRole("navigation", { name: de("run.sections") }).getByRole("link", { name: de("run.tab.selection") }).click();
+    await expectNoSidewaysScroll(page);
+  });
+});
+
 test.describe("on a phone (375 px)", () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true });
 

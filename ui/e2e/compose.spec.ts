@@ -727,7 +727,13 @@ test("the add field reads what is typed with the filter's grammar — the same t
 
   // The other operator is a group of its own; NOT is the switch of its rule.
   await addRule(page, "Sprint-12 OR Sprint-13");
+  // The preview of the last accepted filter is awaited — its request has
+  // left and been answered — before the requests that follow are counted.
+  const lastPreview = page.waitForResponse(
+    (response) => response.url().endsWith("/api/v1/selection/compile") && (response.request().postData() ?? "").includes("Quarantine-"),
+  );
   await addRule(page, "NOT prefix:Quarantine-");
+  await lastPreview;
   await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke AND (Sprint-12 OR Sprint-13) AND NOT prefix:Quarantine-");
   await expect(page.getByRole("button", { name: msg("filter.negateRule", { pattern: "prefix:Quarantine-" }) })).toHaveAttribute("aria-pressed", "true");
 

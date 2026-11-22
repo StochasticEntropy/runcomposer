@@ -122,7 +122,7 @@ export interface TaxonomyNode {
 export interface ResolvedTaxonomy {
   taxonomy: TaxonomyNode[];
   tags: string[];
-  /** Leaves read as one pattern only by the fallback for text that is not filter text. */
+  /** A leaf whose filter reads like an expression is the one tag spelled so: said here. */
   warnings?: string[];
 }
 

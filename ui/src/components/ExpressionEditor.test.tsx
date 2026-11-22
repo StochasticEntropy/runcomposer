@@ -5,10 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { fromAst, toAst } from "../lib/editor.ts";
 import type { GroupNode } from "../lib/editor.ts";
-import { formatFilter } from "../lib/filter.ts";
+import { formatFilter, quotePattern } from "../lib/filter.ts";
 import type { FilterAst } from "../lib/types.ts";
 import { renderWithI18n } from "../test/render.tsx";
-import { ExpressionEditor } from "./ExpressionEditor.tsx";
+import { ExpressionEditor, textListId } from "./ExpressionEditor.tsx";
 
 afterEach(cleanup);
 
@@ -237,10 +237,31 @@ describe("the add field speaks the filter's grammar", () => {
     expect(screen.getByRole("alert").textContent).toBe("Position 10: operators are written in capitals — AND, not “and”.");
   });
 
-  it("takes a tag of the catalog as that tag, whatever characters it has", () => {
+  it("reads a catalog tag spelled like an expression as the grammar does: unquoted two tags, quoted one", () => {
+    // One grammar, one answer: the add field has no exception for a catalog
+    // tag. The text editor, a link, the API and the CLI read the same.
     const catalog = ["Payments", "Smoke", "Cart AND Checkout"];
     renderWithI18n(<Harness initial={null} knownTags={catalog} />);
     type("Cart AND Checkout");
+    expect(toAst(current)).toEqual({ op: "AND", items: ["Cart", "Checkout"] });
+  });
+
+  it("offers a catalog tag in its list as the field reads it: quoted where the grammar needs it", () => {
+    const catalog = ["Payments", "Smoke", "Cart AND Checkout"];
+    renderWithI18n(
+      <>
+        <datalist id="tags-text">
+          {catalog.map((tag) => (
+            <option key={tag} value={quotePattern(tag)} />
+          ))}
+        </datalist>
+        <Harness initial={null} knownTags={catalog} />
+      </>,
+    );
+    expect(addField().getAttribute("list")).toBe(textListId("tags"));
+    const offered = [...document.querySelectorAll(`#${textListId("tags")} option`)].map((option) => option.getAttribute("value"));
+    expect(offered).toEqual(["Payments", "Smoke", '"Cart AND Checkout"']);
+    type(offered[2]!);
     expect(toAst(current)).toBe("Cart AND Checkout");
     expect(document.querySelector(".chip.is-unmatched")).toBeNull();
   });

@@ -147,6 +147,7 @@ function ShardCard({
   live,
   running,
   over,
+  level,
 }: {
   shard: ShardSummary;
   artifacts: Artifact[];
@@ -155,16 +156,19 @@ function ShardCard({
   running: boolean;
   /** The dispatch has ended: a shard that did not deliver never will. */
   over: boolean;
+  /** Its heading's level: one below its group's, or right below the section's. */
+  level: 3 | 4;
 }) {
   const { t } = useI18n();
   // Live status counts while the shard is still expected to deliver, not after.
   const counts = shard.delivered ? shard.summary : over ? {} : reportedOnly(live);
   const reported = shard.delivered ? shard.count : sumCounts(counts);
+  const Heading = level === 4 ? "h4" : "h3";
   const nowRunning = shard.delivered || over ? 0 : (live.RUNNING ?? 0);
   return (
     <li className="shard-card" data-shard={shard.shard}>
       <div className="shard-head">
-        <h3>{shard.shard || t("run.unnamedShard")}</h3>
+        <Heading>{shard.shard || t("run.unnamedShard")}</Heading>
         {shard.delivered ? (
           <ResultBadge result={shard.completion} />
         ) : (
@@ -283,8 +287,9 @@ export function RunResults({ run, names, query, onQuery }: Props) {
   const runLevel = artifacts.filter(
     (artifact) => (!artifact.shard || !allShardNames.includes(artifact.shard)) && !(artifact.group && groupNames.includes(artifact.group)),
   );
-  const shardCard = (entry: ShardSummary) => (
+  const shardCard = (level: 3 | 4) => (entry: ShardSummary) => (
     <ShardCard
+      level={level}
       key={entry.shard}
       shard={entry}
       artifacts={artifacts.filter((artifact) => artifact.shard === entry.shard)}
@@ -307,7 +312,10 @@ export function RunResults({ run, names, query, onQuery }: Props) {
   const anyTrouble = shards.some((entry) => shardRank(entry) === 0);
   // Many shards: the ones without a failure share one folded line, so fifty
   // shards with one failure are one card and one line — not fifty cards.
-  const shardList = (list: ShardSummary[]) => {
+  // A shard's heading is one level below its group's (h4), or right below
+  // the "Shards" section's (h3) when it is in no group.
+  const shardList = (list: ShardSummary[], level: 3 | 4) => {
+    const card = shardCard(level);
     const fold = list.length > FOLD_SHARDS_ABOVE;
     const needLook = fold ? list.filter((entry) => shardRank(entry) < 2) : list;
     const passed = fold ? list.filter((entry) => shardRank(entry) === 2) : [];
@@ -316,17 +324,17 @@ export function RunResults({ run, names, query, onQuery }: Props) {
     const further = needLook.slice(FOLD_SHARDS_ABOVE);
     return (
       <>
-        {shown.length > 0 && <ul className="shard-grid">{shown.map(shardCard)}</ul>}
+        {shown.length > 0 && <ul className="shard-grid">{shown.map(card)}</ul>}
         {further.length > 0 && (
           <details className="group-shards more-shards">
             <summary>{t("run.moreShards", { count: further.length })}</summary>
-            <ul className="shard-grid">{further.map(shardCard)}</ul>
+            <ul className="shard-grid">{further.map(card)}</ul>
           </details>
         )}
         {passed.length > 0 && (
           <details className="group-shards passed-shards">
             <summary>{t("run.passedShards", { count: passed.length })}</summary>
-            <ul className="shard-grid">{passed.map(shardCard)}</ul>
+            <ul className="shard-grid">{passed.map(card)}</ul>
           </details>
         )}
       </>
@@ -411,7 +419,7 @@ export function RunResults({ run, names, query, onQuery }: Props) {
                   <ArtifactLinks artifacts={groupLevel(entry.group)} />
                   <details className="group-shards" open={open}>
                     <summary>{t("run.shards", { count: members.length })}</summary>
-                    {shardList(members)}
+                    {shardList(members, 4)}
                   </details>
                 </li>
               );
@@ -423,7 +431,7 @@ export function RunResults({ run, names, query, onQuery }: Props) {
       {ungrouped.length > 0 && (
         <section aria-labelledby="shards-title">
           <h2 id="shards-title">{t("run.shards", { count: ungrouped.length })}</h2>
-          {shardList(ungrouped)}
+          {shardList(ungrouped, 3)}
         </section>
       )}
 

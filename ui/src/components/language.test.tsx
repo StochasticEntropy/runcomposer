@@ -19,12 +19,12 @@ const german = createTranslator(de, "de");
 
 describe("the untranslated mark", () => {
   it("compares languages by their primary subtag", () => {
-    expect(primaryLanguage("de-CH")).toBe("de");
+    expect(primaryLanguage("de-AT")).toBe("de");
     expect(primaryLanguage("EN")).toBe("en");
     expect(marksUntranslated("de", "en")).toBe(true);
     expect(marksUntranslated("en", "de")).toBe(true);
     expect(marksUntranslated("de", "de")).toBe(false);
-    expect(marksUntranslated("de", "de-CH")).toBe(false);
+    expect(marksUntranslated("de", "de-AT")).toBe(false);
     expect(marksUntranslated("en", "en-GB")).toBe(false);
     expect(marksUntranslated("en", "pt-BR")).toBe(true);
   });
@@ -38,9 +38,9 @@ describe("the untranslated mark", () => {
   });
 
   it("is not shown when they speak the same language, and the text says its own language", () => {
-    renderWithI18n(<Foreign>Runner nicht erreichbar</Foreign>, undefined, { ...german, textLanguage: "de-CH" });
+    renderWithI18n(<Foreign>Runner nicht erreichbar</Foreign>, undefined, { ...german, textLanguage: "de-AT" });
     const text = screen.getByText("Runner nicht erreichbar");
-    expect(text.getAttribute("lang")).toBe("de-CH");
+    expect(text.getAttribute("lang")).toBe("de-AT");
     expect(text.classList.contains("is-marked")).toBe(false);
     expect(text.getAttribute("title")).toBeNull();
   });

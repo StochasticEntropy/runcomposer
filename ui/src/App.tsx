@@ -129,7 +129,10 @@ function Shell({ meta }: { meta: AppContextValue["meta"] }) {
 
   // -- the live region --------------------------------------------------------------------
   const [spoken, setSpoken] = useState("");
-  const announce = useCallback((message: string) => {
+  // A message said for the view being opened survives that one change.
+  const keepThroughNextView = useRef(false);
+  const announce = useCallback((message: string, options: { forNextView?: boolean } = {}) => {
+    keepThroughNextView.current = options.forNextView === true;
     // The same text twice in a row would not be read again; a trailing
     // no-break space makes it a new text without changing what is heard.
     setSpoken((current) => (current === message ? `${message}\u00a0` : message));
@@ -142,6 +145,10 @@ function Shell({ meta }: { meta: AppContextValue["meta"] }) {
       firstRoute.current = false;
       return;
     }
+    // What was said belongs to the view it was said on: a hidden live region
+    // keeps no message of another view for a screen reader to come across.
+    if (keepThroughNextView.current) keepThroughNextView.current = false;
+    else setSpoken("");
     mainRef.current?.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }, [route.name, route.id]);

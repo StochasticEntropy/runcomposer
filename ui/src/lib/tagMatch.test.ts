@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { editDistance, matchesAnyTag, nearestTags, patternChecker, tagIndex } from "./tagMatch.ts";
+import { editDistance, fromPython, matchesAnyTag, nearestTags, patternChecker, tagIndex } from "./tagMatch.ts";
 
 const TAGS = ["Payments", "Payments-Cards", "Payments-Wallets", "Checkout", "Cart", "CartV2", "Smoke", "Regression", "Sprint-12", "Sprint-13", "Quarantine-Flaky"];
 const index = tagIndex(TAGS);
@@ -33,6 +33,56 @@ describe("does any tag match", () => {
   it("claims nothing about an expression the browser cannot read", () => {
     expect(matchesAnyTag("regex:(?i)payments", index)).toBeNull();
     expect(matchesAnyTag("regex:(", index)).toBeNull();
+  });
+});
+
+describe("a Python expression read as Python reads it", () => {
+  // [expression, a tag, does Python's re.search find it (each checked against Python's re.search)]
+  const SAME: [string, string, boolean][] = [
+    ["\\ACart", "Cart", true],
+    ["\\ACart", "Checkout", false],
+    ["Cart\\Z", "Cart", true],
+    ["Cart\\Z", "CartV2", false],
+    ["Cart$", "Cart\n", true],
+    ["Cart\\Z", "Cart\n", false],
+    ["^Cart.$", "Cart\r", true],
+    ["^Cart.$", "Cart\n", false],
+    ["^\\w+$", "Zahlung-Übersicht", false],
+    ["^\\w+$", "Übersicht", true],
+    ["^\\d+$", "١٢", true],
+    ["\\bCards\\b", "Payments-Cards", true],
+    ["\\bSmoke\\b", "ÜSmoke", false],
+    ["^Sprint-\\s?1", "Sprint- 1", true],
+    ["{Cart}", "{Cart}", true],
+    ["^a{,2}$", "aa", true],
+    ["^a{,2}$", "aaa", false],
+    ["^Cart{1}V2$", "CartV2", true],
+    ["[]x]", "]", true],
+    ["[^]x]", "]", false],
+    ["\\-Cards", "Payments-Cards", true],
+    ["(?<=Payments-)Cards", "Payments-Cards", true],
+    ["^(Cart|Checkout)$", "Checkout", true],
+    ["\\x43art", "Cart", true],
+    ["(a)\\1", "aa", true],
+  ];
+  it.each(SAME)("%s on %j is %s", (expression, tag, expected) => {
+    const translated = fromPython(expression);
+    expect(translated).not.toBeNull();
+    expect(new RegExp(translated!, "u").test(tag)).toBe(expected);
+  });
+
+  const NOT_HERE = [
+    "(?i)cart", "Cart(?i)", "(?s)Cart.", "a*+", "a++", "a?+", "a{2}+", "(?>Cart)", "(?P<area>Cart)", "(?P=area)",
+    "(?#note)Cart", "(?(1)a|b)", "\\N{LATIN SMALL LETTER A}", "Cart\\z", "[\\W]", "[\\b]", "(?<area>Cart)", "[Cart",
+  ];
+  it.each(NOT_HERE)("%s is not translated, and no hint is shown for it", (expression) => {
+    expect(fromPython(expression)).toBeNull();
+    expect(matchesAnyTag(`regex:${expression}`, index)).toBeNull();
+  });
+
+  it("a tag Python finds is never reported as matching nothing", () => {
+    expect(matchesAnyTag("regex:\\ACart", index)).toBe(true);
+    expect(matchesAnyTag("regex:Smoke\\Z", index)).toBe(true);
   });
 });
 

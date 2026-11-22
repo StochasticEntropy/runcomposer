@@ -1,7 +1,6 @@
 // A filter that is a single pattern travels as its quoted text: the server
-// reads a lone string as filter text, and a pattern with parentheses in it
-// would otherwise reach it only through the fallback for strings that are
-// not filter text — with a warning on every preview.
+// reads a lone string as filter text, strictly, and a pattern with
+// parentheses in it is filter text only when quoted.
 
 import { addRule, currentRunId, expect, expectPreview, msg, runButton, test } from "./fixtures.ts";
 

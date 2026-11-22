@@ -204,6 +204,19 @@ describe("a run of fifty shards", () => {
     expect(cardsOf(section)).toEqual([lane(1), lane(2), lane(3), lane(4)]);
   });
 
+  it("keeps the outline: a shard's heading is one level below its group's, and right below the section's without groups", () => {
+    const levels = (container: Element, selector: string) =>
+      [...new Set([...container.querySelectorAll(`${selector} .shard-head > :is(h2, h3, h4, h5)`)].map((heading) => heading.localName))];
+    const grouped = show(run(4, { failing: 2, pending: null, groups: true, state: "COMPLETE" })).container;
+    expect(screen.getByRole("heading", { level: 2, name: translator.t("run.groups", { count: 2 }) })).toBeTruthy();
+    expect([...grouped.querySelectorAll(".group-card > .shard-head > *:first-child")].map((heading) => heading.localName)).toEqual(["h3", "h3"]);
+    expect(levels(grouped, ".group-card .shard-card")).toEqual(["h4"]);
+    cleanup();
+    const flat = show(run(4, { failing: 2, pending: null, state: "COMPLETE" })).container;
+    expect(screen.getByRole("heading", { level: 2, name: translator.t("run.shards", { count: 4 }) })).toBeTruthy();
+    expect(levels(flat, ".shard-card")).toEqual(["h3"]);
+  });
+
   it("in groups: the group with the failure is first and open, the group that passed is folded", () => {
     const { container } = show(run(50, { failing: 38, pending: null, groups: true, state: "COMPLETE" }));
     const groups = [...container.querySelectorAll(".group-card")];

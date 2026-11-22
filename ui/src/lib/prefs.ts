@@ -20,7 +20,7 @@ export function chooseLocale(
   deployment: string | null | undefined,
 ): string {
   const known = (candidate: string | null | undefined) => (candidate && available.includes(candidate) ? candidate : null);
-  // "de-CH" asks for German: the texts are per language, not per region.
+  // "de-AT" asks for German: the texts are per language, not per region.
   const fromBrowser = browser.map((tag) => known(tag.toLowerCase().split("-")[0])).find((code) => code !== null);
   return known(chosen) ?? fromBrowser ?? known(deployment) ?? "en";
 }

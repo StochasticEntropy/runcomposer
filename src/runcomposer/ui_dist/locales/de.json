@@ -88,7 +88,8 @@
       "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten.",
       "nothing-planned": "Nichts in der Lieferung gehört zu einem Eintrag dieses Laufs.",
       "filter-too-deep": "Der Filter ist zu tief verschachtelt.",
-      "dispatch-queue-full": "Zu viele Läufe warten auf ihren Start — bitte gleich noch einmal versuchen."
+      "dispatch-queue-full": "Zu viele Läufe warten auf ihren Start — bitte gleich noch einmal versuchen.",
+      "runner-unavailable": "Dieser Runner kann gerade nicht sagen, was er ist — mit ihm lässt sich nichts planen oder ausführen. Das Serverprotokoll nennt den Grund."
     }
   },
   "runState": {

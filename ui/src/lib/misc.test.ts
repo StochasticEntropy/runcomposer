@@ -106,7 +106,7 @@ describe("the language to start in", () => {
   });
 
   it("follows the browser when nothing is stored — the language, whatever the region", () => {
-    expect(chooseLocale(available, null, ["de-CH", "en-US"], "en")).toBe("de");
+    expect(chooseLocale(available, null, ["de-AT", "en-US"], "en")).toBe("de");
     expect(chooseLocale(available, null, ["fr-FR", "de"], "en")).toBe("de");
   });
 

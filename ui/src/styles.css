@@ -163,6 +163,7 @@ body {
 h1,
 h2,
 h3,
+h4,
 p,
 ul,
 ol,
@@ -184,7 +185,8 @@ h2 {
   font-size: 1.05rem;
 }
 
-h3 {
+h3,
+h4 {
   font-size: 0.95rem;
 }
 
@@ -413,6 +415,21 @@ select.input {
 
 .field-inline .input {
   width: auto;
+}
+
+/* The dispatch picker of a run: its options are long (number, mode, state,
+   completion) and may not push the page sideways on a narrow screen — the
+   select shrinks and its text is cut off, the label wraps above it. */
+.dispatch-select {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.dispatch-select .input {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 12rem;
+  text-overflow: ellipsis;
 }
 
 .check {
@@ -2130,7 +2147,8 @@ details.technical > summary {
   gap: 8px;
 }
 
-.shard-head h3 {
+.shard-head h3,
+.shard-head h4 {
   overflow-wrap: anywhere;
 }
 

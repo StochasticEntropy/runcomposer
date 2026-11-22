@@ -16,8 +16,13 @@ export interface AppContextValue {
   runners: RunnerInfo[];
   runnersChecking: boolean;
   refreshRunners: (probe?: boolean) => void;
-  /** Speak a status message through the page's live region. */
-  announce: (message: string) => void;
+  /**
+   * Speak a status message through the page's live region. The region is
+   * emptied when the view changes; `forNextView` keeps the message through
+   * the one change it is said together with (a run started, and its page
+   * opened).
+   */
+  announce: (message: string, options?: { forNextView?: boolean }) => void;
   inboxCount: number | null;
   refreshInbox: () => void;
 }

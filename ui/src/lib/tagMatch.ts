@@ -10,8 +10,12 @@
 // - `regex:<e>` is searched for anywhere in a tag, case-sensitive;
 // - `prefix:<t>` is `regex:^<t>`.
 //
-// Where the browser cannot read an expression the server can (the two
-// regular-expression dialects differ at the edges), nothing is claimed.
+// The server compiles Python's dialect of regular expressions; the browser
+// speaks JavaScript's. An expression is translated where the translation
+// means exactly what Python means (`\A`, `\Z`, `.`, `$`, `\w` and its kin
+// over Unicode, a literal `{`); where it cannot be — inline flags,
+// possessive quantifiers, atomic groups, named groups `(?P<…>)`, comments,
+// conditionals — nothing is claimed: a wrong hint is worse than none.
 
 export type PatternKind = "tag" | "prefix" | "regex";
 
@@ -19,15 +23,164 @@ export function patternKind(pattern: string): PatternKind {
   return pattern.startsWith("regex:") ? "regex" : pattern.startsWith("prefix:") ? "prefix" : "tag";
 }
 
-function searcher(expression: string): RegExp | null {
-  for (const flags of ["u", ""]) {
-    try {
-      return new RegExp(expression, flags);
-    } catch {
-      // try the next way to read it
+// Python's classes over Unicode, written for a JavaScript `u` expression.
+const WORD = "\\p{L}\\p{N}_";
+const DIGIT = "\\p{Nd}";
+const SPACE = "\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const IN_CLASS: Record<string, string> = { w: WORD, d: DIGIT, s: SPACE };
+const OUTSIDE: Record<string, string> = {
+  w: `[${WORD}]`, W: `[^${WORD}]`, d: DIGIT, D: `\\P{Nd}`, s: `[${SPACE}]`, S: `[^${SPACE}]`,
+  b: `(?:(?<=[${WORD}])(?![${WORD}])|(?<![${WORD}])(?=[${WORD}]))`,
+  B: `(?:(?<=[${WORD}])(?=[${WORD}])|(?<![${WORD}])(?![${WORD}]))`,
+  A: "^", Z: "$",
+};
+const CONTROL: Record<string, string> = { a: "\\x07", f: "\\f", n: "\\n", r: "\\r", t: "\\t", v: "\\v" };
+
+const codePoint = (char: string) => `\\u{${char.codePointAt(0)!.toString(16)}}`;
+
+/**
+ * A Python expression as a JavaScript one (for the `u` flag) that matches
+ * exactly the same strings — or null when no such translation is known
+ * here.
+ */
+export function fromPython(expression: string): string | null {
+  let out = "";
+  let index = 0;
+  let inClass = false;
+  let classStart = false;
+  // Whether the token just written may take a quantifier.
+  let quantifiable = false;
+  const at = (offset = 0) => expression[index + offset] ?? "";
+  while (index < expression.length) {
+    const char = at();
+    if (char === "\\") {
+      const next = at(1);
+      if (next === "") return null;
+      index += 2;
+      if (/[0-9]/.test(next)) {
+        if (inClass || next === "0") {
+          // An octal escape: `\0`, `\012`.
+          let digits = next;
+          while (digits.length < 3 && /[0-7]/.test(at())) digits += expression[index++];
+          if (!/^[0-7]+$/.test(digits)) return null;
+          out += codePoint(String.fromCodePoint(parseInt(digits, 8)));
+        } else {
+          let digits = next;
+          if (/[0-9]/.test(at())) digits += expression[index++];
+          out += `\\${digits}`; // a back-reference, read alike
+        }
+      } else if (next === "x") {
+        const hex = expression.slice(index, index + 2);
+        if (!/^[0-9a-fA-F]{2}$/.test(hex)) return null;
+        out += `\\x${hex}`;
+        index += 2;
+      } else if (next === "u" || next === "U") {
+        const width = next === "u" ? 4 : 8;
+        const hex = expression.slice(index, index + width);
+        if (!new RegExp(`^[0-9a-fA-F]{${width}}$`).test(hex)) return null;
+        out += `\\u{${parseInt(hex, 16).toString(16)}}`;
+        index += width;
+      } else if (next in CONTROL) {
+        out += CONTROL[next];
+      } else if (inClass && next in IN_CLASS) {
+        out += IN_CLASS[next];
+      } else if (!inClass && next in OUTSIDE) {
+        out += OUTSIDE[next];
+        quantifiable = !"AZbB".includes(next);
+        classStart = false;
+        continue;
+      } else if (/[A-Za-z]/.test(next)) {
+        return null; // \N{…}, a negated class inside a set, \z, or not Python's
+      } else {
+        out += codePoint(next); // an escaped punctuation character is itself
+      }
+      quantifiable = !inClass;
+      classStart = false;
+      continue;
     }
+    if (inClass) {
+      if (char === "]" && !classStart) {
+        inClass = false;
+        out += "]";
+        quantifiable = true;
+      } else if (char === "^" && out.endsWith("[") && classStart) {
+        out += "^";
+        index += 1;
+        continue; // a `]` right after `[^` is still a member
+      } else if (char === "]" || char === "[") {
+        out += codePoint(char);
+      } else {
+        out += char;
+      }
+      classStart = false;
+      index += 1;
+      continue;
+    }
+    if (char === "[") {
+      inClass = true;
+      classStart = true;
+      out += "[";
+      index += 1;
+      continue;
+    }
+    if (char === "(") {
+      if (at(1) === "?") {
+        const rest = expression.slice(index + 2);
+        const kind = ["<=", "<!", ":", "=", "!"].find((opening) => rest.startsWith(opening));
+        if (kind === undefined) return null; // flags, (?P…), (?#…), (?>…), (?(…)…)
+        out += `(?${kind}`;
+        index += 2 + kind.length;
+      } else {
+        out += "(";
+        index += 1;
+      }
+      quantifiable = false;
+      continue;
+    }
+    if (char === "{") {
+      const quantifier = /^\{(\d*)(,?)(\d*)\}/.exec(expression.slice(index));
+      if (quantifier && (quantifier[1] !== "" || (quantifier[2] === "," && quantifier[3] !== ""))) {
+        if (!quantifiable) return null;
+        out += `{${quantifier[1] || "0"}${quantifier[2]}${quantifier[3]}}`;
+        index += quantifier[0].length;
+        if (at() === "+") return null; // possessive
+        if (at() === "?") out += expression[index++];
+        quantifiable = false;
+        continue;
+      }
+      out += codePoint("{"); // not a quantifier: Python reads it as itself
+      quantifiable = true;
+      index += 1;
+      continue;
+    }
+    if (char === "*" || char === "+" || char === "?") {
+      if (!quantifiable) return null;
+      out += char;
+      index += 1;
+      if (at() === "+") return null; // possessive
+      if (at() === "?") out += expression[index++];
+      quantifiable = false;
+      continue;
+    }
+    if (char === ".") out += "[^\\n]";
+    else if (char === "$") out += "(?=\\n?$)"; // Python's `$` also matches before a final newline
+    else if (char === "}" || char === "]") out += codePoint(char); // literal in Python, an error in a `u` expression
+    else out += char;
+    quantifiable = char !== "^" && char !== "|" && char !== "$";
+    if (char === ")") quantifiable = true;
+    index += 1;
   }
-  return null;
+  return inClass ? null : out;
+}
+
+function searcher(expression: string): RegExp | null {
+  const translated = fromPython(expression);
+  if (translated === null) return null;
+  try {
+    return new RegExp(translated, "u");
+  } catch {
+    return null;
+  }
 }
 
 /** The tags of a catalog, prepared once for many questions. */

@@ -62,14 +62,15 @@ export function parseMessage(t: Translator["t"], error: FilterParseError): strin
   return t(`filter.parse.${error.problem}`, vars);
 }
 
+/** The list of catalog tags as filter text (quoted where the grammar needs
+ * it), for the add field; `tagListId` itself lists the patterns as they are,
+ * for a rule's own pattern field. */
+export const textListId = (tagListId: string) => `${tagListId}-text`;
+
 export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeId, labelOf, textDraft, onTextDraft, knownTags = null }: Props) {
   const { t } = useI18n();
   // One checker per catalog: every rule asks on every render, each pattern is worked out once.
   const check = useMemo(() => (knownTags && knownTags.length > 0 ? patternChecker(knownTags) : null), [knownTags]);
-  const isTag = useMemo(() => {
-    const exact = new Set(knownTags ?? []);
-    return (text: string) => exact.has(text);
-  }, [knownTags]);
   const textMode = textDraft !== null;
   const applied = formatFilter(toAst(root));
   const [focusGroup, setFocusGroup] = useState<string | null>(null);
@@ -146,7 +147,7 @@ export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeI
         </>
       ) : (
         <>
-          <Group node={root} isRoot actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} isTag={isTag} />
+          <Group node={root} isRoot actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} />
           <div className="expr-tools">
             <button type="button" className="btn btn-small btn-quiet" onClick={() => onTextDraft(applied)}>
               {t("filter.editAsText")}
@@ -190,7 +191,6 @@ interface NodeProps {
   /** Whether a pattern matches a tag of the catalog; null while the catalog is not known. */
   check: ((pattern: string) => PatternCheck) | null;
   /** The text is, letter for letter, a tag of the catalog. */
-  isTag: (text: string) => boolean;
 }
 
 /** A rule that is not "everything" and that no tag of the catalog matches. */
@@ -204,7 +204,7 @@ const EXPLAINED = 4;
 // it, and the field that adds the next one stays where it was.
 const LONG_GROUP = 16;
 
-function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf, check, isTag }: NodeProps & { node: GroupNode; isRoot?: boolean }) {
+function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf, check }: NodeProps & { node: GroupNode; isRoot?: boolean }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const [problem, setProblem] = useState<FilterParseError | null>(null);
@@ -214,32 +214,28 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf,
   const invalid = errorNodeId === node.id;
   const strays = node.children.filter((child) => unmatched(child, check));
 
-  // What is typed here is read with the filter's grammar — the same text
-  // means the same in this field, in "Edit as text" and on the command line.
-  // One tag or pattern is one more rule; an expression is the rules or the
-  // group it says. A tag of the catalog chosen from the list is that tag,
-  // whatever characters it has; any other tag with a space or an operator
-  // word in it is typed in quotes, as the grammar has it.
+  // What is typed here is read with the filter's grammar, and only so: a
+  // string reads one way in this field, in "Edit as text", in a link, over
+  // the API and on the command line. One tag or pattern is one more
+  // rule; an expression is the rules or the group it says. A tag with a
+  // space or an operator word in it is written in quotes, as the grammar
+  // has it — which is how the list of catalog tags offers it (`textListId`).
   const submit = () => {
     const text = draft.trim();
     if (!text) return;
-    if (isTag(text)) {
-      actions.addTag(node.id, text);
-    } else {
-      let ast: FilterAst | null;
-      try {
-        ast = parseFilter(text);
-      } catch (error) {
-        if (!(error instanceof FilterParseError)) throw error;
-        // Refused in place: nothing is added, the text stays, the caret goes where reading stopped.
-        setProblem(error);
-        const lead = draft.length - draft.trimStart().length;
-        field.current?.focus();
-        field.current?.setSelectionRange(lead + error.offset, lead + error.offset);
-        return;
-      }
-      if (ast !== null) actions.addExpression(node.id, ast);
+    let ast: FilterAst | null;
+    try {
+      ast = parseFilter(text);
+    } catch (error) {
+      if (!(error instanceof FilterParseError)) throw error;
+      // Refused in place: nothing is added, the text stays, the caret goes where reading stopped.
+      setProblem(error);
+      const lead = draft.length - draft.trimStart().length;
+      field.current?.focus();
+      field.current?.setSelectionRange(lead + error.offset, lead + error.offset);
+      return;
     }
+    if (ast !== null) actions.addExpression(node.id, ast);
     setDraft("");
     setProblem(null);
   };
@@ -290,7 +286,7 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf,
           {node.children.map((child) => (
             // The operator is said once, by the group; the rules are chips that wrap.
             <li key={child.id} className={child.kind === "group" ? "is-group" : undefined}>
-              <Rule node={child} actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} isTag={isTag} />
+              <Rule node={child} actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} />
             </li>
           ))}
         </ul>
@@ -338,7 +334,7 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf,
         <input
           type="text"
           className="input"
-          list={tagListId}
+          list={textListId(tagListId)}
           data-add-input={node.id}
           ref={field}
           value={draft}

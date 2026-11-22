@@ -334,6 +334,50 @@ test("a run that finishes on its own is seen finishing", async ({ page, open, ap
   await expect(page.locator(".verdict-table .live-dot")).toHaveCount(0);
 });
 
+test("Run pressed twice and Enter pressed again while the run is being started make one run", async ({ page, open, api }) => {
+  await open("#/compose?f=Auth-SSO");
+  await expectPreview(page, 3, 60);
+  await runnerSelect(page).selectOption("demo");
+  // The request is held until every extra click and key press has been made.
+  const posts: string[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/v1/runs", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    posts.push(route.request().postData() ?? "");
+    await held;
+    await route.continue();
+  });
+  const start = runButton(page, 3);
+  await start.dblclick();
+  await expect.poll(() => posts.length).toBe(1);
+  await expect(page.getByRole("button", { name: msg("compose.starting") })).toHaveAttribute("aria-disabled", "true");
+  await page.getByRole("button", { name: msg("compose.starting") }).click({ force: true });
+  const title = page.getByRole("textbox", { name: msg("compose.title") });
+  await title.press("Enter");
+  await title.press("Enter");
+  expect(posts).toHaveLength(1);
+  release();
+  const runId = await currentRunId(page);
+  await api.waitFor(runId, ["COMPLETE"]);
+  expect(posts).toHaveLength(1);
+  expect((await api.runs()).map((row) => row.id)).toEqual([runId]);
+});
+
+test("the screen-reader message of a started run is said on its page and gone on the next view", async ({ page, open, api }) => {
+  await open("#/compose?f=Auth-SSO");
+  await expectPreview(page, 3, 60);
+  await runnerSelect(page).selectOption("demo");
+  await runButton(page, 3).click();
+  const runId = await currentRunId(page);
+  const announcer = page.getByTestId("announcer");
+  const run = await api.waitFor(runId, ["COMPLETE"]);
+  await expect(announcer).toHaveText(msg("compose.started", { count: 3, title: run.title }));
+  await page.getByRole("navigation", { name: msg("nav.label") }).getByRole("link", { name: msg("nav.runs") }).click();
+  await expect(page.getByRole("heading", { name: msg("runs.title"), level: 1 })).toBeVisible();
+  await expect(announcer).toHaveText("");
+});
+
 test("results are failures first, filterable, and a message opens in full", async ({ page, open, api }) => {
   const run = await api.finishedRun("Regression", "b", { title: "Nightly regression" });
   const failed = (run.verdict_summary.FAIL ?? 0) + (run.verdict_summary.ERROR ?? 0);
