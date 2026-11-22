@@ -3,6 +3,7 @@
 round trip of .github/workflows/ci.yml reaches COMPLETE."""
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -21,6 +22,28 @@ def workdir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def split_command_line(line: str) -> list[str]:
+    """``line`` as the program it starts receives it: split by POSIX shell
+    rules, or on Windows by Windows itself (``CommandLineToArgvW``, the
+    rules a program there reads its command line by) — the line a person
+    pastes there is not shell syntax, and a backslash is not an escape."""
+    if os.name != "nt":
+        return shlex.split(line)
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)  # type: ignore[attr-defined]
+    shell32.CommandLineToArgvW.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(line, ctypes.byref(count))
+    try:
+        return [argv[index] for index in range(count.value)]
+    finally:
+        kernel32.LocalFree(argv)
+
+
 def next_steps(out: str) -> list[list[str]]:
     """The commands the demo tells the reader to paste, as argv lists."""
     lines = out.splitlines()
@@ -28,7 +51,7 @@ def next_steps(out: str) -> list[list[str]]:
     for line in lines[lines.index("Next steps:") + 1 :]:
         if not line.startswith("  "):
             break
-        argv = shlex.split(line.strip())
+        argv = split_command_line(line.strip())
         assert argv[0] == "runcomposer", argv
         steps.append(argv[1:])
     return steps
@@ -185,7 +208,19 @@ class TestDemoSeedsRealHistory:
         assert main(["demo", "--workspace", "elsewhere/demo"]) == 0
         assert (workdir / "elsewhere" / "demo" / "runcomposer.db").is_file()
         assert not (workdir / "runcomposer-demo").exists()
-        assert next_steps(capsys.readouterr().out)[0][-1] == "elsewhere/demo/config.yaml"
+        assert Path(next_steps(capsys.readouterr().out)[0][-1]) == Path("elsewhere/demo/config.yaml")
+
+    def test_a_workspace_with_a_space_in_its_path_is_one_argument_when_pasted(self, workdir, capsys):
+        """Before, the printed path was not quoted: pasted, ``nightly demo``
+        was two arguments, and the command failed."""
+        assert main(["demo", "--workspace", "nightly demo"]) == 0
+        out = capsys.readouterr().out
+        steps = next_steps(out)
+        for argv in steps:
+            assert Path(argv[argv.index("--config") + 1]) == Path("nightly demo/config.yaml"), argv
+        assert main(steps[0]) == 0
+        removal = next(line for line in out.splitlines() if line.startswith("Delete the workspace"))
+        assert split_command_line(removal.split(":  ", 1)[1])[-1] == "nightly demo"
 
     def test_it_refuses_to_seed_into_somebody_elses_config_directory(self, workdir, capsys):
         deployment = workdir / "deployment"

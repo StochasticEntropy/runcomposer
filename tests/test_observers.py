@@ -310,7 +310,7 @@ class TestWebhook:
 _HOOK_SCRIPT = """\
 import json, os, sys
 record = {key: value for key, value in os.environ.items() if key.startswith("RUNCOMPOSER_")}
-record["stdin"] = json.load(sys.stdin)
+record["stdin"] = json.loads(sys.stdin.buffer.read().decode("utf-8"))  # UTF-8 by contract
 record["argv"] = sys.argv[2:]
 with open(sys.argv[1], "a", encoding="utf-8") as out:
     out.write(json.dumps(record) + "\\n")
@@ -358,6 +358,21 @@ class TestCommand:
         assert json.loads(call["RUNCOMPOSER_EVENT_JSON"]) == call["stdin"]
         assert call["stdin"]["kind"] == "run.completed" and call["stdin"]["run_id"] == run_id
         assert call["stdin"]["data"]["summary"] == {"PASS": 3}
+        assert warnings_of(service, run_id) == []
+
+    def test_a_title_in_any_script_reaches_the_command_as_utf_8(self, make_service, hook):
+        """``✓`` and ``→`` are outside the text encoding Windows uses by
+        default: before, writing the event to the command's stdin raised
+        there, and the command never ran."""
+        script, out, calls = hook
+        service = make_service(
+            observers={"command": {"command": [sys.executable, str(script), str(out)], "events": ["run.completed"]}}
+        )
+        title = "Kasse \u2713 \u2192 \u20ac 12"
+        run_id = run_once(service, title=title)
+        (call,) = calls()
+        assert call["stdin"]["data"]["title"] == title
+        assert call["RUNCOMPOSER_TITLE"] == title
         assert warnings_of(service, run_id) == []
 
     def test_a_string_command_is_run_by_the_shell(self, make_service, hook):

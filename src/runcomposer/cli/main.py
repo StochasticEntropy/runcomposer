@@ -4,6 +4,8 @@ codes."""
 from __future__ import annotations
 
 import argparse
+import errno
+import io
 import logging
 import os
 import sys
@@ -33,6 +35,50 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict]:
     return parser, handlers
 
 
+def _reader_gone(exc: OSError) -> bool:
+    """Whether ``exc`` is the reader of stdout having closed the pipe. POSIX
+    says so with ``EPIPE`` (``BrokenPipeError``). Windows says ``EINVAL``,
+    which other failures say too, so there it counts only when stdout
+    itself cannot be written: flushing it fails again (the bytes that
+    failed are still in its buffer), or a probe written past the buffer
+    does. (Where stdout can be written after all, the probe is one line
+    break in an output that ends in an error anyway.)"""
+    if isinstance(exc, BrokenPipeError):
+        return True
+    if os.name != "nt" or exc.errno != errno.EINVAL:
+        return False
+    try:
+        sys.stdout.flush()
+        os.write(sys.stdout.fileno(), b"\n")
+    except OSError as again:
+        return again.errno in (errno.EINVAL, errno.EPIPE)
+    except ValueError:  # stdout is closed or has no file descriptor
+        return False
+    return False
+
+
+def _text_output() -> None:
+    """Make stdout and stderr able to write every character: what runcomposer
+    prints holds titles, item names and labels in any script, and its own
+    ``→`` and ``─``. Into a file or a pipe they write UTF-8 — the encoding
+    a reader of ``--json`` expects; Windows would write its legacy code
+    page there, which cannot hold most characters, and stop with a
+    traceback at the first. To a terminal they keep its encoding, and a
+    character it lacks is replaced instead of ending the command."""
+    for stream in (sys.stdout, sys.stderr):
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
+        if stream.encoding.lower().replace("-", "").replace("_", "") == "utf8":
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            continue  # a stream that cannot change keeps what it has
+
+
 #: The commands that plan or run with a runner.
 _PLANS_OR_RUNS = frozenset({"run", "dispatch", "rerun", "plan", "spec"})
 
@@ -41,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     from runcomposer.core.errors import ConfigError, RunComposerError, RunnerUnavailable
     from runcomposer.core.taxonomy import TaxonomyError
 
+    _text_output()
     parser, handlers = build_parser()
     args = parser.parse_args(argv)
     if args.command != "serve":
@@ -61,7 +108,9 @@ def main(argv: list[str] | None = None) -> int:
         # interpreter flushes stdout on its way out.
         sys.stdout.flush()
         return code
-    except BrokenPipeError:
+    except OSError as exc:
+        if not _reader_gone(exc):
+            raise
         # `runcomposer catalog | head` closes the pipe under us: the reader
         # saying "enough", not a failure. Point stdout at the void so the
         # interpreter's own flush has nothing to fail on.

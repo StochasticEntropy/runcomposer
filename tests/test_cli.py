@@ -1038,6 +1038,45 @@ class TestOutputDetails:
         assert process.wait(timeout=30) in (0, 141)
         assert stderr == "", stderr
 
+    def test_output_into_a_pipe_is_utf_8_and_holds_every_character(self, tmp_path):
+        """Into a pipe Windows would write its legacy code page, which has no
+        ``─`` (the demo's rule) and no ``→``: before, `runcomposer demo | more`
+        there ended in a traceback at the first one."""
+        import subprocess
+        import sys
+
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+        done = subprocess.run(
+            [sys.executable, "-m", "runcomposer.cli", "demo", "--workspace", str(tmp_path / "demo")],
+            capture_output=True, timeout=120, env=env,
+        )
+        assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+        out = done.stdout.decode("utf-8")
+        assert "\u2500" * 64 in out and "Next steps:" in out
+
+    def test_on_windows_an_invalid_argument_is_a_closed_pipe_only_when_stdout_cannot_be_written(
+        self, tmp_path, monkeypatch
+    ):
+        """Windows reports a reader that closed the pipe as ``EINVAL`` (POSIX:
+        ``EPIPE``), and other failures say ``EINVAL`` too: it is taken for
+        a closed pipe only when stdout itself still fails — otherwise the
+        error is not swallowed."""
+        import errno
+        import importlib
+        import sys
+        from unittest import mock
+
+        cli_main = importlib.import_module("runcomposer.cli.main")  # the module, not the function
+        failure = OSError(errno.EINVAL, "Invalid argument")
+        monkeypatch.setattr(cli_main.os, "name", "nt")
+        monkeypatch.setattr(sys, "stdout", mock.Mock(flush=mock.Mock(side_effect=OSError(errno.EINVAL, "gone"))))
+        assert cli_main._reader_gone(failure)
+        with open(tmp_path / "stdout.txt", "w", encoding="utf-8") as writable:
+            monkeypatch.setattr(sys, "stdout", writable)
+            assert not cli_main._reader_gone(failure), "stdout can be written: the error is another one"
+        assert cli_main._reader_gone(BrokenPipeError(errno.EPIPE, "Broken pipe"))
+        assert not cli_main._reader_gone(OSError(errno.ENOSPC, "No space left on device"))
+
     def test_show_names_the_items_that_no_shard_reported(self, cli, tmp_path):
         """A run finalized with one of its items never reported: the item is
         MISSING, belongs to no shard, and `show` says so instead of printing

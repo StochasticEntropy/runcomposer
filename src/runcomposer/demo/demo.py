@@ -17,12 +17,15 @@ boring: a single directory, named for what it is, holding a `config.yaml` and
 the sqlite file that config points at. Nothing outside it is touched — not the
 adopter's own store, not a `runcomposer.db` in the working directory that a
 later real run would then share with fake data. The directory is printed, it
-is the `--config` of every next step the demo prints, and `rm -rf` on it is
-the complete uninstall.
+is the `--config` of every next step the demo prints, and deleting it is the
+complete uninstall.
 """
 
 from __future__ import annotations
 
+import os
+import shlex
+import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -181,12 +184,29 @@ def _compose_and_run(
     return result.spec, result.run.id, verdicts
 
 
+def shell_word(value: object) -> str:
+    """``value`` as one word of a command line pasted into this platform's
+    shell: quoted the POSIX way, or the way a Windows program reads its
+    command line — so a workspace whose path holds a space is still one
+    argument, and a Windows path keeps its backslashes."""
+    text = str(value)
+    return subprocess.list2cmdline([text]) if os.name == "nt" else shlex.quote(text)
+
+
+def removal_command(directory: Path) -> str:
+    """The command that deletes ``directory`` and everything in it, in the
+    shell a person on this platform has open: ``rm -rf`` on POSIX,
+    ``Remove-Item`` in the shell Windows opens by default."""
+    if os.name == "nt":
+        return f"Remove-Item -Recurse -Force {shell_word(directory)}"
+    return f"rm -rf {shell_word(directory)}"
+
+
 def run_demo(out: Out = print, workspace: str | None = None) -> int:
     workspace_dir, note = _prepare_workspace(workspace)
     config_file = workspace_dir / "config.yaml"
-    config_arg = str(config_file)
-    with Service(load_config(config_arg)) as service:
-        return _narrate(service, out, workspace_dir, note, config_arg)
+    with Service(load_config(str(config_file))) as service:
+        return _narrate(service, out, workspace_dir, note, shell_word(config_file))
 
 
 def _narrate(service: Service, out: Out, workspace_dir: Path, note: str, config_arg: str) -> int:
@@ -298,7 +318,7 @@ def _narrate(service: Service, out: Out, workspace_dir: Path, note: str, config_
         f"{sum(len(service.store.verdicts_for(r.id)) for r in stored)} verdicts are in "
         f"{workspace_dir / 'runcomposer.db'} — history features are live there."
     )
-    out(f"Delete the workspace to undo all of it:  rm -rf {workspace_dir}")
+    out(f"Delete the workspace to undo all of it:  {removal_command(workspace_dir)}")
     out("")
     out("Next steps:")
     out(f"  runcomposer runs --config {config_arg}")

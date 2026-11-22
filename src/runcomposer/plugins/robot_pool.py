@@ -1066,6 +1066,9 @@ class RobotPoolRunner(RunnerBase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # A hook's output only words a refusal: a byte the locale's
+                # encoding cannot read must not turn that into a traceback.
+                errors="replace",
                 start_new_session=os.name != "nt",
             )
             # Waited for in short steps, so that a cancellation stops a hook

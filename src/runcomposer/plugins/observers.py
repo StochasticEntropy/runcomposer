@@ -125,7 +125,8 @@ class CommandObserver(ObserverBase):
     ``RUNCOMPOSER_EVENT`` (the kind), ``RUNCOMPOSER_RUN_ID``,
     ``RUNCOMPOSER_DISPATCH_ID``, ``RUNCOMPOSER_AT``, ``RUNCOMPOSER_STATE``,
     ``RUNCOMPOSER_COMPLETION``, ``RUNCOMPOSER_TITLE``, and
-    ``RUNCOMPOSER_EVENT_JSON`` (the whole event). The same JSON is on stdin.
+    ``RUNCOMPOSER_EVENT_JSON`` (the whole event). The same JSON is on stdin,
+    encoded as UTF-8 on every platform.
 
     ``command`` is an argv list (run directly) or a string (run by the
     shell). The event never becomes part of the command line, so nothing in a
@@ -171,7 +172,11 @@ class CommandObserver(ObserverBase):
                 self.command,
                 shell=isinstance(self.command, str),
                 input=payload,
-                text=True,
+                # The event as UTF-8 whatever the machine's locale: a title
+                # may hold any character, and Windows' default text encoding
+                # cannot write most of them.
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 env=env,
                 cwd=self.cwd,

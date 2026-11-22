@@ -1137,6 +1137,21 @@ class TestHooksAndListeners:
         assert run.state == "COMPOSED" and run.dispatches == ()
         assert service.store.verdicts_for(run_id) == []
 
+    def test_a_hook_whose_output_the_locale_cannot_read_still_refuses_in_words(self, make_service):
+        """Bytes no text encoding here reads (``0x81`` is neither UTF-8 nor
+        cp1252): before, decoding them raised, and the dispatch ended in a
+        traceback instead of a refusal."""
+        import shlex
+        import subprocess
+        import sys
+
+        argv = [sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'doomed \\x81\\xff'); sys.exit(3)"]
+        hook = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        service = pool_service(make_service, pre_run_hooks=[hook])
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        outcome = service.dispatch(run_id, RUNNER, foreground=True)
+        assert "pre_run_hook failed (rc 3)" in outcome.refusal and "doomed" in outcome.refusal
+
     @posix_only
     def test_a_hook_that_overruns_its_timeout_refuses_promptly(self, make_service, tmp_path):
         """The hook starts something that would run for a minute and then
