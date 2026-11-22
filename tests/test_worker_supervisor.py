@@ -415,3 +415,82 @@ class TestAComposedRunner:
             assert done.state == "CANCELLED"
             assert {v.item_id for v in done.verdicts} == delivered, "what was delivered is kept"
             wait_until(lambda: process_gone(hanging_pid), timeout=10, what="the hanging worker to be gone")
+
+
+# -- which processes, and what happens when the supervisor is gone ---------------------------
+
+
+SUPERVISOR = (
+    "import sys\n"
+    "sys.path.insert(0, sys.argv[2])\n"
+    "from runcomposer.sdk import WorkerPayload, supervise_workers\n"
+    "from tests import supervised_targets as targets\n"
+    "if __name__ == '__main__':\n"
+    "    supervise_workers([WorkerPayload(shard='1', out_dir=sys.argv[1])], targets.starts_children)\n"
+)
+
+
+class TestWhichProcesses:
+    def test_on_start_and_on_end_name_every_worker_process_and_the_outcome_carries_its_pid(self, tmp_path):
+        started: list[tuple[str, int]] = []
+        ended: list[tuple[str, int, str]] = []
+        outcomes = supervise_workers(
+            [payload(tmp_path, "1"), payload(tmp_path, "2")], targets.hand_back, max_workers=2,
+            on_start=lambda p, pid: started.append((p.shard, pid)),
+            on_end=lambda p, pid, outcome: ended.append((p.shard, pid, outcome.status)),
+        )
+        assert sorted(shard for shard, _pid in started) == ["1", "2"]
+        assert sorted(ended) == sorted((shard, pid, "finished") for shard, pid in started)
+        for outcome in outcomes:
+            assert outcome.pid == outcome.result["pid"] == dict(started)[outcome.payload.shard]
+
+    @posix_only
+    def test_a_stopped_worker_is_told_to_on_end_but_not_to_on_done(self, tmp_path):
+        done: list[str] = []
+        ended: list[tuple[str, str]] = []
+        supervise_workers(
+            [payload(tmp_path, "1")], targets.stops_when_asked,
+            cancelled=running_marker(tmp_path), grace_s=GRACE,
+            on_done=lambda p, o: done.append(p.shard),
+            on_end=lambda p, pid, outcome: ended.append((p.shard, outcome.status)),
+        )
+        assert done == [] and ended == [("1", "stopped")]
+
+    def test_a_callback_that_raises_is_a_log_line(self, tmp_path):
+        lines: list[tuple[str, str]] = []
+
+        def refuse(_payload: WorkerPayload, _pid: int) -> None:
+            raise RuntimeError("the ledger is full")
+
+        (outcome,) = supervise_workers(
+            [payload(tmp_path, "1")], targets.hand_back, on_start=refuse,
+            log=lambda message, level: lines.append((level, message)),
+        )
+        assert outcome.status == "finished"
+        assert ("warning", "on_start/on_end raised RuntimeError: the ledger is full") in lines
+
+
+@posix_only
+class TestTheSupervisorIsGone:
+    def test_its_worker_stops_itself_and_what_it_started(self, tmp_path):
+        """The supervising process is killed outright (no stop protocol can
+        run): the worker sees its lifeline close, asks its process group to
+        stop and kills what does not — the child that ignores the request
+        included."""
+        from .conftest import REPO
+
+        out = tmp_path / "1"
+        supervisor = subprocess.Popen([sys.executable, "-c", SUPERVISOR, str(out), str(REPO)])
+        try:
+            wait_until(lambda: (out / "running").exists(), timeout=60, what="the worker to run")
+            worker = int((out / "running").read_text(encoding="utf-8"))
+            children = [int((out / f"child-{kind}.pid").read_text(encoding="utf-8")) for kind in ("plain", "stubborn")]
+            assert not process_gone(worker) and not any(process_gone(child) for child in children)
+            supervisor.kill()
+            supervisor.wait(timeout=30)
+            wait_until(lambda: process_gone(worker), timeout=30, what="the worker to stop itself")
+            for child in children:
+                wait_until(lambda child=child: process_gone(child), timeout=30, what="the worker's child to end")
+        finally:
+            if supervisor.poll() is None:
+                supervisor.kill()

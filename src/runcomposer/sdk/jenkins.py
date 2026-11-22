@@ -334,6 +334,7 @@ class JenkinsClient:
         poll_interval_s: float = 5.0,
         check: Callable[[], None] | None = None,
         outage_tolerance_s: float | None = None,
+        on_outage: OutageCallback | None = None,
     ) -> Any:
         """Poll ``probe`` until it returns something true and return that.
         ``check`` is called before every probe and may raise to give up (pass
@@ -354,10 +355,17 @@ class JenkinsClient:
         (``None`` or ``0``). The tolerance does not extend ``timeout_s``.
         The probe's own retries come on top: a probe for a tolerant wait
         should make one attempt (``retry=False``), as the waits of this
-        client do."""
+        client do.
+
+        ``on_outage(answering, seconds)`` is told of each change while the
+        wait rides out an outage: once with ``False`` when the server first
+        fails to answer (seconds since its last answer), once with ``True``
+        on its first answer after that (seconds nothing answered) — so a
+        runner can say in its log that the server was away, and for how
+        long, instead of waiting silently."""
         return self._wait(
             probe, what=what, timeout_s=timeout_s, poll_interval_s=poll_interval_s,
-            check=check, answers=_Answers(outage_tolerance_s),
+            check=check, answers=_Answers(outage_tolerance_s, on_outage),
         )
 
     def _wait(
@@ -395,12 +403,13 @@ class JenkinsClient:
         poll_interval_s: float = 5.0,
         check: Callable[[], None] | None = None,
         outage_tolerance_s: float | None = None,
+        on_outage: OutageCallback | None = None,
     ) -> str:
         """Wait until the queue item became a build; returns its URL.
-        ``outage_tolerance_s`` as for :meth:`wait`."""
+        ``outage_tolerance_s`` and ``on_outage`` as for :meth:`wait`."""
         return self._wait_for_build(
             job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
-            answers=_Answers(outage_tolerance_s),
+            answers=_Answers(outage_tolerance_s, on_outage),
         )
 
     def _wait_for_build(
@@ -431,13 +440,14 @@ class JenkinsClient:
         check: Callable[[], None] | None = None,
         tree: str = "building,result,artifacts[relativePath]",
         outage_tolerance_s: float | None = None,
+        on_outage: OutageCallback | None = None,
     ) -> dict[str, Any]:
         """Wait until the build is over; returns its API document (``result``
         is ``SUCCESS``, ``UNSTABLE``, ``FAILURE``, ``ABORTED`` …).
-        ``outage_tolerance_s`` as for :meth:`wait`."""
+        ``outage_tolerance_s`` and ``on_outage`` as for :meth:`wait`."""
         return self._wait_until_finished(
             build_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
-            tree=tree, answers=_Answers(outage_tolerance_s),
+            tree=tree, answers=_Answers(outage_tolerance_s, on_outage),
         )
 
     def _wait_until_finished(
@@ -473,6 +483,7 @@ class JenkinsClient:
         on_build: Callable[[str], None] | None = None,
         tree: str = "building,result,artifacts[relativePath]",
         outage_tolerance_s: float | None = None,
+        on_outage: OutageCallback | None = None,
     ) -> dict[str, Any]:
         """A triggered build from queue item to its end: wait until the queue
         item became a build, tell ``on_build(build_url)`` (record the link
@@ -502,7 +513,9 @@ class JenkinsClient:
         to a server that is away), and neither timeout starts again. With a
         tolerance every probe is a single attempt — the tolerance is the
         retry policy, so the client's own retries do not multiply the time a
-        probe may take."""
+        probe may take. ``on_outage`` is told when the server stops
+        answering and when it answers again, across both waits (see
+        :meth:`wait`)."""
         if check is not None:
             try:
                 check()
@@ -512,7 +525,7 @@ class JenkinsClient:
                 except JenkinsError:
                     pass  # already gone, or unreachable: nothing more to do here
                 raise
-        answers = _Answers(outage_tolerance_s)  # one measure across both waits
+        answers = _Answers(outage_tolerance_s, on_outage)  # one measure across both waits
         build_url = self._wait_for_build(
             job, queue_url, timeout_s=timeout_s, poll_interval_s=poll_interval_s, check=check,
             answers=answers,
@@ -694,19 +707,33 @@ class JenkinsClient:
         )
 
 
-class _Answers:
-    """When the server last answered, for a wait that tolerates outages."""
+#: ``on_outage(answering, seconds)``: ``False`` when the server first stops
+#: answering a tolerant wait (seconds since its last answer), ``True`` on its
+#: first answer after that (seconds nothing answered).
+OutageCallback = Callable[[bool, float], None]
 
-    def __init__(self, tolerance_s: float | None):
+
+class _Answers:
+    """When the server last answered, for a wait that tolerates outages —
+    and whether it is away now, to tell ``on_outage`` of each change."""
+
+    def __init__(self, tolerance_s: float | None, on_outage: OutageCallback | None = None):
         self.tolerance_s = float(tolerance_s or 0)
         self.last = time.monotonic()
+        self.on_outage = on_outage
+        self.away = False
 
     @property
     def tolerant(self) -> bool:
         return self.tolerance_s > 0
 
     def answered(self) -> None:
-        self.last = time.monotonic()
+        now = time.monotonic()
+        if self.away:
+            self.away = False
+            if self.on_outage is not None:
+                self.on_outage(True, now - self.last)
+        self.last = now
 
     def failed(self, exc: JenkinsError) -> None:
         """Return to wait on, or raise: ``exc`` itself when it is not an
@@ -718,6 +745,10 @@ class _Answers:
         if not self.tolerant or not outage:
             raise exc
         silent = time.monotonic() - self.last
+        if not self.away:
+            self.away = True
+            if self.on_outage is not None:
+                self.on_outage(False, silent)
         if silent >= self.tolerance_s:
             raise JenkinsError(
                 f"Jenkins has not answered for {silent:.1f}s, longer than "

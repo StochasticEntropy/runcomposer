@@ -943,3 +943,16 @@ class TestGroupMerger:
             handle.cancel()
             assert handle.wait(timeout=60).state == "CANCELLED"
             assert not (locks / "staging-shop.lock").exists(), "given back when the dispatch ended"
+
+
+class TestWhichWorkerProcesses:
+    def test_the_robot_supervisor_names_its_workers(self, tmp_path):
+        started: list[tuple[str, int]] = []
+        ended: list[tuple[str, int, str]] = []
+        root = cart_root(tmp_path)
+        (outcome,) = supervise(
+            [payload(root, tmp_path / "eu-01", CART[:1], shard="eu-01")], max_workers=1,
+            on_start=lambda p, pid: started.append((p.shard, pid)),
+            on_end=lambda p, pid, o: ended.append((p.shard, pid, o.status)),
+        )
+        assert started == [("eu-01", outcome.pid)] and ended == [("eu-01", outcome.pid, "finished")]

@@ -530,6 +530,45 @@ class TestFollowingThroughAnOutage:
         assert follower.result["result"] == "SUCCESS"
         assert follower.builds == [f"{jenkins.url}/job/{JOB}/1"]
 
+    def test_on_outage_is_told_when_the_server_goes_away_and_when_it_is_back(self, jenkins):
+        """One call per change, across both waits: away while queued, back,
+        away while it runs, back — four calls, each with how long nothing
+        answered (or since the last answer)."""
+        release = threading.Event()
+        jenkins.add_job(JOB, lambda build: release.wait(30))
+        jenkins.auto_start = False
+        told: list[tuple[bool, float]] = []
+        client = JenkinsClient(jenkins.url, retries=0, request_timeout_s=5)
+        follower = Follower(
+            client, client.trigger(JOB, {}), timeout_s=30, poll_interval_s=0.02, outage_tolerance_s=10,
+            on_outage=lambda answering, seconds: told.append((answering, seconds)),
+        )
+        wait_until(lambda: jenkins.gets("/queue/item/1/api/json"), what="the queue item to be polled")
+        jenkins.down(status=None)
+        requests_while_down(jenkins)
+        wait_until(lambda: len(told) == 1, what="the outage to be told")
+        assert told[0][0] is False and told[0][1] >= 0
+        jenkins.up()
+        jenkins.start(1)
+        assert follower.on_build.wait(10)
+        assert [answering for answering, _s in told] == [False, True]
+        jenkins.down(status=503)
+        requests_while_down(jenkins)
+        jenkins.up()
+        release.set()
+        follower.join()
+        assert follower.error is None, follower.error
+        assert [answering for answering, _s in told] == [False, True, False, True]
+        assert all(seconds >= 0 for _a, seconds in told)
+
+    def test_without_an_outage_on_outage_is_never_called(self, jenkins):
+        jenkins.add_job(JOB)
+        told: list[tuple[bool, float]] = []
+        client = JenkinsClient(jenkins.url, retries=0)
+        Follower(client, client.trigger(JOB, {}), timeout_s=30, poll_interval_s=0.02, outage_tolerance_s=10,
+                 on_outage=lambda answering, seconds: told.append((answering, seconds))).join()
+        assert told == []
+
     def test_errors_with_answers_in_between_never_add_up(self, jenkins):
         """Twelve failed probes, each 0.05 s after the last answer — 0.6 s of
         failures in all, three times the tolerance, but never 0.2 s without
@@ -663,6 +702,12 @@ class TestTheRunnerThroughAnOutage:
         release.set()
         run = service.wait(run_id, timeout=30)
         assert (run.state, run.completion) == ("COMPLETE", "PASS"), run.latest_dispatch.error
+        # The run's log says that Jenkins was away, and when it was back.
+        lines = [str(e.data.get("message")) for e in service.store.events(run_id) if e.kind in ("log", "warning")]
+        away = [line for line in lines if "the server does not answer" in line]
+        back = [line for line in lines if "the server answers again after" in line]
+        assert len(away) == 1 and "outage_tolerance_s=10s" in away[0]
+        assert len(back) == 1
 
     def test_a_queue_item_cancelled_in_jenkins_fails_the_dispatch_saying_so(self, make_service, jenkins):
         jenkins.auto_start = False

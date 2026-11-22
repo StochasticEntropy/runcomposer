@@ -688,11 +688,22 @@ class JenkinsRunner(RunnerBase):
             ctx.add_artifact("Jenkins build", url, media_type="text/html")
             ctx.log(f"jenkins: build started — {url}")
 
+        def outage(answering: bool, seconds: float) -> None:
+            # One line at each change, so the log says that Jenkins was away.
+            if answering:
+                ctx.log(f"jenkins: the server answers again after {seconds:.0f}s without an answer")
+            else:
+                ctx.log(
+                    f"jenkins: the server does not answer — waiting up to "
+                    f"outage_tolerance_s={self.outage_tolerance_s:g}s for it",
+                    level="warning",
+                )
+
         try:
             build = self.client.follow(
                 self.job, queue_url, timeout_s=self.timeout_s,
                 poll_interval_s=self.poll_interval_s, check=ctx.raise_if_cancelled,
-                on_build=started, outage_tolerance_s=self.outage_tolerance_s,
+                on_build=started, outage_tolerance_s=self.outage_tolerance_s, on_outage=outage,
             )
             build_url = str(build["url"])
         except JenkinsQueueCancelled:

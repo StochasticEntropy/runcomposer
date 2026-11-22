@@ -28,6 +28,13 @@ process is reaped by the supervisor. (On Windows there is no process group
 to signal: ``stop()`` is the request, then the worker process is terminated
 and killed.)
 
+A worker also watches the process that supervises it, through a pipe that
+only the supervisor holds open: when the supervisor is gone — killed, its
+machine's server stopped — the pipe reads its end, and the worker stops
+itself the same way, ask then kill, together with what it started (on
+Windows, the worker process alone). So a re-dispatch after a restart never
+executes beside workers of the dispatch before it.
+
 Stdlib only.
 """
 
@@ -52,8 +59,12 @@ __all__ = ["STOP_FILE", "WorkerOutcome", "WorkerPayload", "supervise_workers"]
 STOP_FILE = ".stop-requested"
 
 #: How a shard ended: its target returned, raised, the worker process ended
-#: without saying either, or it ran over its timeout and was stopped.
-FINISHED, RAISED, DIED, TIMED_OUT = "finished", "raised", "died", "timed out"
+#: without saying either, it ran over its timeout and was stopped, or it was
+#: stopped by a cancellation (or because ``on_done`` raised).
+FINISHED, RAISED, DIED, TIMED_OUT, STOPPED = "finished", "raised", "died", "timed out", "stopped"
+#: Seconds a worker whose supervisor is gone waits for what it asked to stop
+#: before it kills its process group.
+ORPHAN_GRACE_S = 5.0
 
 
 @dataclass(frozen=True)
@@ -88,9 +99,10 @@ class WorkerOutcome:
 
     ``status`` is ``"finished"`` (``result`` is what the target returned),
     ``"raised"`` (``error`` is the exception, with its traceback), ``"died"``
-    (the process ended without either — ``exitcode`` says how) or ``"timed
+    (the process ended without either — ``exitcode`` says how), ``"timed
     out"`` (stopped by the supervisor; ``result`` is there if the target
-    still returned)."""
+    still returned) or ``"stopped"`` (by a cancellation — only ``on_end``
+    is told of these). ``pid`` is the worker process's id."""
 
     payload: WorkerPayload
     status: str
@@ -98,6 +110,7 @@ class WorkerOutcome:
     seconds: float
     result: Any = None
     error: str | None = None
+    pid: int | None = None
 
     @property
     def timed_out(self) -> bool:
@@ -113,6 +126,8 @@ class WorkerOutcome:
             return f"{shard}: {_first_line(self.error, 'the worker raised')}"
         if self.status == DIED:
             return f"{shard}: the worker process ended (exit code {self.exitcode}) without a result"
+        if self.status == STOPPED:
+            return f"{shard}: stopped before it ended"
         return f"{shard}: exceeded its timeout and was stopped"
 
 
@@ -141,10 +156,43 @@ class _StopFlag:
             raise SystemExit(128 + signal.SIGTERM)
 
 
-def _worker_main(target: Callable[..., Any], payload: WorkerPayload, event: Any, conn: Any) -> None:
+def _watch_supervisor(lifeline: Any, event: Any) -> None:
+    """In the worker: wait until the supervisor's end of ``lifeline`` is
+    closed — it never sends, so the read returns only when the supervising
+    process is gone — then stop this worker and what it started."""
+    import threading
+
+    def watch() -> None:
+        try:
+            lifeline.recv()
+        except (EOFError, OSError):
+            pass
+        except Exception:  # anything else means the supervisor went as well
+            pass
+        event.set()
+        if os.name == "nt":
+            os._exit(1)
+        try:  # ask, as the supervisor would …
+            os.killpg(0, signal.SIGTERM)
+        except OSError:
+            pass
+        deadline = time.monotonic() + ORPHAN_GRACE_S
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+        try:  # … then kill what is left of the group, this worker included
+            os.killpg(0, signal.SIGKILL)
+        except OSError:
+            os._exit(1)
+
+    threading.Thread(target=watch, name="runcomposer-supervisor-watch", daemon=True).start()
+
+
+def _worker_main(
+    target: Callable[..., Any], payload: WorkerPayload, event: Any, conn: Any, lifeline: Any = None
+) -> None:
     """The spawned process: its own session, the payload's working directory
     and environment, then ``target``; the outcome goes back through
-    ``conn``."""
+    ``conn``. ``lifeline`` is read until the supervisor is gone."""
     stop = _StopFlag(event)
     if os.name != "nt":
         signal.signal(signal.SIGTERM, stop.on_signal)
@@ -152,6 +200,8 @@ def _worker_main(target: Callable[..., Any], payload: WorkerPayload, event: Any,
             os.setsid()
         except OSError:
             pass
+    if lifeline is not None:
+        _watch_supervisor(lifeline, event)
     try:
         if payload.cwd:
             os.chdir(payload.cwd)
@@ -187,6 +237,8 @@ class _Running:
     event: Any
     conn: Any
     started: float
+    #: The supervisor's end of the worker's lifeline: held open, never written.
+    lifeline: Any = None
     message: tuple[str, Any] | None = None
     closed: bool = False
 
@@ -220,7 +272,17 @@ class _Running:
             seconds=seconds,
             result=value if kind == FINISHED else None,
             error=value if kind == RAISED else None,
+            pid=self.process.pid,
         )
+
+    def release(self) -> None:
+        """The worker is reaped: its lifeline is no longer needed."""
+        if self.lifeline is not None:
+            try:
+                self.lifeline.close()
+            except OSError:
+                pass
+            self.lifeline = None
 
 
 def supervise_workers(
@@ -234,6 +296,8 @@ def supervise_workers(
     grace_s: float = 5.0,
     log: Callable[[str, str], None] | None = None,
     poll_s: float = 0.05,
+    on_start: Callable[[WorkerPayload, int], None] | None = None,
+    on_end: Callable[[WorkerPayload, int, WorkerOutcome], None] | None = None,
 ) -> list[WorkerOutcome]:
     """Run each payload in a spawned worker process as ``target(payload,
     stop)``, at most ``max_workers`` at once, and return how each ended, in
@@ -255,6 +319,15 @@ def supervise_workers(
     - ``log(message, level)`` is told of each shard's start, and of its end
       (shard, lane, how it ended, seconds) — pass ``ctx.log``,
       or the ``log`` of a live channel.
+    - ``on_start(payload, pid)`` is called as each worker process has
+      started, ``on_end(payload, pid, outcome)`` once it has been reaped —
+      every started worker, a stopped one included (status ``"stopped"``),
+      before ``on_done`` for those it reports. They say which processes
+      the supervisor started; an exception from them is logged and
+      otherwise ignored.
+
+    Every worker watches the supervising process and stops itself, with
+    what it started, when that process is gone (see the module docstring).
 
     A payload or target that cannot be sent to a worker process is refused
     with ``TypeError`` before anything starts.
@@ -274,9 +347,19 @@ def supervise_workers(
             except Exception:
                 pass
 
+    def tell(callback: Callable[..., None] | None, *args: Any) -> None:
+        if callback is None:
+            return
+        try:
+            callback(*args)
+        except Exception as exc:
+            say(f"on_start/on_end raised {type(exc).__name__}: {exc}", "warning")
+
     def ended(entry: _Running, outcome: WorkerOutcome) -> None:
+        entry.release()
         say(f"{_named(entry.payload)}: {_how(outcome, timeout_s)} after {outcome.seconds:.1f}s",
             "info" if outcome.status == FINISHED else "warning")
+        tell(on_end, entry.payload, entry.process.pid, outcome)
         outcomes.append(outcome)
         if on_done is not None:
             on_done(entry.payload, outcome)
@@ -293,8 +376,10 @@ def supervise_workers(
                     index += 1
                     continue
                 pending.pop(index)
-                running.append(_start(spawn, target, payload))
+                started = _start(spawn, target, payload)
+                running.append(started)
                 say(f"{_named(payload)}: started")
+                tell(on_start, payload, started.process.pid)
                 if payload.lane is not None:
                     busy.add(payload.lane)
             handles = [entry.process.sentinel for entry in running]
@@ -324,7 +409,9 @@ def supervise_workers(
         if running:
             _stop(running, grace_s)
             for entry in running:
+                entry.release()
                 say(f"{_named(entry.payload)}: stopped after {time.monotonic() - entry.started:.1f}s")
+                tell(on_end, entry.payload, entry.process.pid, entry.outcome(STOPPED))
     return outcomes
 
 
@@ -353,14 +440,19 @@ def _start(spawn: Any, target: Callable[..., Any], payload: WorkerPayload) -> _R
         pass
     event = spawn.Event()
     receive, send = spawn.Pipe(duplex=False)
+    # The lifeline: the worker reads one end, this process holds the other
+    # open and never writes — the worker's read returns when this process
+    # is gone.
+    watched, held = spawn.Pipe(duplex=False)
     process = spawn.Process(
         target=_worker_main,
-        args=(target, payload, event, send),
+        args=(target, payload, event, send, watched),
         name=f"runcomposer-shard-{payload.shard}",
     )
     process.start()
     send.close()  # the worker holds its end; EOF here means it is gone
-    return _Running(process, payload, event, receive, time.monotonic())
+    watched.close()
+    return _Running(process, payload, event, receive, time.monotonic(), lifeline=held)
 
 
 def _named(payload: WorkerPayload) -> str:
@@ -374,6 +466,8 @@ def _how(outcome: WorkerOutcome, timeout_s: float | None) -> str:
         return "raised " + _first_line(outcome.error, "an exception")
     if outcome.status == DIED:
         return f"ended without a result (exit code {outcome.exitcode})"
+    if outcome.status == STOPPED:
+        return "was stopped"
     return f"exceeded the timeout of {timeout_s:g}s and was stopped"
 
 

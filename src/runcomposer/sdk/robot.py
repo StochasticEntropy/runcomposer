@@ -616,6 +616,8 @@ class ShardOutcome:
     timed_out: bool = False
     #: Seconds the timeout was, when it timed out.
     timeout_s: float | None = None
+    #: The worker process's id.
+    pid: int | None = None
 
     @property
     def outputs(self) -> tuple[ShardOutput, ...]:
@@ -1378,6 +1380,8 @@ def supervise(
     poll_s: float = 0.05,
     log: Callable[[str, str], None] | None = None,
     grace_s: float = 5.0,
+    on_start: Callable[[ShardPayload, int], None] | None = None,
+    on_end: Callable[[ShardPayload, int, WorkerOutcome], None] | None = None,
 ) -> list[ShardOutcome]:
     """Run ``payloads`` on spawned worker processes, at most ``max_workers``
     at once, and hand each back as it finishes — ``supervise_workers`` of
@@ -1397,7 +1401,11 @@ def supervise(
     the function returns what had ended by then: payloads that never
     started, and those stopped, are not in the result. ``log(message,
     level)`` is told of every shard's start and of its end; by default
-    that is the ``log`` of the payloads' ``channel``.
+    that is the ``log`` of the payloads' ``channel``. ``on_start(payload,
+    pid)`` and ``on_end(payload, pid, outcome)`` say which worker processes
+    were started and how each ended, as for ``supervise_workers``
+    (``outcome`` is its ``WorkerOutcome``); every worker stops itself when
+    the supervising process is gone.
     """
     shard_payloads = list(payloads)
     work = [
@@ -1422,6 +1430,7 @@ def supervise(
             read_shard_result(done.out_dir),
             timed_out=outcome.timed_out,
             timeout_s=timeout_s if outcome.timed_out else None,
+            pid=outcome.pid,
         )
         outcomes.append(shard_outcome)
         if on_done is not None:
@@ -1437,6 +1446,8 @@ def supervise(
         grace_s=grace_s,
         log=log,
         poll_s=poll_s,
+        on_start=(lambda work, pid: on_start(work.data["payload"], pid)) if on_start else None,
+        on_end=(lambda work, pid, outcome: on_end(work.data["payload"], pid, outcome)) if on_end else None,
     )
     return outcomes
 
