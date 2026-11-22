@@ -2297,10 +2297,12 @@ the first few), one step from the top to the failed results, and each
 result row linking to the log and report of its own shard — "N of M
 reported" meaning the same for the run, a group and a shard: items with a
 reported result, never a `MISSING` one (the roll-ups' `count`) — an item
-shown by the name the catalog has for it now, with its id, and found by
-either; a run the server stopped under worded as that, not as an error of
-the runner (the dispatch is `STALE`; what the server noted is a detail
-line) — cancel, rerun (all, or what
+shown by the name it had when the run was composed (served with the run's
+items and verdict rows), with its id, and found by either; why a run ended
+with an error worded from the dispatch's `error_code` — a runner's error,
+a server that stopped under the run (`interrupted`; the process it lost is
+a detail line), results that never came (`expired`), a cancel — never a
+server's stop as an error of the runner — cancel, rerun (all, or what
 did not pass, optionally with a title; the new run links back through
 `rerun_of`), a plan for the stored run (`POST /runs/{id}/plan`) and delete.
 Inbox: attach, promote, discard. The footer links the API documentation

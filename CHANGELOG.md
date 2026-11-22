@@ -867,7 +867,9 @@ run-time dependencies.
   `plan` capability; never the plan of anything but what is on screen.
 - Runner options are a form rendered from what the runner declares — string,
   text, integer, boolean, choice, multi-choice and mapping, with a declared
-  pattern checked before sending; a refusal by the server lands on its field.
+  pattern checked before sending; a refusal by the server lands on its field,
+  worded by the kind of refusal it names (`problem`, and the `key` of a
+  mapping) — only a runner's own reason is shown in the runner's words.
   Unhealthy runners are listed with the reason, and a runner's own health
   checks one by one.
 - A deployment's presets fill selection, runner, options, title and labels;
@@ -878,7 +880,11 @@ run-time dependencies.
   string `tag_filter` is filter text to the server): a tag spelled `Auth OR
   Cart`, a tag named `AND` or `*`, and `regex:^Cart(V2)?$` select exactly
   that pattern, with no warning on the preview; an expression is sent as the
-  AST. A `filter-syntax` refusal is worded by the UI, with its column.
+  AST. A `filter-syntax` refusal is worded by the UI, with its column; the
+  rule a refused filter names is marked from the answer's `path`. The text
+  editor and the add field read every string as the server does — the
+  shared fixture's "strings" are the cases of both — and a filter nests at
+  most 40 levels on both sides.
 - "Save selection…" keeps what Compose holds — filter, unticked items,
   runner, options, title, labels — under a name, listed next to the presets;
   use, rename, delete. Saved selections are per browser (`localStorage`),
@@ -894,11 +900,13 @@ run-time dependencies.
   to the log and report of its own shard. One step from the top leads to
   the failed results; beyond the first few, the cards of failed shards are
   one more line. "N of M reported" means the same for the run, a group and
-  a shard: items with a reported result. Items are shown by name, with
+  a shard: items with a reported result. Items are shown by the name they
+  had when the run was composed (the server keeps it with the run), with
   their id, and found by either.
   After a cancel a missing item says what it was doing when the run stopped.
-  A run the server stopped under says that, not that the runner reported an
-  error.
+  Why a run ended with an error is worded from the dispatch's cause: a
+  runner's error, a server that stopped under the run, results that never
+  came, a cancel — in English and German.
 - While the server cannot be reached, Compose asks again by itself and is
   current once it is back; a count is never shown next to a filter it does
   not belong to.
