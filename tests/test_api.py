@@ -317,6 +317,29 @@ class TestErrorBody:
             assert response.status_code == 400, (route, depth, response.text[:200])
         assert client.get(f"{API}/runs").json()["total"] == 0
 
+    def test_an_error_nothing_answered_is_a_500_logged_once_and_blanked(self, make_client, monkeypatch, caplog):
+        """The answer names the exception's type only; the log line carries
+        the traceback as text with configured secrets blanked; and the
+        exception is not raised on to the server, which would log it as it
+        is (this client raises whatever the application lets through)."""
+        monkeypatch.setenv("SHOP_POOL_TOKEN", "pool-token-example-77")
+        client, service = make_client(
+            runners={"pool": {"module": "tests.test_api:QuotingDescribeRunner", "token": "${env:SHOP_POOL_TOKEN}"}}
+        )
+
+        def refusing(*_args, **_kwargs):
+            raise RuntimeError("the store refused the token pool-token-example-77")
+
+        monkeypatch.setattr(service.store, "list_runs", refusing)
+        with caplog.at_level("ERROR", logger="runcomposer"):
+            response = client.get(f"{API}/runs")
+        error = assert_error(response, 500, "internal-error")
+        assert "RuntimeError" in error["detail"] and "pool-token-example-77" not in response.text
+        logged = [record for record in caplog.records if "unhandled error on GET /api/v1/runs" in record.getMessage()]
+        assert len(logged) == 1 and logged[0].exc_info is None
+        assert "the store refused the token" in logged[0].getMessage() and "Traceback" in logged[0].getMessage()
+        assert "pool-token-example-77" not in "\n".join(record.getMessage() for record in caplog.records)
+
     def test_every_request_body_is_checked_for_lone_surrogates_in_one_place(self):
         from runcomposer.http import models
 

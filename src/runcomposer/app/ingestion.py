@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -90,6 +90,11 @@ def expected_format(spec: Mapping[str, Any] | None) -> str:
     return REFERENCE_FORMAT
 
 
+def _with_blanked_message(verdict: Verdict, redact: Any) -> Verdict:
+    blanked = str(redact(verdict.message)) if isinstance(verdict.message, str) else verdict.message
+    return verdict if blanked == verdict.message else replace(verdict, message=blanked)
+
+
 class Ingestion:
     def __init__(self, service: Service):
         self._service = service
@@ -134,16 +139,21 @@ class Ingestion:
         ``TestSource.resolve`` (§5); names the catalog does not know are
         reported as warnings, never invented as ids."""
         parser = self.parser(format_id)
+        redact = self._service.redact
         try:
-            return correlate(parser, bundle, format_id, self._service.catalog.resolve)
+            verdicts, warnings = correlate(parser, bundle, format_id, self._service.catalog.resolve)
         except IngestError as exc:
+            # What a parser says when it fails may quote one of its options:
+            # the refusal — answered, printed, logged, kept in the quarantine
+            # — carries it blanked.
+            blanked = IngestError(str(redact(str(exc))), reason=exc.reason)
             cause = exc.__cause__
             if cause is not None and not isinstance(cause, (ParseError, IngestError)):
                 log_failure(
-                    log, f"parser {format_id!r} raised on {bundle}", cause, self._service.redact,
-                    level=logging.WARNING,
+                    log, f"parser {format_id!r} raised on {bundle}", cause, redact, level=logging.WARNING
                 )
-            raise
+            raise blanked from None
+        return verdicts, [str(redact(warning)) for warning in warnings]
 
     # -- the pipeline ---------------------------------------------------------------
 
@@ -163,6 +173,12 @@ class Ingestion:
         bundle = Path(bundle_path)
         if not bundle.exists():
             raise IngestError(f"bundle not found: {bundle}", reason="bad-bundle")
+        for name, given in (("run id", run_id), ("dispatch id", dispatch_id), ("shard", shard)):
+            if isinstance(given, str) and any("\ud800" <= char <= "\udfff" for char in given):
+                raise IngestError(
+                    f"the {name} given for {bundle.name} holds a lone UTF-16 surrogate, which is not text",
+                    reason="bad-bundle",
+                )
         warnings: list[str] = []
 
         marker = read_marker(bundle)
@@ -244,8 +260,11 @@ class Ingestion:
         warnings: list[str] | None = None,
     ) -> str:
         """Record one shard's delivery and let the ledger recompute. The
-        single write path for results, whoever brings them."""
+        single write path for results, whoever brings them — a parser, a
+        runner, a push: a result's message is free text and is stored with
+        the configured secrets blanked out, like every other message."""
         service = self._service
+        verdicts = [_with_blanked_message(verdict, service.redact) for verdict in verdicts]
         if dispatch.state == "CANCELLED":
             raise IngestError(
                 f"dispatch {dispatch.dispatch_id} was cancelled — results for it are not taken in",
@@ -342,7 +361,9 @@ class Ingestion:
                     claimed = (read_marker(bundle) or {}).get("run_id")
                 except IngestError:
                     claimed = None
-            detail = without_location(str(exc), bundle, name or bundle.name)
+            # Whatever refused it — a parser's text, an unexpected error —
+            # is kept, listed and logged blanked.
+            detail = without_location(str(self._service.redact(str(exc))), bundle, name or bundle.name)
             entry = self._quarantine(
                 bundle, reason=reason, transport=transport, claimed_run_id=claimed,
                 format=format, detail=detail,

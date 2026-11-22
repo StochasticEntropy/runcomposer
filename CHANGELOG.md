@@ -603,9 +603,16 @@ not exist or worked differently:
   observer, a parser, a source or a runner that raises while quoting a
   configured secret is logged — and, for an observer, recorded as a
   warning on the run — with the secret blanked out; a failure inside the
-  server (settling, recovery, the inbox, an unhandled request) likewise.
+  server (settling, recovery, the inbox) likewise. A parser's failure is
+  blanked where it is answered, printed and kept in the quarantine. A
+  request no handler answered is a `500` logged once by runcomposer, as
+  blanked text, and is not raised on for the web server to log as it is.
   The command line prints the first line of such a failure; the traceback
   with `-v`.
+- **A result's message is blanked like any other message:** a configured
+  secret a test or a parser put into a result's message is stored — and so
+  served and exported — blanked. Files an executor produced are kept as
+  written.
 - **A result message is stored as text:** a lone UTF-16 surrogate in a
   result file's message becomes the replacement character instead of
   failing the bundle.

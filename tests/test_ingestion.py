@@ -84,6 +84,21 @@ class ExplodingParser(ParserBase):
         raise ZeroDivisionError("the parser divided the till by zero")
 
 
+class QuotingParser(ParserBase):
+    """A parser that fails quoting one of its options, or — told to pass —
+    reports a result whose message quotes it."""
+
+    format_id = "shop-quoting"
+
+    def __init__(self, token: str = "", fail: bool = True):
+        self.token, self.fail = token, fail
+
+    def parse(self, path: Any) -> list[ParsedVerdict]:
+        if self.fail:
+            raise RuntimeError(f"the results service refused the token {self.token}")
+        return [ParsedVerdict(native_name=SSO[0], status="FAIL", message=f"refused with token {self.token}")]
+
+
 class OverclaimingParser(ParserBase):
     """A parser that claims a status no executor can report."""
 
@@ -462,6 +477,63 @@ class TestParsers:
             "shop-exploding",
         )
         assert service.store.get_dispatch(export.dispatch.dispatch_id).state == "AWAITING_RESULTS"
+
+    def test_a_parser_that_fails_quoting_a_secret_is_refused_and_quarantined_without_it(
+        self, make_service, tmp_path, monkeypatch, caplog
+    ):
+        """What a parser says when it fails is answered, printed, logged and
+        kept in the quarantine: a configured secret in it is blanked in all."""
+        monkeypatch.setenv("SHOP_RESULTS_TOKEN", "results-token-example-9")
+        service = make_service(
+            parsers={"shop-quoting": {"module": "tests.test_ingestion:QuotingParser", "token": "${env:SHOP_RESULTS_TOKEN}"}}
+        )
+        run_id = compose(service, "Auth-SSO", expect_format="shop-quoting")
+        service.export(run_id)
+        with caplog.at_level("DEBUG", logger="runcomposer"):
+            with pytest.raises(IngestError, match="the results service refused the token") as refused:
+                service.ingest(bundle(tmp_path / "b", SSO), run_id=run_id)
+            report = service.ingest_or_quarantine(
+                bundle(tmp_path / "b", SSO, marker={"run_id": run_id}), transport="file-drop"
+            )
+        assert "results-token-example-9" not in str(refused.value) and refused.value.__cause__ is None
+        assert isinstance(report, QuarantineReport) and "refused the token" in report.detail
+        kept = "".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in service.config.quarantine_dir.rglob("_quarantine.json")
+        )
+        listed = repr([vars(entry) for entry in service.quarantine.entries()])
+        logged = "\n".join(record.getMessage() for record in caplog.records)
+        for text in (report.detail, kept, listed, logged):
+            assert "results-token-example-9" not in text
+        assert kept and "refused the token" in logged
+
+    def test_a_result_message_that_quotes_a_secret_is_stored_without_it(
+        self, make_service, tmp_path, monkeypatch
+    ):
+        """A result's message is free text like any other: it is stored, and
+        so served and exported, with configured secrets blanked out."""
+        monkeypatch.setenv("SHOP_RESULTS_TOKEN", "results-token-example-9")
+        service = make_service(
+            parsers={
+                "shop-quoting": {
+                    "module": "tests.test_ingestion:QuotingParser",
+                    "token": "${env:SHOP_RESULTS_TOKEN}",
+                    "fail": False,
+                }
+            }
+        )
+        run_id = compose(service, "Auth-SSO", expect_format="shop-quoting")
+        service.export(run_id)
+        service.ingest(bundle(tmp_path / "b", SSO), run_id=run_id)
+        messages = [verdict.message for verdict in service.store.verdicts_for(run_id)]
+        assert len(messages) == 1 and messages[0].startswith("refused with token ")
+        assert "results-token-example-9" not in messages[0]
+
+    def test_an_argument_that_is_not_text_is_a_refused_bundle(self, service, tmp_path):
+        run_id, _export, _spec = exported(service, tmp_path)
+        with pytest.raises(IngestError, match="the shard given for b holds a lone UTF-16 surrogate") as refused:
+            service.ingest(bundle(tmp_path / "b", SSO), run_id=run_id, shard="s\udcff")
+        assert refused.value.reason == "bad-bundle"
 
     def test_a_parser_cannot_report_a_status_no_executor_reports(self, make_service, tmp_path):
         service = make_service(

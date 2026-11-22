@@ -1872,8 +1872,11 @@ Rules:
   (below); a `:-default` is written in the file and is no secret.
   Configured options never travel into a run spec, an API response or a log
   line; where a plugin quotes one anyway, secrets are blanked out of free
-  text — messages, refusal reasons, errors, plan text and notes, health
-  details, error documents, log lines — and out of the string values of
+  text — messages (a result's message included, whoever delivered it),
+  refusal reasons, errors (a parser's, an observer's and what the
+  quarantine keeps of a refused bundle included), plan text and notes,
+  health details, error documents, log lines — and out of the string
+  values of
   runner-defined data (health and plan `data`), never out of identifiers:
   shard, group and runner names, item, run and dispatch ids, states, event
   kinds, parameter names, mapping keys and links are recorded as they are
@@ -1882,7 +1885,10 @@ Rules:
   naming the option and the variable — write `${env-public:…}` if it is no
   secret. The links a runner records are stored as given, because a later
   `cancel` finds its executor through them — a runner must not put a secret
-  into a link. An environment value is text; an option the plugin's
+  into a link. The blanking covers what runcomposer itself records, logs
+  and answers; a file an executor produced — a log, a report, a result
+  file kept as an artifact — is served as it was written. An environment
+  value is text; an option the plugin's
   constructor annotates as `int`, `float` or `bool` (optionally `| None`)
   receives it converted — `true`/`yes`/`on`/`1` and `false`/`no`/`off`/`0`,
   an empty value as `null` where the annotation allows it — and a value that

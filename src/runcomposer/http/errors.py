@@ -42,6 +42,7 @@ from runcomposer.core.taxonomy import TaxonomyError
 
 __all__ = [
     "CrossSiteRequest",
+    "UnhandledErrors",
     "UnknownHost",
     "error_body",
     "error_response",
@@ -172,6 +173,50 @@ def error_response(
     return JSONResponse(status_code=status_of(exc), content=content)
 
 
+class UnhandledErrors:
+    """An exception no handler answered: logged once, as text with the
+    configured secrets blanked out (``log_failure``), and answered ``500
+    internal-error`` naming its type only.
+
+    Done as a layer of its own and not as a handler for ``Exception``: such
+    a handler's exception is raised again for the server to log, and the
+    server logs it as it is — with whatever the exception quotes."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def watching(message: Any) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, watching)
+        except Exception as exc:
+            log_failure(
+                log,
+                f"unhandled error on {scope.get('method', '')} {scope.get('path', '')}",
+                exc,
+                scope["app"].state.service.redact,
+            )
+            if started:
+                return  # an answer is already on its way: there is nothing to add to it
+            response = JSONResponse(
+                status_code=500,
+                content=error_body(
+                    f"internal error: {type(exc).__name__} (see the server log)", "internal-error"
+                ),
+            )
+            await response(scope, receive, send)
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RunComposerError)
     async def _domain(request: Request, exc: RunComposerError) -> JSONResponse:
@@ -210,18 +255,6 @@ def install_error_handlers(app: FastAPI) -> None:
             headers=getattr(exc, "headers", None),
         )
 
-    @app.exception_handler(Exception)
-    async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
-        service = getattr(request.app.state, "service", None)
-        log_failure(
-            log,
-            f"unhandled error on {request.method} {request.url.path}",
-            exc,
-            service.redact if service is not None else (lambda value: value),
-        )
-        return JSONResponse(
-            status_code=500,
-            content=error_body(
-                f"internal error: {type(exc).__name__} (see the server log)", "internal-error"
-            ),
-        )
+    # Outermost of the application's own layers: whatever nothing else
+    # answered is answered and logged here.
+    app.add_middleware(UnhandledErrors)
