@@ -217,17 +217,24 @@ test("a slow early answer never overwrites a later one: preview and run agree", 
 test("an invalid pattern marks its rule, makes the preview stale and blocks the run", async ({ page, open }) => {
   await open("#/compose?f=Payments");
   await expectPreview(page, 17, 60);
-  await addRule(page, "regex:(");
+  // In quotes it is one pattern as far as the grammar goes; what is wrong with it only the server can say.
+  await addRule(page, '"regex:("');
   const error = page.getByTestId("filter-error");
   await expect(error).toContainText(msg("error.code.invalid-filter"));
   await expect(error).toContainText("regex:(");
+  // The message points at the rule that is marked — not at a path into the data.
+  await expect(error).toContainText(msg("filter.errorAtRule"));
+  await expect(error).not.toContainText("tag_filter");
+  await expect(error).not.toContainText("items[");
   // The offending rule — and only that one — is marked.
   await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "regex:(" }) })).toHaveAttribute("aria-invalid", "true");
   await expect(page.getByRole("button", { name: msg("filter.editPattern", { pattern: "Payments" }) })).not.toHaveAttribute("aria-invalid", "true");
   // The old rows are still there, but said to be old; nothing can be run.
   await expect(page.locator(".preview-scroll")).toHaveClass(/is-stale/);
   await expect(page.getByText(msg("preview.staleHint"))).toBeVisible();
-  await expect(page.getByRole("button", { name: msg("compose.run", { count: 0 }) })).toBeDisabled();
+  // No count stands next to a filter it is not the count of — in the preview's head or on the button.
+  await expect(page.getByTestId("preview-count")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: msg("compose.runUncounted"), exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: msg("compose.export") })).toBeDisabled();
 
   await page.getByRole("button", { name: msg("filter.removeRule", { pattern: "regex:(" }) }).click();
@@ -236,10 +243,14 @@ test("an invalid pattern marks its rule, makes the preview stale and blocks the 
   await expect(runButton(page, 17)).toBeEnabled();
 });
 
-test("when the server cannot be reached the preview says so, keeps nothing runnable, and recovers", async ({ page, open }) => {
+test("when the server cannot be reached the preview says so, keeps nothing runnable, and recovers by itself", async ({ page, open }) => {
   await open("#/compose?f=Payments");
   await expectPreview(page, 17, 60);
-  await page.route("**/api/v1/selection/compile", (route) => route.abort("connectionrefused"));
+  let refused = 0;
+  await page.route("**/api/v1/selection/compile", (route) => {
+    refused += 1;
+    return route.abort("connectionrefused");
+  });
   await addRule(page, "Smoke");
   const alert = page.locator(".preview").getByRole("alert");
   await expect(alert).toContainText(msg("error.code.network"));
@@ -248,11 +259,18 @@ test("when the server cannot be reached the preview says so, keeps nothing runna
   // The run bar says what is true: the server is out of reach — there is no error of the viewer's to fix.
   await expect(page.getByTestId("run-summary")).toHaveText(msg("compose.blocked.network"));
   await expect(page.getByTestId("run-summary")).not.toHaveText(msg("compose.blocked.error"));
-  await expect(page.getByRole("button", { name: msg("compose.run", { count: 0 }) })).toBeDisabled();
+  // The count of the filter before this one is gone: "17 of 60" is not what "Payments AND Smoke" matches.
+  await expect(page.getByTestId("preview-count")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: msg("compose.runUncounted"), exact: true })).toBeDisabled();
+  // The page keeps asking by itself — and the message stays put while it does: no flicker between error and spinner.
+  await expect.poll(() => refused, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+  await expect(alert).toContainText(msg("error.code.network"));
+  await expect(alert.getByRole("button", { name: msg("action.retry") })).toBeVisible();
 
+  // The server is back: nobody presses anything, and the preview is the answer to the filter on screen.
   await page.unroute("**/api/v1/selection/compile");
-  await alert.getByRole("button", { name: msg("action.retry") }).click();
   await expectPreview(page, 4, 60);
+  await expect(alert).toHaveCount(0);
   await expect(runButton(page, 4)).toBeEnabled();
 });
 
@@ -414,7 +432,7 @@ test("the run bar is always in reach and covers nothing", async ({ page, open })
   await expect(page.getByTestId("filter-text")).toHaveText("Regression AND Smoke");
 });
 
-test("NOT is a labelled switch, and no control is an icon alone", async ({ page, open }) => {
+test("NOT is a labelled switch, and no control but a chip's × is a sign alone", async ({ page, open }) => {
   await open("#/compose?f=" + encodeURIComponent("(Payments OR Checkout) AND NOT prefix:Quarantine-"));
   await expectPreview(page, 28, 60);
   // The switch says NOT in words, and its name says what it does to which rule.
@@ -424,13 +442,17 @@ test("NOT is a labelled switch, and no control is an icon alone", async ({ page,
   const on = page.getByRole("button", { name: msg("filter.negateRule", { pattern: "prefix:Quarantine-" }) });
   await expect(on).toHaveText(msg("filter.not"));
   await expect(on).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: msg("filter.removeRule", { pattern: "Payments" }) })).toHaveText(msg("action.remove"));
+  // One control is a sign: a rule is a chip, and a chip is closed with ×. It says in a name and a tooltip what it removes.
+  const remove = page.getByRole("button", { name: msg("filter.removeRule", { pattern: "Payments" }), exact: true });
+  await expect(remove).toHaveText("×");
+  await expect(remove).toHaveAttribute("title", msg("filter.removeRule", { pattern: "Payments" }));
 
-  // Every button on the page — and in a dialog — carries visible words.
+  // Every other button on the page — and in a dialog — carries visible words.
   const wordless = () =>
     page.evaluate(() =>
       [...document.querySelectorAll("button")]
         .filter((button) => !/[\p{L}]{2,}/u.test(button.textContent ?? ""))
+        .filter((button) => !(button.classList.contains("chip-remove") && button.title !== "" && button.getAttribute("aria-label") === button.title))
         .map((button) => button.outerHTML.slice(0, 120)),
     );
   expect(await wordless()).toEqual([]);
@@ -664,4 +686,110 @@ test("the preview is as tall as its rows, and at most reaches down to the run ba
   expect(await scroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(false);
   const rows = (await scroll.boundingBox())!;
   expect(rows.height).toBeLessThan(200);
+});
+
+test("the add field reads what is typed with the filter's grammar — the same text means the same everywhere", async ({ page, open, api }) => {
+  await open();
+  const field = page.getByRole("combobox", { name: msg("filter.addTag"), exact: true });
+  const chips = page.locator(".expr .chip");
+
+  // An expression is the rules it says: two rules, the count the API gives for that expression.
+  const both = await api.post<Compiled>("/selection/compile", { tag_filter: { op: "AND", items: ["Payments", "Smoke"] }, limit: 0 });
+  await addRule(page, "Payments AND Smoke");
+  await expect(chips).toHaveCount(2);
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke");
+  await expectPreview(page, both.count, 60);
+  expect(both.count).toBeGreaterThan(0);
+  expect(filterOf(page)).toBe("Payments AND Smoke");
+  // The text editor holds the same text, and reads it to the same filter.
+  await page.getByRole("button", { name: msg("filter.editAsText") }).click();
+  await expect(page.getByRole("textbox", { name: msg("filter.textLabel") })).toHaveValue("Payments AND Smoke");
+  await page.locator(".expr-text").getByRole("button", { name: msg("action.cancel") }).click();
+
+  // The other operator is a group of its own; NOT is the switch of its rule.
+  await addRule(page, "Sprint-12 OR Sprint-13");
+  await addRule(page, "NOT prefix:Quarantine-");
+  await expect(page.getByTestId("filter-text")).toHaveText("Payments AND Smoke AND (Sprint-12 OR Sprint-13) AND NOT prefix:Quarantine-");
+  await expect(page.getByRole("button", { name: msg("filter.negateRule", { pattern: "prefix:Quarantine-" }) })).toHaveAttribute("aria-pressed", "true");
+
+  // Operators are capitals. Small ones are refused in place — nothing is added, nothing is sent, the place is named.
+  let asked = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/v1/selection/compile")) asked += 1;
+  });
+  await addRule(page, "Cart and Checkout");
+  const refusal = page.locator(".expr-group.is-root > .expr-add").getByRole("alert");
+  await expect(refusal).toHaveText(msg("filter.operatorCase", { position: 6, operator: "AND", token: "and" }));
+  await expect(field).toHaveValue("Cart and Checkout");
+  await expect(field).toHaveAttribute("aria-invalid", "true");
+  await expect(field).toBeFocused();
+  await expect(chips).toHaveCount(5);
+  // Half an expression, and a pattern without a pattern: refused the same way.
+  await addRule(page, "Cart AND (");
+  await expect(refusal).toHaveText(msg("filter.parse.unexpected-end"));
+  await addRule(page, "prefix:");
+  await expect(refusal).toHaveText(msg("filter.parse.empty", { position: 1 }));
+  await expect(chips).toHaveCount(5);
+  expect(asked).toBe(0);
+  // Typing on takes the message away.
+  await field.fill("Cart");
+  await expect(refusal).toHaveCount(0);
+  await field.fill("");
+
+  // A tag that has a space or an operator word in it is typed in quotes — and is then ONE rule.
+  await page.getByRole("button", { name: msg("filter.clear") }).click();
+  await addRule(page, '"Payments AND Smoke"');
+  await expect(chips).toHaveCount(1);
+  await expect(chips).toHaveAttribute("data-pattern", "Payments AND Smoke");
+  await expectPreview(page, 0, 60);
+  expect(filterOf(page)).toBe('"Payments AND Smoke"');
+});
+
+test("a rule no tag matches is flagged on its chip, with the tag that was probably meant", async ({ page, open }) => {
+  await open("#/compose?f=Smoke");
+  await expectPreview(page, 14, 60);
+  // A slip of the fingers: two letters of a tag the wrong way round.
+  const slip = (tag: string) => tag.slice(0, 4) + tag[5] + tag[4] + tag.slice(6);
+  const typo = slip("Payments");
+  const NO_SUCH_PREFIX = `prefix:${slip("Sprint-")}`;
+  await addRule(page, typo);
+  await expectPreview(page, 0, 60);
+
+  const chip = page.locator(`.chip[data-pattern="${typo}"]`);
+  await expect(chip).toHaveClass(/is-unmatched/);
+  await expect(chip.locator(".chip-flag")).toHaveText(msg("filter.noTag"));
+  await expect(chip.locator(".chip-flag")).toHaveAttribute("title", msg("filter.noTagHint"));
+  await expect(page.locator('.chip[data-pattern="Smoke"]')).not.toHaveClass(/is-unmatched/);
+  const note = page.getByRole("status", { name: msg("filter.unmatchedList") });
+  await expect(note).toContainText(msg("filter.matchesNoTag", { pattern: typo }));
+
+  // One click on what was meant, and the rule matches.
+  await note.getByRole("button", { name: msg("filter.replaceWith", { pattern: typo, tag: "Payments" }) }).click();
+  await expect(page.getByTestId("filter-text")).toHaveText("Smoke AND Payments");
+  await expectPreview(page, 4, 60);
+  await expect(page.locator(".chip.is-unmatched")).toHaveCount(0);
+  await expect(note).toHaveCount(0);
+
+  // A pattern nothing matches is flagged too; case alone is no mismatch for a tag, as on the server.
+  await addRule(page, NO_SUCH_PREFIX);
+  await addRule(page, "smoke");
+  await expect(page.locator(".chip.is-unmatched")).toHaveCount(1);
+  await expect(page.locator(".chip.is-unmatched")).toHaveAttribute("data-pattern", NO_SUCH_PREFIX);
+});
+
+test("three rules fit in one row of the filter column", async ({ page, open }) => {
+  await open("#/compose?f=" + encodeURIComponent("Payments AND Checkout AND Smoke AND (Cart OR Catalog OR Auth)"));
+  await expect(page.locator(".preview")).toHaveAttribute("aria-busy", "false");
+  const tops = async (scope: string) => (await page.locator(`${scope} > li > .chip`).evaluateAll((chips) => chips.map((chip) => Math.round(chip.getBoundingClientRect().top))));
+  const root = await tops(".expr-group.is-root > .expr-rules");
+  expect(root).toHaveLength(3);
+  expect(new Set(root).size).toBe(1);
+  // Also inside a group, which is narrower.
+  const inner = await tops(".expr-group:not(.is-root) > .expr-rules");
+  expect(inner).toHaveLength(3);
+  expect(new Set(inner).size).toBe(1);
+  // Each rule still has its three controls: the pattern, NOT in a word, and the ×.
+  const chip = page.locator('.chip[data-pattern="Checkout"]');
+  await expect(chip.getByRole("button")).toHaveCount(3);
+  await expect(chip.getByRole("button", { name: msg("filter.negateRule", { pattern: "Checkout" }) })).toHaveText(msg("filter.not"));
 });

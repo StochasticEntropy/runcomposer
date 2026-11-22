@@ -15,7 +15,7 @@ afterEach(cleanup);
 let current: GroupNode;
 const text = () => formatFilter(toAst(current));
 
-function Harness({ initial, errorPattern }: { initial: FilterAst | null; errorPattern?: string }) {
+function Harness({ initial, errorPattern, knownTags }: { initial: FilterAst | null; errorPattern?: string; knownTags?: string[] }) {
   const [root, setRoot] = useState(() => fromAst(initial));
   const [textDraft, setTextDraft] = useState<string | null>(null);
   current = root;
@@ -30,6 +30,7 @@ function Harness({ initial, errorPattern }: { initial: FilterAst | null; errorPa
       labelOf={() => null}
       textDraft={textDraft}
       onTextDraft={setTextDraft}
+      knownTags={knownTags}
     />
   );
 }
@@ -166,5 +167,131 @@ describe("the expression editor", () => {
     // Every rule still has its three controls, in the order they read.
     const controls = [...rules.children[19]!.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
     expect(controls).toEqual(["Edit Sprint-14", "NOT: negate Sprint-14", "Remove Sprint-14"]);
+  });
+});
+
+describe("the add field speaks the filter's grammar", () => {
+  const type = (text: string, name?: string) => {
+    fireEvent.change(addField(name), { target: { value: text } });
+    fireEvent.submit(addField(name).closest("form")!);
+  };
+
+  it("reads an expression as the rules it says — the same text as in the text editor", () => {
+    renderWithI18n(<Harness initial={null} />);
+    type("Payments AND Smoke");
+    expect(toAst(current)).toEqual({ op: "AND", items: ["Payments", "Smoke"] });
+    expect(document.querySelectorAll(".chip")).toHaveLength(2);
+    // More rules with the group's own operator are more rules of the group…
+    type("Regression AND NOT prefix:Quarantine-");
+    expect(text()).toBe("Payments AND Smoke AND Regression AND NOT prefix:Quarantine-");
+    // …and the other operator is a group of its own.
+    type("Cart OR Checkout");
+    expect(text()).toBe("Payments AND Smoke AND Regression AND NOT prefix:Quarantine- AND (Cart OR Checkout)");
+    expect((addField() as HTMLInputElement).value).toBe("");
+  });
+
+  it("lets an expression typed into the empty builder bring its operator along", () => {
+    renderWithI18n(<Harness initial={null} />);
+    type("Payments OR Cart");
+    expect(toAst(current)).toEqual({ op: "OR", items: ["Payments", "Cart"] });
+    expect((screen.getByRole("combobox", { name: "How the rules of this group combine" }) as HTMLSelectElement).value).toBe("OR");
+  });
+
+  it("reads NOT, the star and a pattern in quotes as the grammar has them", () => {
+    renderWithI18n(<Harness initial={"Payments"} />);
+    type("NOT Smoke");
+    expect(text()).toBe("Payments AND NOT Smoke");
+    // In quotes, operator words are letters of one tag.
+    type('"Auth OR Cart"');
+    expect(toAst(current)).toEqual({ op: "AND", items: ["Payments", { not: "Smoke" }, "Auth OR Cart"] });
+    type('"regex:^Cart(V2)?$"');
+    expect(text()).toBe('Payments AND NOT Smoke AND "Auth OR Cart" AND "regex:^Cart(V2)?$"');
+  });
+
+  it("refuses text that is no expression in place: nothing is added, the text stays, the place is named", () => {
+    renderWithI18n(<Harness initial={"Payments"} />);
+    type("Smoke AND (Cart OR");
+    expect(text()).toBe("Payments");
+    const field = addField() as HTMLInputElement;
+    expect(field.value).toBe("Smoke AND (Cart OR");
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("The expression ends where a tag or pattern is expected.");
+    expect(field.getAttribute("aria-describedby")).toBe(alert.id);
+    // Two words with nothing between them are not one tag with a space…
+    type("Cart Smoke");
+    expect(screen.getByRole("alert").textContent).toBe("Position 6: an operator is missing before “Smoke”.");
+    // …the caret is where reading stopped…
+    expect(field.selectionStart).toBe(5);
+    // …and typing on takes the message away.
+    fireEvent.change(field, { target: { value: "Cart AND Smoke" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.submit(field.closest("form")!);
+    expect(text()).toBe("Payments AND Cart AND Smoke");
+  });
+
+  it("says that operators are capitals when one is typed small", () => {
+    renderWithI18n(<Harness initial={null} />);
+    type("Payments and Smoke");
+    expect(toAst(current)).toBeNull();
+    expect(screen.getByRole("alert").textContent).toBe("Position 10: operators are written in capitals — AND, not “and”.");
+  });
+
+  it("takes a tag of the catalog as that tag, whatever characters it has", () => {
+    const catalog = ["Payments", "Smoke", "Cart AND Checkout"];
+    renderWithI18n(<Harness initial={null} knownTags={catalog} />);
+    type("Cart AND Checkout");
+    expect(toAst(current)).toBe("Cart AND Checkout");
+    expect(document.querySelector(".chip.is-unmatched")).toBeNull();
+  });
+});
+
+describe("a rule no tag of the catalog matches", () => {
+  const catalog = ["Payments", "Payments-Cards", "Checkout", "Smoke", "Sprint-12", "Sprint-13"];
+  // A slip of the fingers: two neighbouring letters of a tag swapped.
+  const slip = (tag: string) => tag.slice(0, 4) + tag[5] + tag[4] + tag.slice(6);
+  const typo = slip("Payments");
+  const NO_SUCH_PREFIX = `prefix:${slip("Sprint-")}`;
+
+  it("is flagged on its chip, and the tag that was probably meant is one click away", () => {
+    renderWithI18n(<Harness initial={{ op: "AND", items: [typo, "Smoke"] }} knownTags={catalog} />);
+    const chip = document.querySelector(`.chip[data-pattern="${typo}"]`)!;
+    expect(chip.className).toContain("is-unmatched");
+    expect(chip.querySelector(".chip-flag")!.textContent).toBe("no tag");
+    expect(document.querySelector('.chip[data-pattern="Smoke"]')!.className).not.toContain("is-unmatched");
+    // The flag describes the rule to assistive technology too.
+    const edit = screen.getByRole("button", { name: `Edit ${typo}` });
+    expect(document.getElementById(edit.getAttribute("aria-describedby")!)!.textContent).toBe("no tag");
+
+    const note = screen.getByRole("status", { name: "Rules that match no tag" });
+    expect(note.textContent).toContain(`“${typo}” matches no tag of the catalog.`);
+    fireEvent.click(within(note).getByRole("button", { name: `Replace ${typo} with Payments` }));
+    expect(text()).toBe("Payments AND Smoke");
+    expect(document.querySelector(".chip.is-unmatched")).toBeNull();
+    expect(screen.queryByRole("status", { name: "Rules that match no tag" })).toBeNull();
+  });
+
+  it("is flagged for a pattern too — without guessing what was meant — and never for everything", () => {
+    renderWithI18n(<Harness initial={{ op: "AND", items: ["prefix:Sprint-", NO_SUCH_PREFIX, { not: "regex:^$" }, "regex:(?i)smoke"] }} knownTags={catalog} />);
+    const flagged = [...document.querySelectorAll(".chip.is-unmatched")].map((chip) => chip.getAttribute("data-pattern"));
+    // The prefix nothing begins with is flagged. What the browser cannot read is left to the server.
+    expect(flagged).toEqual([NO_SUCH_PREFIX]);
+    const note = screen.getByRole("status", { name: "Rules that match no tag" });
+    expect(within(note).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("is not claimed while the catalog is not known", () => {
+    renderWithI18n(<Harness initial={typo} />);
+    expect(document.querySelector(".chip.is-unmatched")).toBeNull();
+  });
+
+  it("a typed expression is flagged rule by rule as soon as it is added", () => {
+    renderWithI18n(<Harness initial={null} knownTags={catalog} />);
+    fireEvent.change(addField(), { target: { value: `${typo} AND Smoke` } });
+    fireEvent.submit(addField().closest("form")!);
+    expect([...document.querySelectorAll(".chip")].map((chip) => [chip.getAttribute("data-pattern"), chip.classList.contains("is-unmatched")])).toEqual([
+      [typo, true],
+      ["Smoke", false],
+    ]);
   });
 });

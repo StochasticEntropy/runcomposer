@@ -122,6 +122,95 @@ test("a value the server refuses lands on its field, in the viewer's words plus 
   await api.waitFor(await currentRunId(page), ["COMPLETE"]);
 });
 
+test("the names of a mapping have a form too: shown, checked before anything is sent, worded by the UI", async ({ page, open, api }) => {
+  await open("#/compose?f=Auth-SSO");
+  await expectPreview(page, 3, 60);
+  await runnerSelect(page).selectOption("scripted");
+  const form = page.getByRole("group", { name: msg("runner.parameters") });
+  await form.getByRole("combobox", { name: /^Target environment/ }).selectOption("staging");
+  await form.getByRole("textbox", { name: /^Build number/ }).fill("2026.11");
+
+  // The form says which form a name must have, next to the form of a value — each once, as it is written.
+  const switches = page.getByRole("group", { name: "Feature switches" });
+  const field = page.locator('[data-param="switches"]');
+  await expect(field.locator('.pattern-hint[data-pattern-of="name"]')).toHaveText(`${msg("runner.expectedNameForm")} [A-Z][A-Za-z-]+`);
+  await expect(field.locator('.pattern-hint[data-pattern-of="value"]')).toHaveText(`${msg("runner.expectedValueForm")} on|off`);
+
+  const name = (row: number) => switches.getByRole("textbox", { name: msg("runner.mappingKeyOf", { label: "Feature switches", number: row }) });
+  const value = (row: number) => switches.getByRole("textbox", { name: msg("runner.mappingValueOf", { label: "Feature switches", number: row }) });
+  await switches.getByRole("button", { name: msg("runner.mappingAdd") }).click();
+  await name(1).fill("Checkout-Express");
+  await value(1).fill("on");
+  await switches.getByRole("button", { name: msg("runner.mappingAdd") }).click();
+  await name(2).fill("payments wallets");
+  await value(2).fill("off");
+
+  // A name of the wrong form is refused here, in the UI's words — no request is made.
+  let sent = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/v1/runs")) sent += 1;
+  });
+  await runButton(page, 3).click();
+  await expect(field.getByRole("alert")).toHaveText(msg("runner.problem.key"));
+  await expect(name(2)).toHaveAttribute("aria-invalid", "true");
+  await expect(name(1)).not.toHaveAttribute("aria-invalid", "true");
+  await expect(value(2)).not.toHaveAttribute("aria-invalid", "true");
+  expect(sent).toBe(0);
+  expect(await api.runs()).toHaveLength(0);
+  // The same in German: the sentence is the UI's own.
+  await page.getByRole("combobox", { name: msg("prefs.language") }).selectOption("de");
+  await page.getByRole("button", { name: msg("compose.run", { count: 3 }, "de"), exact: true }).click();
+  await expect(field.getByRole("alert")).toHaveText(msg("runner.problem.key", {}, "de"));
+  await expect(field.locator('.pattern-hint[data-pattern-of="name"]')).toHaveText(`${msg("runner.expectedNameForm", {}, "de")} [A-Z][A-Za-z-]+`);
+  await expect(field.locator(".foreign")).toHaveCount(0);
+  await page.getByRole("combobox", { name: msg("prefs.language", {}, "de") }).selectOption("en");
+
+  // Corrected, the mapping reaches the run as typed.
+  await name(2).fill("Payments-Wallets");
+  await expect(field.getByRole("alert")).toHaveCount(0);
+  await runButton(page, 3).click();
+  const runId = await currentRunId(page);
+  await api.waitFor(runId, ["COMPLETE"]);
+  const detail = await api.get<{ dispatches: { parameters: Record<string, unknown> }[] }>(`/runs/${runId}`);
+  expect(detail.dispatches[0]!.parameters.switches).toEqual({ "Checkout-Express": "on", "Payments-Wallets": "off" });
+});
+
+test("when the server refuses a value of a declared form, the field says so in the UI's words — not in the server's", async ({ page, open, api }) => {
+  await open("#/compose?f=Auth-SSO");
+  await expectPreview(page, 3, 60);
+  await runnerSelect(page).selectOption("scripted");
+  const form = page.getByRole("group", { name: msg("runner.parameters") });
+  await form.getByRole("combobox", { name: /^Target environment/ }).selectOption("staging");
+  await form.getByRole("textbox", { name: /^Build number/ }).fill("2026.11");
+  // What the form sends has the declared form, so the request is altered on its way out:
+  // the refusal that comes back is the server's own, for a value that does not have it.
+  let alter = "build";
+  await page.route("**/api/v1/runs", async (route) => {
+    const body = route.request().postDataJSON() as { dispatch: { parameters: Record<string, unknown> } };
+    if (alter === "build") body.dispatch.parameters.build = "build 11";
+    else body.dispatch.parameters.switches = { "payments wallets": "off" };
+    await route.continue({ postData: JSON.stringify(body) });
+  });
+  await runButton(page, 3).click();
+  const build = form.locator('[data-param="build"]');
+  await expect(build.getByRole("alert")).toHaveText(msg("runner.problem.refusedForm"));
+  // The form stands under the field as it is written; the server's sentence — with its doubled backslashes — is not shown.
+  await expect(build.locator(".pattern-hint")).toHaveText(`${msg("runner.expectedForm")} \\d{4}\\.\\d{1,2}`);
+  await expect(build.locator(".foreign")).toHaveCount(0);
+  expect(await build.innerText()).not.toContain("\\\\");
+  expect(await build.innerText()).not.toContain("does not match");
+  expect(await api.runs()).toHaveLength(0);
+
+  // The same for the names of a mapping.
+  alter = "switches";
+  await runButton(page, 3).click();
+  const switches = form.locator('[data-param="switches"]');
+  await expect(switches.getByRole("alert")).toHaveText(msg("runner.problem.refusedForm"));
+  await expect(switches.locator(".foreign")).toHaveCount(0);
+  expect(await switches.innerText()).not.toContain("key pattern");
+  expect(await api.runs()).toHaveLength(0);
+});
+
 test("a refused dispatch is explained where the run was started and leaves no run behind", async ({ page, open, api }) => {
   await open("#/compose?f=Auth-SSO");
   await expectPreview(page, 3, 60);
@@ -251,13 +340,20 @@ test("results are failures first, filterable, and a message opens in full", asyn
   await expect(status(page)).toContainText(msg("completion.FAIL"));
 
   const rows = page.locator(".verdict-table tbody tr[data-item-id]");
+  // An item is shown as in the preview: by its name, with the id it is stored under beneath.
+  const catalog = await api.post<{ items: { id: string; name: string }[] }>("/selection/compile", { tag_filter: "Regression" });
+  const firstId = (await rows.first().getAttribute("data-item-id"))!;
+  const known = catalog.items.find((entry) => entry.id === firstId)!;
+  expect(known.name).not.toBe(known.id);
+  await expect(rows.first().locator(".item-name")).toHaveText(known.name);
+  await expect(rows.first().locator(".item-id")).toHaveText(known.id);
   // The columns are as wide as what they hold: a badge is narrow, the item has the room — and stays on one line.
   const columns = Object.fromEntries(
     await page.locator(".verdict-table thead th").evaluateAll((cells) => cells.map((cell) => [cell.className, cell.getBoundingClientRect().width] as const)),
   ) as Record<string, number>;
   expect(columns["col-status"]).toBeLessThan(150);
   expect(columns["col-item"]).toBeGreaterThan(2.5 * columns["col-status"]!);
-  const item = rows.first().locator(".col-item .clamp");
+  const item = rows.first().locator(".col-item .item-name");
   expect(await item.evaluate((element) => element.getClientRects().length)).toBe(1);
   // Every failure comes before the first row that is not one.
   const statuses = await rows.evaluateAll((elements) => elements.map((element) => element.getAttribute("data-status")));
@@ -285,7 +381,16 @@ test("results are failures first, filterable, and a message opens in full", asyn
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 
-  await page.getByRole("searchbox", { name: msg("run.searchVerdicts") }).fill("no item is called this");
+  // The search finds an item by its name as well as by its id.
+  const search = page.getByRole("searchbox", { name: msg("run.searchVerdicts") });
+  await page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}`) }).click();
+  await search.fill(known.name);
+  await expect(page.locator(`.verdict-table tbody tr[data-item-id="${known.id}"]`)).toBeVisible();
+  expect(await rows.count()).toBeLessThan(catalog.items.length);
+  await search.fill(known.id);
+  await expect(rows).toHaveCount(1);
+
+  await search.fill("no item is called this");
   await expect(page.getByText(msg("run.noRowsMatch"))).toBeVisible();
 });
 

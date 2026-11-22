@@ -13,9 +13,9 @@ import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
 import type { DispatchResponse, RunDetail } from "../lib/types.ts";
 import { PlanView } from "./PlanView.tsx";
-import { ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "./RunnerFields.tsx";
+import { ParameterForm, RunnerSelect, problemTexts, refusedValue, runnerUsable } from "./RunnerFields.tsx";
 import type { FieldProblem } from "./RunnerFields.tsx";
-import { Dialog, ErrorText, Notice, describeError } from "./ui.tsx";
+import { Dialog, ErrorText, Notice } from "./ui.tsx";
 
 interface Props {
   run: RunDetail;
@@ -71,8 +71,7 @@ export function RerunDialog({ run, scope, onDone, onClose }: Props) {
       const failure = asApiError(caught);
       const parameter = failure.extra.parameter;
       if (failure.code === "invalid-parameter" && typeof parameter === "string" && specs.some((spec) => spec.name === parameter)) {
-        const { title, detail } = describeError(i18n, failure);
-        setProblems({ [parameter]: { text: title, foreign: detail } });
+        setProblems({ [parameter]: refusedValue(i18n, specs.find((spec) => spec.name === parameter), failure) });
       } else {
         setError(failure);
       }

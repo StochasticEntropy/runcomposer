@@ -6,9 +6,11 @@ import { useId, useState } from "react";
 
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { parseLabel } from "../lib/format.ts";
-import { Foreign } from "./ui.tsx";
+import { Foreign, describeError } from "./ui.tsx";
 import type { Translator } from "../lib/i18n.ts";
+import { wholeMatch } from "../lib/params.ts";
 import type { MappingRow, ParamProblem, ParamValues } from "../lib/params.ts";
+import type { ApiError } from "../lib/request.ts";
 import type { HealthCheck, ParameterSpec, RunnerInfo } from "../lib/types.ts";
 
 /** What is wrong with a field: the UI's own sentence, and — when the server
@@ -16,6 +18,19 @@ import type { HealthCheck, ParameterSpec, RunnerInfo } from "../lib/types.ts";
 export interface FieldProblem {
   text: string;
   foreign?: string;
+}
+
+/**
+ * A value the SERVER refused (`invalid-parameter`), put on its field. Where
+ * the parameter declares the form its values must have, the UI says so in
+ * its own words — the form itself stands under the field — and leaves the
+ * server's sentence out. For any other refusal the server's sentence is the
+ * only one that knows the reason, and is shown as the server's.
+ */
+export function refusedValue(i18n: Translator, spec: ParameterSpec | undefined, error: ApiError): FieldProblem {
+  if (spec && (spec.pattern || (spec.kind === "mapping" && spec.key_pattern))) return { text: i18n.t("runner.problem.refusedForm") };
+  const { title, detail } = describeError(i18n, error);
+  return { text: title, foreign: detail };
 }
 
 /** What is wrong with a value, in the viewer's words. */
@@ -192,7 +207,10 @@ export function ParameterForm({ specs, values, onChange, problems, plugin, varia
         const errorId = `${fieldId}-error`;
         const problem = problems[spec.name];
         const patternId = `${fieldId}-pattern`;
-        const described = [spec.help ? helpId : "", spec.pattern ? patternId : "", problem ? errorId : ""].filter(Boolean).join(" ") || undefined;
+        const keyPatternId = `${fieldId}-key-pattern`;
+        const keyPattern = spec.kind === "mapping" ? spec.key_pattern : null;
+        const described =
+          [spec.help ? helpId : "", keyPattern ? keyPatternId : "", spec.pattern ? patternId : "", problem ? errorId : ""].filter(Boolean).join(" ") || undefined;
         const builtinLabel = builtinParam(i18n, plugin, spec.name, "label");
         const builtinHelp = (variant && builtinParam(i18n, plugin, spec.name, `help_${variant}`)) || builtinParam(i18n, plugin, spec.name, "help");
         const value = values[spec.name];
@@ -218,9 +236,14 @@ export function ParameterForm({ specs, values, onChange, problems, plugin, varia
                 {builtinHelp ?? spec.help}
               </p>
             )}
+            {keyPattern && (
+              <p className="hint pattern-hint" id={keyPatternId} data-pattern-of="name">
+                {t("runner.expectedNameForm")} <code>{keyPattern}</code>
+              </p>
+            )}
             {spec.pattern && (
-              <p className="hint pattern-hint" id={patternId}>
-                {t("runner.expectedForm")} <code>{spec.pattern}</code>
+              <p className="hint pattern-hint" id={patternId} data-pattern-of="value">
+                {spec.kind === "mapping" ? t("runner.expectedValueForm") : t("runner.expectedForm")} <code>{spec.pattern}</code>
               </p>
             )}
             {problem && (
@@ -284,6 +307,13 @@ export function ParameterForm({ specs, values, onChange, problems, plugin, varia
         }
         if (spec.kind === "mapping") {
           const rows = Array.isArray(value) ? (value as MappingRow[]) : [];
+          // Which cell is wrong, once a problem is shown: the name or the value that does not have its form.
+          const nameForm = wholeMatch(keyPattern);
+          const valueForm = wholeMatch(spec.pattern);
+          const used = (row: MappingRow) => row.key.trim() !== "" || row.value !== "";
+          const badName = (row: MappingRow) => used(row) && nameForm !== null && !nameForm.test(row.key.trim());
+          const badValue = (row: MappingRow) => used(row) && valueForm !== null && !valueForm.test(row.value);
+          const anyBad = rows.some((row) => badName(row) || badValue(row));
           const setRow = (index: number, change: Partial<MappingRow>) =>
             set(spec.name, rows.map((row, position) => (position === index ? { ...row, ...change } : row)));
           return (
@@ -297,7 +327,7 @@ export function ParameterForm({ specs, values, onChange, problems, plugin, varia
                     value={row.key}
                     placeholder={t("runner.mappingKey")}
                     aria-label={t("runner.mappingKeyOf", { label: spec.label, number: index + 1 })}
-                    aria-invalid={problem ? true : undefined}
+                    aria-invalid={problem && (badName(row) || !anyBad) ? true : undefined}
                     autoComplete="off"
                     spellCheck={false}
                     onChange={(event) => setRow(index, { key: event.target.value })}
@@ -308,7 +338,7 @@ export function ParameterForm({ specs, values, onChange, problems, plugin, varia
                     value={row.value}
                     placeholder={t("runner.mappingValue")}
                     aria-label={t("runner.mappingValueOf", { label: spec.label, number: index + 1 })}
-                    aria-invalid={problem ? true : undefined}
+                    aria-invalid={problem && (badValue(row) || !anyBad) ? true : undefined}
                     autoComplete="off"
                     spellCheck={false}
                     onChange={(event) => setRow(index, { value: event.target.value })}

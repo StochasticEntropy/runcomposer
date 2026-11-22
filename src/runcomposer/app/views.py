@@ -206,6 +206,14 @@ def verdict_rows(service: Service, dispatch: DispatchRecord | None, run_id: str)
     return rows
 
 
+def _reported(verdicts: Sequence[Verdict]) -> int:
+    """How many items have a reported result: one per (shard, item) — the
+    effective verdict — and never a derived ``MISSING``, which says that
+    nothing was reported. The one definition of ``count`` for a shard and
+    for a group, so "N of M reported" reads the same at both levels."""
+    return sum(1 for verdict in lifecycle.effective_verdicts(verdicts) if verdict.status != "MISSING")
+
+
 def shard_summaries(
     dispatch: DispatchRecord | None, rows: Sequence[Mapping[str, Any]], delivered: set[str]
 ) -> list[dict[str, Any]]:
@@ -213,7 +221,9 @@ def shard_summaries(
     declaration order — with its own counts and computed completion. "Green
     on partition A, red on partition B" is read here, not aggregated by the
     caller. ``planned`` is how many items the shard said it would report
-    (None when it never said), so progress has a denominator per shard."""
+    (None when it never said), so progress has a denominator per shard;
+    ``count`` is how many of them have a reported result (``MISSING`` is in
+    ``summary``, not in ``count``)."""
     if dispatch is None:
         return []
     order = list(dispatch.shards)
@@ -234,7 +244,7 @@ def shard_summaries(
                 "shard": shard,
                 "declared": shard in order,
                 "delivered": has_delivered,
-                "count": len(lifecycle.effective_verdicts(verdicts)),
+                "count": _reported(verdicts),
                 "planned": len(dispatch.shard_items[shard]) if shard in dispatch.shard_items else None,
                 "summary": lifecycle.summarize(verdicts),
                 "completion": lifecycle.completion_of(verdicts) if has_delivered else None,
@@ -321,8 +331,9 @@ def group_summaries(
     """The roll-up per shard group — one entry per label a runner gave with
     ``declare(groups=…)``, in the order the labels first appear: which
     shards it holds, how many delivered, counts and a completion over all of
-    them (``None`` until every shard of the group delivered). Empty for a
-    dispatch that grouped nothing."""
+    them (``None`` until every shard of the group delivered). ``count`` is
+    the sum of its shards' ``count``: items with a reported result. Empty
+    for a dispatch that grouped nothing."""
     if dispatch is None or not dispatch.shard_groups:
         return []
     members: dict[str, list[str]] = {}
@@ -351,7 +362,7 @@ def group_summaries(
                     if all(items is not None for items in planned)
                     else None
                 ),
-                "count": len(lifecycle.effective_verdicts(verdicts)),
+                "count": _reported(verdicts),
                 "summary": lifecycle.summarize(verdicts),
                 "live": _live_counts([row for row in own if row["live"]]),
                 "completion": (

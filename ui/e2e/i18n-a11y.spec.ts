@@ -68,7 +68,7 @@ test("German: the language switch covers every view, enums and errors, and is re
   await expect(page.getByRole("button", { name: de("filter.editPattern", { pattern: "Payments" }) })).toBeVisible();
 
   // An error from the server is said in German, with the server's detail next to it.
-  await addRule(page, "regex:(", "de");
+  await addRule(page, '"regex:("', "de");
   await expect(page.getByTestId("filter-error")).toContainText(de("error.code.invalid-filter"));
   await expect(page.getByText(de("preview.staleHint"))).toBeVisible();
   await page.getByRole("button", { name: de("filter.removeRule", { pattern: "regex:(" }) }).click();
@@ -206,7 +206,7 @@ test.describe("a browser that asks for German", () => {
     expect(await field.innerText()).not.toContain("\\\\");
 
     // A filter the server refuses: the sentence in German, the server's detail marked as the server's.
-    await addRule(page, "regex:(", "de");
+    await addRule(page, '"regex:("', "de");
     const refused = page.getByTestId("filter-error");
     await expect(refused).toContainText(de("error.code.invalid-filter"));
     await expect(refused.locator(".foreign")).toContainText("regex:(");

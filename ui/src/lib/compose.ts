@@ -124,6 +124,18 @@ export class PreviewController {
     void this.send(this.selection, this.state.key);
   }
 
+  /**
+   * Ask again without saying so: the error stays on screen until an answer
+   * replaces it. For the retries the page makes by itself while the server
+   * is out of reach — a spinner every few seconds would say "working" about
+   * something that is waiting.
+   */
+  retryQuietly(): void {
+    if (this.selection === null || this.state.status !== "error") return;
+    this.clearTimer();
+    void this.send(this.selection, this.state.key);
+  }
+
   private async send(selection: Selection, key: string): Promise<void> {
     this.timer = null;
     try {

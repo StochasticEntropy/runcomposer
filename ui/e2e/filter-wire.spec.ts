@@ -3,11 +3,17 @@
 // would otherwise reach it only through the fallback for strings that are
 // not filter text — with a warning on every preview.
 
-import { addRule, currentRunId, expect, expectPreview, runButton, test } from "./fixtures.ts";
+import { addRule, currentRunId, expect, expectPreview, msg, runButton, test } from "./fixtures.ts";
 
 test("a pattern with parentheses previews and runs as exactly that pattern, with no warning", async ({ page, open, api }) => {
   await open("#/compose");
+  // Typed bare, a pattern that runs into a parenthesis is refused with the way to write it — the grammar's own rule…
   await addRule(page, "regex:^Cart(V2)?$");
+  await expect(page.locator(".expr-add").getByRole("alert")).toHaveText(msg("filter.parse.needs-quotes", { position: 1, token: "regex:^Cart" }));
+  await expect(page.locator(".expr .chip")).toHaveCount(0);
+  // …and in quotes it is that one pattern.
+  await addRule(page, '"regex:^Cart(V2)?$"');
+  await expect(page.locator(".expr .chip")).toHaveAttribute("data-pattern", "regex:^Cart(V2)?$");
   await expectPreview(page, 9, 60);
   await expect(page.locator(".preview .notice-warn")).toHaveCount(0);
 

@@ -1175,16 +1175,56 @@ main {
 
 /* In a chip the switch is small: the word and its box, no frame of its own. */
 .chip .toggle-not {
-  gap: 3px;
-  padding: 0 3px;
+  gap: 2px;
+  padding: 0 2px;
   border-color: transparent;
   background: transparent;
-  font-size: 0.68rem;
+  font-size: 0.64rem;
+  letter-spacing: 0;
 }
 
 .chip .toggle-not .toggle-box {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
+}
+
+/* A rule no tag of the catalog matches: it selects nothing, and says so. */
+.chip.is-unmatched {
+  border-color: var(--warn-solid, var(--border-strong));
+  border-style: dashed;
+  background: var(--warn-bg, var(--panel-2));
+}
+
+.chip-flag {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--warn-solid, var(--border-strong));
+  color: var(--solid-ink);
+  font-size: 0.66rem;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+  flex: none;
+}
+
+.expr-unmatched {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.88rem;
+}
+
+.expr-unmatched > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  overflow-wrap: anywhere;
+}
+
+.expr-add-error {
+  flex: 1 1 100%;
+  margin: 0;
 }
 
 .chip .toggle-not:hover,
@@ -1209,12 +1249,13 @@ main {
   align-items: baseline;
   gap: 5px;
   min-width: 0;
-  padding: 2px 4px;
+  padding: 2px 3px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--text);
   font: inherit;
+  font-size: 0.93rem;
   font-weight: 600;
   text-align: left;
   overflow-wrap: anywhere;
@@ -1227,15 +1268,18 @@ main {
   font-weight: 500;
 }
 
+/* The remove control of a chip is the one sign without a word (see ExpressionEditor). */
 .chip-remove {
+  min-width: 18px;
   min-height: 24px;
-  padding: 0 4px;
+  padding: 0 3px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 1rem;
+  line-height: 1;
   cursor: pointer;
   flex: none;
 }
@@ -1509,8 +1553,27 @@ main {
   white-space: nowrap;
 }
 
-.passed-shards {
+.passed-shards,
+.more-shards {
   margin-top: 10px;
+}
+
+.results-jump {
+  margin: 0 0 10px;
+}
+
+.results h2[tabindex="-1"]:focus {
+  outline: none;
+}
+
+details.technical {
+  margin-top: 6px;
+  font-size: 0.9rem;
+}
+
+details.technical > summary {
+  cursor: pointer;
+  color: var(--muted);
 }
 
 .preset-cards {
@@ -1651,7 +1714,8 @@ main {
   max-height: max(320px, calc(100dvh - 220px));
 }
 
-.table-scroll.is-stale {
+.table-scroll.is-stale,
+.preview-count.is-stale {
   opacity: 0.5;
 }
 
@@ -2142,6 +2206,20 @@ main {
   background: var(--running-solid);
 }
 
+.item-name,
+.item-id {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.item-id {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .item-btn {
   display: block;
   width: 100%;
@@ -2443,6 +2521,11 @@ main {
 
   .verdict-table .col-item {
     grid-area: item;
+  }
+
+  /* A card has one line for the item: its name; the id is in its details. */
+  .verdict-table .item-id {
+    display: none;
   }
 
   .verdict-table .col-shard {

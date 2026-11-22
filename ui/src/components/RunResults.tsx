@@ -3,7 +3,7 @@
 // first. Live status of shards that have not delivered yet is in the same
 // table, marked as live.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "../hooks/context.tsx";
 import { useMediaQuery } from "../hooks/usePage.ts";
@@ -196,12 +196,14 @@ export interface ResultsQuery {
 
 interface Props {
   run: RunDetail;
+  /** Item id → the name the catalog has for it now; ids without one are shown as ids. */
+  names?: ReadonlyMap<string, string>;
   /** Which results are shown — kept by the caller in the URL, so a reload or a shared link shows the same rows. */
   query: ResultsQuery;
   onQuery: (changes: ResultsQuery) => void;
 }
 
-export function RunResults({ run, query, onQuery }: Props) {
+export function RunResults({ run, names, query, onQuery }: Props) {
   const { t, tOr, locale } = useI18n();
   const filter: StatusFilter = query.status && query.status in FILTERS ? (query.status as StatusFilter) : "all";
   const shard = query.shard ?? "";
@@ -212,6 +214,7 @@ export function RunResults({ run, query, onQuery }: Props) {
   const setGroup = (name: string) => onQuery({ group: name, shard: "" });
   const setSearch = (q: string) => onQuery({ q });
   const [opened, setOpened] = useState<ResultRow | null>(null);
+  const verdictsTitle = useRef<HTMLHeadingElement | null>(null);
   const narrow = useMediaQuery("(max-width: 700px)");
   const rowHeight = narrow ? 84 : 44;
 
@@ -261,9 +264,13 @@ export function RunResults({ run, query, onQuery }: Props) {
         (!shard || row.shard === shard) &&
         inGroup(row.shard) &&
         // The search reads what the row shows, so a message can be found as it is displayed.
-        (!needle || row.item_id.toLowerCase().includes(needle) || messageOf(row).toLowerCase().includes(needle)),
+        // …and an item can be found by its name as well as by its id.
+        (!needle ||
+          row.item_id.toLowerCase().includes(needle) ||
+          (names?.get(row.item_id) ?? "").toLowerCase().includes(needle) ||
+          messageOf(row).toLowerCase().includes(needle)),
     );
-  }, [all, filter, shard, search, inGroup, messageOf]);
+  }, [all, filter, shard, search, inGroup, messageOf, names]);
   const virtual = useVirtual<HTMLDivElement>(rows.length, rowHeight, 12, 37);
 
   // What undelivered shards report live — the server's own roll-up.
@@ -302,11 +309,20 @@ export function RunResults({ run, query, onQuery }: Props) {
   // shards with one failure are one card and one line — not fifty cards.
   const shardList = (list: ShardSummary[]) => {
     const fold = list.length > FOLD_SHARDS_ABOVE;
-    const shown = fold ? list.filter((entry) => shardRank(entry) < 2) : list;
+    const needLook = fold ? list.filter((entry) => shardRank(entry) < 2) : list;
     const passed = fold ? list.filter((entry) => shardRank(entry) === 2) : [];
+    // …and of forty shards that failed, the first few are cards; the rest are one more line.
+    const shown = needLook.slice(0, FOLD_SHARDS_ABOVE);
+    const further = needLook.slice(FOLD_SHARDS_ABOVE);
     return (
       <>
         {shown.length > 0 && <ul className="shard-grid">{shown.map(shardCard)}</ul>}
+        {further.length > 0 && (
+          <details className="group-shards more-shards">
+            <summary>{t("run.moreShards", { count: further.length })}</summary>
+            <ul className="shard-grid">{further.map(shardCard)}</ul>
+          </details>
+        )}
         {passed.length > 0 && (
           <details className="group-shards passed-shards">
             <summary>{t("run.passedShards", { count: passed.length })}</summary>
@@ -325,8 +341,28 @@ export function RunResults({ run, query, onQuery }: Props) {
 
   if (!dispatch) return <p className="state state-empty">{t("run.neverDispatched")}</p>;
 
+  // With many shards the list of results per item — the messages, the logs —
+  // is far down the page. What did not pass is one step away from the top.
+  // (Counted over the whole run: the jump also takes a shard or group choice away.)
+  const failedInAll = all.filter(FILTERS.failed).length;
+  const missingInAll = all.filter(FILTERS.missing).length;
+  const jump = failedInAll > 0 ? ("failed" as const) : missingInAll > 0 ? ("missing" as const) : null;
+  const toResults = (status: StatusFilter) => {
+    onQuery({ status, shard: "", group: "" });
+    const target = verdictsTitle.current;
+    target?.scrollIntoView?.({ block: "start" });
+    target?.focus({ preventScroll: true });
+  };
+
   return (
     <div className="results">
+      {jump && shards.length > 1 && (
+        <p className="results-jump">
+          <button type="button" className="btn btn-small" data-testid="jump-to-results" onClick={() => toResults(jump)}>
+            {jump === "failed" ? t("run.jumpFailed", { count: failedInAll }) : t("run.jumpMissing", { count: missingInAll })}
+          </button>
+        </p>
+      )}
       {groups.length > 0 && (
         <section aria-labelledby="groups-title">
           <h2 id="groups-title">{t("run.groups", { count: groups.length })}</h2>
@@ -336,6 +372,10 @@ export function RunResults({ run, query, onQuery }: Props) {
               const merged = { ...entry.summary };
               for (const [status, value] of Object.entries(live)) merged[status] = (merged[status] ?? 0) + value;
               const nowRunning = over ? 0 : (entry.live.RUNNING ?? 0);
+              // Reported: what its shards delivered (the server's `count`, which
+              // holds no MISSING) plus, while they are at work, what they said live —
+              // the same sum its shard cards show one by one.
+              const reported = entry.count + sumCounts(live);
               const members = byAttention(
                 shards.filter((candidate) => groupOf[candidate.shard] === entry.group),
                 shardRank,
@@ -359,7 +399,12 @@ export function RunResults({ run, query, onQuery }: Props) {
                   <VerdictBar counts={merged} planned={entry.planned ?? sumCounts(merged)} active={!complete && running} />
                   <p className="shard-numbers">
                     {t("run.groupShards", { done: entry.delivered_shards, total: entry.declared_shards })}
-                    {entry.planned !== null && <> · {t("run.shardProgress", { done: sumCounts(merged), total: entry.planned })}</>}
+                    {entry.planned !== null && (
+                      <span data-testid="group-reported">
+                        {" · "}
+                        {t("run.shardProgress", { done: reported, total: entry.planned })}
+                      </span>
+                    )}
                     {nowRunning > 0 && <span className="count-running"> · {t("run.nowRunning", { count: nowRunning })}</span>}
                   </p>
                   <VerdictCounts counts={merged} />
@@ -405,7 +450,9 @@ export function RunResults({ run, query, onQuery }: Props) {
       )}
 
       <section aria-labelledby="verdicts-title">
-        <h2 id="verdicts-title">{t("run.verdicts")}</h2>
+        <h2 id="verdicts-title" ref={verdictsTitle} tabIndex={-1}>
+          {t("run.verdicts")}
+        </h2>
         {all.length === 0 ? (
           <p className="state state-empty">{running ? t("run.noVerdictsYet") : t("run.noVerdicts")}</p>
         ) : (
@@ -523,9 +570,17 @@ export function RunResults({ run, query, onQuery }: Props) {
                           <VerdictBadge status={row.status} live={row.live} />
                           {row.live && <span className="live-dot" aria-hidden="true" title={t("run.live")} />}
                         </td>
-                        <td className="col-item mono">
+                        <td className="col-item">
                           <button type="button" className="item-btn" onClick={() => setOpened(row)} title={t("run.showDetails", { item: row.item_id })}>
-                            <span className="clamp">{row.item_id}</span>
+                            {names?.has(row.item_id) ? (
+                              // The name people know the item by, as in the preview — and the id it is stored under.
+                              <>
+                                <span className="item-name">{names.get(row.item_id)}</span>
+                                <span className="item-id mono">{row.item_id}</span>
+                              </>
+                            ) : (
+                              <span className="clamp mono">{row.item_id}</span>
+                            )}
                           </button>
                         </td>
                         <td className="col-shard" data-label={t("run.column.shard")}>
@@ -568,8 +623,14 @@ export function RunResults({ run, query, onQuery }: Props) {
       </section>
 
       {opened && (
-        <Dialog title={opened.item_id} onClose={() => setOpened(null)} size="large">
+        <Dialog title={names?.get(opened.item_id) ?? opened.item_id} onClose={() => setOpened(null)} size="large">
           <dl className="facts">
+            {names?.has(opened.item_id) && (
+              <>
+                <dt>{t("preview.column.id")}</dt>
+                <dd className="mono">{opened.item_id}</dd>
+              </>
+            )}
             <dt>{t("run.column.status")}</dt>
             <dd>
               <VerdictBadge status={opened.status} live={opened.live} />

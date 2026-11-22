@@ -307,7 +307,10 @@ export function VerdictBar({ counts, planned, active = false }: { counts: Record
   const done = Object.values(counts).reduce((total, value) => total + value, 0);
   const total = Math.max(planned, done, 1);
   const parts = [...known, ...other].map((status) => `${counts[status]} ${tOr(`verdict.${status}`, status)}`);
-  const label = planned > 0 ? t("progress.label", { done, total: Math.max(planned, done) }) : t("progress.none");
+  // "Received" is what was reported: an item that is MISSING has a place on
+  // the bar and in the parts, and is no result that came in.
+  const received = done - (counts.MISSING ?? 0);
+  const label = planned > 0 ? t("progress.label", { done: received, total: Math.max(planned, done) }) : t("progress.none");
   return (
     <div className="verdict-bar-wrap">
       <div

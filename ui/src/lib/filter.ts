@@ -201,6 +201,11 @@ export function parseFilter(text: string): FilterAst | null {
     if (token.type === "all") return { not: NO_TAG };
     if (token.type === "pattern") {
       if (token.value === "") throw fail("empty", token.at);
+      // `prefix:` or `regex:` with nothing after the colon is a pattern
+      // without a pattern. The server reads the word and then refuses the
+      // filter (core/filter.py: "empty pattern"); a person typing is told
+      // here, at the word, instead of one request later.
+      if (token.value === "prefix:" || token.value === "regex:") throw fail("empty", token.at, token.value);
       return token.value;
     }
     if (token.type === "op") {
@@ -249,6 +254,9 @@ export function leaves(node: FilterAst | null, negated = false, into: { pattern:
 // The server names the offending node of a refused filter by its path —
 // `tag_filter.items[1].not: invalid regular expression …`. Reading that
 // prefix lets the editor mark the rule; a detail without one marks nothing.
+/** A refusal's detail without the path it starts with: what is wrong, not where in the data. */
+export const withoutPath = (detail: string): string => detail.replace(/^tag_filter(?:\.items\[\d+\]|\.not|\.op|\.items)*:\s*/, "");
+
 export function errorPath(detail: string): string | null {
   const match = /^tag_filter((?:\.items\[\d+\]|\.not|\.op|\.items)*):/.exec(detail);
   if (!match) return null;

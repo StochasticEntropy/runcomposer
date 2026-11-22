@@ -13,12 +13,13 @@ import { ExpressionEditor } from "../components/ExpressionEditor.tsx";
 import { PreviewTable } from "../components/PreviewTable.tsx";
 import { PlanView } from "../components/PlanView.tsx";
 import { SavedSelections } from "../components/SavedSelections.tsx";
-import { LabelsInput, ParameterForm, RunnerSelect, problemTexts, runnerUsable } from "../components/RunnerFields.tsx";
+import { LabelsInput, ParameterForm, RunnerSelect, problemTexts, refusedValue, runnerUsable } from "../components/RunnerFields.tsx";
 import type { FieldProblem } from "../components/RunnerFields.tsx";
 import { TagPicker } from "../components/TagPicker.tsx";
-import { CopyButton, Dialog, ErrorState, ErrorText, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
+import { CopyButton, Dialog, ErrorState, ErrorText, Foreign, Loading, Notice, TimeAgo, describeError } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
 import { usePlan } from "../hooks/usePlan.ts";
+import { usePageVisible } from "../hooks/usePage.ts";
 import { useResource } from "../hooks/useResource.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import {
@@ -34,7 +35,7 @@ import {
 import type { ComposeLink, PreviewState } from "../lib/compose.ts";
 import { ROOT_ID, addNode, addTag, emptyRoot, fromAst, nodeFromAst, toAstWithPaths } from "../lib/editor.ts";
 import type { GroupNode } from "../lib/editor.ts";
-import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter, quotePattern } from "../lib/filter.ts";
+import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter, quotePattern, withoutPath } from "../lib/filter.ts";
 import { setFlash } from "../lib/flash.ts";
 import { parseLabel } from "../lib/format.ts";
 import { fromPayload, mergeValues, toPayload, validateValues } from "../lib/params.ts";
@@ -60,6 +61,9 @@ interface StoredDraft {
   title: string;
   labels: Record<string, string>;
 }
+
+const RETRY_FIRST_MS = 1000;
+const RETRY_MAX_MS = 15_000;
 
 /** A selection as the URL would say it, as a comparable key — "" for no selection, which is what a bare URL says. */
 function keyOfLink(link: ComposeLink | null): string {
@@ -166,6 +170,7 @@ export function ComposeView({ route }: { route: Route }) {
     },
     [byPattern],
   );
+  const knownTags = useMemo(() => tags.data?.tags.map((entry) => entry.tag) ?? null, [tags.data]);
   const catalogItems = tags.data?.items ?? meta.catalog.items;
   const catalogTags = tags.data?.tags.length ?? meta.catalog.tags;
 
@@ -192,6 +197,26 @@ export function ComposeView({ route }: { route: Route }) {
     () => new PreviewController((selection, signal) => api.compile(selection, signal), setPreview),
   );
   useEffect(() => () => controller.dispose(), [controller]);
+
+  // A server that cannot be reached is nothing the viewer did wrong and
+  // nothing they should have to watch: while the page is looked at, the
+  // preview asks again by itself — after 1 s, 2 s, 4 s … at most every 15 s —
+  // and is current again as soon as the server is back.
+  const pageVisible = usePageVisible();
+  const retries = useRef(0);
+  useEffect(() => {
+    if (preview.status !== "error" || preview.error?.code !== "network") {
+      if (preview.status === "ready") retries.current = 0;
+      return;
+    }
+    if (!pageVisible) return;
+    const delay = Math.min(RETRY_FIRST_MS * 2 ** retries.current, RETRY_MAX_MS);
+    const timer = window.setTimeout(() => {
+      retries.current += 1;
+      controller.retryQuietly();
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [preview, pageVisible, controller]);
 
   const selection = useMemo(
     () => (from && !pinned ? null : previewSelection(emitted.ast, pinned?.ids ?? null)),
@@ -503,9 +528,7 @@ export function ComposeView({ route }: { route: Route }) {
       const error = asApiError(caught);
       const parameter = error.extra.parameter;
       if (error.code === "invalid-parameter" && typeof parameter === "string" && specs.some((spec) => spec.name === parameter)) {
-        // The UI's sentence for the refusal, and the server's own words as supporting detail.
-        const { title: problemTitle, detail } = describeError(i18n, error);
-        setParamErrors({ [parameter]: { text: problemTitle, foreign: detail } });
+        setParamErrors({ [parameter]: refusedValue(i18n, specs.find((spec) => spec.name === parameter), error) });
       } else {
         setSubmitError(error);
       }
@@ -712,6 +735,7 @@ export function ComposeView({ route }: { route: Route }) {
           labelOf={labelOf}
           textDraft={textDraft}
           onTextDraft={setTextDraft}
+          knownTags={knownTags}
         />
         <datalist id={tagListId}>
           {(tags.data?.tags ?? []).map((entry) => (
@@ -731,7 +755,15 @@ export function ComposeView({ route }: { route: Route }) {
         )}
         {filterError && (
           <p className="field-error" role="alert" data-testid="filter-error">
-            <ErrorText error={filterError} />
+            {errorNodeId === null ? (
+              <ErrorText error={filterError} />
+            ) : (
+              // The server said which rule it is, as a path into the filter. The
+              // editor marks that rule; the path itself is no reading for a person.
+              <>
+                <strong>{describeError(i18n, filterError).title}</strong> {t("filter.errorAtRule")} <Foreign>{withoutPath(filterError.detail)}</Foreign>
+              </>
+            )}
           </p>
         )}
 
@@ -860,7 +892,8 @@ export function ComposeView({ route }: { route: Route }) {
             aria-disabled={busy || undefined}
             aria-describedby={`${summaryId} ${blockedId}`}
           >
-            {busy ? t("compose.starting") : t("compose.run", { count: selectedCount })}
+            {/* A number only where there is one: while the preview is not the answer to this filter, nothing is counted. */}
+            {busy ? t("compose.starting") : fresh || preview.status === "idle" ? t("compose.run", { count: selectedCount }) : t("compose.runUncounted")}
           </button>
         </div>
       </div>

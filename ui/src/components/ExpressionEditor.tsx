@@ -4,11 +4,12 @@
 // as text. Everything is a native control, so the whole editor works from
 // the keyboard and reads sensibly to a screen reader.
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "../hooks/context.tsx";
 import {
   ROOT_ID,
+  addExpression,
   addGroup,
   addTag,
   findNode,
@@ -22,6 +23,10 @@ import {
 } from "../lib/editor.ts";
 import type { EditorNode, GroupNode, TagNode } from "../lib/editor.ts";
 import { FilterParseError, formatFilter, parseFilter } from "../lib/filter.ts";
+import type { FilterAst } from "../lib/filter.ts";
+import type { Translator } from "../lib/i18n.ts";
+import { patternChecker } from "../lib/tagMatch.ts";
+import type { PatternCheck } from "../lib/tagMatch.ts";
 
 interface Props {
   root: GroupNode;
@@ -39,10 +44,32 @@ interface Props {
    * is applied, the caller must not run anything. */
   textDraft: string | null;
   onTextDraft: (text: string | null) => void;
+  /** The tags of the catalog, once they are known: a rule no tag matches is flagged. */
+  knownTags?: readonly string[] | null;
 }
 
-export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeId, labelOf, textDraft, onTextDraft }: Props) {
+/**
+ * What is wrong with a typed expression, in the viewer's words, with the
+ * place. One mistake gets its own sentence: `and` in small letters is read
+ * as a tag — operators are capitals — and the plain message ("an operator is
+ * missing") would send the reader looking for the wrong thing.
+ */
+export function parseMessage(t: Translator["t"], error: FilterParseError): string {
+  const vars = { position: error.position + 1, token: error.token };
+  if (error.problem === "missing-operator" && /^(and|or|not)$/i.test(error.token) && error.token !== error.token.toUpperCase()) {
+    return t("filter.operatorCase", { ...vars, operator: error.token.toUpperCase() });
+  }
+  return t(`filter.parse.${error.problem}`, vars);
+}
+
+export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeId, labelOf, textDraft, onTextDraft, knownTags = null }: Props) {
   const { t } = useI18n();
+  // One checker per catalog: every rule asks on every render, each pattern is worked out once.
+  const check = useMemo(() => (knownTags && knownTags.length > 0 ? patternChecker(knownTags) : null), [knownTags]);
+  const isTag = useMemo(() => {
+    const exact = new Set(knownTags ?? []);
+    return (text: string) => exact.has(text);
+  }, [knownTags]);
   const textMode = textDraft !== null;
   const applied = formatFilter(toAst(root));
   const [focusGroup, setFocusGroup] = useState<string | null>(null);
@@ -73,6 +100,7 @@ export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeI
 
   const actions: Actions = {
     addTag: (groupId, pattern) => onChange(addTag(root, groupId, pattern)),
+    addExpression: (groupId, ast) => onChange(addExpression(root, groupId, ast)),
     addGroup: (groupId) => {
       // A subgroup defaults to the operator its parent does not have —
       // nesting the same operator would say nothing new.
@@ -118,7 +146,7 @@ export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeI
         </>
       ) : (
         <>
-          <Group node={root} isRoot actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} />
+          <Group node={root} isRoot actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} isTag={isTag} />
           <div className="expr-tools">
             <button type="button" className="btn btn-small btn-quiet" onClick={() => onTextDraft(applied)}>
               {t("filter.editAsText")}
@@ -144,6 +172,7 @@ export function ExpressionEditor({ root, onChange, onPick, tagListId, errorNodeI
 
 interface Actions {
   addTag: (groupId: string, pattern: string) => void;
+  addExpression: (groupId: string, ast: FilterAst) => void;
   addGroup: (groupId: string) => void;
   remove: (id: string) => void;
   toggleNot: (id: string) => void;
@@ -158,22 +187,61 @@ interface NodeProps {
   tagListId: string;
   errorNodeId: string | null;
   labelOf: (pattern: string) => string | null;
+  /** Whether a pattern matches a tag of the catalog; null while the catalog is not known. */
+  check: ((pattern: string) => PatternCheck) | null;
+  /** The text is, letter for letter, a tag of the catalog. */
+  isTag: (text: string) => boolean;
 }
+
+/** A rule that is not "everything" and that no tag of the catalog matches. */
+const unmatched = (node: EditorNode, check: NodeProps["check"]): node is TagNode =>
+  node.kind === "tag" && !(node.negated && node.pattern === "regex:^$") && check !== null && check(node.pattern).matches === false;
+
+/** How many rules without a match a group explains one by one. */
+const EXPLAINED = 4;
 
 // A group with more rules than this keeps its height: the rules scroll inside
 // it, and the field that adds the next one stays where it was.
 const LONG_GROUP = 16;
 
-function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf }: NodeProps & { node: GroupNode; isRoot?: boolean }) {
+function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf, check, isTag }: NodeProps & { node: GroupNode; isRoot?: boolean }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
+  const [problem, setProblem] = useState<FilterParseError | null>(null);
+  const field = useRef<HTMLInputElement | null>(null);
   const opId = useId();
+  const problemId = useId();
   const invalid = errorNodeId === node.id;
+  const strays = node.children.filter((child) => unmatched(child, check));
 
+  // What is typed here is read with the filter's grammar — the same text
+  // means the same in this field, in "Edit as text" and on the command line.
+  // One tag or pattern is one more rule; an expression is the rules or the
+  // group it says. A tag of the catalog chosen from the list is that tag,
+  // whatever characters it has; any other tag with a space or an operator
+  // word in it is typed in quotes, as the grammar has it.
   const submit = () => {
-    if (!draft.trim()) return;
-    actions.addTag(node.id, draft);
+    const text = draft.trim();
+    if (!text) return;
+    if (isTag(text)) {
+      actions.addTag(node.id, text);
+    } else {
+      let ast: FilterAst | null;
+      try {
+        ast = parseFilter(text);
+      } catch (error) {
+        if (!(error instanceof FilterParseError)) throw error;
+        // Refused in place: nothing is added, the text stays, the caret goes where reading stopped.
+        setProblem(error);
+        const lead = draft.length - draft.trimStart().length;
+        field.current?.focus();
+        field.current?.setSelectionRange(lead + error.offset, lead + error.offset);
+        return;
+      }
+      if (ast !== null) actions.addExpression(node.id, ast);
+    }
     setDraft("");
+    setProblem(null);
   };
 
   return (
@@ -222,12 +290,43 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
           {node.children.map((child) => (
             // The operator is said once, by the group; the rules are chips that wrap.
             <li key={child.id} className={child.kind === "group" ? "is-group" : undefined}>
-              <Rule node={child} actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} />
+              <Rule node={child} actions={actions} tagListId={tagListId} errorNodeId={errorNodeId} labelOf={labelOf} check={check} isTag={isTag} />
             </li>
           ))}
         </ul>
       )}
       {node.children.length > LONG_GROUP && <p className="hint expr-count">{t("filter.ruleCount", { count: node.children.length })}</p>}
+      {strays.length > 0 && (
+        // A rule no tag matches selects nothing. Said next to the rules, with what was probably meant.
+        <ul className="expr-unmatched" role="status" aria-label={t("filter.unmatchedList")}>
+          {strays.slice(0, EXPLAINED).map((stray) => {
+            const nearest = check?.(stray.pattern).nearest ?? [];
+            return (
+              <li key={stray.id} data-unmatched={stray.pattern}>
+                {t("filter.matchesNoTag", { pattern: stray.pattern })}
+                {nearest.length > 0 && (
+                  <>
+                    {" "}
+                    {t("filter.didYouMean")}{" "}
+                    {nearest.map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        className="btn btn-small"
+                        aria-label={t("filter.replaceWith", { pattern: stray.pattern, tag })}
+                        onClick={() => actions.setPattern(stray.id, tag)}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </li>
+            );
+          })}
+          {strays.length > EXPLAINED && <li>{t("filter.moreUnmatched", { count: strays.length - EXPLAINED })}</li>}
+        </ul>
+      )}
 
       <form
         className="expr-add"
@@ -241,10 +340,17 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
           className="input"
           list={tagListId}
           data-add-input={node.id}
+          ref={field}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setProblem(null);
+          }}
           placeholder={t("filter.addPlaceholder")}
+          title={t("filter.addHint")}
           aria-label={t(isRoot ? "filter.addTag" : "filter.addTagToGroup")}
+          aria-invalid={problem !== null || undefined}
+          aria-describedby={problem ? problemId : undefined}
           autoComplete="off"
           spellCheck={false}
         />
@@ -257,6 +363,11 @@ function Group({ node, isRoot = false, actions, tagListId, errorNodeId, labelOf 
         <button type="button" className="btn btn-small btn-quiet" onClick={() => actions.addGroup(node.id)} aria-label={isRoot ? undefined : t("filter.addGroupInGroup")}>
           {t("filter.addGroup")}
         </button>
+        {problem && (
+          <p className="field-error expr-add-error" id={problemId} role="alert">
+            {parseMessage(t, problem)}
+          </p>
+        )}
       </form>
     </div>
   );
@@ -274,11 +385,13 @@ export function splitPattern(pattern: string): { kind: "tag" | "prefix" | "regex
   return { kind: "tag", body: pattern };
 }
 
-function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { node: TagNode }) {
+function Chip({ node, actions, tagListId, errorNodeId, labelOf, check }: NodeProps & { node: TagNode }) {
   const { t } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(node.pattern);
   const invalid = errorNodeId === node.id;
+  const stray = unmatched(node, check);
+  const flagId = useId();
   const { kind, body } = splitPattern(node.pattern);
   const everything = node.negated && node.pattern === "regex:^$";
   const label = labelOf(node.pattern);
@@ -320,7 +433,7 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
 
   return (
     <span
-      className={`chip${everything ? " is-everything" : node.negated ? " is-negated" : ""}${invalid ? " is-invalid" : ""}`}
+      className={`chip${everything ? " is-everything" : node.negated ? " is-negated" : ""}${invalid ? " is-invalid" : ""}${stray ? " is-unmatched" : ""}`}
       data-pattern={everything ? "*" : node.pattern}
     >
       {node.negated && !everything && (
@@ -338,6 +451,7 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
         title={t("filter.editPattern", { pattern: node.pattern })}
         aria-label={t("filter.editPattern", { pattern: spoken })}
         aria-invalid={invalid || undefined}
+        aria-describedby={stray ? flagId : undefined}
       >
         {everything ? (
           t("filter.everything")
@@ -349,7 +463,14 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
           </>
         )}
       </button>
+      {stray && (
+        <span className="chip-flag" id={flagId} title={t("filter.noTagHint")}>
+          {t("filter.noTag")}
+        </span>
+      )}
       {!everything && <NotToggle on={node.negated} label={t("filter.negateRule", { pattern: spoken })} onToggle={() => actions.toggleNot(node.id)} />}
+      {/* The one control that is a sign and no word: a rule is a chip, and chips are closed with ×.
+          It has its name for assistive technology and its tooltip (DESIGN.md §10). */}
       <button
         type="button"
         className="chip-remove"
@@ -357,7 +478,7 @@ function Chip({ node, actions, tagListId, errorNodeId, labelOf }: NodeProps & { 
         aria-label={t("filter.removeRule", { pattern: spoken })}
         title={t("filter.removeRule", { pattern: spoken })}
       >
-        {t("action.remove")}
+        <span aria-hidden="true">×</span>
       </button>
     </span>
   );
@@ -438,9 +559,7 @@ function TextEditor({
         }}
       />
       <p id={errorId} className={problem ? "field-error" : "hint"} role={problem ? "alert" : undefined}>
-        {problem
-          ? t(`filter.parse.${problem.problem}`, { position: problem.position + 1, token: problem.token })
-          : t("filter.textHint")}
+        {problem ? parseMessage(t, problem) : t("filter.textHint")}
       </p>
       <div className="row">
         <button type="submit" className="btn btn-primary btn-small">

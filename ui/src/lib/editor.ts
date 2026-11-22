@@ -175,6 +175,24 @@ const inGroup = (root: GroupNode, groupId: string, change: (group: GroupNode) =>
 export const addNode = (root: GroupNode, groupId: string, node: EditorNode): GroupNode =>
   inGroup(root, groupId, (current) => ({ ...current, children: [...current.children, node] }));
 
+/**
+ * Add what a person typed as an expression to a group: one pattern is one
+ * more rule; an expression with the group's own operator is that many more
+ * rules; anything else — the other operator, a NOT over several — is a
+ * subgroup of its own. Into a group that has nothing in it yet, an
+ * expression brings its operator along: `Payments OR Cart` typed into an
+ * empty builder is a filter of two rules joined by OR.
+ */
+export function addExpression(root: GroupNode, groupId: string, ast: FilterAst): GroupNode {
+  const target = findNode(root, groupId);
+  if (target?.kind !== "group") return root;
+  const node = convert(ast);
+  if (node.kind !== "group" || node.negated) return addNode(root, groupId, node);
+  const adopted = target.children.length === 0 ? setOp(root, groupId, node.op) : root;
+  if (target.children.length > 0 && node.op !== target.op) return addNode(root, groupId, node);
+  return node.children.reduce<GroupNode>((next, child) => addNode(next, groupId, child), adopted);
+}
+
 export function addTag(root: GroupNode, groupId: string, pattern: string, negated = false): GroupNode {
   const clean = pattern.trim();
   if (!clean) return root;

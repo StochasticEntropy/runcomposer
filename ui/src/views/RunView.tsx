@@ -26,6 +26,7 @@ import {
   VerdictCounts,
 } from "../components/ui.tsx";
 import { useApp, useI18n } from "../hooks/context.tsx";
+import { useItemNames } from "../hooks/useItemNames.ts";
 import { usePageVisible } from "../hooks/usePage.ts";
 import { navigate } from "../hooks/useRoute.ts";
 import { useRunFollow } from "../hooks/useRunFollow.ts";
@@ -103,6 +104,7 @@ export function RunView({ route }: { route: Route }) {
   const tab: Tab = TABS.includes(route.query.tab as Tab) ? (route.query.tab as Tab) : "results";
   const follow = useRunFollow(api, runId, dispatchParam);
   const { run, refresh } = follow;
+  const names = useItemNames(api, run?.id);
 
   const { flash, show: showFlash, dismiss: dismissFlash } = useFlash();
   const [pending, setPending] = useState<Pending>(null);
@@ -308,15 +310,27 @@ export function RunView({ route }: { route: Route }) {
           {t("run.refreshFailed")} <ErrorText error={follow.error} />
         </Notice>
       )}
-      {/* A cancel somebody asked for is not an error of the runner. */}
-      {latest?.error && run.state !== "CANCELLED" && (
+      {/* A cancel somebody asked for is not an error of the runner — and neither is
+          the server having stopped under a run: a STALE dispatch says that itself, below. */}
+      {latest?.error && run.state !== "CANCELLED" && latest.state !== "STALE" && (
         <Notice tone="error">
           <strong>{t("run.runnerError")}</strong> <Foreign className="pre-line">{latest.error}</Foreign>
         </Notice>
       )}
       {run.state === "CANCELLED" && <Notice tone="info">{t("run.cancelledHint")}</Notice>}
       {latest?.cancel_requested && active && <Notice tone="warn">{t("run.cancelRequested")}</Notice>}
-      {run.state === "STALE" && <Notice tone="warn">{t("run.staleHint")}</Notice>}
+      {run.state === "STALE" && (
+        <Notice tone="warn">
+          <p>{t("run.staleHint")}</p>
+          {latest?.state === "STALE" && latest.error && (
+            // What the server noted when it found the run cut off — which process it was — is for whoever looks into it.
+            <details className="technical">
+              <summary>{t("run.technicalDetail")}</summary>
+              <Foreign className="pre-line">{latest.error}</Foreign>
+            </details>
+          )}
+        </Notice>
+      )}
       {run.state === "AWAITING_RESULTS" && (
         <Notice tone="info">
           <p>{t("run.awaitingHint")}</p>
@@ -384,6 +398,7 @@ export function RunView({ route }: { route: Route }) {
       {tab === "results" && (
         <RunResults
           run={run}
+          names={names}
           query={{ status: route.query.status, group: route.query.group, shard: route.query.shard, q: route.query.q }}
           onQuery={(changes) => navigate(runHref(run.id, { d: dispatchParam, ...route.query, tab: null, ...changes }), { replace: true })}
         />
