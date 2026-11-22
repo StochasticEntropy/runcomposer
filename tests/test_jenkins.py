@@ -800,6 +800,31 @@ class TestPollCompletion:
         assert not [p for p in workdir.rglob("*") if p.is_file() and p.parent.name == "results"]
 
 
+    def test_a_download_that_fails_leaves_no_held_place_behind(self, make_service, jenkins):
+        """Every file's place is held before anything is downloaded. When a
+        download fails, the places of what did not arrive are given back:
+        the failed dispatch's directory holds no empty file under a result's
+        name."""
+        jenkins.add_job(JOB, junit_job(paths=("reports/a.xml", "reports/b.xml", "reports/c.xml")))
+        jenkins.faults.extend([("GET", "artifact/reports/b.xml", 500)] * 3)
+        service = jenkins_service(make_service, jenkins, **POLL, retries=0)
+        run_id, _ = dispatch(service)
+        run = service.require_run(run_id)
+        assert run.state == "FAILED", run.latest_dispatch.error
+        held = [p for p in (service.config.artifact_dir / run_id).rglob("*") if p.is_file()]
+        assert not [p.name for p in held if p.name in ("b.xml", "c.xml")]
+        assert not [p.name for p in held if p.stat().st_size == 0]
+
+    def test_a_result_url_that_ends_in_a_slash_is_kept_under_its_last_name(self, tmp_path):
+        from runcomposer.plugins.jenkins import _bundle_targets, _result_path
+
+        assert _result_path("robot/") == "robot"
+        assert _result_path("robot/output.xml?build=7") == "robot/output.xml"
+        assert _result_path("") == "result"
+        targets = _bundle_targets(tmp_path / "bundle", [("robot/", _result_path("robot/"))])
+        assert [target.name for target in targets.values()] == ["robot"]
+
+
 # -- when the trigger does not go through ----------------------------------------------
 
 

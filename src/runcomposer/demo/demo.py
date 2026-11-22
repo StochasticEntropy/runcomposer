@@ -191,14 +191,20 @@ SHELL = "PowerShell" if os.name == "nt" else "sh"
 _POWERSHELL_PLAIN = re.compile(r"[A-Za-z0-9_.:/\\][A-Za-z0-9_.:/\\-]*")
 
 
+#: What ends a single-quoted string in PowerShell: the plain single quote
+#: and the typographic ones, which it reads the same way.
+_POWERSHELL_QUOTES = re.compile("['\u2018\u2019\u201a\u201b]")
+
+
 def powershell_word(text: str) -> str:
     """``text`` as one argument in PowerShell: as it is when it holds nothing
-    PowerShell reads, else in single quotes — inside them only ``'`` is
-    special, written twice; ``$``, a backtick, ``"``, ``&`` and ``%`` are
-    plain text there, which in double quotes they are not."""
+    PowerShell reads, else in single quotes — inside them only a single
+    quote is special (the typographic ones included), written twice; ``$``,
+    a backtick, ``"``, ``&`` and ``%`` are plain text there, which in double
+    quotes they are not."""
     if _POWERSHELL_PLAIN.fullmatch(text):
         return text
-    return "'" + text.replace("'", "''") + "'"
+    return "'" + _POWERSHELL_QUOTES.sub(lambda quote: quote.group(0) * 2, text) + "'"
 
 
 def shell_word(value: object) -> str:

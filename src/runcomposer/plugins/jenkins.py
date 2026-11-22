@@ -775,19 +775,27 @@ class JenkinsRunner(RunnerBase):
         targets = _bundle_targets(
             bundle,
             [(relative, relative) for relative in matching]
-            + [(relative, urllib.parse.urlsplit(relative).path or "result") for relative in wanted],
+            + [(relative, _result_path(relative)) for relative in wanted],
         )
         fetched: list[Path] = []
-        for relative in matching:
-            fetched.append(self.client.download_artifact(build_url, relative, targets[relative]))
-        for relative in wanted:
-            try:
-                fetched.append(self.client.download_build_file(build_url, relative, targets[relative]))
-            except JenkinsError as exc:
-                if exc.status != 404:
-                    raise
-                targets[relative].unlink(missing_ok=True)  # the place held for it
-                ctx.log(f"jenkins: {build_url}/{relative} does not exist", level="warning")
+        try:
+            for relative in matching:
+                fetched.append(self.client.download_artifact(build_url, relative, targets[relative]))
+            for relative in wanted:
+                try:
+                    fetched.append(self.client.download_build_file(build_url, relative, targets[relative]))
+                except JenkinsError as exc:
+                    if exc.status != 404:
+                        raise
+                    targets[relative].unlink(missing_ok=True)  # the place held for it
+                    ctx.log(f"jenkins: {build_url}/{relative} does not exist", level="warning")
+        except BaseException:
+            # A download failed: the places held for what did not arrive —
+            # empty, or half written — are given back.
+            for target in targets.values():
+                if target not in fetched:
+                    target.unlink(missing_ok=True)
+            raise
         return fetched
 
     # -- cancel -----------------------------------------------------------------------------
@@ -810,6 +818,12 @@ class JenkinsRunner(RunnerBase):
 
 class _BundleNameError(Exception):
     """Files of a build that cannot be kept in one flat bundle as named."""
+
+
+def _result_path(relative: str) -> str:
+    """The path a ``result_urls`` entry is kept under: its URL path without
+    a query, and without a closing ``/`` — ``robot/`` is kept as ``robot``."""
+    return urllib.parse.urlsplit(relative).path.rstrip("/") or "result"
 
 
 def _bundle_targets(bundle: Path, files: list[tuple[str, str]]) -> dict[str, Path]:

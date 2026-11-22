@@ -482,6 +482,8 @@ POWERSHELL_WORDS = [
     ("C:\\config.yaml", "C:\\config.yaml"),
     ("nightly demo", "'nightly demo'"),
     ("it's", "'it''s'"),
+    ("Mia\u2019s shop", "'Mia\u2019\u2019s shop'"),
+    ("\u2018sale\u2019", "'\u2018\u2018sale\u2019\u2019'"),
     ('say "cheese"', "'say \"cheese\"'"),
     ("$HOME", "'$HOME'"),
     ("a`b", "'a`b'"),
