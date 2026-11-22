@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.sdk import WorkerOutcome, WorkerPayload, supervise_workers
+from runcomposer.sdk import STOP_FILE, WorkerOutcome, WorkerPayload, supervise_workers
 from runcomposer.testing import ConnectorHarness, FakeDispatchContext, check_runner
 
 from . import supervised_targets as targets
@@ -180,6 +180,25 @@ def running_marker(tmp_path: Path, shard: str = "1") -> Any:
 
 
 class TestStopping:
+    def test_the_stop_file_is_there_before_the_worker_is_told(self, tmp_path, monkeypatch):
+        """A worker that finds ``stop()`` true may send what it started to
+        look for the file: the file is made first, the flag raised after.
+        Shown by making the file slow to appear."""
+        made = Path.touch
+
+        def slowly(self, *args, **kwargs):
+            if self.name == STOP_FILE:
+                time.sleep(0.5)
+            return made(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "touch", slowly)
+        record = Recorder()
+        supervise_workers(
+            [payload(tmp_path, "1")], targets.stops_when_asked,
+            cancelled=running_marker(tmp_path), on_done=record.on_done, log=record.log, grace_s=30,
+        )
+        assert (tmp_path / "1" / "saw-stop").read_text(encoding="utf-8") == "True True"
+
     def test_a_worker_is_asked_first_and_ends_on_its_own(self, tmp_path):
         record = Recorder()
         outcomes = supervise_workers(

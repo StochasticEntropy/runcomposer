@@ -538,6 +538,9 @@ class TestCallbackCompletion:
             lambda: (r := live_server.get(f"/api/v1/runs/{run_id}"))["state"] == "COMPLETE" and r,
             what="the run to complete",
         )
+        # The run completes when the server has taken the push in — a moment
+        # before the job, in its own thread, has noted the answer it got.
+        wait_until(lambda: pushes, what="the job to note the answer to its push")
         (status, report), = pushes
         assert status == 200, report
         assert report["outcome"] == "new" and report["warnings"] == []

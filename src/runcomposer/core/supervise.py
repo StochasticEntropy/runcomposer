@@ -513,11 +513,13 @@ def _stop(entries: Sequence[_Running], grace_s: float) -> None:
     """Ask, terminate, kill — every worker in ``entries`` at the same time —
     then kill what is left of their process groups and reap them."""
     for entry in entries:
-        entry.event.set()
+        # The file first: a worker that finds `stop()` true may tell what it
+        # started to look for the file, so it is there before the flag is.
         try:
             Path(entry.payload.out_dir, STOP_FILE).touch()
         except OSError:
             pass
+        entry.event.set()
         if os.name != "nt":
             _signal(entry, signal.SIGTERM)
     _wait(entries, grace_s)
