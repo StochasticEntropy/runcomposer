@@ -76,6 +76,7 @@ from runcomposer.sdk import (
 __all__ = [
     "RESULT_FILE",
     "STOP_FILE",
+    "VARIABLE_NAME_PATTERN",
     "ExactSelection",
     "Execution",
     "GroupMerger",
@@ -101,6 +102,7 @@ __all__ = [
     "run_shard",
     "spawn_merge",
     "supervise",
+    "variable_name_problem",
 ]
 
 #: What a worker writes into its output directory when it is done (or dies
@@ -111,6 +113,31 @@ RESULT_FILE = ".shard-result.json"
 # stop. Robot turns the first termination signal into a graceful end of the
 # *current* execution; the file is how :func:`run_shard` knows not to start
 # the next one.
+#: The shape of a Robot variable name a payload may set (a regular
+#: expression, matched whole): letters, digits, ``_``, spaces, ``.`` and
+#: ``-``, beginning with a letter, a digit or ``_`` — no ``${…}``, and in
+#: particular no ``:`` (Robot splits ``--variable NAME:value`` at the first
+#: one, so ``BASE_URL:https`` would set ``${BASE_URL}``) and no ``=``. Robot
+#: compares names ignoring case, spaces and underscores; that is left to it.
+VARIABLE_NAME_PATTERN = r"[A-Za-z0-9_][A-Za-z0-9_ .\-]*"
+_VARIABLE_NAME = re.compile(VARIABLE_NAME_PATTERN)
+
+
+def variable_name_problem(name: object) -> str | None:
+    """Why ``name`` cannot be set as a Robot variable by a payload — a
+    sentence naming it — or ``None`` when it can (:data:`VARIABLE_NAME_PATTERN`).
+    A name with ``:`` would set another variable than it names: Robot reads
+    ``NAME:value`` up to the first colon."""
+    text = name if isinstance(name, str) else None
+    if text is not None and _VARIABLE_NAME.fullmatch(text) and text == text.strip():
+        return None
+    why = " — Robot reads NAME:value up to the first ':'" if isinstance(name, str) and ":" in name else ""
+    return (
+        f"{name!r} is not a plain Robot variable name (letters, digits, '_', spaces, '.', '-'; "
+        f"no ':', '=' or ${{…}}){why}"
+    )
+
+
 #: Robot's return code for an execution that was forcefully stopped.
 _STOPPED_BY_SIGNAL = 253
 _STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "NOT RUN": "SKIP"}
@@ -459,7 +486,9 @@ class ShardPayload:
       executes one after another.
     - ``partition`` — a label handed to ``worker_setup`` and usable as a
       shard group; it has no effect on execution.
-    - ``variables`` — Robot variables (``name → value``).
+    - ``variables`` — Robot variables (``name → value``); a name that is not
+      a plain variable name (:func:`variable_name_problem` — a ``:`` in it
+      would set another variable) is a ``ValueError``.
     - ``channel`` — where the worker writes log lines and, with
       ``live_status``, per-test status (``ctx.live_channel()``).
     - ``listeners`` — additional Robot listeners (import paths).
@@ -535,8 +564,13 @@ class ShardPayload:
 
     def __post_init__(self) -> None:
         # Checked where the payload is made, not in the worker: a selector
-        # Robot would refuse is a ValueError naming it.
+        # Robot would refuse is a ValueError naming it, and so is a variable
+        # name that would set another variable than it names.
         object.__setattr__(self, "clean_output", _clean_settings(self.clean_output))
+        for name in self.variables:
+            problem = variable_name_problem(name)
+            if problem is not None:
+                raise ValueError(f"ShardPayload {self.shard!r}: variables: {problem}")
 
     @property
     def item_ids(self) -> tuple[str, ...]:

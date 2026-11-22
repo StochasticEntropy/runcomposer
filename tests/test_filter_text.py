@@ -12,7 +12,15 @@ from typing import Any
 import pytest
 
 from runcomposer.core.errors import InvalidRequest
-from runcomposer.core.filter import MATCH_ALL, FilterError, format_filter, parse_filter, quote_pattern
+from runcomposer.core.filter import (
+    MATCH_ALL,
+    MAX_FILTER_DEPTH,
+    FilterError,
+    FilterTooDeep,
+    format_filter,
+    parse_filter,
+    quote_pattern,
+)
 from runcomposer.core.filtertext import (
     FilterSyntaxError,
     format_filter_text,
@@ -130,8 +138,33 @@ def test_patterns_are_checked_after_the_grammar_with_the_node_path():
 
 
 def test_deep_nesting_is_refused_as_a_filter_error_not_a_crash():
-    with pytest.raises(FilterError, match="nested too deeply"):
+    with pytest.raises(FilterTooDeep, match="nests deeper than 40 levels") as caught:
         parse_filter_text("(" * 5000 + "Auth" + ")" * 5000)
+    assert caught.value.code == "filter-too-deep" and caught.value.extra == {"position": 40}
+    with pytest.raises(FilterTooDeep):
+        parse_filter_text("NOT " * 300 + "Auth")
+
+
+def test_the_same_depth_bounds_the_ast_and_the_text():
+    deepest_text = "NOT " * MAX_FILTER_DEPTH + "Auth"
+    deepest = parse_filter_text(deepest_text)
+    assert format_filter(parse_filter(deepest)) == deepest_text
+    with pytest.raises(FilterTooDeep):
+        parse_filter_text("NOT " + deepest_text)
+    nested: Any = "Auth"
+    for _ in range(MAX_FILTER_DEPTH):
+        nested = {"op": "AND", "items": ["Cart", nested]}
+    parse_filter(nested)
+    with pytest.raises(FilterTooDeep) as caught:
+        parse_filter({"not": nested})
+    assert caught.value.extra == {"path": ["not", *(["items", 1] * (MAX_FILTER_DEPTH - 1))]}
+
+
+def test_a_filter_error_says_where_as_a_path():
+    with pytest.raises(FilterError) as caught:
+        parse_filter({"op": "AND", "items": ["Auth", {"not": "regex:("}]})
+    assert caught.value.extra == {"path": ["items", 1, "not"]}
+    assert str(caught.value).startswith("tag_filter.items[1].not: invalid regular expression")
 
 
 # -- round trip over generated filters ------------------------------------------------

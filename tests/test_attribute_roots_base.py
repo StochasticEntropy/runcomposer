@@ -73,3 +73,34 @@ class TestRootsOfACheckoutElsewhere:
         assert attribute_roots([absolute], IDS[1:], items_of(checkout), base=tmp_path / "other") == {
             "Suites.Cart.Refund Order": absolute,
         }
+
+
+# -- a Robot variable name a payload may set ------------------------------------------------
+
+
+class TestVariableNames:
+    """``variable_name_problem`` / ``VARIABLE_NAME_PATTERN``: what a payload
+    may set as a Robot variable. ``BASE_URL:https`` would set ``${BASE_URL}``
+    — Robot reads ``NAME:value`` up to the first colon."""
+
+    @pytest.mark.parametrize("name", ["BASE_URL", "base_url", "Base Url", "SHOP-REGION", "v1.2", "_x"])
+    def test_plain_names_are_accepted(self, name):
+        from runcomposer.sdk.robot import variable_name_problem
+
+        assert variable_name_problem(name) is None
+
+    @pytest.mark.parametrize("name", ["BASE_URL:https", "A=B", "${BASE_URL}", "&{MAP}", " LEADING", "TRAILING ", "", "a\nb", 7])
+    def test_anything_else_is_refused_with_why(self, name):
+        from runcomposer.sdk.robot import variable_name_problem
+
+        problem = variable_name_problem(name)
+        assert problem is not None and repr(name) in problem
+        if isinstance(name, str) and ":" in name:
+            assert "first ':'" in problem
+
+    def test_a_payload_refuses_such_a_name_where_it_is_made(self):
+        from runcomposer.sdk.robot import Execution, ShardPayload
+
+        with pytest.raises(ValueError, match=r"ShardPayload 'eu-01': variables: 'BASE_URL:https' is not a plain"):
+            ShardPayload(shard="eu-01", out_dir="out", executions=(Execution("suites", ()),),
+                         variables={"BASE_URL:https": "//attacker.shop.example"})

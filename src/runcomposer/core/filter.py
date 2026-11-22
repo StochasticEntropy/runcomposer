@@ -29,7 +29,7 @@ writes it, and reads it, as ``*`` (:data:`EVERYTHING`).
 from __future__ import annotations
 
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Union
 
@@ -38,9 +38,11 @@ from .errors import InvalidRequest
 __all__ = [
     "EVERYTHING",
     "MATCH_ALL",
+    "MAX_FILTER_DEPTH",
     "BoolOp",
     "FilterError",
     "FilterNode",
+    "FilterTooDeep",
     "NotNode",
     "TagPattern",
     "format_filter",
@@ -52,9 +54,28 @@ __all__ = [
 
 
 class FilterError(InvalidRequest):
-    """Raised when filter data does not conform to the grammar."""
+    """Raised when filter data does not conform to the grammar. ``at``, when
+    given, is where in the filter: the keys and indices from its root
+    (``["items", 1, "not"]``) — served as ``path`` beside the message."""
 
     code = "invalid-filter"
+
+    def __init__(self, message: str, *, at: Sequence[str | int] | None = None):
+        super().__init__(message)
+        if at is not None:
+            self.extra = {**(self.extra or {}), "path": list(at)}
+
+
+#: How deeply a filter may nest — NOT and AND/OR groups counted alike, in
+#: the AST and in the text form. Deeper filters are refused
+#: (:class:`FilterTooDeep`) before anything recurses over them.
+MAX_FILTER_DEPTH = 40
+
+
+class FilterTooDeep(FilterError):
+    """A filter nested deeper than :data:`MAX_FILTER_DEPTH` levels."""
+
+    code = "filter-too-deep"
 
 
 @dataclass(frozen=True)
@@ -95,9 +116,9 @@ FilterNode = Union[TagPattern, BoolOp, NotNode]
 _OPS = ("AND", "OR")
 
 
-def _parse_pattern(text: str, path: str) -> TagPattern:
+def _parse_pattern(text: str, path: str, at: tuple[str | int, ...] = ()) -> TagPattern:
     if not text:
-        raise FilterError(f"{path}: pattern must be a non-empty string")
+        raise FilterError(f"{path}: pattern must be a non-empty string", at=at)
     if text.startswith("regex:"):
         body = text[len("regex:"):]
     elif text.startswith("prefix:"):
@@ -106,39 +127,56 @@ def _parse_pattern(text: str, path: str) -> TagPattern:
     else:
         return TagPattern(raw=text)
     if body in ("", "^"):
-        raise FilterError(f"{path}: empty pattern in {text!r}")
+        raise FilterError(f"{path}: empty pattern in {text!r}", at=at)
     try:
         compiled = re.compile(body)
     except re.error as exc:
-        raise FilterError(f"{path}: invalid regular expression {text!r}: {exc}") from None
+        raise FilterError(f"{path}: invalid regular expression {text!r}: {exc}", at=at) from None
     return TagPattern(raw=text, regex=compiled)
 
 
 def parse_filter(data: Any, path: str = "tag_filter") -> FilterNode:
-    """Parse filter data (as it appears in a runspec) into an AST node."""
+    """Parse filter data (as it appears in a runspec) into an AST node. A
+    :class:`FilterError` carries where (``path``, the keys and indices from
+    the root); a filter nested deeper than :data:`MAX_FILTER_DEPTH` is a
+    :class:`FilterTooDeep`."""
+    return _parse_node(data, path, (), 0)
+
+
+def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> FilterNode:
     if isinstance(data, str):
-        return _parse_pattern(data, path)
+        return _parse_pattern(data, path, at)
+    if depth >= MAX_FILTER_DEPTH:
+        raise FilterTooDeep(
+            f"{path}: the filter nests deeper than {MAX_FILTER_DEPTH} levels — "
+            "write it flatter (a run of one operator is one group)",
+            at=at,
+        )
     if isinstance(data, dict):
         keys = set(data)
         if keys == {"not"}:
-            return NotNode(item=parse_filter(data["not"], f"{path}.not"))
+            return NotNode(item=_parse_node(data["not"], f"{path}.not", (*at, "not"), depth + 1))
         if keys == {"op", "items"}:
             op = data["op"]
             if op not in _OPS:
-                raise FilterError(f"{path}.op: unknown operator {op!r} (expected 'AND' or 'OR')")
+                raise FilterError(
+                    f"{path}.op: unknown operator {op!r} (expected 'AND' or 'OR')", at=(*at, "op")
+                )
             items = data["items"]
             if not isinstance(items, list) or not items:
-                raise FilterError(f"{path}.items: must be a non-empty list")
+                raise FilterError(f"{path}.items: must be a non-empty list", at=(*at, "items"))
             return BoolOp(
                 op=op,
                 items=tuple(
-                    parse_filter(child, f"{path}.items[{index}]") for index, child in enumerate(items)
+                    _parse_node(child, f"{path}.items[{index}]", (*at, "items", index), depth + 1)
+                    for index, child in enumerate(items)
                 ),
             )
         raise FilterError(
-            f"{path}: node must be a pattern string, {{op, items}}, or {{not}} — got keys {sorted(keys)}"
+            f"{path}: node must be a pattern string, {{op, items}}, or {{not}} — got keys {sorted(keys)}",
+            at=at,
         )
-    raise FilterError(f"{path}: node must be a string or mapping, got {type(data).__name__}")
+    raise FilterError(f"{path}: node must be a string or mapping, got {type(data).__name__}", at=at)
 
 
 def to_data(node: FilterNode) -> Any:

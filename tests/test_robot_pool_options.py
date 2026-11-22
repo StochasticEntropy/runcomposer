@@ -302,12 +302,48 @@ class TestProtectedVariables:
         with pytest.raises(InvalidParameter) as raised:
             preview(service, parameters, selection="Checkout")
         assert raised.value.parameter == "variables"
-        assert repr(spelling) in str(raised.value) and "'BASE_URL'" in str(raised.value)
+        assert repr(spelling) in str(raised.value)
+        if spelling.strip() == spelling and not spelling.startswith(("$", "&")):
+            assert "'BASE_URL'" in str(raised.value)
+        else:  # not a plain variable name at all: refused for its shape
+            assert "does not match the key pattern" in str(raised.value)
 
-        run_id = compose(service, "Checkout", runner_id=RUNNER, parameters=parameters)
+        run_id = compose(service, "Checkout")
         with pytest.raises(InvalidParameter) as raised:
             service.dispatch(run_id, RUNNER, parameters, foreground=True)
         assert raised.value.parameter == "variables"
+        assert service.require_run(run_id).dispatches == ()
+
+    @pytest.mark.parametrize("key", ["BASE_URL:https", "LOCALE:x", "BASE_URL=x", "${BASE_URL}", "LOCALE "])
+    def test_a_name_that_is_not_a_plain_variable_name_is_refused_in_preview_and_dispatch(
+        self, make_service, tmp_path, key
+    ):
+        """``BASE_URL:https`` would set ``${BASE_URL}``: Robot reads
+        ``NAME:value`` up to the first colon."""
+        service = protected_service(make_service, tmp_path)
+        parameters = {"variables": {key: "//attacker.shop.example"}}
+        with pytest.raises(InvalidParameter) as raised:
+            preview(service, parameters, selection="Checkout")
+        assert raised.value.parameter == "variables" and repr(key) in str(raised.value)
+        run_id = compose(service, "Checkout")
+        with pytest.raises(InvalidParameter) as raised:
+            service.dispatch(run_id, RUNNER, parameters, foreground=True)
+        assert raised.value.parameter == "variables"
+        assert service.require_run(run_id).dispatches == ()
+
+    def test_the_name_rule_holds_where_the_mapping_declares_its_own_lax_key_pattern(self, make_service, tmp_path):
+        service = pool_service(
+            make_service, shop_suite(tmp_path, PROTECTED_SUITE),
+            variables={"BASE_URL": "https://eu.shop.example"},
+            run_parameters=[{"name": "variables", "kind": "mapping", "key_pattern": ".+"}],
+            parameter_variables={"variables": "*"},
+        )
+        parameters = {"variables": {"BASE_URL:https": "//attacker.shop.example"}}
+        with pytest.raises(InvalidParameter, match=r"not a plain Robot variable name .* first ':'"):
+            preview(service, parameters, selection="Checkout")
+        run_id = compose(service, "Checkout")
+        with pytest.raises(InvalidParameter, match=r"not a plain Robot variable name"):
+            service.dispatch(run_id, RUNNER, parameters, foreground=True)
         assert service.require_run(run_id).dispatches == ()
 
     def test_other_names_still_reach_the_tests(self, make_service, tmp_path):

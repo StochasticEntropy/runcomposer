@@ -79,6 +79,8 @@ ROBOT_TOOLKIT = {
     "clean_output",
     # one merged result per shard group and one for the run, before the last delivery
     "GroupMerger",
+    # the Robot variable names a payload may set (no ':' — Robot splits there)
+    "VARIABLE_NAME_PATTERN", "variable_name_problem",
 }
 JENKINS_TOOLKIT = {
     "JenkinsClient", "JenkinsError", "JenkinsTimeout", "JenkinsQueueCancelled", "encode_spec", "decode_spec", "queue_id_of",

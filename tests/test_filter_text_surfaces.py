@@ -246,3 +246,38 @@ def test_service_compose_reads_a_string_filter_as_text(service):
     result = service.compose_run({"tag_filter": "Auth-SSO OR Cart-V2"}, title="Two areas", origin="script")
     assert result.spec["selection"]["tag_filter"] == {"op": "OR", "items": ["Auth-SSO", "Cart-V2"]}
     assert len(result.items) == 7
+
+
+# -- a filter nested too deeply ----------------------------------------------------------
+
+
+def _nested_and(depth: int) -> Any:
+    node: Any = "Auth"
+    for _ in range(depth):
+        node = {"op": "AND", "items": ["Auth", node]}
+    return node
+
+
+class TestDepth:
+    """A filter nested deeper than the documented bound is a 400
+    ``filter-too-deep`` wherever it arrives — never a 500 from a recursion
+    further in — and a one-line error on the command line."""
+
+    def test_every_route_refuses_it(self, make_client):
+        client, _service = make_client()
+        too_deep = [_nested_and(150), {"not": _nested_and(60)}, "NOT " * 300 + "Auth"]
+        for tag_filter in too_deep:
+            for route, body in (
+                ("/runs", {"selection": {"tag_filter": tag_filter}}),
+                ("/plan", {"selection": {"tag_filter": tag_filter}, "runner": "demo"}),
+                ("/selection/spec-preview", {"selection": {"tag_filter": tag_filter}}),
+                ("/selection/compile", {"tag_filter": tag_filter}),
+            ):
+                answer = client.post(f"{API}{route}", json=body)
+                assert answer.status_code == 400, (route, answer.text[:200])
+                assert answer.json()["code"] == "filter-too-deep", route
+
+    def test_the_command_line_says_so_in_one_line(self, cli):
+        code, _out, err = cli("spec", "NOT " * 400 + "Auth", "--dry-run")
+        assert code in (1, 2) and "Traceback" not in err
+        assert "nests deeper than 40 levels" in err

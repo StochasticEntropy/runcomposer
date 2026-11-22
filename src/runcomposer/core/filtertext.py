@@ -44,9 +44,11 @@ from typing import Any
 from .filter import (
     EVERYTHING,
     MATCH_ALL,
+    MAX_FILTER_DEPTH,
     OPERATOR_WORDS,
     TEXT_WHITESPACE,
     FilterError,
+    FilterTooDeep,
     format_filter,
     parse_filter,
 )
@@ -153,6 +155,18 @@ class _Parser:
         self.end = len(text)
         self.tokens = tokens
         self.cursor = 0
+        self.depth = 0
+
+    def deeper(self, token: _Token) -> None:
+        """One level more (a NOT, a group); refused past MAX_FILTER_DEPTH."""
+        self.depth += 1
+        if self.depth > MAX_FILTER_DEPTH:
+            error = FilterTooDeep(
+                f"cannot read the filter text at column {token.at + 1}: the filter nests deeper "
+                f"than {MAX_FILTER_DEPTH} levels — write it flatter (a run of one operator is one group)"
+            )
+            error.extra = {"position": token.at}
+            raise error
 
     def peek(self) -> _Token | None:
         return self.tokens[self.cursor] if self.cursor < len(self.tokens) else None
@@ -177,7 +191,10 @@ class _Parser:
             return token.value
         if token.kind == "op":
             if token.value == "NOT":
-                return {"not": self.unary()}
+                self.deeper(token)
+                inner = self.unary()
+                self.depth -= 1
+                return {"not": inner}
             following = self.peek()
             if following is not None and following.kind == "open":
                 # `AND (x)`: a group of one item.
@@ -191,7 +208,9 @@ class _Parser:
         raise FilterSyntaxError("unbalanced-close", token.at, f"')' where {_OPERAND} was expected")
 
     def group(self, opening: _Token) -> Any:
+        self.deeper(opening)
         inner = self.expression()
+        self.depth -= 1
         closing = self.peek()
         if closing is None or closing.kind != "close":
             raise FilterSyntaxError(

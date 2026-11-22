@@ -156,6 +156,8 @@ meaning given here and in its docstring.
 | `spawn_merge` | :func:`run_merge` in a spawned process, waited for: the calling process imports nothing of Robot Framework and never touches its process-global logger, so a server can merge while it serves — and several merges can run at once. |
 | `STOP_FILE` | Left in a worker's ``out_dir`` when it is asked to stop. |
 | `supervise` | Run ``payloads`` on spawned worker processes, at most ``max_workers`` at once, and hand each back as it finishes — ``supervise_workers`` of the SDK with :func:`run_shard` as the worker. |
+| `VARIABLE_NAME_PATTERN` | The shape of a Robot variable name a payload may set (a regular expression, matched whole): letters, digits, ``_``, spaces, ``.`` and ``-``, beginning with a letter, a digit or ``_`` — no ``${…}``, and in particular no ``:`` (Robot splits ``--variable NAME:value`` at the first one, so ``BASE_URL:https`` would set ``${BASE_URL}``) and no ``=``. |
+| `variable_name_problem` | Why ``name`` cannot be set as a Robot variable by a payload — a sentence naming it — or ``None`` when it can (:data:`VARIABLE_NAME_PATTERN`). |
 
 ## `runcomposer.sdk.jenkins`
 

@@ -84,7 +84,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +108,7 @@ from runcomposer.sdk import (
     split_max,
 )
 from runcomposer.sdk.robot import (
+    VARIABLE_NAME_PATTERN,
     Execution,
     GroupMerger,
     ShardOutcome,
@@ -116,6 +117,7 @@ from runcomposer.sdk.robot import (
     deliver_shard,
     robot_version,
     supervise,
+    variable_name_problem,
 )
 
 __all__ = ["RobotPoolRunner"]
@@ -366,6 +368,19 @@ class RobotPoolRunner(RunnerBase):
                 f"partitions {self.partitions}"
             )
         self.run_parameters = parameters_from_config(run_parameters, "robot-pool: run_parameters")
+        targets = {str(k) for k, v in (parameter_variables or {}).items() if str(v) == "*"}
+        # A mapping that becomes Robot variables takes plain variable names
+        # only, unless its declaration constrains its keys itself.
+        self.run_parameters = tuple(
+            replace(parameter, key_pattern=VARIABLE_NAME_PATTERN)
+            if parameter.name in targets and parameter.kind == "mapping" and not parameter.key_pattern
+            else parameter
+            for parameter in self.run_parameters
+        )
+        for name in self.variables:
+            problem = variable_name_problem(name)
+            if problem is not None:
+                raise ConfigError(f"robot-pool: variables: {problem}")
         own = _OWN_PARAMETERS + (("partition_mode",) if self.partition_mode_per_run else ())
         clash = sorted({p.name for p in self.run_parameters} & set(own))
         if clash:
@@ -394,6 +409,9 @@ class RobotPoolRunner(RunnerBase):
         self.protected_variables = [str(name) for name in (protected_variables or [])]
         self._protected = {variable_key(name): name for name in self.protected_variables}
         for name, target in self.parameter_variables.items():
+            problem = variable_name_problem(target) if target != "*" else None
+            if problem is not None:
+                raise ConfigError(f"robot-pool: parameter_variables.{name}: {problem}")
             if target != "*" and variable_key(target) in self._protected:
                 raise ConfigError(
                     f"robot-pool: parameter_variables.{name} sets {target!r}, which "
@@ -964,13 +982,16 @@ class RobotPoolRunner(RunnerBase):
         """``protected_variables``: a per-run mapping of Robot variables may
         not name one of them — in any spelling Robot would read as the same
         variable. Refused as an invalid parameter, in a preview and a
-        dispatch alike."""
-        if not self._protected:
-            return
+        dispatch alike. Every key must be a plain Robot variable name in the
+        first place (``variable_name_problem``): ``BASE_URL:https`` would set
+        ``${BASE_URL}``."""
         for name, target in self.parameter_variables.items():
             if target != "*" or name not in ctx.parameters:
                 continue
             for key in dict(ctx.parameters[name]):
+                problem = variable_name_problem(key)
+                if problem is not None:
+                    raise InvalidParameter(name, f"the Robot variable {problem}")
                 protected = self._protected.get(variable_key(str(key)))
                 if protected is not None:
                     raise InvalidParameter(
