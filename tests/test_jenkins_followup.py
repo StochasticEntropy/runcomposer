@@ -601,13 +601,20 @@ class TestFollowingThroughAnOutage:
             client, client.trigger(JOB, {}), timeout_s=30, poll_interval_s=0.02, outage_tolerance_s=0.3,
         )
         assert follower.on_build.wait(10)
-        went_down = time.monotonic()
+        # The tolerance counts from the server's last answer. That answer is
+        # no earlier than this moment: the follower probes one at a time, so
+        # once two more probes have arrived, the first of them was answered
+        # after it — and only then is the server taken away.
+        probe = f"/job/{JOB}/1/api/json"
+        answering = time.monotonic()
+        seen = len(jenkins.gets(probe))
+        wait_until(lambda: len(jenkins.gets(probe)) > seen + 1, timeout=10, what="two more probes")
         jenkins.down(status=status)
         follower.join()
         assert isinstance(follower.error, JenkinsError) and not isinstance(follower.error, JenkinsTimeout)
         assert follower.error.status == status
         assert "has not answered for" in str(follower.error) and "outage_tolerance_s=0.3" in str(follower.error)
-        assert follower.ended_at - went_down >= 0.3
+        assert follower.ended_at - answering >= 0.3
         assert follower.builds == [f"{jenkins.url}/job/{JOB}/1"]
 
     def test_without_a_tolerance_an_outage_fails_as_before(self, jenkins):
