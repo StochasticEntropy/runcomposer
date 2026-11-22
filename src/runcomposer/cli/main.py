@@ -42,7 +42,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command != "serve":
         configure_logging(level=logging.INFO if args.verbose else logging.WARNING)
     try:
-        code = int(handlers[args.command](args))
+        try:
+            code = int(handlers[args.command](args))
+        except ImportError as exc:
+            from . import missing_package
+
+            message = missing_package(exc)
+            if message is None:
+                raise
+            print(message, file=sys.stderr)
+            return EXIT_USAGE
         # Flush here, inside the handler below: a reader that closed the pipe
         # early (`… | head`) otherwise surfaces as a traceback when the
         # interpreter flushes stdout on its way out.

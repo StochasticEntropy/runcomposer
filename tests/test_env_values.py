@@ -163,6 +163,17 @@ class TestWhatIsNoSecret:
         service = regional(make_service, ci_url="${env-public:SHOP_CI_URL:-https://ci.shop.example}")
         assert service.runner("staging").ci_url == "https://ci.shop.example"
 
+    @pytest.mark.parametrize("form", ["env", "env-public"])
+    def test_an_empty_variable_takes_the_default_as_in_a_shell(self, make_service, monkeypatch, form):
+        """``:-`` reads as a shell reads it: unset *or empty* takes the
+        default; without a default an empty variable is the empty value."""
+        monkeypatch.setenv("SHOP_CI_URL", "")
+        service = regional(make_service, ci_url=f"${{{form}:SHOP_CI_URL:-https://ci.shop.example}}")
+        assert service.runner("staging").ci_url == "https://ci.shop.example"
+        monkeypatch.setenv("SHOP_CI_URL", "https://eu.ci.shop.example")
+        service = regional(make_service, ci_url=f"${{{form}:SHOP_CI_URL:-https://ci.shop.example}}")
+        assert service.runner("staging").ci_url == "https://eu.ci.shop.example"
+
     def test_a_missing_public_variable_is_named_in_its_own_spelling(self, make_service, monkeypatch):
         monkeypatch.delenv("SHOP_CI_URL", raising=False)
         service = regional(make_service, ci_url="${env-public:SHOP_CI_URL}")

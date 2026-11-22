@@ -363,3 +363,99 @@ class TestTheConsumerOverHttps:
         assert done.returncode == 0, done.stderr
         assert "bundle pushed" in done.stderr
         everything_arrived(tls_server)
+
+
+# -- the scheme in any case, no redirects, a streamed body ---------------------------------
+
+
+class TestTheClientsSendCarefully:
+    def test_an_upper_case_scheme_is_https_all_the_same(self, tls_server, bundle):
+        """``HTTPS://`` is HTTPS: the CA bundle applies, and without it the
+        certificate is refused as for ``https://``."""
+        upper = tls_server.callback.replace("https://", "HTTPS://")
+        with pytest.raises(ResultsPushRefused, match="certificate"):
+            push_results(upper, TOKEN, bundle, timeout_s=10)
+        assert push_results(upper, TOKEN, bundle, ca_bundle=tls_server.cert, timeout_s=10)["outcome"] == "recorded"
+        channel = RemoteLiveChannel(upper, TOKEN, ca_bundle=tls_server.cert)
+        channel.log("shard eu: started")
+        assert channel.failures == 0
+
+    def test_a_redirect_is_not_followed_and_the_token_goes_nowhere_else(self, bundle):
+        seen: list[tuple[str, str | None]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                seen.append((self.path, self.headers.get("X-Runcomposer-Token")))
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if self.path.startswith("/api/"):
+                    self.send_response(307)
+                    self.send_header("Location", "/elsewhere/results")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+
+            def log_message(self, *_args: Any) -> None:
+                return None
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_address[1]}/api/v1/runs/{RUN_ID}"
+            with pytest.raises(ResultsPushRefused) as refused:
+                push_results(f"{base}/results", TOKEN, bundle, timeout_s=10)
+            assert refused.value.status == 307
+            channel = RemoteLiveChannel(base, TOKEN)
+            channel.log("shard eu: started")
+            assert channel.failures == 1
+            assert all(not path.startswith("/elsewhere") for path, _token in seen), seen
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=10)
+
+    def test_a_large_bundle_is_streamed_not_read_into_memory(self, tmp_path):
+        import tracemalloc
+
+        counted: list[int] = []
+
+        class Counting(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                left, total = int(self.headers.get("Content-Length") or 0), 0
+                while left:  # read and drop: only the client's memory is measured
+                    chunk = self.rfile.read(min(left, 1 << 16))
+                    left -= len(chunk)
+                    total += len(chunk)
+                counted.append(total)
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *_args: Any) -> None:
+                return None
+
+        big = tmp_path / "big"
+        big.mkdir()
+        size = 24 * 1024 * 1024
+        with open(big / "output.xml", "wb") as handle:
+            handle.write(b"<robot>" + b"x" * (size - 15) + b"</robot>")
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Counting)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        tracemalloc.start()
+        try:
+            push_results(f"http://127.0.0.1:{httpd.server_address[1]}/api/v1/runs/{RUN_ID}/results",
+                         TOKEN, big, timeout_s=60)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=10)
+        assert peak < size / 8, f"peak {peak} bytes for a {size}-byte bundle"
+        assert counted and counted[-1] > size

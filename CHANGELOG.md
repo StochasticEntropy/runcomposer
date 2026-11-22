@@ -56,9 +56,21 @@ sqlite database opens as it is.
 - **`ctx.refuse()` is only legal before `ctx.declare()`**; called after it,
   it raises `RuntimeError` and the dispatch fails with the reason in its
   error.
-- **The `demo-corpus` source moved** to
-  `runcomposer.plugins.manifest_source:DemoCorpusSource` (the entry point is
-  unchanged); `runcomposer.plugins.demo_source` is gone.
+- **The demo corpus is a source of its own**, `demo-corpus`
+  (`runcomposer.plugins.manifest_source:DemoCorpusSource`), which the
+  zero-config mode and `runcomposer demo` configure; 0.1.7 had no such
+  entry point.
+- **The demo runner declares the capability `simulated`** (0.1.7:
+  `fake-execution`).
+- **`RunnerInfo`'s fields are, in order, `id`, `title`, `description`,
+  `capabilities`, `parameters`, `result_format`**: build it by keyword —
+  `RunnerInfo("demo", ("cancel",))` of 0.1.7 now sets the title.
+- **`runcomposer.inbox` and `runcomposer.quarantine` are gone** with the
+  other modules outside `runcomposer.sdk` (the code lives in
+  `runcomposer.app`).
+- **`DispatchContext` gained `redact(text)`** (the deployment's secrets
+  blanked out of a text a runner records — a command's output): a context
+  of your own, a test double, adds it.
 - **The `runcomposer-verdicts` parser refuses a file named directly** that is
   not its format (`ParseError`) instead of returning no verdicts; in a bundle
   directory foreign JSON files are still skipped.
@@ -70,9 +82,8 @@ sqlite database opens as it is.
   `runcomposer.sdk.robot.LiveStatusListener` (and
   `RemoteLiveStatusListener` for an agent that pushes to the API).
 
-**Changed during the 0.2 line.** For code written against an earlier,
-unreleased state of 0.2. Each of these is also a break relative to 0.1.x,
-where the member, field or behaviour did not exist or worked differently.
+**More breaks relative to 0.1.x**, where the member, field or behaviour did
+not exist or worked differently:
 
 - **`ctx.options` holds the configured options only.** It is the runner's
   config entry as its constructor received it (`${env:…}` resolved); the
@@ -92,13 +103,15 @@ where the member, field or behaviour did not exist or worked differently.
   `duration_aggregates(statuses=)`; `update_dispatch(shard_groups=)` and
   `DispatchRecord.shard_groups`; `add_artifact_ref(group=)` and
   `ArtifactRef.group`; `record_live_verdict` takes and `live_verdicts`
-  returns `LiveStatus` records (not `Verdict`s), `RUNNING` included. A store
-  of your own adds them; `check_store` names what is missing.
-- **The sqlite schema is version 3**: dispatches gain `shard_groups`,
-  artifact references `shard_group`, and there is a `duration_seeds` table.
-  A database of 0.1.x or of schema 2 is migrated in place when it is opened;
-  an earlier state of 0.2 refuses a migrated database as newer than it
-  understands.
+  returns `LiveStatus` records (not `Verdict`s), `RUNNING` included;
+  `update_dispatch(error_code=, error_owner=)` and the same fields on
+  `DispatchRecord`; `set_item_names()` / `item_names()` (a default that
+  keeps nothing in `StoreBase`). A store of your own adds them;
+  `check_store` names what is missing.
+- **The sqlite schema is version 4**: dispatches gain `shard_groups`,
+  `error_code` and `error_owner`, artifact references `shard_group`, and
+  there are `duration_seeds` and `item_names` tables. A database of 0.1.x
+  is migrated in place when it is opened.
 - **A `string` parameter is one line.** A value with a line break is a
   `400`; declare the parameter as `text` to take several lines.
 - **`ui.quick_filters` are served normalized**, by `GET /api/v1/ui-config`
@@ -136,18 +149,24 @@ where the member, field or behaviour did not exist or worked differently.
   dispatch-refused`). A client that told the two apart by status reads
   `code`; `runcomposer run` and `plan` print `error: parameter '…': …` and
   exit `1`.
-- **A string filter is filter text** wherever a filter is one string — a
-  selection's `tag_filter` over the API, the CLI's `FILTER`,
-  `ui.quick_filters`, `ui.presets`, `ui.default_filter`, a taxonomy leaf's
-  `filter`, `FakeDispatchContext.from_source(selection=…)`. A tag spelled
-  like an expression is quoted now (`'"Auth OR Cart"'`, `'"AND"'`); `*` is
-  every item (it was the tag `*`); `(Auth)` is `Auth`; outer whitespace is
-  dropped; a blank string is refused; a string with a double quote or an
-  operator word that does not parse is a `400 filter-syntax` (CLI exit `2`).
-  A string that is not filter text and has neither still names that one
-  pattern (`regex:^Cart(V2)?$`, `Sprint 12`), with a warning. On the CLI a
-  YAML-quoted or numeric `FILTER` is no longer YAML-processed. A taxonomy
-  leaf whose text reads as an expression is refused. `format_filter`, and
+- **A string filter is filter text, and nothing else** wherever a filter
+  is one string — a selection's `tag_filter` over the API, the CLI's
+  `FILTER`, `ui.quick_filters`, `ui.presets`, `ui.default_filter`, a
+  taxonomy leaf's `filter`, `FakeDispatchContext.from_source(selection=…)`
+  — read by the same grammar as the web UI's text editor, with one answer
+  for every string (`tests/fixtures/filter-text.json`, "strings"). **Quote
+  a pattern that contains whitespace, a parenthesis or a double quote, or
+  is an operator word**: `'"regex:^Cart(V2)?$"'`, `'"Sprint 12"'`,
+  `'"Auth OR Cart"'`, `'"AND"'` — in 0.1 a filter string was always one
+  pattern. A string that does not parse is a `400 filter-syntax` (CLI exit
+  `2`) with the column, also when it would have made sense as one pattern;
+  so are an empty or blank string and a `prefix:` / `regex:` with nothing
+  after it. `*` is every item (it was the tag `*`); `(Auth)` is `Auth`;
+  outer whitespace is dropped; a filter nests at most 40 levels
+  (`filter-too-deep`). A configured filter or taxonomy leaf that does not
+  parse refuses the start, naming it. On the CLI a YAML-quoted or numeric
+  `FILTER` is no longer YAML-processed. A taxonomy leaf whose text reads as
+  an expression is refused. `format_filter`, and
   the `text` of configured selections, now quote what needs it, so the text
   reads back to the same filter; a bare-string quick filter is labelled
   with its pattern.
@@ -283,6 +302,14 @@ where the member, field or behaviour did not exist or worked differently.
   did): a row is the run's headline, verdict counts, planned count,
   duration and its `dispatches`. Read deliveries from the run detail,
   `GET /api/v1/runs/{id}`.
+- **The compose and finalize answers carry no `deliveries` either** — the
+  run detail does.
+- **`POST /runs/{id}/finalize` of a run nothing was dispatched for is a
+  `409`** (0.1.7: `200`), and **`GET /runs?state=` with a state that does
+  not exist is a `400`** (0.1.7: `200` and an empty list).
+- **An interrupted dispatch's `error` no longer names the process** that
+  was executing it: `error_code` is `interrupted` and the process is
+  `error_owner`.
 - `GET /runs` returns `total` / `limit` / `offset`; `GET /runners` returns
   the configured id (not the plugin's own), parameters and health.
 
@@ -505,12 +532,31 @@ where the member, field or behaviour did not exist or worked differently.
   The core and the web UI are held to the same cases,
   `tests/fixtures/filter-text.json`. The SDK exports `parse_filter_text`,
   `read_filter_string`, `quote_pattern` and `FilterSyntaxError`.
-- **`supervise_workers`, `WorkerPayload`, `WorkerOutcome`** in the SDK:
-  worker-process supervision for any framework — lanes, a bound, a timeout,
-  the result handed back, one stop protocol that reaches what a worker
-  started. The Robot toolkit's `supervise` and the `command` runner are
-  built on it; a guide example runs plain Python checks in it
+- **`supervise_workers`, `WorkerPayload`, `WorkerOutcome`, `STOP_FILE`** in
+  the SDK: worker-process supervision for any framework — lanes, a bound, a
+  timeout, the result handed back, one stop protocol that reaches what a
+  worker started, `on_done(payload, outcome)`, `on_start(payload, pid)` and
+  `on_end(payload, pid, outcome)`, the worker's `pid` on its outcome. A
+  worker watches the supervising process and stops itself, with what it
+  started, when that process is gone (a killed server or foreground run).
+  The Robot toolkit's `supervise` (the same callbacks) and the `command`
+  runner are built on it; a guide example runs plain Python checks in it
   (`tests/shop_check_runner.py`).
+- **`callback_urls` / `CallbackUrls`** in the SDK: a run's results, live,
+  log and document URLs under a deployment's base address; the `jenkins`
+  runner makes its URLs with it.
+- **`DISPATCH_ERROR_CODES`** and a dispatch's `error_code` (`runner-raised`,
+  `interrupted`, `expired`, `cancelled`) and `error_owner` — in the API, the
+  store and the web UI's wording. **`PARAMETER_PROBLEMS`**: an
+  `invalid-parameter` answer's `problem` and, for a mapping, `key`.
+  `invalid-filter` answers carry `path` and `reason`.
+- **A run keeps its items' names as composed**: `name` on every verdict
+  row, `items: [{id, name}]` on `GET /runs/{id}/items`.
+- **`core.dispatch.max_queued`** (default 100): how many dispatches may
+  wait for a slot; one more is a `503 dispatch-queue-full`.
+- **`docs/sdk-names.md`**: every exported name of the connector surface with
+  the first sentence of its docstring, generated by `ci/sdk_names.py` and
+  held to the frozen surface by a test.
 - **`${env-public:NAME}`** for a value from the environment that is no
   secret; numbers and booleans from the environment converted by the
   constructor's annotation.
@@ -536,18 +582,31 @@ where the member, field or behaviour did not exist or worked differently.
   `supervise(…, log=None, grace_s=5.0)`; `merge_outputs(…,
   rebot_options=None)`; `MergePayload`, `MergeResult`, `run_merge`,
   `spawn_merge` (a merge in a spawned process); `NameTopSuites`;
-  `root_mismatches`.
+  `root_mismatches`; `GroupMerger` (one merged result per group and one for
+  the run, before the last delivery — `merge_groups` is built on it);
+  `attribute_roots(…, base=)` for roots of a checkout elsewhere;
+  `VARIABLE_NAME_PATTERN` / `variable_name_problem`, the Robot variable
+  names a payload may set (a `ShardPayload` refuses any other, and
+  `robot-pool` refuses one per run as an invalid parameter).
 - **`jenkins`**: `plan_provider` / `plan_fields` (a plan of its own for a
   job that cannot say which item goes where), `check_parameters` (the job's
   declared parameters held against `parameters` in the health check),
   `outage_tolerance_s`; shard groups; `field_providers` and `postprocess`
-  take `{call, with}`. **Jenkins toolkit**: `JenkinsClient.job_parameters`,
-  `outage_tolerance_s` on the waits and on `follow`,
-  `JenkinsQueueCancelled`.
+  take `{call, with}`; a line in the run's log when the server stops
+  answering and when it is back. **Jenkins toolkit**:
+  `JenkinsClient.job_parameters`, `job_parameter_definitions` and
+  `JobParameter` (kind, choices, default), `outage_tolerance_s` and
+  `on_outage` on the waits and on `follow`, `JenkinsQueueCancelled`.
 - **Kit**: `check_store` rule `store.atomic`; `check_observer(kinds=…)` for
-  an observer that passes on only some kinds; `FakeJenkins.add_job(…,
-  parameters=…)` (undeclared form fields dropped, as Jenkins does, and
-  recorded in `ignored_parameters`), `down()` / `up()`;
+  an observer that passes on only some kinds; `check_runner` rules
+  `runner.health-bounded` (`health_within=`) and
+  `runner.records-before-last-delivery` (`FakeDispatchContext.late_records`);
+  `sample_events()` made from the one list of event kinds;
+  `HarnessRun.invalid` / `DispatchHandle.invalid`;
+  `FakeDispatchContext(secrets=…)`; `FakeJenkins.add_job(…,
+  parameters=…)` with names or definitions (undeclared form fields dropped,
+  as Jenkins does, and recorded in `ignored_parameters`; a value a choice
+  does not list answered `500`), `down()` / `up()`;
   `ConnectorHarness(advertise_host=…)`, `harness.port`, `harness.local_url`
   and `RUNCOMPOSER_HARNESS_PORT`.
 - **`core.text_language`**, the BCP 47 tag of the free text the server and
@@ -604,6 +663,36 @@ where the member, field or behaviour did not exist or worked differently.
 
 ### Fixed
 
+- A per-run Robot variable whose name held a colon (`BASE_URL:https`) set
+  the variable named before the colon, past `protected_variables`: Robot
+  reads `NAME:value` up to the first colon. Such a name is refused.
+- A filter nested a few hundred levels deep answered `500`; it is a `400
+  filter-too-deep` from 41 levels on, and a one-line error on the CLI.
+- Workers of a killed server or foreground run executed to their end; they
+  stop themselves when the supervising process is gone.
+- An error recorded for a dispatch could carry the server's absolute
+  artifact directory; it names paths relative to it now, in the dispatch's
+  error and in its events.
+- A live owner on this machine could be taken for gone when the host name
+  changed (a laptop on another network); owners carry a machine key from
+  the system's machine id, and one on another identified machine is never
+  declared gone.
+- `${env:NAME:-default}` used an empty variable as the value; as in a
+  shell, unset or empty takes the default.
+- The push clients compared the scheme case-sensitively (`HTTPS://`
+  skipped `ca_bundle` and `verify_tls`), followed redirects with the ingest
+  token, and read a whole bundle into memory: the scheme is compared without
+  regard to case, no redirect is followed, and the bundle is streamed.
+- A configured `${env:…}` value a command printed was served in its
+  `command.log`; the `command` runner blanks it.
+- `store.sqlite.path: "file:…"` through a configuration created a file of
+  that name instead of being refused.
+- The refusal of `core.api.hosts: []` said `null` meant every name; on a
+  loopback bind it means the loopback names.
+- A `runcomposer` command on a minimal install printed a traceback; it says
+  which package is missing in one line.
+- The `invalid-parameter` message of a pattern doubled its backslashes; the
+  pattern is shown as written.
 - A line a worker wrote before its shard was delivered could land in the
   event stream after that delivery, when the thread tailing the live files
   had read it but not yet emitted it; a delivery now waits for it.

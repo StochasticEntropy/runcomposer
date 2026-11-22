@@ -41,7 +41,8 @@ directly, never looked up by attribute convention.
 
 **Values from the environment.** A string option of the form
 ``${env:NAME}`` or ``${env:NAME:-default}`` is replaced from the environment
-when the plugin is built; ``${env-public:NAME}`` is the same substitution for
+when the plugin is built — the default, as in a shell, when the variable is
+unset or empty; ``${env-public:NAME}`` is the same substitution for
 a value that is not a secret. A missing variable is a :class:`ConfigError`
 naming it. An environment value is text; an option the plugin's constructor
 annotates as ``int``, ``float`` or ``bool`` receives it converted, and a
@@ -167,6 +168,7 @@ _DEFAULT_INGESTION = {
 _DEFAULT_RETENTION = {"max_age_days": 90, "max_runs": None}
 _DEFAULT_DISPATCH = {
     "max_concurrent": 2,
+    "max_queued": 100,
     "handoff_wait_s": 2.0,
     "awaiting_timeout_s": None,
     "recovery_interval_s": 15.0,
@@ -609,10 +611,11 @@ def _resolve_env(value: Any, where: str) -> Any:
 
         def substitute(match: re.Match[str]) -> str:
             form, name, default = match.group(1), match.group(2), match.group(3)
+            if default is not None:
+                # As a shell reads ``:-``: unset *or empty* takes the default.
+                return os.environ.get(name) or default
             if name in os.environ:
                 return os.environ[name]
-            if default is not None:
-                return default
             raise ConfigError(
                 f"{where}: environment variable {name!r} is not set "
                 f"(referenced as ${{{form}:{name}}}; use ${{{form}:{name}:-default}} to make it "
@@ -857,6 +860,12 @@ def _check_core_values(config: Config, file_path: Path) -> None:
         raise ConfigError(
             f"{file_path}: core.dispatch.max_concurrent must be an integer ≥ 1, got {concurrent!r}"
         )
+    queued = dispatch.get("max_queued")
+    if isinstance(queued, bool) or not isinstance(queued, int) or queued < 0:
+        raise ConfigError(
+            f"{file_path}: core.dispatch.max_queued must be an integer ≥ 0 (how many dispatches "
+            f"may wait for a free slot), got {queued!r}"
+        )
     if config.ingestion.get("tokens") not in ("required", "disabled"):
         raise ConfigError(
             f"{file_path}: core.ingestion.tokens must be 'required' or 'disabled', "
@@ -878,7 +887,8 @@ def _check_api_hosts(hosts: Any, file_path: Path) -> None:
         raise ConfigError(
             f"{file_path}: core.api.hosts must be a non-empty list of the host names the server "
             f"answers to (such as runcomposer.shop.example, *.shop.example, localhost:8100), "
-            f"or null for every name, got {hosts!r}"
+            f"or null for the default — the loopback names on a loopback bind, every name on any "
+            f"other — got {hosts!r}"
         )
     for index, entry in enumerate(hosts):
         if not isinstance(entry, str):

@@ -28,6 +28,7 @@ import http.client
 import json
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterable
@@ -140,11 +141,28 @@ def _tls_context(ca_bundle: str | None, verify_tls: bool) -> ssl.SSLContext:
     return context
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirects are not followed: the request carries the ingest token, and
+    a redirect would hand it to whatever address the answer names. A
+    redirect answer is an error answer (``HTTPError`` with its 3xx status)."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirect to {newurl} not followed (the request carries a token)",
+            headers, fp,
+        )
+
+
 def _open(
     request: urllib.request.Request, timeout_s: float, ca_bundle: str | None, verify_tls: bool
 ) -> Any:
-    context = _tls_context(ca_bundle, verify_tls) if request.full_url.startswith("https:") else None
-    return urllib.request.urlopen(request, timeout=timeout_s, context=context)
+    """Send ``request`` — over HTTPS (the scheme compared without regard to
+    case) with the TLS settings given — following no redirect."""
+    secure = urllib.parse.urlsplit(request.full_url).scheme.lower() == "https"
+    handlers: list[Any] = [_NoRedirect()]
+    if secure:
+        handlers.append(urllib.request.HTTPSHandler(context=_tls_context(ca_bundle, verify_tls)))
+    return urllib.request.build_opener(*handlers).open(request, timeout=timeout_s)
 
 
 def _unreachable_reason(exc: BaseException) -> str:
@@ -233,26 +251,33 @@ def push_results(
         raise ValueError(f"two results files would be sent as {twice} — a bundle is flat")
 
     boundary = "runcomposer-" + uuid.uuid4().hex
-    parts: list[bytes] = []
+    # The body is streamed, file by file in pieces: a bundle is never held
+    # in memory as a whole. Its length is known beforehand.
+    pieces: list[bytes | Path] = []
     for path in chosen:
         filename = path.name.replace('"', "%22")
-        parts.append(
+        pieces.append(
             f'--{boundary}\r\nContent-Disposition: form-data; name="files"; '
             f'filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
-            + path.read_bytes() + b"\r\n"
         )
+        pieces.append(path)
+        pieces.append(b"\r\n")
     for name, value in (("shard", shard), ("dispatch", dispatch_id), ("format", format)):
         if value is not None:
-            parts.append(
+            pieces.append(
                 f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
                 f"{value}\r\n".encode()
             )
-    parts.append(f"--{boundary}--\r\n".encode())
-    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    pieces.append(f"--{boundary}--\r\n".encode())
+    length = sum(piece.stat().st_size if isinstance(piece, Path) else len(piece) for piece in pieces)
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(length),
+    }
     if token:
         headers["X-Runcomposer-Token"] = token
     url = results_url(callback_url)
-    request = urllib.request.Request(url, data=b"".join(parts), headers=headers, method="POST")
+    request = urllib.request.Request(url, data=_streamed(pieces), headers=headers, method="POST")
     try:
         with _open(request, timeout_s, bundle, bool(verify_tls)) as response:
             status, raw = int(response.status), response.read()
@@ -275,6 +300,22 @@ def push_results(
             status=status, body=answer,
         )
     return answer
+
+
+#: The size of the pieces a pushed file is read and sent in.
+_PIECE_BYTES = 1 << 16
+
+
+def _streamed(pieces: Iterable[bytes | Path]) -> Iterable[bytes]:
+    """The multipart body piece by piece: literal parts as they are, a file
+    read in pieces of :data:`_PIECE_BYTES`."""
+    for piece in pieces:
+        if isinstance(piece, Path):
+            with open(piece, "rb") as handle:
+                while chunk := handle.read(_PIECE_BYTES):
+                    yield chunk
+        else:
+            yield piece
 
 
 def _answer(raw: bytes) -> Any:

@@ -351,6 +351,14 @@ class DispatchContext(Protocol):
         """Append a line to the run's event stream."""
         ...
 
+    def redact(self, text: str) -> str:
+        """``text`` with the deployment's secrets (the values its
+        configuration takes from ``${env:…}``) blanked out, and without the
+        locations of its own directories — what runcomposer does to every
+        free text it records. For a file a runner writes and records as an
+        artifact: a command's output that may echo a configured token."""
+        ...
+
     def export_spec(self) -> bytes:
         """The spec document as the exact JSON bytes to hand to an external
         executor. Their hash is recorded on the dispatch, so a marker written

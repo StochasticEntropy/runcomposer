@@ -97,9 +97,11 @@ and `push_results` for reporting back, `supervise_workers` — and the
 `run_shard` executes a shard. Reading a YAML spec, validating a document
 and every `runcomposer` command need the full install (`pip install
 runcomposer`); reaching one of them on a minimal install raises an error
-naming the missing package
+naming the missing package, and a `runcomposer` command says it in one line
+and exits `2`
 (`tests/test_minimal_imports.py::test_an_executor_imports_and_works_without_the_reading_and_serving_packages`,
-`::test_reading_yaml_or_validating_names_the_missing_package`).
+`::test_reading_yaml_or_validating_names_the_missing_package`,
+`::test_the_command_line_on_a_minimal_install_says_what_is_missing_in_one_line`).
 
 ---
 
@@ -357,9 +359,44 @@ Who asks, and what they get:
    "code": "filter-syntax", "problem": "unbalanced-open", "position": 13}
   ```
 
-  A string that is not filter text but one pattern — `"regex:^Cart(V2)?$"`,
-  which runs into `(` unquoted — still selects that pattern, and the answer's
-  `warnings` say how to write it unambiguously: `"\"regex:^Cart(V2)?$\""`.
+  The same goes for a string that would make sense as one pattern but does
+  not parse — `"regex:^Cart(V2)?$"` runs into `(` unquoted: it is refused
+  with the position (`needs-quotes`), and `"\"regex:^Cart(V2)?$\""` is the
+  pattern.
+
+  **The runner is named differently in the two requests**, because they
+  carry different things. `POST /api/v1/plan` takes `runner: "<id>"` and
+  `parameters` at the top. `POST /api/v1/runs` composes a run — its
+  top-level `runner` is the run spec's open `runner` section, a mapping for
+  an external executor ([DESIGN.md §3](../DESIGN.md)) — and dispatches it
+  when it carries `dispatch: {runner, parameters}` (or `dispatch: {mode:
+  "export"}`). `runner: "demo"` at the top of `POST /runs` is a `400`
+  (`runner: Input should be a valid dictionary`). Against the demo
+  workspace, the answer shortened:
+
+  ```console
+  $ curl -s -X POST http://127.0.0.1:8100/api/v1/runs -H 'Content-Type: application/json' \
+      -d '{"selection": {"tag_filter": "Auth-SSO"}, "title": "SSO before the release",
+           "dispatch": {"runner": "demo", "parameters": {"seed": "release-1"}}}'
+  {"warnings": [], "derived_from": [], "handoff": "done",
+   "dispatch": {"dispatch_id": "01M81QA3T63TS59Z6G7VFN22N2", "mode": "demo", "state": "RUNNING",
+                "shards": ["1"], "error": "", "error_code": "", "error_owner": null,
+                "plan": "demo runner: simulating 3 item(s) with seed 'release-1'",
+                "parameters": {"seed": "release-1"}, "executing": true, "planned_verdicts": 3, …},
+   "run": {"id": "01M81QA3S66T73Q874J7SMRHWA", "title": "SSO before the release",
+           "state": "RUNNING", "planned_count": 3, "mode": "demo", …}}
+  ```
+
+  A `201`; `handoff` says whether the runner had handed off within
+  `core.dispatch.handoff_wait_s` (`done`) or was still preparing
+  (`pending`). A dispatch refused before the hand-off is a `409
+  dispatch-refused`, an invalid parameter a `400 invalid-parameter` with
+  `parameter`, `problem` and, for a mapping, `key`, and a full queue a `503
+  dispatch-queue-full`; each says `run_kept` (and `run_id`), since the run
+  composed for the request is removed unless `keep_run: true`
+  (`tests/test_api.py::TestComposeAndDispatch`,
+  `tests/test_parameter_refusals.py::TestTheReasonIsAField`,
+  `tests/test_dispatch_queue.py`).
 - `runcomposer plan [FILTER | --run ID] --runner ID [--param k=v] [--items]
   [--json]` prints the same and exits `1` when the dispatch would be refused
   (`tests/test_runner_contract.py::TestPlanCommand`).
@@ -466,7 +503,14 @@ dispatch outside the artifact directory (`core.private_dir`), created on first
 use, removed with the run and swept by `runcomposer gc`
 (`tests/test_runner_contract.py::TestOwnDispatch`).
 `ctx.log(message, level="info")` appends a line to the run's event stream;
-`level="warning"` makes it a warning event.
+`level="warning"` makes it a warning event. What runcomposer records from
+you — log lines, a refusal, the error a dispatch failed with — has the
+deployment's secrets blanked out and names its artifact directory by
+relative paths only (`tests/test_dispatch_error_codes.py`). A file you
+write and record is yours: `ctx.redact(text)` gives a text with the same
+secrets blanked out — the `command` runner passes the command's output
+through it before `command.log` is recorded and served
+(`tests/test_command_runner.py::TestSecretsInTheLog`).
 
 How a client reads what you recorded: each artifact of a run detail
 (`GET /api/v1/runs/{id}`) has a `kind` — `url` (a link; `href` is the URL),
@@ -589,7 +633,18 @@ the system does not trust is a counted failure of the channel, and a
 `ResultsPushRefused` (`status` `None`) whose message names the TLS reason
 and both ways out. The channel stays picklable: its TLS context is built in
 the process that pushes (`tests/test_remote_tls.py`,
-`tests/test_remote_listener_tls.py`).
+`tests/test_remote_listener_tls.py`). The scheme is compared without regard
+to case (`HTTPS://` is HTTPS), no redirect is followed — the request
+carries the token, and a redirect answer is a refusal with its `3xx`
+status — and `push_results` streams the bundle file by file instead of
+reading it into memory (`tests/test_remote_tls.py::TestTheClientsSendCarefully`).
+
+`runcomposer serve` speaks plain HTTP: it does not terminate TLS itself.
+Put a reverse proxy in front of it that does (and forwards to
+`runcomposer serve` on a loopback or private address), and give the
+executors the proxy's `https://` address as `callback_base`
+(DESIGN.md §9; `tests/test_remote_tls.py` pushes through a TLS endpoint of
+its own).
 
 **Results that never come.** A dispatch left in `AWAITING_RESULTS` waits for
 ever unless the deployment says how long: with `core.dispatch.awaiting_timeout_s`
@@ -842,7 +897,9 @@ ui:                            # selections people start from
 - **Values from the environment.** A string option `${env:NAME}` or
   `${env:NAME:-default}` — at any depth, in plugin entries and under
   `connectors:` — is replaced from the environment when the plugin is built;
-  a missing variable is a `ConfigError` naming it.
+  a missing variable is a `ConfigError` naming it. As in a shell, `:-`
+  takes the default when the variable is unset *or empty*
+  (`tests/test_env_values.py`).
   - *What is a secret.* An `${env:…}` value is, unless it is written
     `${env-public:NAME}` (or `${env-public:NAME:-default}`: the same
     substitution, for an address, a region, a port), used as a path (an
@@ -977,9 +1034,9 @@ Each raises `AssertionError` whose message begins with the violated rule:
 |---|---|
 | `check_source` | contract members; `provider_id`; items are `Item`s with string tags, stable across calls; `duplicate_ids` lists exactly the duplicated ids; snapshot and fingerprint stable; every id resolves to itself; an unknown name resolves to `None`; the native names you give resolve; a rebuilt instance agrees |
 | `check_parser` | contract; `format_id` is a name; `parse` returns `ParsedVerdict`s with reportable statuses, non-negative durations, attempts ≥ 1; deterministic; non-empty; `expected` statuses; every bad bundle is a `ParseError` |
-| `check_runner` | contract; `describe` well-formed, parameter defaults validate; `health` well-formed; the dispatch keeps the hand-off order; declares at least one shard; delivers only declared shards and only planned items; a `complete` dispatch reports every planned item under names the catalog resolves (`allow_missing=True` for a runner that reports partially on purpose); ends as `expect`ed; outstanding shards only with `external_delivery`; with `cancel_after_declare`, returns within `cancel_within` seconds of the cancel and does not go on to deliver every shard. With the `plan` capability, first a preview: a `PlanPreview` listing only planned items and labelling only its own shards (`runner.plan`), that declares, delivers, records, exports and logs nothing and reaches for nothing a `PlanContext` lacks (`runner.plan-is-read-only`), and that names exactly the shards the dispatch then declares (`runner.plan-matches-dispatch`); a preview that refuses is accepted |
-| `check_store` | contract; runs, documents, paging/filtering/search; dispatches incl. the exclusive claim and shard groups (`store.shard-groups`); spec bytes; token hashes; the delivery idempotency contract; shard and attempt on read-back; live status, `RUNNING` included (`store.live-running`); artifacts, with their group; the event cursor and `latest_events`; history queries, restricted by status (`store.duration-statuses`) and falling back to seeds (`store.duration-seeds`); delete and prune; concurrent deliveries leave exactly one; `atomic()` — writes read back inside the block, undone by an exception, no other writer in between (`store.atomic`) |
-| `check_observer` | contract; every event kind accepted, `None` returned; concurrent calls; with `seen`, every notification arrives exactly once. With `kinds=["run.completed", "run.f*"]` — for an observer that passes on only some kinds by its own decision — `seen` must grow by exactly the notifications of those kinds, and the others must leave no trace (`tests/test_kit_additions.py::TestObserverKinds`) |
+| `check_runner` | contract; `describe` well-formed, parameter defaults validate; `health` well-formed; the dispatch keeps the hand-off order; declares at least one shard; delivers only declared shards and only planned items; a `complete` dispatch reports every planned item under names the catalog resolves (`allow_missing=True` for a runner that reports partially on purpose); ends as `expect`ed; outstanding shards only with `external_delivery`; with `cancel_after_declare`, returns within `cancel_within` seconds of the cancel and does not go on to deliver every shard; `health()` answers within `health_within` seconds (default 10; `runner.health-bounded`); a `complete` dispatch records nothing — artifact, link, log line — after the delivery that completed it, which in runcomposer would arrive after `run.completed` (`runner.records-before-last-delivery`; the fake lists such records in `late_records`). With the `plan` capability, first a preview: a `PlanPreview` listing only planned items and labelling only its own shards (`runner.plan`), that declares, delivers, records, exports and logs nothing and reaches for nothing a `PlanContext` lacks (`runner.plan-is-read-only`), and that names exactly the shards the dispatch then declares (`runner.plan-matches-dispatch`); a preview that refuses is accepted |
+| `check_store` | contract; runs, documents, paging/filtering/search; dispatches incl. the exclusive claim and shard groups (`store.shard-groups`); spec bytes; token hashes; the delivery idempotency contract; shard and attempt on read-back; live status, `RUNNING` included (`store.live-running`); artifacts, with their group; a dispatch's `error_code` and `error_owner` (`store.dispatch-error-code`); item names as composed, or none (`store.item-names`); the event cursor and `latest_events`; history queries, restricted by status (`store.duration-statuses`) and falling back to seeds (`store.duration-seeds`); delete and prune; concurrent deliveries leave exactly one; `atomic()` — writes read back inside the block, undone by an exception, no other writer in between (`store.atomic`) |
+| `check_observer` | contract; every event kind accepted — `sample_events()` holds one of every kind there is, made from the one list of kinds, `run.cancel_requested` and `delivery.attached` included (`tests/test_testing_kit.py::TestSampleEvents`) — `None` returned; concurrent calls; with `seen`, every notification arrives exactly once. With `kinds=["run.completed", "run.f*"]` — for an observer that passes on only some kinds by its own decision — `seen` must grow by exactly the notifications of those kinds, and the others must leave no trace (`tests/test_kit_additions.py::TestObserverKinds`) |
 
 ### `FakeDispatchContext` — unit tests for a runner
 
@@ -1282,7 +1339,7 @@ options in [ADOPTING.md §2](../ADOPTING.md#2-start-with-configuration-not-code)
 | `health_check_timeout_s: 5` | the checks run side by side, and one that has not answered within this many seconds is a failed row saying so; `health` returns, though the check keeps running in its thread (`tests/test_robot_pool_suite_name_and_health.py::TestHealthCheckTimeout`) |
 | `run_parameters: [{name, kind, …}]` | further per-run parameters, declared with the fields of `Parameter` — beside the runner's own `partitions` and `allow_drift` |
 | `parameter_variables: {param: VARIABLE}` | a per-run parameter as a Robot variable (a list comma-joined); `"*"` for a `mapping` parameter makes each of its entries a variable |
-| `protected_variables: [NAME, …]` | Robot variables a per-run mapping may not set, matched as Robot matches names — case, spaces, underscores and `${…}` ignored, so `shop_url` and `${Shop Url}` both hit `SHOP_URL`. Refused as an invalid parameter by preview and dispatch; a `parameter_variables` entry aiming a scalar parameter at a protected name is a `ConfigError` |
+| `protected_variables: [NAME, …]` | Robot variables a per-run mapping may not set, matched as Robot matches names — case, spaces and underscores ignored, so `shop_url` and `Shop Url` both hit `SHOP_URL`. Refused as an invalid parameter by preview and dispatch; a `parameter_variables` entry aiming a scalar parameter at a protected name is a `ConfigError`. Every per-run variable name must be a plain Robot variable name (`VARIABLE_NAME_PATTERN`: letters, digits, `_`, spaces, `.`, `-` — no `:`, `=` or `${…}`): a mapping turned into variables gets that as its `key_pattern` unless it declares its own, and a name of another shape is refused even then — Robot reads `NAME:value` up to the first colon, so `SHOP_URL:https` would set `${SHOP_URL}` (`tests/test_robot_pool_options.py::TestProtectedVariables`) |
 | `merge_groups: true` | one merged `output.xml` / `log.html` / `report.html` per group (`… (group eu)`) and one for the run (`… (run)`), each merged in a spawned process as soon as its shards are in and recorded before the last shard delivers; a failed merge is a warning line, a cancelled dispatch merges nothing more, no verdict depends on it |
 | `rpa: true \| false \| null` | the execution mode. `null` (default) lets Robot decide — and Robot refuses a selection that keeps both tests and tasks, so a root that mixes them needs `false` (everything executed as tests) or `true`; otherwise the dispatch fails with Robot's own message and that hint |
 | `robot_options: {…}` | further keyword options for `robot.run` (`{loglevel: DEBUG, variablefile: [env.py]}`); the options the runner sets itself win. `robot_options` shape `log.html` and `report.html` only — `removekeywords` and `flattenkeywords` leave `output.xml` as big as it was; `clean_output` shapes `output.xml`, and with it everything that is parsed, merged, recorded and pushed (`tests/test_robot_post_execution.py::TestRobotOptionsShapeTheLogOnly`). `name` (lowercase, as `robot.run` takes it) renames the top-level suite; the suite-root check, the exact selection and `doctor` read the ids under that name, and the health data carry it as `suite_name` (`tests/test_robot_pool_suite_name_and_health.py::TestARenamedTopSuite`) |
@@ -1576,6 +1633,7 @@ test's longname):
 | Name | What |
 |---|---|
 | `JenkinsClient(base_url, *, user, api_token, verify_tls, ca_bundle, request_timeout_s, retries, retry_backoff_s)` | one server: a session whose crumb belongs to it, bounded retry on transient errors (a trigger is repeated only when it provably did not take effect), TLS with an optional CA bundle; thread-safe |
+| `on_outage` on `follow` and the waits | `on_outage(answering, seconds)` is told of each change while a tolerant wait rides out an outage: `False` when the server first fails to answer, `True` on its first answer after (with how long nothing answered); the `jenkins` runner writes a line to the run's log at each (`tests/test_jenkins_followup.py::TestFollowingThroughAnOutage`) |
 | `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…, outage_tolerance_s=None)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by. With `outage_tolerance_s` (also on the waits) it rides out a Jenkins that has not answered for up to that long, probing with single attempts; `timeout_s` applies to each of its two waits (to start, then to finish) and is not extended by an outage |
 | `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now |
 | `job_parameters(job)` | the names of the parameters a job declares, `None` when it declares none — what to compare a trigger's parameters with, since Jenkins drops an undeclared one silently |
@@ -1760,6 +1818,18 @@ whatever executes inside the worker:
   `outcome.error`), `died` (no result, `outcome.exitcode`) or `timed out`,
   and `outcome.problem` says what went wrong in one sentence, or is `None`;
 - `log` is told of each shard's start and of its end;
+- `on_start(payload, pid)` as each worker process has started and
+  `on_end(payload, pid, outcome)` once it is reaped — every started
+  worker, a stopped one included (status `stopped`) — say which processes
+  the supervisor started; `outcome.pid` is the worker's process id too
+  (`tests/test_worker_supervisor.py::TestWhichProcesses`);
+- a worker watches the supervising process through a pipe only the
+  supervisor holds open: when the supervisor is gone — the server or the
+  foreground `run` was killed — the worker asks its process group to stop
+  and kills what is left after five seconds, so nothing of a dead
+  dispatch executes beside the next one
+  (`tests/test_worker_supervisor.py::TestTheSupervisorIsGone`; on Windows
+  the worker process ends, what it started is not reached);
 - `cancelled()` and `timeout_s` stop a worker by the stop protocol:
   `stop()` becomes true, the file `STOP_FILE` (`.stop-requested`, exported
   by `runcomposer.sdk`) appears in `out_dir`, and the
@@ -1867,6 +1937,22 @@ Deliberate, each for a reason:
   that drifts — into the file ([docs/taxonomy.md](taxonomy.md#known-limitation-one-pattern-per-leaf-and-only-a-pattern)).
   Whole expressions belong in `ui.quick_filters` and `ui.presets`
   ([§5](#5-configuration)).
+- **The configured `robot-pool` stops where a composed runner begins.** Its
+  per-run parameters have fixed names (`partitions`, `partition_mode`,
+  `allow_drift`); it runs nothing when a dispatch ends (`pre_dispatch` can
+  take a resource, nothing gives it back); it has no per-partition variable
+  whose value a run parameter chooses (`partition_variables` are fixed,
+  `parameter_variables` are the same for every partition); and it takes no
+  plan from outside — which item goes to which partition and chunk is its
+  own. Each of these would be one more switch whose meaning only some
+  deployments share; a runner composed from the Robot toolkit
+  ([§9.2](#92-compose-when-configuration-is-not-enough)) owns its
+  parameters, its plan and its `dispatch`, and is the intended route. A
+  step when a dispatch ends is a `try`/`finally` around the work in your
+  own `dispatch` — acquire before the hand-off (so a refusal leaves nothing
+  taken), give back in the `finally`, which runs on completion, failure and
+  cancel alike (`tests/test_robot_toolkit.py::MergingRunner`, pinned by
+  `TestGroupMerger::test_the_environment_is_given_back_on_cancel_and_a_held_one_refuses`).
 - **No per-runner custom "actions" endpoint.** A runner offers `dispatch`,
   `plan`, `cancel`, `health` and declared per-run parameters; an endpoint
   whose meaning only one runner knows would be an

@@ -235,14 +235,22 @@ Filter grammar notes (deliberate, not inherited):
   `ui.quick_filters`, `ui.presets` and `ui.default_filter`, a taxonomy
   leaf's `filter` (which must read as one pattern), the kit's
   `FakeDispatchContext.from_source(selection=…)` — it is this text; a spec
-  stores the AST, never the text. Text that cannot be read is a `400`
+  stores the AST, never the text. **One grammar, one answer**: a single tag
+  or `prefix:`/`regex:` pattern is one word of the grammar and reads as
+  itself, and a string that does not parse is refused — a `400`
   `filter-syntax` naming the `problem` and its `position` (in characters),
-  or CLI exit `2` with the column marked. A string that is not readable as
-  text and contains neither an operator word nor a double quote is the
-  single pattern it spells, with a warning that shows the quoted spelling —
-  so `regex:^Cart(V2)?$` keeps selecting what it always did. The web UI and
-  the core are held to the same cases, `tests/fixtures/filter-text.json`
-  (tests/test_filter_text.py, tests/test_filter_text_entry_points.py).
+  or CLI exit `2` with the column marked — also when it would make sense as
+  one pattern (`Sprint 12`, a bare `regex:^Cart(V2)?$`: quote them). An
+  empty or blank string and a `prefix:`/`regex:` with nothing after it are
+  refused (`empty`). A filter nests at most `MAX_FILTER_DEPTH` (40) levels,
+  NOT and groups alike, in the AST and in the text (`filter-too-deep`). The
+  web UI's text editor and add field read the same strings with the same
+  outcome; both sides are held to the same cases,
+  `tests/fixtures/filter-text.json` — its `strings` section is what a filter
+  given as one string yields (tests/test_filter_text.py,
+  tests/test_filter_text_entry_points.py, ui/src/lib/filter.fixture.test.ts).
+  A structured filter (the AST) is not text: its pattern strings are taken
+  as they are.
 - **"Every item" has no node of its own.** `runspec/1.0`'s filter grammar is
   closed: `filterNode` in the shipped schema is a string, `{op, items}` or
   `{not}`, with no other fields, so a new node shape would be refused by
@@ -419,10 +427,20 @@ error text, and whatever was delivered until then is kept.
   moved on in the meantime is left alone (tests/test_recovery_periodic.py).
   An owner is gone when its process id is dead (on Linux a
   process that ended but was not reaped — a zombie under a container's
-  process 1 without an init — counts as dead); when it is this
+  process 1 without an init — counts as dead); or when it is this
   very process id under another token (an earlier life of it — process id 1
-  of a restarted container); or when it ran on another host — one instance
-  owns a store (§13), so that is a container that was replaced. What cannot
+  of a restarted container) — and only when it provably ran on *this*
+  machine. The owner identity carries a machine key made from the system's
+  machine id (Linux `/etc/machine-id`, macOS's platform UUID, Windows's
+  `MachineGuid`), so a host name that changes with the network does not
+  make a live owner look foreign. An owner on another machine with such an
+  id is never declared gone (`cancel --force` closes what it left); where
+  the system has no machine id (a slim container image) the key is made of
+  the host name, and an owner under another one is gone — one instance owns
+  a store (§13), so that is a container that was replaced
+  (tests/test_recovery.py::TestWhichMachine). The workers a dispatch
+  started stop themselves when the process that supervises them is gone
+  (§6.6), so a dispatch made `STALE` executes nothing any more. What cannot
   be told apart is a process id that was reused by an unrelated program: the
   dispatch then looks owned. `cancel --force` (`?force=true`) is the way out
   — it closes a dispatch as `CANCELLED` whoever owns it. (A dispatch that
@@ -435,6 +453,20 @@ error text, and whatever was delivered until then is kept.
   its recovery interval; `cancel --force` closes it), and their
   JSON carries `owner_gone` on the run and on each dispatch; they change
   nothing (tests/test_cli_owner_gone.py).
+- **Why a dispatch ended with an error** is a field of its own beside the
+  free-text `error`: `error_code`, one of `DISPATCH_ERROR_CODES` —
+  `runner-raised` (the runner raised after the hand-off; `FAILED`),
+  `interrupted` (the process executing it is gone; `STALE`), `expired` (no
+  results within `awaiting_timeout_s`; `FAILED`), `cancelled` — and, for an
+  interrupted one, `error_owner`, the process it lost, kept out of the
+  text. A record from before the codes existed has `""`
+  (tests/test_dispatch_error_codes.py). What is recorded about a dispatch —
+  its error, its events — names no directory of this machine: a path in
+  the artifact or private directory is written relative to it.
+- **The dispatch queue is bounded.** Behind `core.dispatch.max_concurrent`
+  executing dispatches at most `core.dispatch.max_queued` (default 100)
+  wait for a slot; one more is refused before anything is recorded, `503`
+  `dispatch-queue-full` (tests/test_dispatch_queue.py).
 - **Events.** Every state change emits an event — `run.composed`,
   `run.dispatched`, `run.running`, `run.awaiting_results`, `run.completed`,
   `run.failed`, `run.cancelled`, `run.stale` — as do `dispatch.refused`,
@@ -816,6 +848,7 @@ the same name, and a runner that wants a per-run value reads it from
 | `private_dir` | a directory for this dispatch that is **never** served, whatever is recorded — for files that must not be downloadable (credentials a hook writes, intermediate state). Under `core.private_dir`, created on first use, removed with the run and swept by `gc` |
 | `source` | the catalog as it is now — drift check, name resolution |
 | `connector_settings(name)` | the deployment's `connectors.<name>` mapping (`${env:…}` resolved), read-only, empty when there is none — how a callable named in a runner's configuration reads the settings of the connector package it belongs to |
+| `redact(text)` | the text with the deployment's secrets blanked out and its directories written relatively, as everything runcomposer records is — for a file the runner writes and records itself (the `command` runner's `command.log`) |
 | `history.durations(labels=, last_n=, statuses=)` | mean duration per item id from earlier dispatches; `statuses` restricts it to executions that ended so (§7) |
 | `refuse(reason)` | decline; legal before `declare`, leaves no dispatch |
 | `declare(shards, *, plan="", links=None, spec_sha256=None, groups=None)` | THE hand-off (§4): shard names, or names mapped to the item ids each shard will report; exactly once. `groups` labels shards that belong together (`{shard: label}` — the partition each chunk runs on): results get a roll-up of their own, next to the one per shard. `spec_sha256` records the hash of document bytes the runner serialized itself (`export_spec()` records it for the bytes it returns) |
@@ -1479,8 +1512,12 @@ filter's text form (`parse_filter_text`, `read_filter_string`,
 `RemoteLiveChannel` and `push_results` (an executor's progress and its
 results bundle, pushed to the API — over HTTPS with `ca_bundle` /
 `verify_tls`; a refused push raises
-`ResultsPushRefused` with the status and the server's answer, §5) — plus
-`load_config` and `Service` for driving
+`ResultsPushRefused` with the status and the server's answer, §5; the
+scheme is compared without regard to case, no redirect is followed, a
+bundle is streamed), `callback_urls` / `CallbackUrls` (a run's results,
+live, log and document URLs under a deployment's base address), the closed
+vocabularies `DISPATCH_ERROR_CODES` and `PARAMETER_PROBLEMS` (§4, §9) —
+plus `load_config` and `Service` for driving
 runcomposer from Python (compose → dispatch → wait → read, in one process).
 
 Beside them, the SDK carries the supervisor of worker processes for any
@@ -1492,7 +1529,15 @@ starts and when it ends, and one stop protocol — ask (`stop()` becomes true,
 `.stop-requested` appears in the shard's directory, `SIGTERM` to the
 worker's process group, so what the worker started is asked too), after
 `grace_s` terminate, after another `grace_s` kill, then kill what is left
-of the group before the worker is reaped. A payload or a function that
+of the group before the worker is reaped. `STOP_FILE` names the file
+(`.stop-requested`); `on_start(payload, pid)` and `on_end(payload, pid,
+outcome)` say which worker processes it started, and an outcome carries
+its `pid`. A worker watches the supervising process through a pipe only
+the supervisor holds open, and when that process is gone — a killed
+server, a killed foreground `run` — stops itself the same way, ask then
+kill, with what it started; so a dispatch after a restart never executes
+beside the workers of the one before it (tests/test_worker_supervisor.py
+`TestTheSupervisorIsGone`). A payload or a function that
 cannot be sent to a spawned process is refused before anything starts. The
 Robot toolkit's `supervise` and `spawn_merge` (one payload, the merge as
 its target) and the `command` runner are built on it — one implementation
@@ -1519,16 +1564,24 @@ are assembled from:
   (`deliver_shard`, `collect_verdicts`), merging (`merge_outputs` with
   `rebot_options`, and `MergePayload` / `run_merge` / `spawn_merge` for a
   merge in a spawned process, so the dispatching process never loads
-  Robot's result model; `NameTopSuites`), the suite-root check
+  Robot's result model; `NameTopSuites`), one merged result per shard
+  group and one for the run recorded before the last delivery
+  (`GroupMerger` — `robot-pool`'s `merge_groups`), the suite-root check
   (`attribute_roots`, `root_mismatches`, both with `name=` for a renamed
-  top suite), `robot_version` (read from the installed distribution's
+  top suite and `base=` for roots of a checkout elsewhere), the Robot
+  variable names a payload may set (`VARIABLE_NAME_PATTERN`,
+  `variable_name_problem`: no `:` — Robot splits `NAME:value` at the first
+  one), `robot_version` (read from the installed distribution's
   metadata);
 - `runcomposer.sdk.jenkins` — `JenkinsClient` (session and crumb, bounded
   retry, TLS, trigger → queue item → build, lookup by queue id once the
   queue item is gone, stop and cancel, archived artifacts and any URL below
-  a build, the parameters a job declares (`job_parameters`), and `follow`: a triggered build from its queue item to its end,
+  a build, the parameters a job declares (`job_parameters`, and
+  `job_parameter_definitions` / `JobParameter` with kind, choices and
+  default), and `follow`: a triggered build from its queue item to its end,
   taken back when the dispatch was cancelled before a link existed to stop
-  it by, riding out an outage of up to `outage_tolerance_s`), `JenkinsError` / `JenkinsTimeout` /
+  it by, riding out an outage of up to `outage_tolerance_s` and telling
+  `on_outage` when the server stops answering and when it is back), `JenkinsError` / `JenkinsTimeout` /
   `JenkinsQueueCancelled` (a queue item cancelled in Jenkins), and `encode_spec` /
   `decode_spec` for the compressed spec.
 
@@ -1548,7 +1601,9 @@ toolkit at all).
 **What is stable for the 0.2.x series:** the names in
 `runcomposer.sdk.__all__`, in the two toolkits' `__all__` and in the kit's
 (`runcomposer.testing`, `runcomposer.testing.jenkins`), with their
-documented meaning; the run-spec document (`runspec/1.0`); the error codes;
+documented meaning — `docs/sdk-names.md` lists each with the first sentence
+of its docstring, generated from the code and held to the frozen lists
+(tests/test_sdk_names.py); the run-spec document (`runspec/1.0`); the error codes;
 and the reference runners' documented options. A removal or a change of
 meaning is a breaking change listed in the changelog. **What is
 provisional:** `Service` and `Config` are exported whole, but only the
@@ -1803,7 +1858,8 @@ Rules:
 - **Values from the environment.** A string option of the form
   `${env:NAME}` or `${env:NAME:-default}` — at any depth of an option value,
   under `connectors:` too — is replaced from the environment when the plugin
-  is built; a missing variable is a `ConfigError` naming it. Such a value is
+  is built; a missing variable is a `ConfigError` naming it, and `:-` takes
+  the default when it is unset or empty, as in a shell. Such a value is
   a **secret** unless it is written `${env-public:NAME}` (the same
   substitution, for an address, a region, a port), used as a path (an option
   the plugin names in `PATH_OPTIONS`), or converted to a number or a boolean
@@ -1852,10 +1908,8 @@ Rules:
   normalized shape. `quick_filters` are `{label, filter}` entries whose
   `filter` is filter text (§3.1) or a filter AST (a bare string entry is
   short for that filter labelled with itself — a single pattern with the
-  pattern); a string that needs the
-  single-pattern fallback works and is named in one warning when the
-  configuration is loaded, and text that cannot be read refuses the start,
-  naming the entry; `default_filter` is the
+  pattern); text that cannot be read — a pattern with a space or a
+  parenthesis left unquoted among it — refuses the start, naming the entry; `default_filter` is the
   expression a new selection starts from; `presets` are named, complete
   starting points — `name` and `filter`, optionally `label`, `description`,
   `title`, `labels`, and a `runner` with its per-run `parameters`. Each
@@ -1923,9 +1977,8 @@ deployment writes by hand. Top-level `taxonomy` must be a list; each node
 needs a non-empty `label`, a `filter` (when present) that is a string whose
 filter text names a single pattern the §3.1 grammar accepts — a tag spelled
 like an expression is quoted (`'"Auth OR Cart"'`), and text that reads as an
-expression is refused, saying how to quote it; a string that needs the
-single-pattern fallback is listed under `warnings` of the resolved
-taxonomy — and a `children` (when present) that is a
+expression is refused, saying how to quote it, and text that does not parse
+is refused with its column — and a `children` (when present) that is a
 list; sibling labels must be distinct; a node with neither `filter` nor
 `children` is refused, because that is exactly what a misspelled key
 produces. Unknown *extra* node keys are ignored, matching §3's stance on
@@ -2063,11 +2116,20 @@ invalid request `400` (`invalid-request`, `unknown-host`, …), state conflict `
 `422`, too large `413`; a deployment that broke under a running server (the
 taxonomy file) is a `500` that says what is wrong. Request bodies are
 validated before anything acts on them. Some errors carry fields of their
-own: `invalid-parameter` the `parameter`; `filter-syntax` — filter text
+own: `invalid-parameter` the `parameter`, the `problem` (one of
+`PARAMETER_PROBLEMS`: `unknown`, `required`, `type`, `choice`, `pattern`,
+`key-pattern`, `runner`) and, for a mapping, the `key`; `invalid-filter`
+the `path` of the node (keys and indices from the filter's root) and the
+`reason` (the message without where); `filter-syntax` — filter text
 that cannot be read — the `problem` (`empty`, `unexpected-end`,
 `unexpected-operator`, `missing-operator`, `unbalanced-open`,
-`unbalanced-close`, `unterminated-quote`, `needs-quotes`), its `position`
-(0-based, in characters) and, where reading stopped at a word, the `token`.
+`unbalanced-close`, `unterminated-quote`, `needs-quotes`, `too-deep`), its
+`position` (0-based, in characters) and, where reading stopped at a word,
+the `token`; `filter-too-deep` is a `400` as well; `dispatch-queue-full` is a
+`503`. A run's items and verdict rows carry each item's `name` as the run
+was composed (the store keeps them; the id where it kept none).
+`runcomposer serve` speaks plain HTTP; TLS is terminated by a reverse proxy
+in front of it.
 
 **Cross-site writes are refused.** A state-changing request — any method
 but `GET`, `HEAD` and `OPTIONS`, on every path — that a browser sends for
@@ -2453,7 +2515,7 @@ as history; `CHANGELOG.md` says what changed.
 | 21 | A dispatch whose results never come (0.2) | **Opt-in expiry to `FAILED`** (`core.dispatch.awaiting_timeout_s`, §4), the clock restarted by every delivery, late results still taken in. Rejected: finalizing on expiry (an executor that died is a broken execution, not a result), and an expiry on by default (how long a remote job may take is the deployment's knowledge, not the core's). |
 | 22 | The reference runners' parts (0.2) | **Exported as SDK toolkits** (`runcomposer.sdk.robot`, `.jenkins`, §6.6), the reference runners built on them. Rejected: keeping the parts private to the runners — a connector with different needs would restate the worker stop protocol or the Jenkins queue semantics, which is where such details go wrong. |
 | 23 | UI stack (0.2; supersedes #3) | **TypeScript and React only** (§10): the expression editor, dialogs and list windowing are the UI's own. Rejected: keeping the filter widget behind an adapter — the filter is the run spec's grammar, and translating a widget's model into it was a standing source of silent mistranslations. |
-| 24 | A filter given as one string (0.2) | **Filter text, read by the core** (§3.1), with the single-pattern fallback and a warning for a string that is not text. The spec stores the AST; "every item" is `{"not": "regex:^$"}`, spelled `*` only in the text. Rejected: a string as always one pattern (`compile 'Auth OR Cart'` selected nothing), and a new node for "every item" (refused by every shipped `runspec/1.0` validator). |
+| 24 | A filter given as one string (0.2) | **Filter text, read by the core** (§3.1), and nothing else: a string that does not parse is refused with its position, by the API, the CLI, configured filters and the web UI alike — one grammar, one answer. The spec stores the AST; "every item" is `{"not": "regex:^$"}`, spelled `*` only in the text. Rejected: a string as always one pattern (`compile 'Auth OR Cart'` selected nothing); a fallback that read an unparsable string as one pattern with a warning (the server then answered what the UI refused — two answers for one string); and a new node for "every item" (refused by every shipped `runspec/1.0` validator). |
 | 25 | Which values from the environment are secret (0.2) | **`${env:…}` stays a secret; `${env-public:…}`, paths and converted numbers are none** (§8), and secrets are blanked out of free text only, never out of identifiers. Rejected: every environment value a secret (a region named like a shard, or a port, was blanked out of identifiers and addresses), and a secret too short to blank safely kept silently unblanked — it is refused instead. |
 | 26 | The host names the server answers to (0.2) | **`core.api.hosts`, defaulted by the address actually bound** (§8, §9): unset, a loopback bind answers to the loopback names only — DNS rebinding is closed for the default local setup with nothing to configure — and any other bind to every name until the list is set. Keyed to the bind, not to `core.api.host`, because `serve --host` overrides the file (the image binds `0.0.0.0` over any config). The refusal is an ordinary error document (`400`, `unknown-host`); an entry without a port matches any port, one with a port that port only. Rejected: restricting every deployment to the loopback names by default (every server reached by a real name would refuse its first request), and leaving `Host` unchecked with a reverse proxy as the only answer (the default local setup was open to any page its user visits). |
 | 27 | The run spec as a Jenkins build parameter (0.2) | **Visible, on purpose** (§6.2b): the document carries no credential — the token travels only as a password parameter — and it is what runcomposer itself serves for the run, so the build page says which document was run. Its cost is size (one environment variable of the build step); `max_parameter_bytes` refuses before that limit and `{spec_url}` keeps the document out of the parameters. Rejected: hiding the document as a password parameter, which protects nothing and takes from the build page the one thing worth showing. |

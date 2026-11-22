@@ -87,7 +87,8 @@
       "store-error": "Der Laufspeicher hat einen Fehler gemeldet.",
       "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten.",
       "nothing-planned": "Nichts in der Lieferung gehört zu einem Eintrag dieses Laufs.",
-      "filter-too-deep": "Der Filter ist zu tief verschachtelt."
+      "filter-too-deep": "Der Filter ist zu tief verschachtelt.",
+      "dispatch-queue-full": "Zu viele Läufe warten auf ihren Start — bitte gleich noch einmal versuchen."
     }
   },
   "runState": {

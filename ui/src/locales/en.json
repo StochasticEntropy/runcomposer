@@ -87,7 +87,8 @@
       "store-error": "The run store reported an error.",
       "internal-error": "The server ran into an internal error.",
       "nothing-planned": "Nothing in the delivery is for an item of this run.",
-      "filter-too-deep": "The filter nests too deeply."
+      "filter-too-deep": "The filter nests too deeply.",
+      "dispatch-queue-full": "Too many runs are waiting to start — try again in a moment."
     }
   },
   "runState": {

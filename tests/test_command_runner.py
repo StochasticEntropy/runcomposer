@@ -648,3 +648,20 @@ class TestDrift:
         run_id = compose(service, "Cart", runner_id=RUNNER)
         shutil.copy(manifest, manifest.with_suffix(".bak"))  # the directory changed, the catalog did not
         assert run_to_end(service, run_id, RUNNER).completion == "PASS"
+
+
+class TestSecretsInTheLog:
+    def test_a_secret_the_command_prints_is_blanked_in_the_recorded_log(self, make_service, script, monkeypatch):
+        """``command.log`` is served: a configured ``${env:…}`` value the
+        command echoes is blanked in it, as in every other recorded text."""
+        secret = "shop-deploy-key-9f3e"
+        monkeypatch.setenv("SHOP_DEPLOY_KEY", secret)
+        echo = [PY, "-c", "import os, sys; print('key is', os.environ['SHOP_KEY']); sys.exit(0)"]
+        service = command_service(
+            make_service, echo, env={"SHOP_KEY": "${env:SHOP_DEPLOY_KEY}"}, format="runcomposer-verdicts",
+        )
+        run = execute(service)
+        log = (shard_dir(service, run) / "command.log").read_text(encoding="utf-8")
+        assert log.startswith("key is ") and secret not in log
+        recorded = [a for a in service.store.artifact_refs(run.id) if a.name.startswith("command.log")]
+        assert recorded

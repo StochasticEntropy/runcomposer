@@ -199,12 +199,11 @@ result is itself a valid taxonomy document — plus additive metadata:
 Alongside `taxonomy`, the response carries a `resolved` summary:
 `tags_total`, `tags_claimed`, `tags_selectable`, `tags_unassigned`,
 `items_total`, `items_claimed`, `nodes_written`, `nodes_dropped`,
-`nodes_total` — and, as a key of its own, `warnings`: one sentence per leaf whose `filter` was
-read as one pattern only by the fallback for strings that are not filter
-text ([above](#the-pattern-in-a-leaf)); empty for a file written as filter
-text throughout, such as the bundled one, whose one regex leaf is written
-quoted
-(`tests/test_filter_text_entry_points.py::TestTheDriftCheckReadsLeavesAsTheTreeDoes::test_the_bundled_demo_taxonomy_needs_no_fallback`).
+`nodes_total` — and, as a key of its own, `warnings`, empty for a file
+written as filter text: a leaf whose `filter` does not parse is refused
+with its column instead ([above](#the-pattern-in-a-leaf)) — the bundled
+file's one regex leaf is written quoted
+(`tests/test_filter_text_entry_points.py::TestTheDriftCheckReadsLeavesAsTheTreeDoes::test_the_bundled_demo_taxonomy_reads_without_a_warning`).
 
 ### The three rules worth knowing
 

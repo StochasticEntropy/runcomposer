@@ -233,3 +233,10 @@ def test_serve_on_the_default_loopback_address_refuses_a_foreign_host(tmp_path):
     finally:
         server.terminate()
         server.wait(timeout=30)
+
+
+def test_an_empty_list_is_refused_saying_what_null_means(tmp_path):
+    """``null`` is not "every name": on a loopback bind it is the loopback
+    names only — the refusal says so."""
+    with pytest.raises(ConfigError, match=r"or null for the default — the loopback names on a loopback bind, every name on any other"):
+        load_config(str(write_config(tmp_path, core={"api": {"hosts": []}})))

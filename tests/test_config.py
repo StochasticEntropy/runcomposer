@@ -328,7 +328,7 @@ class TestCoreValues:
 
     def test_dispatch_defaults(self, tmp_path):
         assert load(tmp_path, {}).dispatch == {
-            "max_concurrent": 2, "handoff_wait_s": 2.0, "awaiting_timeout_s": None,
+            "max_concurrent": 2, "max_queued": 100, "handoff_wait_s": 2.0, "awaiting_timeout_s": None,
             "recovery_interval_s": 15.0,
         }
 

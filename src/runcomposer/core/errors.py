@@ -15,6 +15,7 @@ __all__ = [
     "ConfigError",
     "Conflict",
     "DispatchCancelled",
+    "DispatchQueueFull",
     "DispatchRefused",
     "Forbidden",
     "IngestError",
@@ -179,6 +180,13 @@ class DispatchCancelled(RunComposerError):
 
 
 # -- authentication of the write path --------------------------------------------
+
+
+class DispatchQueueFull(RunComposerError):
+    """As many dispatches wait for a free slot (``core.dispatch.max_queued``)
+    as this deployment queues: try again later (HTTP 503)."""
+
+    code = "dispatch-queue-full"
 
 
 class AuthRequired(RunComposerError):

@@ -298,3 +298,52 @@ def test_the_server_recovers_at_startup(make_client, tmp_path):
     assert dispatch["error_code"] == "interrupted"
     assert dispatch["error_owner"].endswith(":01TOKENOFTHATPROCESS000000")
     assert dispatch["error_owner"] not in dispatch["error"]
+
+
+class TestWhichMachine:
+    """An owner is declared gone only when it provably ran on this machine:
+    the machine is known by the system's machine id, not by a host name
+    that changes with the network."""
+
+    def test_an_identity_carries_this_machines_key(self, service):
+        from runcomposer.app.liveness import machine_key
+
+        assert service.dispatcher.owner.endswith("." + machine_key())
+        assert machine_key().startswith(("m-", "h-"))
+
+    def test_a_live_owner_of_this_machine_under_another_host_name_is_alive(self, service, monkeypatch):
+        """The host name changed (the laptop joined another network): the
+        owner ran on this machine, its process lives — not gone."""
+        from runcomposer.app import liveness
+
+        monkeypatch.setattr(liveness, "machine_key", lambda: "m-0123456789ab")
+        other = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+        try:
+            renamed = f"laptop-at-the-office:{other.pid}:01TOKENOFTHATPROCESS000000.m-0123456789ab"
+            assert liveness.owner_alive(renamed, service.dispatcher.owner)
+        finally:
+            other.communicate(b"")
+        assert not liveness.owner_alive(renamed, service.dispatcher.owner), "and gone once its process is"
+
+    def test_an_owner_on_another_identified_machine_is_never_gone(self, service, monkeypatch):
+        from runcomposer.app import liveness
+
+        monkeypatch.setattr(liveness, "machine_key", lambda: "m-0123456789ab")
+        elsewhere = f"build-agent-7:{dead_pid()}:01TOKENOFTHATPROCESS000000.m-ba9876543210"
+        assert liveness.owner_alive(elsewhere, service.dispatcher.owner)
+
+    def test_a_replaced_container_without_a_machine_id_is_gone(self, service, monkeypatch):
+        from runcomposer.app import liveness
+
+        monkeypatch.setattr(liveness, "machine_key", lambda: "h-0123456789ab")
+        replaced = "4f2a9c0d1e3b:1:01TOKENOFTHATPROCESS000000.h-ba9876543210"
+        assert not liveness.owner_alive(replaced, service.dispatcher.owner)
+
+    def test_recovery_leaves_a_dispatch_of_another_identified_machine_alone(self, service, monkeypatch):
+        from runcomposer.app import liveness
+
+        monkeypatch.setattr(liveness, "machine_key", lambda: "m-0123456789ab")
+        run_id = compose(service, "Auth-SSO")
+        open_dispatch(service, run_id, owned_by=f"build-agent-7:{dead_pid()}:01TOKENOFTHATPROCESS000000.m-ba9876543210")
+        assert service.recover() == []
+        assert service.require_run(run_id).state == "RUNNING"

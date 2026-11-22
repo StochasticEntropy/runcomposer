@@ -174,6 +174,8 @@ class FakeDispatchContext:
     - ``tokens`` — ``False`` for a deployment with ingest tokens disabled.
     - ``connectors`` — ``{name: settings}``, what ``ctx.connector_settings(name)``
       answers (the deployment's ``connectors:`` section).
+    - ``secrets`` — values ``ctx.redact(text)`` blanks out, as runcomposer
+      blanks what a deployment takes from ``${env:…}``.
 
     What the runner did is in ``declared``, ``shard_items``, ``shard_groups``,
     ``plan``, ``links``, ``spec_sha256``, ``deliveries``, ``live_updates``
@@ -209,6 +211,7 @@ class FakeDispatchContext:
         expect_format: str | None = None,
         tokens: bool = True,
         connectors: Mapping[str, Mapping[str, Any]] | None = None,
+        secrets: Sequence[str] = (),
     ):
         #: Whether the expected format may still follow the runner's own.
         self._format_adoptable = spec is None and expect_format is None
@@ -244,6 +247,7 @@ class FakeDispatchContext:
         self._expect_format = _expected_format(self._document) or expect_format
         self._tokens_enabled = tokens
         self._connectors = {str(name): dict(value) for name, value in (connectors or {}).items()}
+        self._secrets = frozenset(str(secret) for secret in secrets)
         self._own_workdir = workdir is None
         self._workdir: Path | None = Path(workdir).resolve() if workdir is not None else None
         self._order = HandoffOrder(self.dispatch_id)
@@ -545,6 +549,13 @@ class FakeDispatchContext:
             self.artifacts.append(
                 ArtifactRef(self.run_id, self.dispatch_id, name, guessed, target, shard, group)
             )
+
+    def redact(self, text: str) -> str:
+        """``text`` with the ``secrets=`` of the constructor blanked out, as
+        runcomposer blanks the values a deployment takes from ``${env:…}``."""
+        from runcomposer.app.redaction import redact
+
+        return str(redact(str(text), self._secrets))
 
     def log(self, message: str, level: str = "info") -> None:
         with self._lock:

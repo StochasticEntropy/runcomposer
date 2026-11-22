@@ -941,7 +941,7 @@ class TestDatabase:
         }
         assert tables == {
             "runs", "specs", "dispatches", "dispatch_specs", "ingest_tokens", "deliveries",
-            "verdicts", "live_verdicts", "artifact_refs", "events", "duration_seeds",
+            "verdicts", "live_verdicts", "artifact_refs", "events", "duration_seeds", "item_names",
         }
         columns = {
             row[1] for table in tables for row in conn.execute(f"PRAGMA table_info({table})")
@@ -1024,6 +1024,18 @@ class TestInMemory:
     def test_the_file_uri_form_is_refused_with_a_reason(self):
         with pytest.raises(StoreError, match="'file:' URI form is not supported"):
             SqliteRunStore(path="file:shop?mode=memory&cache=shared")
+
+    def test_through_a_config_it_is_refused_too_and_no_file_appears(self, tmp_path):
+        """The check runs before the path is anchored to the config file —
+        anchored, 'file:old.db' would be a file of that name beside it."""
+        from runcomposer.sdk import ConfigError, Service, load_config
+
+        from .conftest import write_config
+
+        config = load_config(str(write_config(tmp_path, store={"sqlite": {"path": "file:old.db"}})))
+        with pytest.raises(ConfigError, match="'file:' URI form is not supported"):
+            Service(config).validate()
+        assert not list(tmp_path.glob("file:*"))
 
     def test_a_missing_directory_is_created(self, tmp_path):
         """Like every other directory a config names (artifacts, inbox,

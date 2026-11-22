@@ -144,3 +144,21 @@ def test_a_json_document_is_read_without_yaml(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "1.0"
+
+
+def test_the_command_line_on_a_minimal_install_says_what_is_missing_in_one_line(tmp_path):
+    """``runcomposer --version`` (any command) where the command line's
+    packages are not installed: one line naming the package and the way
+    out, exit 2 — not a traceback."""
+    done = run_blocked(
+        """
+        from runcomposer.cli import main
+        raise SystemExit(main(["--version"]))
+        """,
+        tmp_path,
+    )
+    assert done.returncode == 2, done.stderr
+    assert "Traceback" not in done.stderr
+    (line,) = done.stderr.strip().splitlines()
+    assert line.startswith("error: this command needs the package 'PyYAML', which is not installed")
+    assert "pip install runcomposer" in line

@@ -70,7 +70,21 @@ Referrer-Policy: no-referrer
 ```
 
 (These two blocks are compared with what the server sends by
-`tests/test_api_browser_safety.py`.) In scope: any traversal that reads a
+`tests/test_api_browser_safety.py`.)
+
+What that leaves a hostile HTML artifact, precisely: it cannot read or call
+this server as the user (its origin is opaque: no cookies, no
+`localStorage`, no API), cannot fetch, load or post anything
+(`default-src 'none'`, `form-action 'none'`), and cannot open windows
+(`sandbox` without `allow-popups`). It **can navigate its own tab** — by
+script (`location = …`) or a link the user follows — to any address, and
+put what it holds into that address: the report's own content, nothing of
+the user's. In a frame, `sandbox` without `allow-top-navigation` keeps it
+from moving the page around it; opened in a tab of its own, the tab is its
+top-level page and navigating it is allowed. No standard header restricts
+where a page may navigate itself (CSP's `navigate-to` was dropped from the
+specification and no browser enforces it), so this residual stays; it is
+why the run page links artifacts rather than embedding them. In scope: any traversal that reads a
 file outside `artifact_dir` (via `..`, an absolute path, or a symlink), and
 any way an artifact scripts against this origin, reaches the API, or steals
 an ingest token despite those headers.

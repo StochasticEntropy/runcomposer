@@ -16,7 +16,6 @@ quarantine it and move on.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
 from .quarantine import QuarantineEntry
+from .redaction import without_location
 from .tokens import authorize_push, mint_token
 
 if TYPE_CHECKING:
@@ -80,22 +80,6 @@ class QuarantineReport:
     entry_id: str | None
     reason: str
     detail: str
-
-
-def _without_location(text: str, bundle: Path, name: str) -> str:
-    """``text`` with the bundle's location on this machine taken out: a path
-    inside the bundle becomes its path relative to the bundle, the bundle's
-    own path becomes ``name``. Both spellings of the location are covered —
-    as given and fully resolved (a temporary directory is often reached
-    through a symlink) — the longer first, so neither is cut in half."""
-    spellings = {str(bundle), os.path.abspath(bundle)}
-    try:
-        spellings.add(str(bundle.resolve()))
-    except (OSError, ValueError):
-        pass
-    for location in sorted(spellings, key=len, reverse=True):
-        text = text.replace(location + os.sep, "").replace(location, name)
-    return text
 
 
 def expected_format(spec: Mapping[str, Any] | None) -> str:
@@ -355,7 +339,7 @@ class Ingestion:
                     claimed = (read_marker(bundle) or {}).get("run_id")
                 except IngestError:
                     claimed = None
-            detail = _without_location(str(exc), bundle, name or bundle.name)
+            detail = without_location(str(exc), bundle, name or bundle.name)
             entry = self._quarantine(
                 bundle, reason=reason, transport=transport, claimed_run_id=claimed,
                 format=format, detail=detail,

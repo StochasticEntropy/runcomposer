@@ -55,7 +55,7 @@ from .ingestion import Ingestion, IngestReport, QuarantineReport
 from .ledger import Ledger
 from .quarantine import Quarantine
 from .recovery import recover
-from .redaction import redact, redact_free_text
+from .redaction import FREE_TEXT_KEYS, redact, redact_free_text, without_locations
 from .taxonomy import read_taxonomy
 
 __all__ = ["Service", "parameter_json"]
@@ -186,21 +186,39 @@ class Service:
 
     @_part
     def dispatcher(self) -> DispatchManager:
-        return DispatchManager(self, max_concurrent=int(self.config.dispatch["max_concurrent"]))
+        return DispatchManager(
+            self,
+            max_concurrent=int(self.config.dispatch["max_concurrent"]),
+            max_queued=int(self.config.dispatch["max_queued"]),
+        )
 
     def redact(self, value: Any) -> Any:
         """``value`` with every secret this deployment takes from the
-        environment blanked out. A runner may quote a configured option in a
-        refusal, an error or its health — a hook command with a token in it,
-        say; what is recorded, logged and answered goes through here."""
-        return redact(value, self._secrets)
+        environment blanked out, and without the locations of its own
+        directories: a path in the artifact or private directory is written
+        relative to it (``without_locations``). A runner may quote a
+        configured option in a refusal, an error or its health — a hook
+        command with a token in it, say — or a file in its work directory;
+        what is recorded, logged and answered goes through here."""
+        return without_locations(redact(value, self._secrets), self._locations)
 
     def redact_event_data(self, data: Mapping[str, Any]) -> dict[str, Any]:
         """An event's data with the secrets blanked out of its free-text
         fields only (``message``, ``reason``, ``error``, ``plan``,
-        ``detail``) — shard and group names, ids, states and links are
-        identifiers, never rewritten."""
-        return redact_free_text(data, self._secrets)
+        ``detail``), and this machine's directories taken out of them —
+        shard and group names, ids, states and links are identifiers, never
+        rewritten."""
+        return {
+            key: without_locations(entry, self._locations) if key in FREE_TEXT_KEYS else entry
+            for key, entry in redact_free_text(data, self._secrets).items()
+        }
+
+    @_part
+    def _locations(self) -> dict[str, Path]:
+        return {
+            "<artifact directory>": self.config.artifact_dir,
+            "<private directory>": self.config.private_dir,
+        }
 
     @_part
     def _secrets(self) -> frozenset[str]:

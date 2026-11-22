@@ -88,3 +88,34 @@ def test_an_expired_dispatch(make_client):
     dispatch = latest_dispatch(client, run_id)
     assert (dispatch["state"], dispatch["error_code"]) == ("FAILED", "expired")
     assert dispatch["error"].startswith("expired: no results for")
+
+
+class EmptyBundle(RunnerBase):
+    """Delivers a shard directory that holds no JUnit file: the parser's
+    error names the directory, as a path of the work directory."""
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="empty", result_format="junit-xml")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["shard-1"])
+        bundle = ctx.workdir / "shard-1"
+        bundle.mkdir(parents=True, exist_ok=True)
+        ctx.log(f"delivering {bundle}")
+        ctx.deliver("shard-1", bundle=bundle, format="junit-xml")
+
+
+def test_an_error_names_no_directory_of_the_server(make_client):
+    """What is recorded for a dispatch — its error and its log lines — says
+    where in the artifact directory, never where that directory is."""
+    client, service = make_client(runners={"empty": {"module": f"{HERE}:EmptyBundle"}})
+    run_id = start(client, "empty")
+    wait_until(lambda: latest_dispatch(client, run_id)["state"] == "FAILED", what="the dispatch to fail")
+    dispatch = latest_dispatch(client, run_id)
+    roots = {str(service.config.artifact_dir), str(service.config.artifact_dir.resolve())}
+    assert "bundle contains no 'junit-xml' results" in dispatch["error"]
+    assert not any(root in dispatch["error"] for root in roots), dispatch["error"]
+    assert dispatch["error"].rstrip().endswith("shard-1"), dispatch["error"]
+    events = client.get(f"{API}/runs/{run_id}/events").json()
+    text = " ".join(str(event["data"]) for event in (events["events"] if isinstance(events, dict) else events))
+    assert "delivering" in text and not any(root in text for root in roots)

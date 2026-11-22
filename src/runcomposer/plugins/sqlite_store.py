@@ -44,6 +44,7 @@ from typing import Any
 from runcomposer.sdk import (
     ACTIVE_STATES,
     ArtifactRef,
+    ConfigError,
     DeliveryRecord,
     DispatchRecord,
     LiveStatus,
@@ -242,6 +243,11 @@ class _NoLock:
 
 _NO_LOCK = _NoLock()
 
+_FILE_URI_REFUSAL = (
+    "store.sqlite.path takes a file path or ':memory:' — the 'file:' URI form is "
+    "not supported (its options would bypass the journal settings this store relies on)"
+)
+
 
 class SqliteRunStore(StoreBase):
     store_id = "sqlite"
@@ -257,6 +263,10 @@ class SqliteRunStore(StoreBase):
         which names no file at all, which is exactly why this decision is the
         store's and not the core's."""
         path = options.get("path")
+        if isinstance(path, str) and path.startswith("file:"):
+            # Refused before anchoring: anchored, 'file:old.db' would read as
+            # a file of that name next to the config file.
+            raise ConfigError(_FILE_URI_REFUSAL)
         if isinstance(path, str) and path != ":memory:":
             options["path"] = resolve(path)
         return options
@@ -264,10 +274,7 @@ class SqliteRunStore(StoreBase):
     def __init__(self, path: str = "runcomposer.db"):
         self._path = str(path)
         if self._path.startswith("file:"):
-            raise StoreError(
-                "store.sqlite.path takes a file path or ':memory:' — the 'file:' URI form is "
-                "not supported (its options would bypass the journal settings this store relies on)"
-            )
+            raise StoreError(_FILE_URI_REFUSAL)
         self._memory = self._path == ":memory:"
         if not self._memory:
             # The directory the store lives in is created on first use, like

@@ -260,6 +260,7 @@ class CommandRunner(RunnerBase):
 
     @staticmethod
     def _record_artifacts(ctx: DispatchContext, shard: str, out_dir: Path) -> None:
+        _blank_secrets(ctx, out_dir / "command.log")
         count = 0
         for file in sorted(out_dir.rglob("*")):
             if file.is_file() and file.name != "item_ids.txt" and count < _MAX_ARTIFACTS:
@@ -279,6 +280,21 @@ class CommandRunner(RunnerBase):
         except Exception as exc:
             return f"shard {shard}: {exc}"
         return None
+
+
+def _blank_secrets(ctx: DispatchContext, log: Path) -> None:
+    """The command's output as it is recorded and served: with the
+    deployment's secrets blanked out (``ctx.redact``) — a command may echo
+    the token it was configured with. Rewritten line by line, in place."""
+    if not log.is_file():
+        return
+    cleaned = log.with_name(f".{log.name}.cleaning")
+    with open(log, encoding="utf-8", errors="surrogateescape", newline="") as source, open(
+        cleaned, "w", encoding="utf-8", errors="surrogateescape", newline=""
+    ) as target:
+        for line in source:
+            target.write(ctx.redact(line))
+    os.replace(cleaned, log)
 
 
 def _run_command(payload: WorkerPayload, stop: Callable[[], bool]) -> dict[str, Any]:

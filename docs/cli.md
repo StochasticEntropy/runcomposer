@@ -1629,7 +1629,7 @@ $ runcomposer watch 01M7XRJCMQKS9MGQSZEZK9CSQG --timeout 1 --config slow/config.
 2026-11-21T00:37:15Z  #1    run.composed
 2026-11-21T00:37:15Z  #2    run.dispatched  state=DISPATCHED
 2026-11-21T00:37:15Z  #3    run.running  state=RUNNING
-warning: 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
+warning: 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H.m-3f9a0c2d71be) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
 timed out
 ```
 
@@ -1728,11 +1728,25 @@ dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z  demo  RUNNING (owner gone)  no verdicts
   shard 1: outstanding — no verdicts
   running now: 1 item(s)
   live: 1 item(s) reported so far by shards still executing
-# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
+# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H.m-3f9a0c2d71be) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
 ```
 
-The owner is `host:pid:token`; it is gone when that process is dead (on
-Linux, also when it ended and was never reaped) or ran on another host.
+The owner is `host:pid:token.machine`, `machine` a key made from the
+system's machine id (or, where the system has none — a slim container
+image — from the host name); it is gone when it ran on this machine and
+that process is dead (on Linux, also when it ended and was never reaped),
+or, without a machine id, when it ran under another host name. An owner on
+another machine with a machine id is never taken for gone: `cancel --force`
+closes what it left. The workers it started stop by themselves when it is
+gone, so nothing of the dispatch executes any more.
+
+Once the dispatch is `STALE`, its `error` says it was interrupted, and the
+JSON of `show`, `runs` and the API says why in a field of its own:
+`error_code` is `interrupted` and `error_owner` the process it lost (kept
+out of the `error` text). The other causes are `runner-raised` (the runner
+raised after the hand-off), `expired` (no results within
+`core.dispatch.awaiting_timeout_s`) and `cancelled`; a dispatch without an
+error has `""` (`tests/test_dispatch_error_codes.py`).
 [`doctor`](#doctor), or starting [`serve`](#serve), marks such a dispatch
 `STALE`, and so does a `serve` already running on the same store, within
 `core.dispatch.recovery_interval_s` (default 15 seconds); [`cancel --force`](#cancel) closes it as `CANCELLED`
@@ -1806,7 +1820,7 @@ a line that says how to reconcile it:
 $ runcomposer runs --config slow/config.yaml
 RUN ID                      STATE                 RESULT      MODE          CREATED               TITLE
 01M7XRJCMQKS9MGQSZEZK9CSQG  RUNNING (owner gone)  -           demo          2026-11-21T00:37:15Z  Refunds, slowly
-# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
+# 01M7XRJCMQKS9MGQSZEZK9CSQG: the process executing dispatch 01M7XRJCNKQ7Y2H9P8J793GJ4Z (ci-runner-1:87492:01M7XRJCKQ777F3DMPSCSJBD8H.m-3f9a0c2d71be) is gone — nothing will finish it. `runcomposer doctor` (or starting `serve`) marks it STALE; `runcomposer cancel --force 01M7XRJCMQKS9MGQSZEZK9CSQG` closes it
 ```
 
 A state that does not exist, or a time that is not one, is an error rather
@@ -2308,14 +2322,18 @@ Every name goes through the catalog. What it does not know is reported and
 not stored, and a duration of 0 is skipped — 0 means "not known", to the
 store and to the planner alike. A file that imports nothing it was asked to
 exits `1`. The sample file of the example world, imported into a freshly
-seeded demo workspace (two of its names are not in the demo corpus), and a
-file with nothing usable in it:
+seeded demo workspace (every one of its nine names is in the demo corpus),
+and a file with nothing usable in it — one name the catalog does not know,
+and one duration of 0:
 
 ```console
 $ runcomposer history import durations.csv --config demo/config.yaml
-imported 7 duration(s)
-  not in the catalog, skipped: Shop.Checkout.Cart.T001
-  not in the catalog, skipped: Shop.Checkout.Cart.T002
+imported 9 duration(s)
+
+$ cat unknown.csv
+item,duration_ms
+Shop.No.Such.T999,250
+Shop.Cart.Core.T001,0
 
 $ runcomposer history import unknown.csv --config demo/config.yaml
 imported 0 duration(s)
@@ -2579,7 +2597,9 @@ While it runs, the server:
 
 - **executes dispatches off the request path** — `POST /api/v1/runs` with a
   dispatch answers at once, and at most `core.dispatch.max_concurrent`
-  (default `2`) dispatches execute at a time;
+  (default `2`) dispatches execute at a time; at most
+  `core.dispatch.max_queued` (default `100`) wait for a slot, and one more is
+  refused `503`, `dispatch-queue-full`;
 - **watches the file-drop inbox** (`core.ingestion.inbox`, default
   `results_inbox/` next to the config; `inbox: null` turns it off). Each
   subdirectory dropped there is one bundle. It is taken in when it is

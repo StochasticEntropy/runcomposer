@@ -54,6 +54,7 @@ from runcomposer.core import events as kinds
 from runcomposer.core.errors import (
     Conflict,
     DispatchCancelled,
+    DispatchQueueFull,
     DispatchRefused,
     InvalidParameter,
     InvalidRequest,
@@ -109,7 +110,7 @@ def _redacted_invalid(service: Service, error: InvalidParameter) -> InvalidParam
     quote an option)."""
     return InvalidParameter(
         str(service.redact(str(error))), parameter=error.parameter,
-        problem=getattr(error, "problem", "runner"), key=getattr(error, "key", None),
+        problem=error.problem, key=error.key,
     )
 
 
@@ -495,6 +496,9 @@ class _Context:
             group=group,
         )
 
+    def redact(self, text: str) -> str:
+        return str(self._service.redact(str(text)))
+
     def log(self, message: str, level: str = "info") -> None:
         kind = kinds.WARNING if level in ("warning", "error") else kinds.LOG
         self._service.bus.emit(
@@ -586,8 +590,11 @@ class _Active:
 
 
 class DispatchManager:
-    def __init__(self, service: Service, *, max_concurrent: int = 2):
+    def __init__(self, service: Service, *, max_concurrent: int = 2, max_queued: int = 100):
         self._service = service
+        #: Dispatches that may wait for a free slot of the pool; one more is
+        #: refused (``DispatchQueueFull``) before anything is recorded.
+        self._max_queued = max(0, int(max_queued))
         self.owner = owner_identity()
         LIVE_OWNERS.add(self.owner)
         self._pool = ThreadPoolExecutor(
@@ -761,6 +768,8 @@ class DispatchManager:
             # process has its own lock — the store's exclusive insert below
             # is what holds across processes.
             self._refuse_if_in_flight(run_id)
+            if not foreground:
+                self._refuse_if_queue_full()
             dispatch = service.ledger.open(
                 run_id, runner_id, owner=self.owner, parameters=accepted, exclusive=True
             )
@@ -793,6 +802,19 @@ class DispatchManager:
         else:
             active.future = self._pool.submit(self._execute, active)
         return active.outcome
+
+    def _refuse_if_queue_full(self) -> None:
+        """Called under the lock: as many dispatches already wait for a free
+        slot as are queued at most."""
+        waiting = sum(
+            1 for active in self._active.values()
+            if active.future is not None and not active.future.running() and not active.future.done()
+        )
+        if waiting >= self._max_queued:
+            raise DispatchQueueFull(
+                f"{waiting} dispatch(es) already wait for a free slot (core.dispatch.max_queued: "
+                f"{self._max_queued}, max_concurrent executing) — try again later"
+            )
 
     def wait_handoff(self, outcome: Outcome, timeout: float) -> bool:
         """Wait up to ``timeout`` for the dispatch to be declared, refused or
