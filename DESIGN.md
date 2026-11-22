@@ -1299,7 +1299,7 @@ file is connected by configuration alone. Its `plan` names the shards and
 the items each would run. Each shard's command is started by a supervised
 worker process (`supervise_workers`, §6.6) in a process group of its own:
 a cancel, or `timeout_s` (counted from the worker's start), stops the
-command and whatever it started, and a cancel that lands before the
+command and whatever it started (on Windows the command alone, §6.6), and a cancel that lands before the
 command starts runs nothing (tests/test_command_runner.py).
 
 **e) `demo`** — **simulated**. No test is run: verdicts derive from a seed
@@ -1551,7 +1551,14 @@ the supervisor holds open, and when that process is gone — a killed
 server, a killed foreground `run` — stops itself the same way, ask then
 kill, with what it started; so a dispatch after a restart never executes
 beside the workers of the one before it (tests/test_worker_supervisor.py
-`TestTheSupervisorIsGone`). A payload or a function that
+`TestTheSupervisorIsGone`). Windows has no process groups and no signal
+to send: there the request is `stop()` and the file, then the worker
+process alone is terminated (no `SystemExit` to clean up on) and what it
+started is not reached — a known limit (docs/connectors.md); a Robot
+toolkit worker watches the request itself and raises the termination
+signal in its own process, so Robot ends its execution gracefully there
+too, and a merge ends at once (tests/test_robot_toolkit.py, run on
+Windows by CI). A payload or a function that
 cannot be sent to a spawned process is refused before anything starts. The
 Robot toolkit's `supervise` and `spawn_merge` (one payload, the merge as
 its target) and the `command` runner are built on it — one implementation

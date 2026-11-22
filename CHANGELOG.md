@@ -551,7 +551,7 @@ not exist or worked differently:
 - **A versioned sqlite schema with in-place migration** from 0.1; WAL, a busy
   timeout, one connection per thread, atomic deliveries.
 - **Logging** through the `logging` module (`runcomposer.*`).
-- **CI** on Linux (3.10–3.13), macOS and (not yet blocking) Windows, plus
+- **CI** on Linux (3.10–3.13), macOS and Windows, plus
   jobs for the robot extra, the connector template, the export round trip,
   the wheel, the docker image and a real Jenkins; **releases** publish the
   very files the release workflow built, installed and tested.
@@ -1125,7 +1125,13 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
   application built without its bind address answers to every name too.
 - One instance owns a store: dispatching one run twice is refused across
   processes, but instances are not coordinated (`DESIGN.md` §13).
-- The Windows CI job has not been seen green yet and does not block.
+- On Windows there are no process groups: what a worker, a `command`
+  runner's command or a `pre_run_hooks` command started is not stopped
+  with it, and a worker that does not stop on the request is ended outright
+  (no `SystemExit` to clean up on; a `robot-pool` worker does stop on the
+  request). The suite runs there in CI (with and without the robot extra)
+  and blocks a merge; the tests of a POSIX shell's commands skip there,
+  naming why.
 
 ## 0.1.7 — 2026-09-03
 

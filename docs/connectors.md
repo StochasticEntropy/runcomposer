@@ -2045,6 +2045,12 @@ Edges you should know:
 - **One instance owns a store.** The store refuses a second in-flight dispatch
   per run across processes, but runcomposer does not coordinate instances or
   queue across them (DESIGN.md §13).
-- **Windows** has a process-liveness code path of its own and CI runs the
-  suite there without blocking merges; it has not been seen green yet.
-  Tests that need a POSIX shell skip there with that reason.
+- **Windows** has no process groups and no termination signal to send.
+  What a worker, a `command` runner's command or a `pre_run_hooks`
+  command started is not stopped with it — after a stop, a timeout or the
+  end of the supervising process — and a worker that does not stop on the
+  request is ended outright, without `SystemExit` to clean up on. A
+  `robot-pool` worker watches the request itself and ends Robot's
+  execution gracefully, as the first signal does on POSIX. CI runs the
+  whole suite there, with and without the robot extra, and it blocks a
+  merge; the tests whose commands are POSIX shell skip there, naming why.

@@ -74,13 +74,14 @@ jobs:
           - os: macos-latest
             python-version: "3.12"
             experimental: false
-          # Windows has a code path of its own (process liveness) and tests
-          # that need a POSIX shell skip there with a reason. It has not yet
-          # been seen green, so it does not block a merge until it has been —
-          # then set experimental to false.
+          # Windows has code paths of its own (process liveness, the stop
+          # protocol without process groups or signals) and blocks a merge
+          # like every other platform. A test that needs a POSIX shell, or
+          # what Windows does not have, skips there naming it (-rs lists
+          # every reason in the log).
           - os: windows-latest
             python-version: "3.12"
-            experimental: true
+            experimental: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -110,9 +111,8 @@ jobs:
 
   robot-windows:
     # The robot extra on Windows: robot-pool, its workers and the toolkit
-    # there. Not yet seen green, so it does not block a merge.
+    # there, the whole suite with them.
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
