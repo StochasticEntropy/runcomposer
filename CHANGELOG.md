@@ -328,6 +328,11 @@ not exist or worked differently:
   instead of `spec_document`. Download the document from `spec_url` — those
   are the exact bytes the marker hash is verified against.
 - **`GET /runs/{id}/spec` no longer contains `results.token`.**
+- **A results push whose files would be one file on the server is a
+  `400`**: the same name twice in one push on every server, and on Windows
+  and a default macOS volume also `Results.json` with `results.json`, or
+  one name in its composed and decomposed Unicode forms. 0.1 took such a
+  push and kept the last of them.
 - **The rows of `GET /api/v1/runs` no longer carry `deliveries`** (0.1.7's
   did): a row is the run's headline, verdict counts, planned count,
   duration and its `dispatches`. Read deliveries from the run detail,
@@ -388,11 +393,13 @@ not exist or worked differently:
   config with an end-to-end test for each of four ways to execute
   (`examples/robot-pool`, `examples/jenkins`, `examples/pytest-shop`,
   `examples/remote-agent`).
-- **`portable_name_problem(name)` and `name_collision_key(name)`** in the
-  SDK: why a file name is not one every file system keeps as written, and
-  the key under which two names are one file where case or Unicode
-  normalization does not count — the rule the results push holds names to,
-  for a plugin that writes files named by someone else.
+- **File names named by someone else, in the SDK**: `child_path(directory,
+  name)` (the file, or `ValueError` unless the name is one component this
+  machine keeps — decided before anything is opened or resolved) and
+  `local_name_problem(name)`, what the results push and the `jenkins`
+  runner hold names to; `portable_name_problem(name)` and
+  `name_collision_key(name)`, strict and the same on every platform, for an
+  author who wants names every file system keeps as written.
 - **`CONNECTOR = "<name>"`** on a plugin class: built with
   `connectors.<name>` as `connector_settings` (`${env:…}` resolved,
   redacted).
@@ -868,10 +875,9 @@ not exist or worked differently:
   item without history.
 - **Windows** (the CI job runs the whole suite there):
   - a pushed file name Windows cannot keep (`a"b`, `name:stream`, `CON`,
-    `nul.txt`, a trailing dot or space) answered `500`; it is a `400` on
-    every platform, and so are two names that are one file where case or
-    Unicode normalization does not count (`Results.json`, `results.json`):
-    a bundle is the same bundle on every server;
+    `nul.txt`, `COM0`, a trailing dot or space) answered `500` on a Windows
+    server; it is a `400` there (a Linux or macOS server keeps such a name,
+    as before);
   - the artifact route resolved a path naming a share (`//host/share/…`,
     `\\host\share\…`) — on Windows a connection to that host — before
     refusing it; a path with a root, a drive or a share of its own, and on
@@ -893,13 +899,19 @@ not exist or worked differently:
   - a refusal named a suite root with doubled backslashes;
   - the demo printed its workspace unquoted, so a path with a space was two
     arguments when pasted (on every platform), and `rm -rf` as the way to
-    delete it; it prints `Remove-Item` there.
+    delete it. On Windows the lines are for PowerShell, and say so, with
+    words in single quotes where PowerShell would read them otherwise (`$`,
+    a backtick, `'`), and `Remove-Item` to delete the workspace.
 - A `pre_run_hooks` command whose output held bytes the locale's encoding
   cannot read ended the dispatch in a traceback instead of a refusal.
 - The `jenkins` runner downloaded two archived files of one name
   (`eu/junit.xml`, `us/junit.xml`) into one flat bundle, the second
-  replacing the first without a word; files that would be one file there,
-  or whose name some file system cannot keep, fail the shard naming them.
+  replacing the first without a word, and on Windows a path archived with
+  a backslash (`results/..\..\x`, `results/\\host\share\x`, matched by
+  `results/*`) was joined as a path out of the bundle. Files this server
+  would keep as one, a name it cannot keep, and any archived path with a
+  backslash fail the shard naming them; the file is written only under a
+  name `child_path` accepts.
 
 ### Security
 
@@ -1129,9 +1141,9 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
   runner's command or a `pre_run_hooks` command started is not stopped
   with it, and a worker that does not stop on the request is ended outright
   (no `SystemExit` to clean up on; a `robot-pool` worker does stop on the
-  request). The suite runs there in CI (with and without the robot extra)
-  and blocks a merge; the tests of a POSIX shell's commands skip there,
-  naming why.
+  request). The suite runs there in CI, with and without the robot extra,
+  and a failure there fails the workflow; the tests of a POSIX shell's
+  commands skip there, naming why.
 
 ## 0.1.7 — 2026-09-03
 

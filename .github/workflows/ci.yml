@@ -75,8 +75,10 @@ jobs:
             python-version: "3.12"
             experimental: false
           # Windows has code paths of its own (process liveness, the stop
-          # protocol without process groups or signals) and blocks a merge
-          # like every other platform. A test that needs a POSIX shell, or
+          # protocol without process groups or signals). Its job no longer
+          # continues on error: a failure fails the workflow, as on every
+          # other platform. (Whether a merge waits for it is the repository's
+          # setting of required checks, not this file's.) A test that needs a POSIX shell, or
           # what Windows does not have, skips there naming it (-rs lists
           # every reason in the log).
           - os: windows-latest
@@ -111,8 +113,13 @@ jobs:
 
   robot-windows:
     # The robot extra on Windows: robot-pool, its workers and the toolkit
-    # there, the whole suite with them.
+    # there, the whole suite with them. The Robot tests must really have run:
+    # in their three files no test skips but the hooks whose commands are
+    # POSIX shell.
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -121,7 +128,11 @@ jobs:
       - name: Install with the robot extra
         run: python -m pip install -e ".[dev,robot]"
       - name: Test (robot tests included)
-        run: python -m pytest -q -rs
+        run: |
+          python -m pytest -q -rs | tee robot.out
+          grep -q " passed" robot.out
+          ! grep -E "^SKIPPED .*tests.(test_robot_pool|test_robot_source|test_four_ways)\.py" robot.out \
+            | grep -v "POSIX shell / file semantics"
 
   connector-template:
     # The copy-to-start connector package: installed next to runcomposer in a

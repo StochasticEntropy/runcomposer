@@ -120,7 +120,9 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
 - Branch off `main`, keep the change focused, and say in the description *what
   problem it solves* rather than what files it touches.
 - Tests pass on 3.10 through 3.13 on Linux, and on macOS and Windows —
-  CI runs the whole matrix (Windows also with the robot extra), plus the pipx
+  CI runs the whole matrix (Windows also with the robot extra; none of its
+  jobs continues on error — which checks a merge must wait for is a
+  setting of the repository, not of the workflow), plus the pipx
   quickstart, the export round trip, the Docker build, and the UI bundle check.
   It also runs the whole suite inside the shipped image (`shipped-image`),
   installs the wheel without its dependencies to check that an executing
