@@ -588,7 +588,11 @@ concurrent deliveries to one shard leave exactly one.
   The body of an authenticated push is read as a
   stream into a temporary bundle directory, each file under its base name (a
   name that is not a file name — `..`, `.`, empty, a control character — is
-  a `400`). Only an authenticated bundle that is then refused for what it
+  a `400`; so is a name some file system cannot keep as written — a
+  character Windows refuses (`<>:"|?*`), a device name such as `CON` or
+  `nul.txt`, a trailing dot or space — and two names that are one file where
+  case or Unicode normalization does not count, on every platform alike, so
+  that a bundle is the same bundle on every server). Only an authenticated bundle that is then refused for what it
   contains is quarantined, named by its files' names — never by where it lay
   on the server (tests/test_api_streamed_push.py,
   tests/test_api_hostile_names.py).
@@ -1461,7 +1465,11 @@ Two safety properties of the route, both deliberate:
    it lands strictly inside the configured directory, so `..` segments,
    absolute paths, and symlinks pointing out of the tree are one rule rather
    than three patches. A refusal is a `404`, identical to a miss, and so is
-   a path no file system can hold (a NUL byte, an over-long name)
+   a path no file system can hold (a NUL byte, an over-long name). A path
+   that carries a root, a drive or a share of its own — read the POSIX and
+   the Windows way alike (`//host/share`, `\\host\share`, `C:x`), and on
+   Windows any `:` (a drive, or another stream of a file) — is refused before
+   it is resolved: resolving a share's path on Windows connects to that host
    (tests/test_api_hostile_names.py).
 2. **Sandboxed delivery.** Artifact bytes are untrusted content served from
    the same origin as the API and the UI. They go out with
@@ -1500,7 +1508,7 @@ Shipped: **`webhook`** (POST the event as JSON; with a `secret` — give it as
 **`jsonl`** (append one line per event to a file), **`command`** (run a
 command with the event in its environment — `RUNCOMPOSER_EVENT`,
 `RUNCOMPOSER_RUN_ID`, `RUNCOMPOSER_STATE`, `RUNCOMPOSER_COMPLETION`, … — and
-as JSON on stdin; never on the command line).
+as JSON on stdin, UTF-8 on every platform; never on the command line).
 
 ### 6.6 The SDK
 
@@ -1961,7 +1969,10 @@ Rules:
 `artifact_dir`, `private_dir`, `ingestion.inbox`, `ingestion.quarantine_dir`)
 and the plugin sections alike. A config directory is therefore portable, and
 one `--config` behaves identically from every working directory. Absolute
-paths are left as written. A path may come from the environment, and then
+paths are left as written. On Windows a path with a root but no drive
+(`\srv\shop`, also written `/srv/shop`) is not absolute: it is anchored too,
+and so lies on the config file's drive rather than on the drive of whatever
+working directory a command starts in (tests/test_config.py). A path may come from the environment, and then
 `${env:…}` is substituted **before** the path is anchored — so `root:
 ${env:SHOP_CHECKOUT}/tests` with an absolute value stays where the variable
 points, and a relative value is anchored like any other; this holds for the

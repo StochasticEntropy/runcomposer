@@ -388,6 +388,11 @@ not exist or worked differently:
   config with an end-to-end test for each of four ways to execute
   (`examples/robot-pool`, `examples/jenkins`, `examples/pytest-shop`,
   `examples/remote-agent`).
+- **`portable_name_problem(name)` and `name_collision_key(name)`** in the
+  SDK: why a file name is not one every file system keeps as written, and
+  the key under which two names are one file where case or Unicode
+  normalization does not count — the rule the results push holds names to,
+  for a plugin that writes files named by someone else.
 - **`CONNECTOR = "<name>"`** on a plugin class: built with
   `connectors.<name>` as `connector_settings` (`${env:…}` resolved,
   redacted).
@@ -861,6 +866,34 @@ not exist or worked differently:
   are `${env-public:…}` now; only the API token is a secret.
 - `robot-pool`'s preview read "the other 1 weigh the mean" for a single
   item without history.
+- **Windows** (the CI job runs the whole suite there):
+  - a pushed file name Windows cannot keep (`a"b`, `name:stream`, `CON`,
+    `nul.txt`, a trailing dot or space) answered `500`; it is a `400` on
+    every platform, and so are two names that are one file where case or
+    Unicode normalization does not count (`Results.json`, `results.json`):
+    a bundle is the same bundle on every server;
+  - the artifact route resolved a path naming a share (`//host/share/…`,
+    `\\host\share\…`) — on Windows a connection to that host — before
+    refusing it; a path with a root, a drive or a share of its own, and on
+    Windows any `:`, is refused before it is resolved;
+  - output into a file or a pipe was written in the legacy code page and
+    ended in a traceback at the first character it lacks (the demo's `─`,
+    `→`, a title in another script); it is UTF-8 there, and a terminal
+    without a character shows a replacement;
+  - a reader that closed the pipe early (`runcomposer catalog | more`)
+    ended the command with exit code `120`, not `141`;
+  - a `command` observer could not write an event whose title held a
+    character outside the legacy code page to its stdin, and never ran; the
+    event is UTF-8 on every platform;
+  - the demo printed its workspace unquoted, so a path with a space was two
+    arguments when pasted (on every platform), and `rm -rf` as the way to
+    delete it; it prints `Remove-Item` there.
+- A `pre_run_hooks` command whose output held bytes the locale's encoding
+  cannot read ended the dispatch in a traceback instead of a refusal.
+- The `jenkins` runner downloaded two archived files of one name
+  (`eu/junit.xml`, `us/junit.xml`) into one flat bundle, the second
+  replacing the first without a word; files that would be one file there,
+  or whose name some file system cannot keep, fail the shard naming them.
 
 ### Security
 
