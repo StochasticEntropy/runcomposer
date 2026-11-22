@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -156,6 +158,22 @@ class TestRunsACommand:
         run = execute(service)
         assert (run.state, run.completion) == ("COMPLETE", "PASS")
         assert "shop runner:" in (shard_dir(service, run) / "tee.txt").read_text(encoding="utf-8")
+
+    def test_a_command_line_string_runs_through_this_platform_s_shell(self, make_service, script, tmp_path):
+        """The same line on every platform — ``sh`` on POSIX, ``cmd`` on
+        Windows: the placeholders are quoted for that shell (the work
+        directory may hold a space too), and ``&&`` is the shell's own."""
+        quote = subprocess.list2cmdline if os.name == "nt" else shlex.join
+        command = f"{quote([PY, str(script)])} {{ids_file}} {{out_dir}} && echo the shell ran on"
+        service = make_service(
+            runners={RUNNER: {"plugin": "command", "command": command}},
+            core={"artifact_dir": str(tmp_path / "work dir")},
+        )
+        run = execute(service)
+        assert (run.state, run.completion) == ("COMPLETE", "PASS"), run.latest_dispatch.error
+        log = (shard_dir(service, run) / "command.log").read_text(encoding="utf-8")
+        assert "shop runner:" in log and "the shell ran on" in log
+        assert " " in str(shard_dir(service, run))
 
     def test_placeholders_and_the_environment_say_the_same(self, make_service, script):
         service = command_service(

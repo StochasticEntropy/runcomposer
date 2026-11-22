@@ -200,8 +200,8 @@ def _pid_alive_windows(pid: int) -> bool:
     *with* code 259 reads as running — Windows offers no way to tell; for a
     runcomposer owner process that is not an exit code it uses.)
 
-    Not exercised by the test suite on Windows (it is run on Linux and
-    macOS); read with that in mind."""
+    Exercised on Windows by the CI job there (tests/test_recovery.py, and
+    every test that waits for a process to be gone)."""
     import ctypes
     from ctypes import wintypes
 

@@ -32,11 +32,21 @@ from runcomposer.sdk import (
     load_config,
 )
 
-from .conftest import compose, posix_only, wait_until, write_config
+from .conftest import compose, wait_until, write_config
 from .exec_loader import runcomposer_exec
 
 SSO = ["Shop.Auth.SSO.T001", "Shop.Auth.SSO.T002", "Shop.Auth.SSO.T003"]
 API = "/api/v1"
+
+
+def symlink_or_skip(link: Path, target: Path) -> None:
+    """``link`` → ``target``, or a skip where this account may not create
+    symbolic links (an account on Windows that is not allowed to)."""
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"this account cannot create a symbolic link: {exc}")
+
 
 # -- runners for this module, configured by import path --------------------------------
 
@@ -1841,15 +1851,13 @@ class TestArtifactRoute:
         response = client.get(f"/artifacts//{tmp_path / 'secret.txt'}")
         assert response.status_code == 404 and "do not serve me" not in response.text
 
-    @posix_only
     def test_a_symlink_out_of_the_artifact_dir_is_a_404(self, with_artifact):
         client, _service, _run_id, tmp_path = with_artifact
-        (tmp_path / "artifacts" / "escape.txt").symlink_to(tmp_path / "secret.txt")
+        symlink_or_skip(tmp_path / "artifacts" / "escape.txt", tmp_path / "secret.txt")
         response = client.get("/artifacts/escape.txt")
         assert_error(response, 404, "unknown-artifact")
         assert "do not serve me" not in response.text
 
-    @posix_only
     def test_a_miss_and_a_refusal_are_indistinguishable_in_status_and_code(self, with_artifact):
         client, service, run_id, _tmp = with_artifact
         gone = _tmp / "artifacts" / run_id / "dispatch-1" / "away" / "output.xml"
@@ -1860,7 +1868,7 @@ class TestArtifactRoute:
             client.get(f"/artifacts/{run_id}/dispatch-1/away/output.xml"), 404, "unknown-artifact"
         )
         assert "retention" in miss["detail"], "a recorded file that is gone names the likely cause"
-        (tmp_path := _tmp / "artifacts" / "link").symlink_to(_tmp / "secret.txt")
+        symlink_or_skip(tmp_path := _tmp / "artifacts" / "link", _tmp / "secret.txt")
         refusal = assert_error(client.get("/artifacts/link"), 404, "unknown-artifact")
         assert (refusal["code"], tmp_path.exists()) == (miss["code"], True)
 

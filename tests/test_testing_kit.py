@@ -60,7 +60,7 @@ from runcomposer.testing import (
     xml_with_dtd,
 )
 
-from .conftest import REPO, ROBOT_SHOP, needs_robot, posix_only, process_gone, wait_until
+from .conftest import REPO, ROBOT_SHOP, needs_robot, process_gone, wait_until
 from .test_command_runner import SHOP_RUNNER
 from .test_jenkins import JOB, POLL, FakeJenkins, junit_for, junit_job
 from .test_observers import Receiver
@@ -277,7 +277,6 @@ class TestReferenceRunnersAgainstTheFake:
         check_runner(runner, ctx, expect="refused")
         assert "drift" in (ctx.refusal or "")
 
-    @posix_only
     def test_command_cancel(self, shop_script, tmp_path, monkeypatch):
         block = tmp_path / "blocked.pid"
         monkeypatch.setenv("SHOP_BLOCK", str(block))
