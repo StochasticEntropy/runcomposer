@@ -15,7 +15,7 @@ test("a runner's exception: the run fails, its message is in the run's error ban
   const runPage = page.locator(".run-page");
   await expect(runPage).toHaveAttribute("data-run-state", "FAILED");
   await expect(runPage.locator(".run-head")).toContainText(msg("runState.FAILED"));
-  const banner = page.getByRole("alert").filter({ hasText: msg("run.runnerError") });
+  const banner = page.getByRole("alert").filter({ hasText: msg("run.cause.runner-raised") });
   await expect(banner).toContainText(EXPLODING_ERROR);
   // The runner's own words, marked as such.
   await expect(banner.locator(".foreign")).toHaveText(EXPLODING_ERROR);

@@ -114,6 +114,7 @@ def create_run(body: ComposeRequest, service: Service = Depends(service_of)) -> 
             if not body.keep_run:
                 service.delete_run(run_id)
             exc.extra = {
+                **(exc.extra or {}),
                 "run_kept": body.keep_run,
                 "run_id": run_id if body.keep_run else None,
             }
@@ -174,7 +175,14 @@ def delete_run(run_id: str, service: Service = Depends(service_of)) -> Response:
 @router.get("/{run_id}/items")
 def run_items(run_id: str, service: Service = Depends(service_of)) -> dict[str, Any]:
     materialized = (service.require_spec(run_id).get("selection") or {}).get("materialized") or {}
-    return {"item_ids": materialized.get("item_ids", []), "count": materialized.get("count", 0)}
+    item_ids = list(materialized.get("item_ids", []))
+    names = service.store.item_names(run_id)
+    return {
+        "item_ids": item_ids,
+        "count": materialized.get("count", 0),
+        # Each item with its name as the run was composed (its id when none was kept).
+        "items": [{"id": item_id, "name": names.get(item_id, item_id)} for item_id in item_ids],
+    }
 
 
 @router.get("/{run_id}/spec")
@@ -345,7 +353,7 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
         error: RunComposerError = outcome.invalid or DispatchRefused(str(outcome.refusal))
         if target != run_id:
             service.delete_run(target)
-            error.extra = {"run_kept": False, "run_id": None}
+            error.extra = {**(error.extra or {}), "run_kept": False, "run_id": None}
         raise error
     dispatch = service.store.get_dispatch(outcome.dispatch_id)
     return {

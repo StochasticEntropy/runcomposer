@@ -281,3 +281,23 @@ class TestDepth:
         code, _out, err = cli("spec", "NOT " * 400 + "Auth", "--dry-run")
         assert code in (1, 2) and "Traceback" not in err
         assert "nests deeper than 40 levels" in err
+
+
+class TestWhereAFilterIsWrong:
+    """An ``invalid-filter`` answer says where in the filter: ``path``, the
+    keys and indices from its root; filter text says ``position``."""
+
+    def test_an_ast_names_the_node(self, make_client):
+        client, _service = make_client()
+        body = client.post(f"{API}/selection/compile", json={
+            "tag_filter": {"op": "AND", "items": ["Auth", {"not": "regex:("}]}}).json()
+        assert (body["code"], body["path"]) == ("invalid-filter", ["items", 1, "not"])
+        assert body["reason"].startswith("invalid regular expression") and body["detail"].endswith(body["reason"])
+        created = client.post(f"{API}/runs", json={"selection": {
+            "tag_filter": {"op": "OR", "items": ["Auth", "prefix:"]}}}).json()
+        assert (created["code"], created["path"]) == ("invalid-filter", ["items", 1])
+
+    def test_text_names_the_position(self, make_client):
+        client, _service = make_client()
+        body = client.post(f"{API}/selection/compile", json={"tag_filter": "Auth AND (Cart"}).json()
+        assert (body["code"], body["position"], body["problem"]) == ("filter-syntax", 9, "unbalanced-open")

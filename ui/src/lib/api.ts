@@ -99,7 +99,7 @@ export function createApi(client: Client = createClient()) {
     run: (runId: string, dispatch?: string | null, signal?: AbortSignal) =>
       get<RunDetail>(`${API}/runs/${id(runId)}${dispatch ? `?dispatch=${id(dispatch)}` : ""}`, signal),
     runItems: (runId: string, signal?: AbortSignal) =>
-      get<{ item_ids: string[]; count: number }>(`${API}/runs/${id(runId)}/items`, signal),
+      get<{ item_ids: string[]; count: number; items: { id: string; name: string }[] }>(`${API}/runs/${id(runId)}/items`, signal),
     events: (runId: string, after: number, wait: number, signal?: AbortSignal) =>
       get<{ events: RunEvent[]; last_seq: number }>(
         `${API}/runs/${id(runId)}/events?after=${after}&wait=${wait}&limit=200`,

@@ -86,7 +86,8 @@
       "plugin-error": "Ein Plugin konnte nicht geladen werden.",
       "store-error": "Der Laufspeicher hat einen Fehler gemeldet.",
       "internal-error": "Auf dem Server ist ein interner Fehler aufgetreten.",
-      "nothing-planned": "Nichts in der Lieferung gehört zu einem Eintrag dieses Laufs."
+      "nothing-planned": "Nichts in der Lieferung gehört zu einem Eintrag dieses Laufs.",
+      "filter-too-deep": "Der Filter ist zu tief verschachtelt."
     }
   },
   "runState": {
@@ -206,7 +207,8 @@
       "unbalanced-open": "Position {position}: Diese Klammer wird nie geschlossen.",
       "unbalanced-close": "Position {position}: Zu dieser schließenden Klammer fehlt die öffnende.",
       "unterminated-quote": "Position {position}: Dieses Anführungszeichen wird nie geschlossen.",
-      "needs-quotes": "Position {position}: Ein Muster mit Klammern oder Anführungszeichen in Anführungszeichen setzen — \"{token}…\"."
+      "needs-quotes": "Position {position}: Ein Muster mit Klammern oder Anführungszeichen in Anführungszeichen setzen — \"{token}…\".",
+      "too-deep": "Position {position}: Der Filter ist tiefer als 40 Ebenen verschachtelt — flacher schreiben."
     },
     "negateAll": "NICHT: den ganzen Filter verneinen",
     "pickForGroup": "Tags für diese Gruppe auswählen…",
@@ -403,8 +405,7 @@
       "pattern": "Das hat nicht die Form, die dieses Feld erwartet.",
       "duplicate": "Jede Zeile braucht einen Namen, und jeden Namen nur einmal.",
       "line": "Das muss eine einzelne Zeile sein.",
-      "key": "Ein Name hat nicht die Form, die Namen hier haben müssen.",
-      "refusedForm": "Der Server hat das nicht angenommen — es muss die erwartete Form haben."
+      "key": "Ein Name hat nicht die Form, die Namen hier haben müssen."
     },
     "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen.",
     "checks": "Was dieser Runner geprüft hat",
@@ -418,7 +419,16 @@
     "mappingAdd": "Zeile hinzufügen",
     "expectedForm": "Erwartete Form:",
     "expectedNameForm": "Erwartete Form eines Namens:",
-    "expectedValueForm": "Erwartete Form eines Werts:"
+    "expectedValueForm": "Erwartete Form eines Werts:",
+    "refused": {
+      "unknown": "Diese Einstellung kennt der Runner nicht.",
+      "required": "Dieses Feld ist erforderlich.",
+      "type": "Dieser Wert hat nicht die Art, die das Feld erwartet.",
+      "choice": "Bitte einen der angebotenen Werte wählen.",
+      "pattern": "Das hat nicht die Form, die das Feld erwartet.",
+      "key-pattern": "Ein Name hat nicht die Form, die Namen hier haben müssen.",
+      "runner": "Der Runner hat diesen Wert nicht angenommen:"
+    }
   },
   "labels": {
     "label": "Labels",
@@ -521,8 +531,6 @@
     "deleteConfirm": "Lauf löschen",
     "deleted": "„{title}“ wurde gelöscht.",
     "refreshFailed": "Der Lauf konnte nicht aktualisiert werden.",
-    "runnerError": "Der Runner hat einen Fehler gemeldet:",
-    "staleHint": "Der Server wurde angehalten, während dieser Lauf ausgeführt wurde. Was fertig war, bleibt erhalten; erneut ausführen, um ihn zu vervollständigen.",
     "awaitingHint": "Dieser Lauf wartet auf Ergebnisse von außen. Sie kommen per Upload oder über den Eingang.",
     "composedHint": "Dieser Lauf ist zusammengestellt, wurde aber nie gestartet.",
     "progress": "Fortschritt",
@@ -660,6 +668,12 @@
     "moreShards": {
       "one": "{count} weiteren Shard zeigen",
       "other": "{count} weitere Shards zeigen"
+    },
+    "cause": {
+      "runner-raised": "Der Runner hat einen Fehler gemeldet:",
+      "interrupted": "Der Server wurde angehalten, während dieser Lauf ausgeführt wurde. Was fertig war, bleibt erhalten; den Lauf erneut starten, um ihn abzuschließen.",
+      "expired": "Innerhalb der Zeit, die diese Installation auf Ergebnisse wartet, sind keine eingetroffen. Was angekommen ist, bleibt erhalten; später eintreffende Ergebnisse werden noch übernommen.",
+      "cancelled": "Dieser Lauf wurde abgebrochen."
     }
   },
   "rerun": {

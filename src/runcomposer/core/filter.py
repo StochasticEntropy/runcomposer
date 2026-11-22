@@ -60,10 +60,19 @@ class FilterError(InvalidRequest):
 
     code = "invalid-filter"
 
-    def __init__(self, message: str, *, at: Sequence[str | int] | None = None):
+    def __init__(self, message: str, *, at: Sequence[str | int] | None = None, reason: str | None = None):
         super().__init__(message)
         if at is not None:
             self.extra = {**(self.extra or {}), "path": list(at)}
+        if reason is not None:
+            self.extra = {**(self.extra or {}), "reason": reason}
+
+
+def _refuse(path: str, at: Sequence[str | int], reason: str, kind: type[FilterError] | None = None) -> FilterError:
+    """The error for the node at ``at`` (written ``path``): the message is
+    ``"<path>: <reason>"``; ``path`` and ``reason`` are also served apart,
+    so a client marks the node without reading the sentence."""
+    return (kind or FilterError)(f"{path}: {reason}", at=at, reason=reason)
 
 
 #: How deeply a filter may nest — NOT and AND/OR groups counted alike, in
@@ -118,7 +127,7 @@ _OPS = ("AND", "OR")
 
 def _parse_pattern(text: str, path: str, at: tuple[str | int, ...] = ()) -> TagPattern:
     if not text:
-        raise FilterError(f"{path}: pattern must be a non-empty string", at=at)
+        raise _refuse(path, at, "pattern must be a non-empty string")
     if text.startswith("regex:"):
         body = text[len("regex:"):]
     elif text.startswith("prefix:"):
@@ -127,11 +136,11 @@ def _parse_pattern(text: str, path: str, at: tuple[str | int, ...] = ()) -> TagP
     else:
         return TagPattern(raw=text)
     if body in ("", "^"):
-        raise FilterError(f"{path}: empty pattern in {text!r}", at=at)
+        raise _refuse(path, at, f"empty pattern in {text!r}")
     try:
         compiled = re.compile(body)
     except re.error as exc:
-        raise FilterError(f"{path}: invalid regular expression {text!r}: {exc}", at=at) from None
+        raise _refuse(path, at, f"invalid regular expression {text!r}: {exc}") from None
     return TagPattern(raw=text, regex=compiled)
 
 
@@ -147,10 +156,11 @@ def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> 
     if isinstance(data, str):
         return _parse_pattern(data, path, at)
     if depth >= MAX_FILTER_DEPTH:
-        raise FilterTooDeep(
-            f"{path}: the filter nests deeper than {MAX_FILTER_DEPTH} levels — "
-            "write it flatter (a run of one operator is one group)",
-            at=at,
+        raise _refuse(
+            path, at,
+            f"the filter nests deeper than {MAX_FILTER_DEPTH} levels — write it flatter "
+            "(a run of one operator is one group)",
+            FilterTooDeep,
         )
     if isinstance(data, dict):
         keys = set(data)
@@ -159,12 +169,10 @@ def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> 
         if keys == {"op", "items"}:
             op = data["op"]
             if op not in _OPS:
-                raise FilterError(
-                    f"{path}.op: unknown operator {op!r} (expected 'AND' or 'OR')", at=(*at, "op")
-                )
+                raise _refuse(f"{path}.op", (*at, "op"), f"unknown operator {op!r} (expected 'AND' or 'OR')")
             items = data["items"]
             if not isinstance(items, list) or not items:
-                raise FilterError(f"{path}.items: must be a non-empty list", at=(*at, "items"))
+                raise _refuse(f"{path}.items", (*at, "items"), "must be a non-empty list")
             return BoolOp(
                 op=op,
                 items=tuple(
@@ -172,11 +180,10 @@ def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> 
                     for index, child in enumerate(items)
                 ),
             )
-        raise FilterError(
-            f"{path}: node must be a pattern string, {{op, items}}, or {{not}} — got keys {sorted(keys)}",
-            at=at,
+        raise _refuse(
+            path, at, f"node must be a pattern string, {{op, items}}, or {{not}} — got keys {sorted(keys)}"
         )
-    raise FilterError(f"{path}: node must be a string or mapping, got {type(data).__name__}", at=at)
+    raise _refuse(path, at, f"node must be a string or mapping, got {type(data).__name__}")
 
 
 def to_data(node: FilterNode) -> Any:

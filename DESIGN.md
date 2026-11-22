@@ -1350,7 +1350,7 @@ database from a newer schema is refused.
 
 **Port evolution.** 0.2 is a breaking revision of every port. From here the
 ports grow by *addition* within a minor line: new members, and keyword-only
-parameters with defaults on existing ones. `RunStore` is the wide one — 33
+parameters with defaults on existing ones. `RunStore` is the wide one — 35
 members, `close`, `atomic` and `store_id` among them — and may gain members
 in a minor release, with a default in `StoreBase` wherever a default can be
 right; a store of your own that lacks a new member is refused at startup

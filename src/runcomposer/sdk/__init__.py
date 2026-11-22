@@ -56,6 +56,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from runcomposer.core.errors import (
+    PARAMETER_PROBLEMS,
     AuthRequired,
     ConfigError,
     Conflict,
@@ -160,6 +161,7 @@ __all__ = [
     "LIFECYCLE_KINDS",
     "LIVE_STATUSES",
     "MARKER_FILENAME",
+    "PARAMETER_PROBLEMS",
     "REPORTABLE_STATUSES",
     "RUN_STATES",
     "SPEC_VERSION",

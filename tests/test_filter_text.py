@@ -140,7 +140,8 @@ def test_patterns_are_checked_after_the_grammar_with_the_node_path():
 def test_deep_nesting_is_refused_as_a_filter_error_not_a_crash():
     with pytest.raises(FilterTooDeep, match="nests deeper than 40 levels") as caught:
         parse_filter_text("(" * 5000 + "Auth" + ")" * 5000)
-    assert caught.value.code == "filter-too-deep" and caught.value.extra == {"position": 40}
+    assert caught.value.code == "filter-too-deep"
+    assert caught.value.extra == {"problem": "too-deep", "position": 40}
     with pytest.raises(FilterTooDeep):
         parse_filter_text("NOT " * 300 + "Auth")
 
@@ -157,14 +158,15 @@ def test_the_same_depth_bounds_the_ast_and_the_text():
     parse_filter(nested)
     with pytest.raises(FilterTooDeep) as caught:
         parse_filter({"not": nested})
-    assert caught.value.extra == {"path": ["not", *(["items", 1] * (MAX_FILTER_DEPTH - 1))]}
+    assert caught.value.extra["path"] == ["not", *(["items", 1] * (MAX_FILTER_DEPTH - 1))]
 
 
 def test_a_filter_error_says_where_as_a_path():
     with pytest.raises(FilterError) as caught:
         parse_filter({"op": "AND", "items": ["Auth", {"not": "regex:("}]})
-    assert caught.value.extra == {"path": ["items", 1, "not"]}
-    assert str(caught.value).startswith("tag_filter.items[1].not: invalid regular expression")
+    assert caught.value.extra["path"] == ["items", 1, "not"]
+    assert caught.value.extra["reason"].startswith("invalid regular expression 'regex:('")
+    assert str(caught.value) == f"tag_filter.items[1].not: {caught.value.extra['reason']}"
 
 
 # -- round trip over generated filters ------------------------------------------------

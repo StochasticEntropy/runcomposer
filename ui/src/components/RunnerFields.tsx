@@ -20,17 +20,26 @@ export interface FieldProblem {
   foreign?: string;
 }
 
+/** What kind of refusal an `invalid-parameter` answer is (its `problem`) — the server's closed list. */
+export const PARAMETER_PROBLEMS = ["unknown", "required", "type", "choice", "pattern", "key-pattern", "runner"] as const;
+type ParameterProblem = (typeof PARAMETER_PROBLEMS)[number];
+
 /**
- * A value the SERVER refused (`invalid-parameter`), put on its field. Where
- * the parameter declares the form its values must have, the UI says so in
- * its own words — the form itself stands under the field — and leaves the
- * server's sentence out. For any other refusal the server's sentence is the
- * only one that knows the reason, and is shown as the server's.
+ * A value the SERVER refused (`invalid-parameter`), put on its field. The
+ * answer says what kind of refusal it is (`problem`) and, for a mapping,
+ * which name (`key`): every kind the declaration decides is worded by the
+ * UI itself. Only a refusal by the runner (`runner`) carries a reason the
+ * UI cannot know — its sentence is shown, as the runner's.
  */
-export function refusedValue(i18n: Translator, spec: ParameterSpec | undefined, error: ApiError): FieldProblem {
-  if (spec && (spec.pattern || (spec.kind === "mapping" && spec.key_pattern))) return { text: i18n.t("runner.problem.refusedForm") };
+export function refusedValue(i18n: Translator, _spec: ParameterSpec | undefined, error: ApiError): FieldProblem {
+  const problem = error.extra.problem as ParameterProblem | undefined;
+  const key = typeof error.extra.key === "string" ? error.extra.key : null;
+  if (problem && problem !== "runner" && PARAMETER_PROBLEMS.includes(problem)) {
+    const text = i18n.t(`runner.refused.${problem}`);
+    return { text: key ? `${text} (${key})` : text };
+  }
   const { title, detail } = describeError(i18n, error);
-  return { text: title, foreign: detail };
+  return { text: problem === "runner" ? i18n.t("runner.refused.runner") : title, foreign: detail };
 }
 
 /** What is wrong with a value, in the viewer's words. */

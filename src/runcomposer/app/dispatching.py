@@ -107,7 +107,10 @@ def _redacted_invalid(service: Service, error: InvalidParameter) -> InvalidParam
     """A runner's ``InvalidParameter`` as it is answered: the same parameter,
     the message with the deployment's secrets blanked out (a runner may
     quote an option)."""
-    return InvalidParameter(str(service.redact(str(error))), parameter=error.parameter)
+    return InvalidParameter(
+        str(service.redact(str(error))), parameter=error.parameter,
+        problem=getattr(error, "problem", "runner"), key=getattr(error, "key", None),
+    )
 
 
 class _History:

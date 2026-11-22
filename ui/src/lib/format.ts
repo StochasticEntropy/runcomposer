@@ -74,3 +74,14 @@ export function parseLabel(text: string): [string, string] | null {
   const value = text.slice(mark + 1).trim();
   return key ? [key, value] : null;
 }
+
+/**
+ * Why a dispatch ended with an error, for what the run page says: its
+ * `error_code` — or, for a record from before the codes existed, what its
+ * state implies. null when it has no error.
+ */
+export function dispatchCause(dispatch: { error: string; error_code?: string; state: string } | undefined | null): string | null {
+  if (!dispatch?.error) return null;
+  if (dispatch.error_code) return dispatch.error_code;
+  return dispatch.state === "STALE" ? "interrupted" : dispatch.state === "CANCELLED" ? "cancelled" : "runner-raised";
+}

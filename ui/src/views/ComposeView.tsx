@@ -35,7 +35,7 @@ import {
 import type { ComposeLink, PreviewState } from "../lib/compose.ts";
 import { ROOT_ID, addNode, addTag, emptyRoot, fromAst, nodeFromAst, toAstWithPaths } from "../lib/editor.ts";
 import type { GroupNode } from "../lib/editor.ts";
-import { MATCH_ALL, errorPath, formatFilter, isEverything, parseFilter, quotePattern, withoutPath } from "../lib/filter.ts";
+import { MATCH_ALL, errorNodeKey, formatFilter, isEverything, parseFilter, quotePattern } from "../lib/filter.ts";
 import { setFlash } from "../lib/flash.ts";
 import { parseLabel } from "../lib/format.ts";
 import { fromPayload, mergeValues, toPayload, validateValues } from "../lib/params.ts";
@@ -235,7 +235,7 @@ export function ComposeView({ route }: { route: Route }) {
       : null;
   const errorNodeId = useMemo(() => {
     if (!filterError || filterError.code !== "invalid-filter") return null;
-    const path = errorPath(filterError.detail);
+    const path = errorNodeKey(filterError.extra.path);
     return path === null ? null : (emitted.paths.get(path) ?? null);
   }, [filterError, emitted.paths]);
 
@@ -761,7 +761,7 @@ export function ComposeView({ route }: { route: Route }) {
               // The server said which rule it is, as a path into the filter. The
               // editor marks that rule; the path itself is no reading for a person.
               <>
-                <strong>{describeError(i18n, filterError).title}</strong> {t("filter.errorAtRule")} <Foreign>{withoutPath(filterError.detail)}</Foreign>
+                <strong>{describeError(i18n, filterError).title}</strong> {t("filter.errorAtRule")} <Foreign>{typeof filterError.extra.reason === "string" ? filterError.extra.reason : filterError.detail}</Foreign>
               </>
             )}
           </p>

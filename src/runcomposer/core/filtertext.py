@@ -83,6 +83,14 @@ class FilterSyntaxError(FilterError):
             self.extra["token"] = token
 
 
+class FilterTextTooDeep(FilterSyntaxError, FilterTooDeep):
+    """Filter text nested deeper than ``MAX_FILTER_DEPTH`` levels: problem
+    ``too-deep`` at the NOT or parenthesis that goes one level too far, and
+    the code ``filter-too-deep`` an AST nested too deeply has as well."""
+
+    code = "filter-too-deep"
+
+
 @dataclass(frozen=True)
 class _Token:
     kind: str  # "op" | "open" | "close" | "all" | "pattern"
@@ -161,12 +169,11 @@ class _Parser:
         """One level more (a NOT, a group); refused past MAX_FILTER_DEPTH."""
         self.depth += 1
         if self.depth > MAX_FILTER_DEPTH:
-            error = FilterTooDeep(
-                f"cannot read the filter text at column {token.at + 1}: the filter nests deeper "
-                f"than {MAX_FILTER_DEPTH} levels — write it flatter (a run of one operator is one group)"
+            raise FilterTextTooDeep(
+                "too-deep", token.at,
+                f"the filter nests deeper than {MAX_FILTER_DEPTH} levels — write it flatter "
+                "(a run of one operator is one group)",
             )
-            error.extra = {"position": token.at}
-            raise error
 
     def peek(self) -> _Token | None:
         return self.tokens[self.cursor] if self.cursor < len(self.tokens) else None

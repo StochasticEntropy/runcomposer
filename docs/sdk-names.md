@@ -66,6 +66,7 @@ meaning given here and in its docstring.
 | `ObserverBase` | Base class for a :class:`RunObserver` (configuration defaults). |
 | `outstanding_shards` | Declared shards that have not delivered, in declaration order. |
 | `Parameter` | One per-run option. |
+| `PARAMETER_PROBLEMS` | What kind of refusal an :class:`InvalidParameter` is: ``unknown`` (the runner declares no such parameter), ``required`` (missing), ``type`` (the wrong kind of value — a string where an integer is declared, several lines for a ``string``), ``choice`` (not among the choices), ``pattern`` (a value does not match ``pattern``), ``key-pattern`` (a mapping's name does not match ``key_pattern``), ``runner`` (the runner refused it). |
 | `parameters_from_config` | Build parameter declarations from configuration — for a runner whose per-run parameters are themselves configured (a list of mappings with the fields of :class:`Parameter`). |
 | `parse_filter` | Parse filter data (as it appears in a runspec) into an AST node. |
 | `parse_filter_text` | Text → filter AST data (the shape a run spec's ``tag_filter`` holds), or ``None`` for empty or blank text. |

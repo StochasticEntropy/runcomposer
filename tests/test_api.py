@@ -351,7 +351,10 @@ class TestComposeAndDispatch:
         assert (run["state"], run["title"], run["origin"]) == ("COMPOSED", "Anmeldung prüfen", "api")
         assert run["labels"] == {"suite": "adhoc"} and run["planned_count"] == 3
         assert run["mode"] is None and run["duration_s"] is None and run["verdict_summary"] == {}
-        assert client.get(f"{API}/runs/{run['id']}/items").json() == {"item_ids": SSO, "count": 3}
+        items = client.get(f"{API}/runs/{run['id']}/items").json()
+        assert (items["item_ids"], items["count"]) == (SSO, 3)
+        # Each item with the name it had when the run was composed.
+        assert items["items"][0] == {"id": SSO[0], "name": "SSO login via identity provider"}
 
     def test_a_dispatched_run_comes_back_before_it_finishes(self, gated):
         """The request is answered while the run executes — here the runner
@@ -424,7 +427,7 @@ class TestComposeAndDispatch:
             return [row for row in detail["verdicts"] if row["live"]] if detail["state"] == "RUNNING" else []
 
         rows = wait_until(live_rows, what="live rows of a run in flight")
-        assert set(rows[0]) == {"item_id", "status", "duration_ms", "message", "shard", "attempt", "live"}
+        assert set(rows[0]) == {"item_id", "name", "status", "duration_ms", "message", "shard", "attempt", "live"}
         assert rows[0]["shard"] == "1"
         client.post(f"{API}/runs/{run_id}/cancel")
         follow(client, run_id, until="run.cancelled")
@@ -672,7 +675,7 @@ class TestRunDetail:
         json.dumps(body)
         assert (body["state"], body["completion"], body["dispatch_id"]) == ("COMPLETE", "FAIL", outcome.dispatch_id)
         assert len(body["verdicts"]) == 3
-        assert set(body["verdicts"][0]) == {"item_id", "status", "duration_ms", "message", "shard", "attempt", "live"}
+        assert set(body["verdicts"][0]) == {"item_id", "name", "status", "duration_ms", "message", "shard", "attempt", "live"}
         assert (body["shard_groups"], body["groups"], body["live_summary"], body["rerun_of"]) == ({}, [], {}, None)
         failing = [row for row in body["verdicts"] if row["status"] == "FAIL"]
         assert len(failing) == 2 and failing[0]["duration_ms"] > 0 and failing[0]["message"]
@@ -1621,3 +1624,23 @@ class TestUiFiles:
             pytest.skip("this build carries no UI bundle")
         assert_error(client.get("/locales/tlh.json"), 404, "not-found")
         assert client.get("/locales/..%2f..%2findex.json").status_code == 404
+
+
+class TestItemNamesAsComposed:
+    """A run's items and verdict rows carry each item's name as the run was
+    composed — not what today's catalog calls it — and the id where the
+    store kept none."""
+
+    def test_a_renamed_item_keeps_its_composed_name(self, make_client):
+        client, service = make_client()
+        created = client.post(f"{API}/runs", json={"selection": {"item_ids": SSO}, "dispatch": {"runner": "demo"}})
+        run_id = created.json()["run"]["id"]
+        follow(client, run_id, until="run.completed")
+        service.store.set_item_names(run_id, {SSO[0]: "SSO login (as composed)"})
+        rows = {row["item_id"]: row["name"] for row in client.get(f"{API}/runs/{run_id}").json()["verdicts"]}
+        assert rows[SSO[0]] == "SSO login (as composed)"
+        assert rows[SSO[1]] == "SSO account linking"
+        items = client.get(f"{API}/runs/{run_id}/items").json()["items"]
+        assert items[0] == {"id": SSO[0], "name": "SSO login (as composed)"}
+        listed = client.get(f"{API}/runs/{run_id}/verdicts").json()["verdicts"]
+        assert {row["name"] for row in listed} >= {"SSO login (as composed)"}

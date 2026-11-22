@@ -44,6 +44,8 @@ const tuple = (text: string, assignment: RegExp): string[] => {
 const RUN_STATES = /^RUN_STATES = \(([^)]*)\)/ms;
 const COMPLETIONS = /^COMPLETIONS = \(([^)]*)\)/ms;
 const REPORTABLE = /^REPORTABLE_STATUSES = \(([^)]*)\)/ms;
+const PARAMETER_PROBLEMS = /^PARAMETER_PROBLEMS = \(([^)]*)\)/ms;
+const DISPATCH_ERROR_CODES = /^DISPATCH_ERROR_CODES = \(([^)]*)\)/ms;
 
 const LOCALES = { en, de } as Record<string, Record<string, unknown>>;
 
@@ -122,7 +124,9 @@ describe("values the server sends", () => {
     ["health", ["ok", "degraded", "down", "unknown"]],
     ["outcome", ["new", "duplicate", "replaced"]],
     ["runner.problem", ["required", "integer", "choice"]],
-    ["filter.parse", ["empty", "unexpected-end", "unexpected-operator", "missing-operator", "unbalanced-open", "unbalanced-close", "unterminated-quote", "needs-quotes"]],
+    ["runner.refused", tuple(python("core/errors.py"), PARAMETER_PROBLEMS)],
+    ["run.cause", tuple(model, DISPATCH_ERROR_CODES)],
+    ["filter.parse", ["empty", "unexpected-end", "unexpected-operator", "missing-operator", "unbalanced-open", "unbalanced-close", "unterminated-quote", "needs-quotes", "too-deep"]],
   ];
 
   it("were found in the Python sources", () => {

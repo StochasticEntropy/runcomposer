@@ -75,7 +75,11 @@ export type ParseProblem =
   | "unbalanced-open"
   | "unbalanced-close"
   | "unterminated-quote"
-  | "needs-quotes";
+  | "needs-quotes"
+  | "too-deep";
+
+/** How deeply a filter may nest — NOT and groups alike; the server's bound (core/filter.py MAX_FILTER_DEPTH). */
+export const MAX_FILTER_DEPTH = 40;
 
 // Positions. The text form counts where reading stopped in Unicode code
 // points — the unit of the server's `filter-syntax` errors and of the shared
@@ -183,11 +187,19 @@ export function parseFilter(text: string): FilterAst | null {
   const tokens = tokenize(text);
   if (tokens.length === 0) return null;
   let cursor = 0;
+  let depth = 0;
   const peek = () => tokens[cursor];
   const fail = (problem: ParseProblem, at: number, token = "") => new FilterParseError(problem, text, at, token);
+  // One level more (a NOT, a group): refused past the bound, at the word that goes too deep.
+  const deeper = (token: Token) => {
+    depth += 1;
+    if (depth > MAX_FILTER_DEPTH) throw fail("too-deep", token.at);
+  };
 
   const group = (opening: Token): FilterAst => {
+    deeper(opening);
     const inner = or();
+    depth -= 1;
     const closing = peek();
     if (!closing || closing.type !== "close") throw fail("unbalanced-open", opening.at);
     cursor += 1;
@@ -209,7 +221,12 @@ export function parseFilter(text: string): FilterAst | null {
       return token.value;
     }
     if (token.type === "op") {
-      if (token.value === "NOT") return { not: unary() };
+      if (token.value === "NOT") {
+        deeper(token);
+        const inner = unary();
+        depth -= 1;
+        return { not: inner };
+      }
       const following = peek();
       if (following?.type === "open") {
         // `AND (x)`: a group of one item.
@@ -242,6 +259,18 @@ export function parseFilter(text: string): FilterAst | null {
   return ast;
 }
 
+/**
+ * A filter given as one string, as the server reads it (a `tag_filter`
+ * string, the command line's FILTER): the grammar and nothing else, and an
+ * empty or blank string is no filter to send — refused (`empty` at its end).
+ * The text editor treats an empty text as "no filter" before it gets here.
+ */
+export function readFilterString(text: string): FilterAst {
+  const ast = parseFilter(text);
+  if (ast === null) throw new FilterParseError("empty", text, text.length);
+  return ast;
+}
+
 /** Every leaf pattern with whether it sits under an odd number of NOTs. */
 export function leaves(node: FilterAst | null, negated = false, into: { pattern: string; negated: boolean }[] = []) {
   if (node == null) return into;
@@ -251,16 +280,23 @@ export function leaves(node: FilterAst | null, negated = false, into: { pattern:
   return into;
 }
 
-// The server names the offending node of a refused filter by its path —
-// `tag_filter.items[1].not: invalid regular expression …`. Reading that
-// prefix lets the editor mark the rule; a detail without one marks nothing.
-/** A refusal's detail without the path it starts with: what is wrong, not where in the data. */
-export const withoutPath = (detail: string): string => detail.replace(/^tag_filter(?:\.items\[\d+\]|\.not|\.op|\.items)*:\s*/, "");
-
-export function errorPath(detail: string): string | null {
-  const match = /^tag_filter((?:\.items\[\d+\]|\.not|\.op|\.items)*):/.exec(detail);
-  if (!match) return null;
-  const segments = (match[1] ?? "").split(".").filter(Boolean);
-  while (segments.length > 0 && ["op", "items"].includes(segments[segments.length - 1]!)) segments.pop();
+// A refused filter says where the offending node is: `path`, the keys and
+// indices from the filter's root (`["items", 1, "not"]`), and `reason`, what
+// is wrong without the where. The editor keys its nodes by the same path
+// written as text (`items[1].not`); this is the one place that converts.
+/** The editor's key of the node an `invalid-filter` answer names, from its `path`; null when it names none. */
+export function errorNodeKey(path: unknown): string | null {
+  if (!Array.isArray(path)) return null;
+  const segments: string[] = [];
+  for (let index = 0; index < path.length; index += 1) {
+    const step = path[index];
+    if (step === "items" && typeof path[index + 1] === "number") {
+      segments.push(`items[${path[index + 1]}]`);
+      index += 1;
+    } else if (step === "not") {
+      segments.push("not");
+    }
+    // A trailing "op" or "items" names a part of the group, not a node: the group is marked.
+  }
   return segments.join(".");
 }

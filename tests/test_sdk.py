@@ -39,7 +39,7 @@ PUBLIC_NAMES = {
     # vocabulary
     "RUN_STATES", "ACTIVE_STATES", "TERMINAL_STATES", "COMPLETIONS", "VERDICT_STATUSES",
     "REPORTABLE_STATUSES", "LIVE_STATUSES", "LIFECYCLE_KINDS", "MARKER_FILENAME", "SPEC_VERSION",
-    "DISPATCH_ERROR_CODES",
+    "DISPATCH_ERROR_CODES", "PARAMETER_PROBLEMS",
     # errors
     "RunComposerError", "InvalidRequest", "InvalidParameter", "UnknownRunner", "ParseError",
     "NotFound", "UnknownRun", "Conflict", "RunActive", "InvalidTransition", "SpecConflict",

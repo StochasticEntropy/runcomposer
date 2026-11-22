@@ -149,15 +149,17 @@ describe("the names of a mapping", () => {
     expect(invalid("Feature switches, value 2")).toBeNull();
   });
 
-  it("when the server refuses a value of a declared form, says so in its own words and leaves the server's sentence out", () => {
-    const refusal = { code: "invalid-parameter", status: 422, detail: "parameter 'build': 'x' does not match the pattern '\\\\d{4}'", extra: { parameter: "build" } } as unknown as ApiError;
+  it("words a refusal by the kind the server names — and shows the server's sentence only for the runner's own reason", () => {
+    const refusal = (problem: string, key?: string) =>
+      ({ code: "invalid-parameter", status: 400, detail: "parameter 'build': 'x' does not match the pattern '\\\\d{4}'", extra: { parameter: "build", problem, ...(key ? { key } : {}) } }) as unknown as ApiError;
     const patterned = spec("build", "string", { pattern: "\\d{4}" });
-    expect(refusedValue(translator, patterned, refusal)).toEqual({ text: "The server did not accept this — it has to have the expected form." });
-    expect(refusedValue(translator, switches[0], refusal)).toEqual({ text: "The server did not accept this — it has to have the expected form." });
-    // Without a declared form only the server knows the reason: its sentence is shown, as the server's.
-    const plain = refusedValue(translator, spec("seed", "string"), refusal);
-    expect(plain.foreign).toBe(refusal.detail);
-    expect(plain.text).not.toBe("");
+    expect(refusedValue(translator, patterned, refusal("pattern"))).toEqual({ text: "This does not have the form the field expects." });
+    expect(refusedValue(translator, switches[0], refusal("key-pattern", "x-bad name"))).toEqual({ text: "A name does not have the form names must have here. (x-bad name)" });
+    expect(refusedValue(translator, patterned, refusal("choice"))).toEqual({ text: "Choose one of the listed values." });
+    // The runner's own reason is something only the runner knows: its sentence is shown, as the runner's.
+    const runner = refusedValue(translator, spec("seed", "string"), refusal("runner"));
+    expect(runner.foreign).toBe(refusal("runner").detail);
+    expect(runner.text).toBe("The runner did not accept this value:");
   });
 });
 

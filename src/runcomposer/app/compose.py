@@ -316,6 +316,11 @@ class Composer:
             expect_format=expect_format,
         )
         result.run = self._service.store.create_run(result.spec, origin=origin)
+        # The names the items had when the run was composed: what a reader of
+        # the run sees later, whatever the catalog says by then.
+        names = {item.id: item.display_name for item in result.items if item.display_name != item.id}
+        if names:
+            self._service.store.set_item_names(result.run.id, names)
         self._service.bus.emit(
             result.run.id,
             kinds.RUN_COMPOSED,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   codePointPosition,
-  errorPath,
+  errorNodeKey,
   FilterParseError,
   formatFilter,
   isEverything,
@@ -11,7 +11,6 @@ import {
   parseFilter,
   quotePattern,
   utf16Offset,
-  withoutPath,
 } from "./filter.ts";
 import type { FilterAst } from "./types.ts";
 
@@ -172,104 +171,21 @@ describe("leaves", () => {
   });
 });
 
-describe("errorPath", () => {
-  it("reads the node path the server puts in front of a refused filter", () => {
-    expect(errorPath("tag_filter: invalid regular expression 'regex:('")).toBe("");
-    expect(errorPath("tag_filter.items[1].items[0]: invalid regular expression 'regex:('")).toBe("items[1].items[0]");
-    expect(errorPath("tag_filter.items[0].not: empty pattern in 'prefix:'")).toBe("items[0].not");
-    expect(errorPath("tag_filter.op: unknown operator 'XOR'")).toBe("");
-    expect(errorPath("tag_filter.items[2].items: must be a non-empty list")).toBe("items[2]");
+describe("errorNodeKey", () => {
+  it("writes the path a refused filter names the way the editor keys its nodes", () => {
+    expect(errorNodeKey([])).toBe("");
+    expect(errorNodeKey(["items", 1, "items", 0])).toBe("items[1].items[0]");
+    expect(errorNodeKey(["items", 0, "not"])).toBe("items[0].not");
+    expect(errorNodeKey(["op"])).toBe("");
+    expect(errorNodeKey(["items", 2, "items"])).toBe("items[2]");
   });
 
-  it("marks nothing when the detail names no node", () => {
-    expect(errorPath("selection is empty: provide tag_filter and/or item_ids")).toBeNull();
-    expect(errorPath("unknown item ids")).toBeNull();
-  });
-});
-
-describe("withoutPath", () => {
-  it("leaves what is wrong and drops where in the data it is", () => {
-    expect(withoutPath("tag_filter.items[1]: invalid regular expression 'regex:(': missing )")).toBe("invalid regular expression 'regex:(': missing )");
-    expect(withoutPath("tag_filter.items[0].not: empty pattern in 'prefix:'")).toBe("empty pattern in 'prefix:'");
-    expect(withoutPath("tag_filter: pattern must be a non-empty string")).toBe("pattern must be a non-empty string");
-    expect(withoutPath("unknown item ids")).toBe("unknown item ids");
+  it("marks nothing when the answer names no node", () => {
+    expect(errorNodeKey(undefined)).toBeNull();
+    expect(errorNodeKey("tag_filter.items[1]")).toBeNull();
   });
 });
 
-// A table of expressions as people type them — the plain ones, the ones with
-// surprising precedence, quoting, `*`, and the mistakes. The text editor, the
-// add field, the command line and the API read each of them alike; this is
-// the editor's side of that table.
-describe("expressions as people type them", () => {
-  const AND = (...items: FilterAst[]): FilterAst => ({ op: "AND", items });
-  const OR = (...items: FilterAst[]): FilterAst => ({ op: "OR", items });
-  const NOT = (not: FilterAst): FilterAst => ({ not });
-  const ALL = NOT("regex:^$");
-
-  const read: [text: string, ast: FilterAst | null][] = [
-    ["Payments", "Payments"],
-    ["Payments AND Smoke", AND("Payments", "Smoke")],
-    ["Payments OR Cart AND Smoke", OR("Payments", AND("Cart", "Smoke"))],
-    ["(Payments OR Cart) AND Smoke", AND(OR("Payments", "Cart"), "Smoke")],
-    ["NOT Payments", NOT("Payments")],
-    ["NOT Payments AND Smoke", AND(NOT("Payments"), "Smoke")],
-    ["NOT (Payments OR Cart)", NOT(OR("Payments", "Cart"))],
-    ["prefix:Sprint-", "prefix:Sprint-"],
-    ["regex:^Sprint-1[23]$", "regex:^Sprint-1[23]$"],
-    ['"regex:^Cart(V2)?$"', "regex:^Cart(V2)?$"],
-    ["*", ALL],
-    ["* AND NOT Smoke", AND(ALL, NOT("Smoke"))],
-    ["NOT *", NOT(ALL)],
-    ['"Payments"', "Payments"],
-    // Single quotes are no quotes: they are part of the tag.
-    ["'Payments'", "'Payments'"],
-    // A tag is compared without regard to case by the server; the text keeps what was typed.
-    ["payments", "payments"],
-    ["NOT NOT Payments", NOT(NOT("Payments"))],
-    ["((Payments))", "Payments"],
-    ["Payments AND NOT prefix:Quarantine- OR Smoke", OR(AND("Payments", NOT("prefix:Quarantine-")), "Smoke")],
-    // In quotes, operator words and the star are tags spelled so.
-    ['"Auth OR Cart"', "Auth OR Cart"],
-    ['"AND"', "AND"],
-    ['"*"', "*"],
-    ['"a \\"quoted\\" tag"', 'a "quoted" tag'],
-    ["  Payments   OR\tCart  ", OR("Payments", "Cart")],
-    ["prefix:Sprint- AND regex:3$", AND("prefix:Sprint-", "regex:3$")],
-    ["Sprint-12 OR Sprint-13 AND NOT Payments", OR("Sprint-12", AND("Sprint-13", NOT("Payments")))],
-    // No text is no filter — "nothing selected", not an error.
-    ["", null],
-  ];
-  it.each(read)("%j is read", (text, ast) => {
-    expect(parseFilter(text)).toEqual(ast);
-  });
-
-  const refused: [text: string, problem: string, position: number][] = [
-    ["Payments AND", "unexpected-end", 12],
-    ["Payments OR OR Cart", "unexpected-operator", 12],
-    ['"unterminated', "unterminated-quote", 0],
-    ["NOT", "unexpected-end", 3],
-    ["AND Payments", "unexpected-operator", 0],
-    ["(Payments", "unbalanced-open", 0],
-    ["Payments)", "unbalanced-close", 8],
-    // Two words are two patterns with nothing between them — not one tag with a space.
-    ["Payments Smoke", "missing-operator", 9],
-    // Operators are capitals: `and` is a word like any other.
-    ["Payments and Smoke", "missing-operator", 9],
-    ["regex:(", "needs-quotes", 0],
-    // A pattern without a pattern: refused here as the server refuses it one step later.
-    ["prefix:", "empty", 0],
-    ["regex:", "empty", 0],
-    ["Payments AND prefix:", "empty", 13],
-    ['Smoke OR "regex:"', "empty", 9],
-  ];
-  it.each(refused)("%j is refused: %s at %i", (text, problem, position) => {
-    let caught: unknown;
-    try {
-      parseFilter(text);
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(FilterParseError);
-    expect({ problem: (caught as FilterParseError).problem, position: (caught as FilterParseError).position }).toEqual({ problem, position });
-  });
-});
+// The expressions people type — precedence, quoting, `*`, and the mistakes —
+// are shared cases now (tests/fixtures/filter-text.json, "strings"), read by
+// this reader and the server's alike: filter.fixture.test.ts.

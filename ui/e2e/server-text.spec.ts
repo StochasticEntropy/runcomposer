@@ -18,7 +18,7 @@ test.describe("a deployment whose server writes German", () => {
     const runId = await currentRunId(page);
     await api.waitFor(runId, ["FAILED"]);
 
-    const error = page.getByRole("alert").filter({ hasText: msg("run.runnerError", {}, "de") }).locator(".foreign");
+    const error = page.getByRole("alert").filter({ hasText: msg("run.cause.runner-raised", {}, "de") }).locator(".foreign");
     await expect(error).toHaveText(EXPLODING_ERROR);
     await expect(error).toHaveAttribute("lang", "de");
     await expect(error).not.toHaveClass(/is-marked/);
@@ -26,7 +26,7 @@ test.describe("a deployment whose server writes German", () => {
 
     await page.getByRole("combobox", { name: msg("prefs.language", {}, "de") }).selectOption("en");
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
-    const shown = page.getByRole("alert").filter({ hasText: msg("run.runnerError") }).locator(".foreign");
+    const shown = page.getByRole("alert").filter({ hasText: msg("run.cause.runner-raised") }).locator(".foreign");
     await expect(shown).toHaveText(EXPLODING_ERROR);
     await expect(shown).toHaveAttribute("lang", "de");
     await expect(shown).toHaveClass(/is-marked/);

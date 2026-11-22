@@ -66,7 +66,7 @@ to any of them is accidental.
   `config.connector_settings(name)`, and `Service(config)` with
   `compose_run`, `dispatch`, `plan`, `wait`, `cancel`, `list_runs` and
   `close`; everything else on them may change in a minor release;
-- the `RunStore` protocol is wide — 33 members — and may gain members in a
+- the `RunStore` protocol is wide — 35 members — and may gain members in a
   minor release, with a default in `StoreBase` wherever a default can be
   right ([§4](#runstore--persistence));
 - a record may gain fields with defaults — the Robot toolkit's
@@ -198,11 +198,24 @@ a run composed for the runner expects that format back
 (`results.expect[0].format`), so `ctx.deliver(shard, bundle=…)` without
 `format=` parses it with that parser — leave it `None` for a runner that
 delivers verdicts it built itself.
-Capabilities with meaning to runcomposer and its clients: `live_status`,
-`partitions`, `cancel`, `plan` (`plan(ctx)` answers with a real preview,
-[§3.2](#32-planctx--a-preview-without-side-effects)), `external_delivery`
-(results arrive by ingestion after `dispatch` returns), `simulated` (nothing
-is really executed).
+`capabilities` are flags a client may branch on. Every one the reference
+runners declare, with its meaning (`tests/test_capabilities.py` holds this
+table to what the shipped runners declare):
+
+| Capability | Meaning | Declared by |
+|---|---|---|
+| `plan` | `plan(ctx)` answers with a real preview ([§3.2](#32-planctx--a-preview-without-side-effects)); without it a plan request is a `400` | every reference runner |
+| `cancel` | `cancel(ctx)` stops what is executing ([§3.4](#34-cancelctx-and-health)) | every reference runner |
+| `live_status` | items are reported `RUNNING` and with their status while they execute | `demo`, `robot-pool` |
+| `partitions` | the run chooses environments to execute on — the per-run parameter `partitions` — and shards are grouped by them | `robot-pool` |
+| `shards` | the selection is split into several shards that execute side by side | `command` with `shards` above 1 |
+| `external_delivery` | results arrive by ingestion after `dispatch` returns; the run waits in `AWAITING_RESULTS` | `jenkins` |
+| `callback` | the executor pushes its results back to the run's results URL | `jenkins` with `completion: callback` |
+| `poll` | runcomposer follows the executor and downloads the results itself | `jenkins` with `completion: poll` |
+| `simulated` | nothing is really executed — verdicts are made up | `demo` |
+
+A capability of your own is any other string: runcomposer passes it on in
+`GET /api/v1/runners` and gives it no meaning.
 
 `parameters` are the **per-run options** whoever starts a run may set — a
 `Parameter` has `name`, `kind`, `label`, `help`, `default`, `choices`,
@@ -741,7 +754,7 @@ store needs SQLite 3.24.0 or newer with the JSON functions and refuses to
 open otherwise, naming both versions
 (`tests/test_store_sqlite_version.py`).
 
-The protocol has 33 members — `close`, `store_id` and `atomic` with
+The protocol has 35 members — `close`, `store_id`, `atomic`, `set_item_names` and `item_names` with
 defaults in `StoreBase` — and may gain members in a minor release, with a
 `StoreBase` default wherever a default can be right
 ([§1](#1-the-surface)); a store that lacks one is refused at startup naming
@@ -1279,6 +1292,55 @@ A `callable` above is `"pkg.mod:callable"` or `{call: "pkg.mod:callable",
 with: {…}}`, the `with:` mapping arriving as `settings=`
 ([§5](#5-configuration)).
 
+Every option of `robot-pool`, as its constructor takes it — "below" points
+at the table above (`tests/test_runner_options_docs.py` holds these tables
+to the constructors):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `suite_root` | — | the one directory (or file) of suites executed |
+| `suite_roots` | — | several roots; each item is executed from the root it came from |
+| `max_workers` | `2` | worker processes at once |
+| `partitions` | — | the environments a run may choose (the per-run parameter `partitions`) |
+| `partition_mode` | `each` | `each` or `split` (below) |
+| `partition_mode_per_run` | `false` | the mode as a per-run parameter (below) |
+| `max_chunks_per_partition` | — | chunks of one partition at once (below) |
+| `chunk_shards` | `false` | every piece of a chunk a shard of its own (below) |
+| `variables` | — | Robot variables for every execution |
+| `partition_variable` | `PARTITION` | the Robot variable that carries a shard's partition name |
+| `partition_variables` | — | Robot variables per partition: `{partition: {NAME: value}}` |
+| `run_parameters` | — | further per-run parameters (below) |
+| `parameter_variables` | — | per-run parameters as Robot variables (below) |
+| `protected_variables` | — | Robot variables a per-run mapping may not set (below) |
+| `executed_tag` | — | a tag added to every executed test; `{partition}` and `{shard}` are replaced |
+| `live_status` | `true` | stream `RUNNING` and each test's status while it executes |
+| `allow_drift` | `false` | the default of the per-run parameter `allow_drift`: execute what is left of a changed corpus instead of refusing |
+| `listener` | — | further Robot listeners (import paths) |
+| `pre_run_hooks` | — | shell commands run once per dispatch before anything executes; one that fails refuses the dispatch |
+| `hook_timeout_s` | `600` | seconds a `pre_run_hooks` command may take |
+| `plan_checks` | — | callables checking the plan (below) |
+| `pre_dispatch` | — | callables run before the hand-off (below) |
+| `worker_setup` | — | callables run in each worker (below) |
+| `health_checks` | — | callables adding rows to the health (below) |
+| `health_check_timeout_s` | `5` | seconds one health check may take (below) |
+| `post_execution` | — | callables after every execution (below) |
+| `clean_output` | — | output.xml rewritten without selected keyword data (below) |
+| `worker_cwd` | — | the workers' working directory (below) |
+| `worker_env` | — | the workers' environment (below) |
+| `pythonpath` | — | entries added to the workers' module search path (relative to the config file) |
+| `log` | `true` | write `log.html` |
+| `report` | `true` | write `report.html` |
+| `merge_groups` | `false` | one merged result per group and one for the run (below) |
+| `max_tests_per_chunk` | — | a chunk executed in pieces of at most this many tests (below) |
+| `rerun_failed` | `0` | re-execute failed tests up to this many more times; every attempt is reported, the last counts |
+| `shard_timeout_s` | — | seconds one shard may take; a shard over it is stopped and reported |
+| `history_selector` | — | `{labels: {…}}`: whose earlier runs the durations come from |
+| `history_depth` | `5` | how many earlier dispatches the durations are averaged over |
+| `history_statuses` | — | durations of executions with these statuses only (below) |
+| `rpa` | — | the execution mode (below) |
+| `robot_options` | — | further options for `robot.run` (below) |
+| `format` | — | the result format delivered; default `robot-output-xml` |
+
 What it does on its own: `RUNNING` streams when a test starts, workers log
 their progress into the run's event stream and a line when each shard
 starts and ends, each shard's directory is
@@ -1364,13 +1426,46 @@ error: parameter 'variables': the Robot variable 'shop_url' cannot be set per ru
 | `parameters: {NAME: template}` | the build parameters of *your* job. Fields: the document as `{spec_b64}` (the exact document, gzipped, as base64 — one line of ASCII that survives any form or shell; `base64 -d \| gunzip` restores it, `decode_spec` in Python), `{spec_url}` (where the job downloads the exact bytes; needs `callback_base`) or `{spec_json}` (as text — small documents only); `{run_id}`, `{dispatch_id}`, `{title}`, `{labels[key]}`; `{callback_url}`, `{token}`; `{item_ids}` (one per line), `{shards}` (comma-joined), `{params[name]}` (a list comma-joined, a `mapping` as `name=value` lines) |
 | `shards` | what the build reports separately: a list of names, or a template rendering to a comma- or newline-separated list (`"{params[regions]}"`); default `["1"]`. A template that renders to nothing, or to duplicates, refuses the dispatch |
 | `artifact_paths`, `result_urls` | with `completion: poll`, what is downloaded per shard: archived files matching `artifact_paths` (globs), and paths below the build's URL listed in `result_urls` (`consoleText`, `robot/report/output.xml` — what a publisher serves without archiving it). `{shard}` in either tells several shards' results apart. `artifact_paths` defaults to `["results/*"]` only when no `result_urls` are given. Several shards with `poll` and neither `{shard}` nor a `postprocess` are refused before the trigger |
-| `postprocess: callable` | called as `callable(ctx, shard, directory) -> Path \| None` over what was downloaded for one shard, before parsing; the path it returns is what is delivered, `None` delivers the directory as it is |
+| `postprocess: callable` | called as `callable(ctx, shard, directory) -> Path \| None` over what was downloaded for one shard, before parsing; the path it returns is what is delivered, `None` delivers the directory as it is. `directory` is `results/` in the dispatch's work directory (`results/<shard>/` with several shards) and holds that shard's downloads: each archived file `artifact_paths` matched, under its file name, and each `result_urls` path as a file named after its last segment — `consoleText` for `result_urls: [consoleText]` |
 | `field_providers: {name: callable}` | each called as `callable(ctx, fields) -> str` with the fields computed so far; its text is the template field `{name}`. It may `ctx.refuse` before anything is triggered. It is called for a plan preview too, with a `PlanContext` — so it must be free of side effects |
 | `plan_provider: callable`, `plan_fields: [names]` | for a job that cannot say which item goes where: called by the preview and the dispatch as `callable(ctx, fields)` with the built-in fields, it returns any of `{"shards": {name: [item ids]}, "groups": {shard: label}, "fields": {name: text}}`. Its shards replace what `shards` says, are declared with their items and groups and shown in the preview; `{shards}` renders from their names. `plan_fields` lists the fields it yields, so templates can be checked at startup (one it does not yield renders empty). Free of side effects; it may `ctx.refuse`; a return of the wrong shape, or an item that is not planned, fails the dispatch or the preview naming it; `None` changes nothing |
 | `check_parameters: true` | the health check compares the names under `parameters` with the parameters the job declares — Jenkins ignores a build parameter its job does not declare, silently. A name the job would drop, or a job that declares none, makes the runner `degraded`; a job that is not readable is "not checked" |
 | `outage_tolerance_s: N` | with `poll`, following the build rides out a Jenkins that has not answered for up to `N` seconds (a restart); without it, a request that still fails after the bounded retries fails the dispatch. It does not extend `timeout_s`. A queue item cancelled in Jenkins fails the dispatch either way |
 | `max_parameter_bytes`, `max_request_bytes` | a trigger with one build parameter over `max_parameter_bytes` (default 128 000) or a whole request over `max_request_bytes` (default 1 000 000) is refused before anything is sent, with a message naming the way out (`{spec_b64}`, `{spec_url}`, or a higher limit); `null` lifts a limit |
 | `run_parameters: [{name, kind, …}]` | the per-run parameters, declared with the fields of `Parameter` |
+
+Every option of `jenkins`, as its constructor takes it — "below" points
+at the table above:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `base_url` | required | the Jenkins server's address |
+| `job` | required | the job to trigger (a folder job as `folder/job`) |
+| `parameters` | — | the build parameters, as templates (below) |
+| `callback_base` | — | the address the job reaches this runcomposer by (`{callback_url}`, `{spec_url}`) |
+| `completion` | `callback` | `callback`: the job pushes its results; `poll`: runcomposer follows the build and downloads them |
+| `shards` | — | what the build reports separately (below) |
+| `artifact_paths` | — | with `poll`: archived files to download (below) |
+| `result_urls` | — | with `poll`: paths below the build's URL to download (below) |
+| `field_providers` | — | callables computing template fields (below) |
+| `postprocess` | — | a callable over what was downloaded for a shard (below) |
+| `plan_provider` | — | a callable saying which item goes to which shard (below) |
+| `plan_fields` | — | the fields `plan_provider` yields (below) |
+| `check_parameters` | `false` | health compares `parameters` with what the job declares (below) |
+| `outage_tolerance_s` | — | with `poll`: how long a silent server is waited out (below) |
+| `format` | — | the result format the job's results are in; default: the run's expected format |
+| `user` | — | the Jenkins user, with `api_token` (Basic authentication); none for an unauthenticated server |
+| `api_token` | — | that user's API token — a secret: write `${env:NAME}` |
+| `verify_tls` | `true` | `false` skips the check of the server's certificate |
+| `ca_bundle` | — | a file of the CA certificates to trust instead of the system's (relative to the config file) |
+| `request_timeout_s` | `30` | seconds one HTTP request may take |
+| `retries` | `3` | how often a request that failed transiently (429, 502–504, no connection) is repeated |
+| `retry_backoff_s` | `1` | seconds before the first repetition, doubling with each |
+| `poll_interval_s` | `5` | with `poll`: seconds between two looks at the queue item and the build |
+| `timeout_s` | `3600` | with `poll`: seconds the build may take from trigger to end before the dispatch fails |
+| `run_parameters` | — | the per-run parameters (below) |
+| `max_parameter_bytes` | `128000` | the size limit of one build parameter (below) |
+| `max_request_bytes` | `1000000` | the size limit of one trigger request (below) |
 
 A `callable` is `"pkg.mod:callable"` or `{call: …, with: {…}}`, its
 settings arriving as `settings=` ([§5](#5-configuration))
@@ -1428,6 +1523,28 @@ runs `jenkins-fanout` from that file against the stand-in;
 [`ci/jenkins/e2e.py`](../ci/jenkins/e2e.py) runs both entries against a real
 Jenkins (steps 8–11: plan, fan-out polled, fan-out pushing with progress, a
 cancel after the queue item was forgotten).
+
+**`command`** (`src/runcomposer/plugins/command_runner.py`) runs a command
+per shard on this machine and delivers what it wrote through the
+configured parser — placeholders `{ids_file}`, `{out_dir}`, `{spec_file}`,
+`{run_id}`, `{dispatch_id}`, `{shard}`, the same values in the environment
+as `RUNCOMPOSER_IDS_FILE` …, each per-run parameter as
+`RUNCOMPOSER_PARAM_<NAME>`. Every option, as its constructor takes it:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `command` | required | the command run per shard: one string (run by the shell) or an argv list, with placeholders |
+| `format` | — | the result format the command writes; default: the run's expected format |
+| `shards` | `1` | how many shards the selection is split into |
+| `max_parallel` | `1` | shards whose commands run at once |
+| `cwd` | — | the commands' working directory (relative to the config file) |
+| `env` | — | set in the commands' environment |
+| `timeout_s` | — | seconds one shard's command may take; one over it is stopped with what it started |
+| `ok_exit_codes` | — | exit codes after which the shard's results are delivered (default `[0]`) |
+| `allow_drift` | `false` | execute what is left of a changed corpus instead of refusing |
+| `parameters` | — | the per-run parameters, declared with the fields of `Parameter` |
+| `history_selector` | — | `{labels: {…}}`: whose earlier runs the shard balancing reads durations from |
+| `history_depth` | `5` | how many earlier dispatches the durations are averaged over |
 
 ### 9.2 Compose when configuration is not enough
 

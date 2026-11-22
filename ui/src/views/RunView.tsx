@@ -34,7 +34,7 @@ import { dispatchSpecUrl, resultsExportUrl, specUrl } from "../lib/api.ts";
 import { formatFilter } from "../lib/filter.ts";
 import { useFlash } from "../hooks/useFlash.ts";
 import { setFlash } from "../lib/flash.ts";
-import { absoluteTime, elapsedMs, formatDuration } from "../lib/format.ts";
+import { absoluteTime, dispatchCause, elapsedMs, formatDuration } from "../lib/format.ts";
 import type { Translator } from "../lib/i18n.ts";
 import { asApiError } from "../lib/request.ts";
 import type { ApiError } from "../lib/request.ts";
@@ -310,27 +310,35 @@ export function RunView({ route }: { route: Route }) {
           {t("run.refreshFailed")} <ErrorText error={follow.error} />
         </Notice>
       )}
-      {/* A cancel somebody asked for is not an error of the runner — and neither is
-          the server having stopped under a run: a STALE dispatch says that itself, below. */}
-      {latest?.error && run.state !== "CANCELLED" && latest.state !== "STALE" && (
-        <Notice tone="error">
-          <strong>{t("run.runnerError")}</strong> <Foreign className="pre-line">{latest.error}</Foreign>
-        </Notice>
-      )}
-      {run.state === "CANCELLED" && <Notice tone="info">{t("run.cancelledHint")}</Notice>}
-      {latest?.cancel_requested && active && <Notice tone="warn">{t("run.cancelRequested")}</Notice>}
-      {run.state === "STALE" && (
-        <Notice tone="warn">
-          <p>{t("run.staleHint")}</p>
-          {latest?.state === "STALE" && latest.error && (
-            // What the server noted when it found the run cut off — which process it was — is for whoever looks into it.
+      {/* Why the latest dispatch ended with an error is a field of its own
+          (error_code): a runner's error, a server that stopped under the run,
+          results that never came, a cancel. Each is worded for what it is; the
+          server's sentence stays as supporting detail. A record from before the
+          codes existed falls back to its state. */}
+      {latest?.error && (() => {
+        const code = dispatchCause(latest);
+        if (code === null || code === "cancelled") return null;
+        if (code === "runner-raised") {
+          return (
+            <Notice tone="error">
+              <strong>{t("run.cause.runner-raised")}</strong> <Foreign className="pre-line">{latest.error}</Foreign>
+            </Notice>
+          );
+        }
+        return (
+          <Notice tone="warn">
+            <p>{t(`run.cause.${code}`)}</p>
             <details className="technical">
               <summary>{t("run.technicalDetail")}</summary>
               <Foreign className="pre-line">{latest.error}</Foreign>
+              {latest.error_owner && <Foreign className="pre-line">{latest.error_owner}</Foreign>}
             </details>
-          )}
-        </Notice>
-      )}
+          </Notice>
+        );
+      })()}
+      {run.state === "STALE" && !latest?.error && <Notice tone="warn">{t("run.cause.interrupted")}</Notice>}
+      {run.state === "CANCELLED" && <Notice tone="info">{t("run.cancelledHint")}</Notice>}
+      {latest?.cancel_requested && active && <Notice tone="warn">{t("run.cancelRequested")}</Notice>}
       {run.state === "AWAITING_RESULTS" && (
         <Notice tone="info">
           <p>{t("run.awaitingHint")}</p>

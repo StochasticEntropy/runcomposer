@@ -162,6 +162,12 @@ CREATE TABLE IF NOT EXISTS verdicts (
     message TEXT NOT NULL DEFAULT '',
     attempt INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS item_names (
+    run_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (run_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS live_verdicts (
     run_id TEXT NOT NULL,
     dispatch_id TEXT NOT NULL,
@@ -503,6 +509,22 @@ class SqliteRunStore(StoreBase):
         return RunPage(
             runs=tuple(_run_record(row, by_run[row["id"]], ()) for row in rows), total=total
         )
+
+    def set_item_names(self, run_id: str, names: Mapping[str, str]) -> None:
+        with self._write() as conn:
+            _require_run(conn, run_id)
+            conn.executemany(
+                "INSERT INTO item_names (run_id, item_id, name) VALUES (?, ?, ?)"
+                " ON CONFLICT (run_id, item_id) DO UPDATE SET name = excluded.name",
+                [(run_id, str(item_id), str(name)) for item_id, name in names.items()],
+            )
+
+    def item_names(self, run_id: str) -> dict[str, str]:
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT item_id, name FROM item_names WHERE run_id = ?", (run_id,)
+            ).fetchall()
+        return {row["item_id"]: row["name"] for row in rows}
 
     def delete_run(self, run_id: str) -> bool:
         with self._write() as conn:
@@ -1020,6 +1042,7 @@ def _events(rows: list[Any]) -> list[RunEvent]:
 # -- helpers -------------------------------------------------------------------------
 
 _RUN_TABLES = (
+    "item_names",
     "verdicts",
     "live_verdicts",
     "deliveries",

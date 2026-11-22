@@ -991,13 +991,15 @@ class RobotPoolRunner(RunnerBase):
             for key in dict(ctx.parameters[name]):
                 problem = variable_name_problem(key)
                 if problem is not None:
-                    raise InvalidParameter(name, f"the Robot variable {problem}")
+                    raise InvalidParameter(
+                        name, f"the Robot variable {problem}", problem="key-pattern", key=str(key)
+                    )
                 protected = self._protected.get(variable_key(str(key)))
                 if protected is not None:
                     raise InvalidParameter(
                         f"parameter {name!r}: the Robot variable {str(key)!r} cannot be set per "
                         f"run — this runner protects {protected!r} (protected_variables)",
-                        parameter=name,
+                        parameter=name, key=str(key),
                     )
 
     def _pre_dispatch(

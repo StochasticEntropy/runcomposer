@@ -813,7 +813,12 @@ def _check_dispatches(store: Any) -> None:
              f"a new token for a dispatch replaces its previous one: {store.ingest_tokens(run.id)}")
     store.delete_dispatch("01KITD2")
     _require(store.get_dispatch("01KITD2") is None, rule, "delete_dispatch did not remove it")
+    store.set_item_names(run.id, {DEFAULT_ITEM_IDS[0]: "Cart holds one item"})
+    kept = store.item_names(run.id)
+    _require(kept in ({}, {DEFAULT_ITEM_IDS[0]: "Cart holds one item"}), "store.item-names",
+             f"item_names returns what set_item_names kept (or nothing, for a store that keeps no names): {kept!r}")
     store.delete_run(run.id)
+    _require(store.item_names(run.id) == {}, "store.item-names", "the names go with the run")
 
 
 def _deliver(store: Any, run_id: str, dispatch_id: str, shard: str, content_hash: str,

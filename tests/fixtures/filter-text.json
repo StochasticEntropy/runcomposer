@@ -1,5 +1,5 @@
 {
-  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1), read by the core (tests/test_filter_text.py) and by the web UI (ui/src/lib/filter.fixture.test.ts) alike, every case on both sides. parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. `*` is every item: it reads as {\"not\": \"regex:^$\"}, which is written `*`; the quoted \"*\" is the tag spelled so. strings: what a filter given as one string yields \u2014 a selection's `tag_filter` over the API, the command line's FILTER, a configured filter, and the web UI's text editor when it applies its text: `ast`, or `error` with `problem`, `position` and, where given, `token`. One grammar, one answer: a single tag or pattern is one word of the grammar and reads as itself; a string that does not parse is refused, whatever it might mean as one pattern; an empty or blank string, and a `prefix:` or `regex:` with nothing after it, are refused (problem `empty`; for blank text the position is its end).",
+  "description": "Conformance cases for the one-line text form of a tag filter (DESIGN.md \u00a73.1), read by the core (tests/test_filter_text.py) and by the web UI (ui/src/lib/filter.fixture.test.ts) alike, every case on both sides. parse: reading `text` gives `ast` (null: no filter). format: writing `ast` gives `text`, and reading `text` gives `ast` back. errors: reading `text` fails with `problem` at `position` (0-based, counted in Unicode code points) and, where given, `token`. `*` is every item: it reads as {\"not\": \"regex:^$\"}, which is written `*`; the quoted \"*\" is the tag spelled so. strings: what a filter given as one string yields \u2014 a selection's `tag_filter` over the API, the command line's FILTER, a configured filter, and the web UI's text editor when it applies its text: `ast`, or `error` with `problem`, `position` and, where given, `token`. One grammar, one answer: a single tag or pattern is one word of the grammar and reads as itself; a string that does not parse is refused, whatever it might mean as one pattern; an empty or blank string, and a `prefix:` or `regex:` with nothing after it, are refused (problem `empty`; for blank text the position is its end), and so is text nested deeper than 40 levels (problem `too-deep`, at the NOT or parenthesis one level too deep). The web UI's text editor treats an empty text as no filter and sends none; an empty string that is sent is refused.",
   "parse": [
     {
       "text": "Payments",
@@ -1337,6 +1337,112 @@
         "problem": "missing-operator",
         "position": 7,
         "token": "12"
+      }
+    },
+    {
+      "text": "Smoke OR \"regex:\"",
+      "error": {
+        "problem": "empty",
+        "position": 9,
+        "token": "regex:"
+      }
+    },
+    {
+      "text": "NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT Auth",
+      "error": {
+        "problem": "too-deep",
+        "position": 160
+      }
+    },
+    {
+      "text": "(((((((((((((((((((((((((((((((((((((((((Auth)))))))))))))))))))))))))))))))))))))))))",
+      "error": {
+        "problem": "too-deep",
+        "position": 40
+      }
+    },
+    {
+      "text": "NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT Auth",
+      "ast": {
+        "not": {
+          "not": {
+            "not": {
+              "not": {
+                "not": {
+                  "not": {
+                    "not": {
+                      "not": {
+                        "not": {
+                          "not": {
+                            "not": {
+                              "not": {
+                                "not": {
+                                  "not": {
+                                    "not": {
+                                      "not": {
+                                        "not": {
+                                          "not": {
+                                            "not": {
+                                              "not": {
+                                                "not": {
+                                                  "not": {
+                                                    "not": {
+                                                      "not": {
+                                                        "not": {
+                                                          "not": {
+                                                            "not": {
+                                                              "not": {
+                                                                "not": {
+                                                                  "not": {
+                                                                    "not": {
+                                                                      "not": {
+                                                                        "not": {
+                                                                          "not": {
+                                                                            "not": {
+                                                                              "not": {
+                                                                                "not": {
+                                                                                  "not": {
+                                                                                    "not": {
+                                                                                      "not": "Auth"
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   ]

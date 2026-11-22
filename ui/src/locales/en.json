@@ -86,7 +86,8 @@
       "plugin-error": "A plugin could not be loaded.",
       "store-error": "The run store reported an error.",
       "internal-error": "The server ran into an internal error.",
-      "nothing-planned": "Nothing in the delivery is for an item of this run."
+      "nothing-planned": "Nothing in the delivery is for an item of this run.",
+      "filter-too-deep": "The filter nests too deeply."
     }
   },
   "runState": {
@@ -206,7 +207,8 @@
       "unbalanced-open": "Position {position}: this parenthesis is never closed.",
       "unbalanced-close": "Position {position}: this closing parenthesis has no opening one.",
       "unterminated-quote": "Position {position}: this quote is never closed.",
-      "needs-quotes": "Position {position}: put a pattern that contains parentheses or quotes in quotes — \"{token}…\"."
+      "needs-quotes": "Position {position}: put a pattern that contains parentheses or quotes in quotes — \"{token}…\".",
+      "too-deep": "Position {position}: the filter nests deeper than 40 levels — write it flatter."
     },
     "negateAll": "NOT: negate the whole filter",
     "pickForGroup": "Pick tags for this group…",
@@ -403,8 +405,7 @@
       "pattern": "This does not have the form the field expects.",
       "duplicate": "Every row needs a name, and each name only once.",
       "line": "This must be a single line.",
-      "key": "A name does not have the form names must have here.",
-      "refusedForm": "The server did not accept this — it has to have the expected form."
+      "key": "A name does not have the form names must have here."
     },
     "unhealthyHint": "This runner reports a problem. A run started on it may fail.",
     "checks": "What this runner checked",
@@ -418,7 +419,16 @@
     "mappingAdd": "Add a row",
     "expectedForm": "Expected form:",
     "expectedNameForm": "Expected form of a name:",
-    "expectedValueForm": "Expected form of a value:"
+    "expectedValueForm": "Expected form of a value:",
+    "refused": {
+      "unknown": "The runner has no such setting.",
+      "required": "This is required.",
+      "type": "This is not the kind of value the field takes.",
+      "choice": "Choose one of the listed values.",
+      "pattern": "This does not have the form the field expects.",
+      "key-pattern": "A name does not have the form names must have here.",
+      "runner": "The runner did not accept this value:"
+    }
   },
   "labels": {
     "label": "Labels",
@@ -521,8 +531,6 @@
     "deleteConfirm": "Delete the run",
     "deleted": "“{title}” was deleted.",
     "refreshFailed": "The run could not be refreshed.",
-    "runnerError": "The runner reported an error:",
-    "staleHint": "The server stopped while this run was executing. What had finished is kept; run it again to complete it.",
     "awaitingHint": "This run waits for results from outside. They arrive by upload or through the inbox.",
     "composedHint": "This run is composed but was never dispatched.",
     "progress": "Progress",
@@ -660,6 +668,12 @@
     "moreShards": {
       "one": "Show {count} more shard",
       "other": "Show {count} more shards"
+    },
+    "cause": {
+      "runner-raised": "The runner reported an error:",
+      "interrupted": "The server stopped while this run was executing. What had finished is kept; run it again to complete it.",
+      "expired": "No results arrived within the time this deployment waits for them. What had arrived is kept; results that still come are taken in.",
+      "cancelled": "This run was cancelled."
     }
   },
   "rerun": {

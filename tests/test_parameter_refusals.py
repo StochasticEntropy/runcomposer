@@ -278,3 +278,64 @@ class TestTheHarnessSaysSo:
     def test_a_valid_run_has_neither(self, harness):
         run = harness.run("Checkout", runner="careful", parameters={"region": "eu"})
         assert (run.invalid, run.refusal, run.state) == (None, None, "COMPLETE")
+
+
+PARAMETER_CASES = [
+    ({"nope": "x"}, "nope", "unknown", None),
+    ({"build": 7}, "build", "type", None),
+    ({"build": "2026-12"}, "build", "pattern", None),
+    ({"lane": "warp"}, "lane", "choice", None),
+    ({"headers": {"Accept": "json"}}, "headers", "key-pattern", "Accept"),
+    ({"headers": {"X-Tenant": "x y"}}, "headers", "pattern", "X-Tenant"),
+    ({"region": "ap"}, "region", "runner", None),
+]
+
+
+class TestTheReasonIsAField:
+    """``invalid-parameter`` answers say what kind of refusal it is —
+    ``problem``, one of ``PARAMETER_PROBLEMS`` — and for a mapping which of
+    its names, ``key``: a form marks the field without reading the text."""
+
+
+    def test_the_vocabulary_is_closed(self):
+        from runcomposer.sdk import PARAMETER_PROBLEMS
+
+        assert PARAMETER_PROBLEMS == ("unknown", "required", "type", "choice", "pattern", "key-pattern", "runner")
+        with pytest.raises(ValueError, match="unknown parameter problem"):
+            InvalidParameter("region", "x", problem="mood")
+
+    @pytest.mark.parametrize(("given", "parameter", "problem", "key"), PARAMETER_CASES)
+    def test_over_http(self, make_client, given, parameter, problem, key):
+        client, _service = make_client(runners={"formed": {"module": f"{HERE}:FormedRunner"}})
+        answer = client.post(f"{API}/runs", json={
+            "selection": {"tag_filter": "Checkout"}, "dispatch": {"runner": "formed", "parameters": given}})
+        assert answer.status_code == 400, answer.text
+        body = answer.json()
+        assert (body["code"], body["parameter"], body.get("problem")) == ("invalid-parameter", parameter, problem), body
+        assert body.get("key") == key
+
+    def test_a_missing_required_parameter(self, make_client):
+        client, _service = make_client(runners={"formed": {"module": f"{HERE}:FormedRunner", "strict": True}})
+        body = client.post(f"{API}/runs", json={
+            "selection": {"tag_filter": "Checkout"}, "dispatch": {"runner": "formed"}}).json()
+        assert (body["parameter"], body["problem"]) == ("ticket", "required")
+
+
+class FormedRunner(RunnerBase):
+    def __init__(self, strict: bool = False):
+        self.strict = strict
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="formed", parameters=(
+            Parameter("build", pattern=r"\d{4}\.\d{1,2}"),
+            Parameter("lane", kind="choice", choices=("eu", "us"), default="eu"),
+            Parameter("headers", kind="mapping", key_pattern=r"X-[A-Za-z-]+", pattern=r"\S+"),
+            Parameter("region", default="eu"),
+            *((Parameter("ticket", required=True),) if self.strict else ()),
+        ))
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        if ctx.parameters["region"] not in ("eu", "us"):
+            raise InvalidParameter("region", f"no build agent serves {ctx.parameters['region']!r}")
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(item, "PASS") for item in ctx.item_ids])

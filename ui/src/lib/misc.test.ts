@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { absoluteTime, elapsedMs, formatDuration, naturalCompare, parseLabel, relativeTime, sumCounts } from "./format.ts";
+import { absoluteTime, dispatchCause, elapsedMs, formatDuration, naturalCompare, parseLabel, relativeTime, sumCounts } from "./format.ts";
+import { loadItemNames } from "../hooks/useItemNames.ts";
 import { createTranslator } from "./i18n.ts";
 import { chooseLocale } from "./prefs.ts";
 import { composeHref, formatHash, parseHash, runHref, runsHref } from "./router.ts";
@@ -113,5 +114,38 @@ describe("the language to start in", () => {
     expect(chooseLocale(available, null, ["fr-FR"], "de")).toBe("de");
     expect(chooseLocale(available, null, [], undefined)).toBe("en");
     expect(chooseLocale(available, "xx", ["fr"], "yy")).toBe("en");
+  });
+});
+
+describe("why a dispatch ended with an error", () => {
+  it("is the server's cause when it names one", () => {
+    expect(dispatchCause({ error: "interrupted while RUNNING: …", error_code: "interrupted", state: "STALE" })).toBe("interrupted");
+    expect(dispatchCause({ error: "expired: no results for 900s …", error_code: "expired", state: "FAILED" })).toBe("expired");
+    expect(dispatchCause({ error: "RuntimeError: boom", error_code: "runner-raised", state: "FAILED" })).toBe("runner-raised");
+    expect(dispatchCause({ error: "cancelled on request", error_code: "cancelled", state: "CANCELLED" })).toBe("cancelled");
+  });
+
+  it("follows the state for a record without one, and is nothing without an error", () => {
+    expect(dispatchCause({ error: "gone", error_code: "", state: "STALE" })).toBe("interrupted");
+    expect(dispatchCause({ error: "RuntimeError: boom", state: "FAILED" })).toBe("runner-raised");
+    expect(dispatchCause({ error: "", error_code: "", state: "COMPLETE" })).toBeNull();
+    expect(dispatchCause(undefined)).toBeNull();
+  });
+});
+
+describe("item names of a stored run", () => {
+  it("come with the run's items as it was composed, and only where they differ from the id", async () => {
+    const api = {
+      runItems: async () => ({
+        item_ids: ["Shop.Cart.Core.T001", "Shop.Cart.Core.T002"],
+        count: 2,
+        items: [
+          { id: "Shop.Cart.Core.T001", name: "Cart holds one item" },
+          { id: "Shop.Cart.Core.T002", name: "Shop.Cart.Core.T002" },
+        ],
+      }),
+    };
+    const names = await loadItemNames(api, "01RUN");
+    expect([...names]).toEqual([["Shop.Cart.Core.T001", "Cart holds one item"]]);
   });
 });

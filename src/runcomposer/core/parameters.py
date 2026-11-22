@@ -85,9 +85,10 @@ class Parameter:
         """Return the accepted value, or raise :class:`InvalidParameter`
         naming this parameter."""
 
-        def bad(expected: str) -> InvalidParameter:
+        def bad(expected: str, problem: str = "type") -> InvalidParameter:
             return InvalidParameter(
-                f"parameter {self.name!r} must be {expected}, got {value!r}", parameter=self.name
+                f"parameter {self.name!r} must be {expected}, got {value!r}", parameter=self.name,
+                problem=problem,
             )
 
         if self.kind == "string":
@@ -111,9 +112,9 @@ class Parameter:
                     raise InvalidParameter(
                         f"parameter {self.name!r}: key {key!r} does not match the key pattern "
                         f"'{self.key_pattern}'",  # as written, not as a repr doubles a backslash
-                        parameter=self.name,
+                        parameter=self.name, problem="key-pattern", key=key,
                     )
-                self._match(entry, f"[{key!r}]")
+                self._match(entry, f"[{key!r}]", key)
             return dict(value)
         elif self.kind == "integer":
             if isinstance(value, bool) or not isinstance(value, int):
@@ -123,23 +124,23 @@ class Parameter:
                 raise bad("true or false")
         elif self.kind == "choice":
             if not isinstance(value, str) or value not in self.choices:
-                raise bad(f"one of {list(self.choices)}")
+                raise bad(f"one of {list(self.choices)}", "choice")
         elif self.kind == "multi_choice":
             if (
                 not isinstance(value, (list, tuple))
                 or not all(isinstance(entry, str) for entry in value)
                 or any(entry not in self.choices for entry in value)
             ):
-                raise bad(f"a list drawn from {list(self.choices)}")
+                raise bad(f"a list drawn from {list(self.choices)}", "choice")
             return list(value)
         return value
 
-    def _match(self, value: str, where: str = "") -> None:
+    def _match(self, value: str, where: str = "", key: str | None = None) -> None:
         if self.pattern is not None and re.fullmatch(self.pattern, value) is None:
             raise InvalidParameter(
                 f"parameter {self.name!r}{where}: {value!r} does not match the pattern "
                 f"'{self.pattern}'",  # as written, not as a repr doubles a backslash
-                parameter=self.name,
+                parameter=self.name, problem="pattern", key=key,
             )
 
 
@@ -157,7 +158,7 @@ def validate_parameters(
         if name not in by_name:
             raise InvalidParameter(
                 f"unknown parameter {name!r} (this runner accepts: {sorted(by_name) or 'none'})",
-                parameter=name,
+                parameter=name, problem="unknown",
             )
     accepted: dict[str, Any] = {}
     for parameter in declared:
@@ -165,7 +166,8 @@ def validate_parameters(
             accepted[parameter.name] = parameter.check(given[parameter.name])
         elif parameter.required:
             raise InvalidParameter(
-                f"parameter {parameter.name!r} is required", parameter=parameter.name
+                f"parameter {parameter.name!r} is required", parameter=parameter.name,
+                problem="required",
             )
         elif parameter.default is not None:
             accepted[parameter.name] = parameter.default

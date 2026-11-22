@@ -172,7 +172,11 @@ def verdict_rows(service: Service, dispatch: DispatchRecord | None, run_id: str)
     that have not delivered — the live status streamed so far (``live``)."""
     if dispatch is None:
         return []
+    names = service.store.item_names(run_id)
     rows = [verdict_json(verdict) for verdict in service.ledger.scored_verdicts(dispatch)]
+    for row in rows:
+        # The item's name as the run was composed; its id when none was kept.
+        row["name"] = names.get(row["item_id"], row["item_id"])
     delivered = {row["shard"] for row in rows if row["status"] != "MISSING"}
     streamed = service.store.live_verdicts(run_id, dispatch.dispatch_id)
     # A MISSING verdict says "nothing was delivered for this item" — which is
@@ -202,7 +206,7 @@ def verdict_rows(service: Service, dispatch: DispatchRecord | None, run_id: str)
     over = dispatch.state in lifecycle.TERMINAL_STATES
     for status in streamed:
         if status.shard not in delivered and not (over and status.status == "RUNNING"):
-            rows.append(verdict_json(status, live=True))
+            rows.append({**verdict_json(status, live=True), "name": names.get(status.item_id, status.item_id)})
     return rows
 
 

@@ -10,6 +10,7 @@ text to classify an error.
 from __future__ import annotations
 
 __all__ = [
+    "PARAMETER_PROBLEMS",
     "AuthRequired",
     "ConfigError",
     "Conflict",
@@ -63,16 +64,43 @@ class InvalidParameter(InvalidRequest):
     runner: raised from ``plan`` or from ``dispatch`` before ``declare``, it
     is answered like a value the declaration refuses (HTTP ``400``
     ``invalid-parameter``, no dispatch left behind); raised after the
-    hand-off it fails the dispatch with its message."""
+    hand-off it fails the dispatch with its message.
+
+    ``problem`` says what kind of refusal it is — one of
+    :data:`PARAMETER_PROBLEMS`; ``runner`` (the default) for one a runner
+    raised — and ``key``, for a ``mapping`` parameter, which of its names
+    is concerned. Both are served beside ``parameter``."""
 
     code = "invalid-parameter"
 
-    def __init__(self, message: str, detail: str | None = None, *, parameter: str = ""):
+    def __init__(
+        self,
+        message: str,
+        detail: str | None = None,
+        *,
+        parameter: str = "",
+        problem: str = "runner",
+        key: str | None = None,
+    ):
         if detail is not None:
             parameter = parameter or message
             message = f"parameter {message!r}: {detail}"
         super().__init__(message)
+        if problem not in PARAMETER_PROBLEMS:
+            raise ValueError(f"unknown parameter problem {problem!r} (one of {PARAMETER_PROBLEMS})")
         self.parameter = parameter
+        self.problem = problem
+        self.key = key
+        self.extra = {"problem": problem, **({"key": key} if key is not None else {})}
+
+
+#: What kind of refusal an :class:`InvalidParameter` is: ``unknown`` (the
+#: runner declares no such parameter), ``required`` (missing), ``type`` (the
+#: wrong kind of value — a string where an integer is declared, several
+#: lines for a ``string``), ``choice`` (not among the choices), ``pattern``
+#: (a value does not match ``pattern``), ``key-pattern`` (a mapping's name
+#: does not match ``key_pattern``), ``runner`` (the runner refused it).
+PARAMETER_PROBLEMS = ("unknown", "required", "type", "choice", "pattern", "key-pattern", "runner")
 
 
 class UnknownRunner(InvalidRequest):

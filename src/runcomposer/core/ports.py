@@ -615,6 +615,16 @@ class RunStore(Protocol):
         """Remove a run and everything recorded for it."""
         ...
 
+    def set_item_names(self, run_id: str, names: Mapping[str, str]) -> None:
+        """Keep the display names of a run's items as they were when it was
+        composed (``item id → name``; only names that differ from the id
+        need be given). Removed with the run."""
+        ...
+
+    def item_names(self, run_id: str) -> dict[str, str]:
+        """What :meth:`set_item_names` kept for the run; ``{}`` when nothing."""
+        ...
+
     def prune_runs(self, *, before: str | None = None, max_runs: int | None = None) -> list[str]: ...
 
     def get_spec_document(self, run_id: str) -> dict[str, Any] | None: ...
@@ -819,6 +829,13 @@ class StoreBase(PluginBase):
 
     def close(self) -> None:
         """Nothing to release."""
+
+    def set_item_names(self, run_id: str, names: Mapping[str, str]) -> None:
+        """Keeps nothing: a store without names serves every item by its id."""
+
+    def item_names(self, run_id: str) -> dict[str, str]:
+        """Nothing kept: ``{}``."""
+        return {}
 
 
 # -- the contract, as data ---------------------------------------------------------

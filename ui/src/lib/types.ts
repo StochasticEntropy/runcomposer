@@ -184,6 +184,10 @@ export interface Dispatch {
   executing: boolean;
   /** Verdicts the dispatch owes over all its shards; null when no shard declared its items. */
   planned_verdicts: number | null;
+  /** Why it ended with an error (the server's DISPATCH_ERROR_CODES), "" for none. */
+  error_code?: DispatchErrorCode | "";
+  /** For an interrupted dispatch: the process that was executing it. */
+  error_owner?: string | null;
   duration_s?: number | null;
   shard_groups?: Record<string, string>;
 }
@@ -207,6 +211,8 @@ export interface RunRow {
 
 export interface VerdictRow {
   item_id: string;
+  /** The item's name as the run was composed; its id when none was kept. */
+  name?: string;
   status: VerdictStatus;
   duration_ms: number;
   message: string;
@@ -343,5 +349,8 @@ export interface IngestReport {
 
 export const ACTIVE_STATES = ["DISPATCHED", "RUNNING", "AWAITING_RESULTS"] as const;
 export const TERMINAL_STATES = ["COMPLETE", "FAILED", "CANCELLED", "STALE"] as const;
+/** Why a dispatch ended with an error — the server's closed list (core/model.py DISPATCH_ERROR_CODES). */
+export const DISPATCH_ERROR_CODES = ["runner-raised", "interrupted", "expired", "cancelled"] as const;
+export type DispatchErrorCode = (typeof DISPATCH_ERROR_CODES)[number];
 
 export const isActive = (state: string): boolean => (ACTIVE_STATES as readonly string[]).includes(state);

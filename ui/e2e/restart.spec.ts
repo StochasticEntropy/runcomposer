@@ -39,21 +39,25 @@ test("a run the server stopped under says so — it is not an error of the runne
   await api.waitFor(runId, ["STALE"]);
   // The page follows by itself.
   await expect(page.getByTestId("run-status")).toContainText(msg("runState.STALE"), { timeout: 60_000 });
-  const stored = await api.get<{ dispatches: { state: string; error: string }[] }>(`/runs/${runId}`);
+  const stored = await api.get<{ dispatches: { state: string; error: string; error_code: string; error_owner: string | null }[] }>(`/runs/${runId}`);
   expect(stored.dispatches[0]!.state).toBe("STALE");
   expect(stored.dispatches[0]!.error).not.toBe("");
+  // The cause is a field of its own; the process it was is kept out of the text.
+  expect(stored.dispatches[0]!.error_code).toBe("interrupted");
+  expect(stored.dispatches[0]!.error).not.toContain(stored.dispatches[0]!.error_owner ?? "-");
 
   // What happened, in the UI's words…
-  const notice = page.locator(".notice").filter({ hasText: msg("run.staleHint") });
+  const notice = page.locator(".notice").filter({ hasText: msg("run.cause.interrupted") });
   await expect(notice).toBeVisible();
   // …and nothing claims the runner reported an error.
-  await expect(page.getByText(msg("run.runnerError"))).toHaveCount(0);
+  await expect(page.getByText(msg("run.cause.runner-raised"))).toHaveCount(0);
   // What the server noted — which process it was — is one step away, for whoever looks into it.
   const technical = notice.locator("details");
   await expect(technical.locator("summary")).toHaveText(msg("run.technicalDetail"));
-  await expect(technical.locator(".foreign")).toBeHidden();
+  await expect(technical.locator(".foreign").first()).toBeHidden();
   await technical.locator("summary").click();
-  await expect(technical.locator(".foreign")).toHaveText(stored.dispatches[0]!.error);
+  await expect(technical.locator(".foreign").first()).toHaveText(stored.dispatches[0]!.error);
+  await expect(technical.locator(".foreign").nth(1)).toHaveText(stored.dispatches[0]!.error_owner!);
   // The run can be run again.
   await expect(page.getByRole("button", { name: msg("run.rerunAll") })).toBeVisible();
 });

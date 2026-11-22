@@ -95,7 +95,7 @@ test("the form is rendered from the runner's declared parameters, and its values
   await expect(page.getByText("chromium, webkit")).toBeVisible();
 });
 
-test("a value the server refuses lands on its field, in the viewer's words plus the server's", async ({ page, open, api }) => {
+test("a value the server refuses lands on its field, worded by the kind of refusal the server names", async ({ page, open, api }) => {
   await open("#/compose?f=Auth-SSO");
   await expectPreview(page, 3, 60);
   await runnerSelect(page).selectOption("demo");
@@ -108,8 +108,8 @@ test("a value the server refuses lands on its field, in the viewer's words plus 
   });
   await runButton(page, 3).click();
   const field = page.locator('[data-param="seed"]');
-  await expect(field.getByRole("alert")).toContainText(msg("error.code.invalid-parameter"));
-  await expect(field.getByRole("alert")).toContainText("parameter 'seed' must be a string");
+  // The answer says it is a value of the wrong kind (`problem: type`): the UI words it.
+  await expect(field.getByRole("alert")).toHaveText(msg("runner.refused.type"));
   await expect(field.getByRole("textbox")).toHaveAttribute("aria-invalid", "true");
   await expect(page).toHaveURL(/#\/compose/);
   expect(await api.runs()).toHaveLength(0);
@@ -193,7 +193,8 @@ test("when the server refuses a value of a declared form, the field says so in t
   });
   await runButton(page, 3).click();
   const build = form.locator('[data-param="build"]');
-  await expect(build.getByRole("alert")).toHaveText(msg("runner.problem.refusedForm"));
+  // The answer says the value does not match the pattern (`problem: pattern`).
+  await expect(build.getByRole("alert")).toHaveText(msg("runner.refused.pattern"));
   // The form stands under the field as it is written; the server's sentence — with its doubled backslashes — is not shown.
   await expect(build.locator(".pattern-hint")).toHaveText(`${msg("runner.expectedForm")} \\d{4}\\.\\d{1,2}`);
   await expect(build.locator(".foreign")).toHaveCount(0);
@@ -205,7 +206,8 @@ test("when the server refuses a value of a declared form, the field says so in t
   alter = "switches";
   await runButton(page, 3).click();
   const switches = form.locator('[data-param="switches"]');
-  await expect(switches.getByRole("alert")).toHaveText(msg("runner.problem.refusedForm"));
+  // …and which name does not match (`problem: key-pattern`, `key`).
+  await expect(switches.getByRole("alert")).toHaveText(`${msg("runner.refused.key-pattern")} (payments wallets)`);
   await expect(switches.locator(".foreign")).toHaveCount(0);
   expect(await switches.innerText()).not.toContain("key pattern");
   expect(await api.runs()).toHaveLength(0);
@@ -295,7 +297,7 @@ test("watch a run progress live, then cancel it", async ({ page, open, api }) =>
   // Cancelling is not an error of the runner, and nothing is counted twice:
   // every item is one row — missing, with what it had reported live as a note.
   await expect(page.getByText(msg("run.cancelledHint"))).toBeVisible();
-  await expect(page.getByText(msg("run.runnerError"))).toHaveCount(0);
+  await expect(page.getByText(msg("run.cause.runner-raised"))).toHaveCount(0);
   await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}\\s+46$`) })).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.missing")}\\s+46$`) })).toBeVisible();
   await expect(page.locator(".verdict-table .live-dot")).toHaveCount(0);
