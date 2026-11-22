@@ -128,6 +128,22 @@ describe("text, mapping and pattern", () => {
     expect(validateValues([spec("extra", "mapping", { required: true })], { extra: [] })).toEqual({ extra: "required" });
   });
 
+  it("checks the names of a mapping against their own pattern, before the values", () => {
+    const switches = [spec("switches", "mapping", { key_pattern: "[A-Z][A-Za-z-]+", pattern: "on|off" })];
+    const check = (rows: { key: string; value: string }[]) => validateValues(switches, { switches: rows });
+    expect(check([{ key: "Checkout-Express", value: "on" }])).toEqual({});
+    expect(check([{ key: "checkout express", value: "on" }])).toEqual({ switches: "key" });
+    // The whole name must have the form, not a part of it.
+    expect(check([{ key: "Checkout Express", value: "on" }])).toEqual({ switches: "key" });
+    // A name of the wrong form is said before a value of the wrong form in the same field.
+    expect(check([{ key: "checkout", value: "maybe" }])).toEqual({ switches: "key" });
+    expect(check([{ key: "Checkout", value: "maybe" }])).toEqual({ switches: "pattern" });
+    // A row that was added and left empty is no row.
+    expect(check([{ key: "Checkout", value: "on" }, { key: "", value: "" }])).toEqual({});
+    // A name pattern the browser cannot read is left to the server.
+    expect(validateValues([spec("switches", "mapping", { key_pattern: "(?P<name>x)" })], { switches: [{ key: "anything", value: "v" }] })).toEqual({});
+  });
+
   it("a one-line string may not hold a line break; a pattern the browser cannot read is left to the server", () => {
     expect(validateValues([spec("build", "string")], { build: "a\nb" })).toEqual({ build: "line" });
     expect(wholeMatch("(?P<year>\\d{4})")).toBeNull();

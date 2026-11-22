@@ -184,7 +184,7 @@
     "add": "Hinzufügen",
     "addTag": "Tag oder Muster hinzufügen",
     "addTagToGroup": "Tag oder Muster zu dieser Gruppe hinzufügen",
-    "addPlaceholder": "Tag, prefix:… oder regex:…",
+    "addPlaceholder": "Tag oder Ausdruck…",
     "pick": "Tags auswählen…",
     "addGroup": "Gruppe hinzufügen",
     "clear": "Filter leeren",
@@ -216,7 +216,20 @@
     "ruleCount": {
       "one": "{count} Regel in dieser Gruppe.",
       "other": "{count} Regeln in dieser Gruppe — die Liste lässt sich rollen."
-    }
+    },
+    "operatorCase": "Position {position}: Operatoren werden großgeschrieben — {operator}, nicht „{token}“.",
+    "noTag": "kein Tag",
+    "noTagHint": "Kein Tag des Katalogs passt auf diese Regel.",
+    "unmatchedList": "Regeln, auf die kein Tag passt",
+    "matchesNoTag": "„{pattern}“ passt auf kein Tag des Katalogs.",
+    "didYouMean": "Gemeint war vielleicht",
+    "replaceWith": "{pattern} durch {tag} ersetzen",
+    "moreUnmatched": {
+      "one": "…und auf {count} weitere Regel passt kein Tag.",
+      "other": "…und auf {count} weitere Regeln passt kein Tag."
+    },
+    "errorAtRule": "Es ist die markierte Regel:",
+    "addHint": "Ein Tag, prefix:…, regex:… — oder ein Ausdruck wie Payments AND NOT Smoke."
   },
   "picker": {
     "title": "Tags auswählen",
@@ -331,7 +344,7 @@
       "empty": "Noch nichts ausgewählt.",
       "nothing": "Kein Eintrag ist ausgewählt.",
       "runner": "Einen Runner wählen.",
-      "textDraft": "Der Filtertext ist noch nicht übernommen — übernehmen oder zurück zum Baukasten.",
+      "textDraft": "Der Filtertext ist noch nicht übernommen — übernehmen oder abbrechen.",
       "network": "Der Server ist nicht erreichbar — Verbindung prüfen und die Vorschau erneut laden.",
       "failed": "Die Vorschau konnte nicht aktualisiert werden — erneut versuchen."
     },
@@ -370,7 +383,8 @@
     "usePreset": "Verwenden",
     "usePresetNamed": "Vorlage {label} verwenden",
     "quickFilters": "Schnellfilter",
-    "presetsOfDeployment": "Vorlagen dieser Installation"
+    "presetsOfDeployment": "Vorlagen dieser Installation",
+    "runUncounted": "Ausführen"
   },
   "runner": {
     "label": "Runner",
@@ -388,7 +402,9 @@
       "choice": "Einen der aufgeführten Werte wählen.",
       "pattern": "Das hat nicht die Form, die dieses Feld erwartet.",
       "duplicate": "Jede Zeile braucht einen Namen, und jeden Namen nur einmal.",
-      "line": "Das muss eine einzelne Zeile sein."
+      "line": "Das muss eine einzelne Zeile sein.",
+      "key": "Ein Name hat nicht die Form, die Namen hier haben müssen.",
+      "refusedForm": "Der Server hat das nicht angenommen — es muss die erwartete Form haben."
     },
     "unhealthyHint": "Dieser Runner meldet ein Problem. Ein darauf gestarteter Lauf kann fehlschlagen.",
     "checks": "Was dieser Runner geprüft hat",
@@ -400,7 +416,9 @@
     "mappingValueOf": "{label}, Wert {number}",
     "mappingRemoveOf": "Zeile {number} von {label} entfernen",
     "mappingAdd": "Zeile hinzufügen",
-    "expectedForm": "Erwartete Form:"
+    "expectedForm": "Erwartete Form:",
+    "expectedNameForm": "Erwartete Form eines Namens:",
+    "expectedValueForm": "Erwartete Form eines Werts:"
   },
   "labels": {
     "label": "Labels",
@@ -426,7 +444,7 @@
     "working": "Exportiert…",
     "doneTitle": "Exportiert — der Lauf wartet auf Ergebnisse",
     "doneIntro": "„{title}“ wartet jetzt auf Ergebnisse.",
-    "stepDownload": "Laufdokument herunterladen",
+    "stepDownload": "Laufdokument holen",
     "download": "Laufdokument herunterladen ({format})",
     "downloadHint": "Die Datei unverändert verwenden: Ergebnisse werden dem Lauf über ihre Prüfsumme zugeordnet.",
     "stepToken": "Ingest-Token aufbewahren",
@@ -629,7 +647,20 @@
       "one": "{count} Shard ohne Fehlschlag",
       "other": "{count} Shards ohne Fehlschlag"
     },
-    "fileOf": "{file} des Shards, der {item} ausgeführt hat"
+    "fileOf": "{file} des Shards, der {item} ausgeführt hat",
+    "technicalDetail": "Technisches Detail",
+    "jumpFailed": {
+      "one": "Zum {count} fehlgeschlagenen Ergebnis",
+      "other": "Zu den {count} fehlgeschlagenen Ergebnissen"
+    },
+    "jumpMissing": {
+      "one": "Zum {count} fehlenden Ergebnis",
+      "other": "Zu den {count} fehlenden Ergebnissen"
+    },
+    "moreShards": {
+      "one": "{count} weiteren Shard zeigen",
+      "other": "{count} weitere Shards zeigen"
+    }
   },
   "rerun": {
     "titleAll": "Erneut ausführen",
@@ -742,7 +773,7 @@
   },
   "saved": {
     "title": "Gespeicherte Auswahlen",
-    "where": "Gespeicherte Auswahlen liegen nur in diesem Browser: Niemand sonst sieht sie, und ein anderer Browser oder ein anderes Gerät hat sie nicht. Auswahlen für alle sind die Vorlagen der Installation (ui.presets in ihrer Konfiguration).",
+    "where": "Gespeicherte Auswahlen liegen nur in diesem Browser: Niemand sonst sieht sie, und ein anderer Browser oder ein anderes Gerät hat sie nicht. Eine Auswahl, die alle finden sollen, ist eine Vorlage — wer diese Installation betreut, kann eine anlegen.",
     "name": "Name",
     "save": "Auswahl speichern",
     "replace": "Gespeicherte ersetzen",

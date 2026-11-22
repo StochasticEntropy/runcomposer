@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialValues } from "../lib/params.ts";
 import type { ParameterSpec, RunnerInfo } from "../lib/types.ts";
 import { renderWithI18n, translator } from "../test/render.tsx";
-import { LabelsInput, ParameterForm, RunnerSelect, healthChecks, problemTexts } from "./RunnerFields.tsx";
+import type { ApiError } from "../lib/request.ts";
+import { LabelsInput, ParameterForm, RunnerSelect, healthChecks, problemTexts, refusedValue } from "./RunnerFields.tsx";
 
 afterEach(cleanup);
 
@@ -119,6 +120,44 @@ describe("text and mapping parameters", () => {
     expect(alert.textContent).toContain("This value was not accepted.");
     // The server's own words are marked as text the UI did not write.
     expect(alert.querySelector('[lang="en"]')!.textContent).toContain("does not match the pattern");
+  });
+});
+
+describe("the names of a mapping", () => {
+  const switches = [spec("switches", "mapping", { label: "Feature switches", key_pattern: "[A-Z][A-Za-z-]+", pattern: "on|off" })];
+  const rows = [
+    { key: "Checkout-Express", value: "on" },
+    { key: "payments wallets", value: "off" },
+  ];
+
+  it("shows the form a name must have next to the form of a value, each once and as written", () => {
+    renderWithI18n(<ParameterForm specs={switches} values={{ switches: rows }} onChange={() => undefined} problems={{}} />);
+    const hints = [...document.querySelectorAll(".pattern-hint")].map((hint) => hint.textContent);
+    expect(hints).toEqual(["Expected form of a name: [A-Z][A-Za-z-]+", "Expected form of a value: on|off"]);
+    // Both are part of what describes the field to assistive technology.
+    const described = screen.getByRole("group", { name: "Feature switches" }).getAttribute("aria-describedby")!.split(" ");
+    expect(described.map((id) => document.getElementById(id)?.getAttribute("data-pattern-of"))).toEqual(["name", "value"]);
+  });
+
+  it("words a name of the wrong form itself, and marks that name — not the whole field", () => {
+    expect(problemTexts(translator.t, { switches: "key" })).toEqual({ switches: { text: "A name does not have the form names must have here." } });
+    renderWithI18n(<ParameterForm specs={switches} values={{ switches: rows }} onChange={() => undefined} problems={problemTexts(translator.t, { switches: "key" })} />);
+    expect(screen.getByRole("alert").textContent).toBe("A name does not have the form names must have here.");
+    const invalid = (name: string) => screen.getByRole("textbox", { name }).getAttribute("aria-invalid");
+    expect(invalid("Feature switches, name 2")).toBe("true");
+    expect(invalid("Feature switches, name 1")).toBeNull();
+    expect(invalid("Feature switches, value 2")).toBeNull();
+  });
+
+  it("when the server refuses a value of a declared form, says so in its own words and leaves the server's sentence out", () => {
+    const refusal = { code: "invalid-parameter", status: 422, detail: "parameter 'build': 'x' does not match the pattern '\\\\d{4}'", extra: { parameter: "build" } } as unknown as ApiError;
+    const patterned = spec("build", "string", { pattern: "\\d{4}" });
+    expect(refusedValue(translator, patterned, refusal)).toEqual({ text: "The server did not accept this — it has to have the expected form." });
+    expect(refusedValue(translator, switches[0], refusal)).toEqual({ text: "The server did not accept this — it has to have the expected form." });
+    // Without a declared form only the server knows the reason: its sentence is shown, as the server's.
+    const plain = refusedValue(translator, spec("seed", "string"), refusal);
+    expect(plain.foreign).toBe(refusal.detail);
+    expect(plain.text).not.toBe("");
   });
 });
 

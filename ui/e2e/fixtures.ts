@@ -76,6 +76,8 @@ const SCRIPTED = {
     { name: "browsers", kind: "multi_choice", label: "Browsers to use", choices: ["chromium", "firefox", "webkit"], default: ["chromium"] },
     { name: "notes", kind: "text", label: "Release notes", help: "Free text handed to the job." },
     { name: "variables", kind: "mapping", label: "Extra variables", pattern: "[a-z0-9-]+", default: { locale: "de" } },
+    // Names with a form of their own: the shop's feature switches are named like its areas.
+    { name: "switches", kind: "mapping", label: "Feature switches", key_pattern: "[A-Z][A-Za-z-]+", pattern: "on|off" },
   ],
 };
 
@@ -217,14 +219,28 @@ export class Server {
   helpers: ChildProcess[] = [];
   private logText = "";
 
+  private child!: ChildProcess;
+
   private constructor(
     readonly url: string,
     readonly directory: string,
-    private readonly child: ChildProcess,
+    private readonly port: number,
+    private readonly environment: Record<string, string>,
   ) {
     this.api = `${url}/api/v1`;
+  }
+
+  /** Start (or start again) the server process over this deployment's directory. */
+  private launch(): void {
+    const child = spawn(PYTHON, ["-m", "runcomposer.cli", "serve", "--port", String(this.port), "--config", join(this.directory, "config.yaml"), "--log-level", "warning"], {
+      cwd: this.directory,
+      stdio: ["ignore", "pipe", "pipe"],
+      // The repository root is importable, for a runner configured by import path.
+      env: { ...process.env, PYTHONPATH: REPO, ...this.environment },
+    });
     child.stdout?.on("data", (chunk: Buffer) => (this.logText += chunk.toString()));
     child.stderr?.on("data", (chunk: Buffer) => (this.logText += chunk.toString()));
+    this.child = child;
   }
 
   get log(): string {
@@ -238,16 +254,26 @@ export class Server {
     if (config === "large") writeFileSync(join(directory, "corpus.json"), largeManifest());
     const port = await freePort();
     const jenkins = config === "ci" ? await startJenkinsStandIn() : null;
-    const child = spawn(PYTHON, ["-m", "runcomposer.cli", "serve", "--port", String(port), "--config", join(directory, "config.yaml"), "--log-level", "warning"], {
-      cwd: directory,
-      stdio: ["ignore", "pipe", "pipe"],
-      // The repository root is importable, for a runner configured by import path.
-      env: { ...process.env, PYTHONPATH: REPO, ...(jenkins ? { E2E_JENKINS_URL: jenkins.url } : {}) },
-    });
-    const server = new Server(`http://127.0.0.1:${port}`, directory, child);
+    const server = new Server(`http://127.0.0.1:${port}`, directory, port, jenkins ? { E2E_JENKINS_URL: jenkins.url } : {});
     server.helpers = jenkins ? [jenkins.child] : [];
+    server.launch();
     await server.ready();
     return server;
+  }
+
+  /** The server process is gone at once — a crash or a hard stop, not a shutdown. Its data stays. */
+  async kill(): Promise<void> {
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    const gone = new Promise((done) => this.child.once("exit", done));
+    this.child.kill(9);
+    await gone;
+  }
+
+  /** The same deployment answers again, on the same address, over the same data. */
+  async comeBack(): Promise<void> {
+    await this.kill();
+    this.launch();
+    await this.ready();
   }
 
   /** Resolves once the server answers its health endpoint. */
@@ -270,7 +296,7 @@ export class Server {
   }
 
   async stop(): Promise<void> {
-    if (this.child.exitCode === null) {
+    if (this.child.exitCode === null && this.child.signalCode === null) {
       const gone = new Promise((done) => this.child.once("exit", done));
       this.child.kill(); // the default signal asks it to terminate
       // A graceful stop waits for requests in flight, and a page that was

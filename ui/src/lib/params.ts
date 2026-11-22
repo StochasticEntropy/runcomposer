@@ -7,7 +7,7 @@
 import type { ParameterSpec } from "./types.ts";
 
 export type ParamValues = Record<string, unknown>;
-export type ParamProblem = "required" | "integer" | "choice" | "pattern" | "duplicate" | "line";
+export type ParamProblem = "required" | "integer" | "choice" | "pattern" | "key" | "duplicate" | "line";
 
 /** A mapping is edited as rows, so a key can be empty or doubled while it is typed. */
 export interface MappingRow {
@@ -119,7 +119,10 @@ export function validateValues(specs: ParameterSpec[], values: ParamValues): Rec
     if (spec.kind === "mapping") {
       const rows = (isRows(value) ? value : []).filter((row) => row.key.trim() !== "" || row.value !== "");
       const keys = rows.map((row) => row.key.trim());
+      const keyPattern = wholeMatch(spec.key_pattern);
       if (keys.some((key) => key === "") || new Set(keys).size !== keys.length) problems[spec.name] = "duplicate";
+      // Names first: a name of the wrong form is the more basic mistake of a row.
+      else if (keyPattern && keys.some((key) => !keyPattern.test(key))) problems[spec.name] = "key";
       else if (pattern && rows.some((row) => !pattern.test(row.value))) problems[spec.name] = "pattern";
       else if (spec.required && rows.length === 0) problems[spec.name] = "required";
       continue;

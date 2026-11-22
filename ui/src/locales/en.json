@@ -184,7 +184,7 @@
     "add": "Add",
     "addTag": "Add a tag or pattern",
     "addTagToGroup": "Add a tag or pattern to this group",
-    "addPlaceholder": "Tag, prefix:… or regex:…",
+    "addPlaceholder": "Tag or expression…",
     "pick": "Pick tags…",
     "addGroup": "Add group",
     "clear": "Clear filter",
@@ -216,7 +216,20 @@
     "ruleCount": {
       "one": "{count} rule in this group.",
       "other": "{count} rules in this group — they scroll."
-    }
+    },
+    "operatorCase": "Position {position}: operators are written in capitals — {operator}, not “{token}”.",
+    "noTag": "no tag",
+    "noTagHint": "No tag of the catalog matches this rule.",
+    "unmatchedList": "Rules that match no tag",
+    "matchesNoTag": "“{pattern}” matches no tag of the catalog.",
+    "didYouMean": "Did you mean",
+    "replaceWith": "Replace {pattern} with {tag}",
+    "moreUnmatched": {
+      "one": "…and {count} more rule matches no tag.",
+      "other": "…and {count} more rules match no tag."
+    },
+    "errorAtRule": "It is the marked rule:",
+    "addHint": "A tag, prefix:…, regex:… — or an expression such as Payments AND NOT Smoke."
   },
   "picker": {
     "title": "Pick tags",
@@ -331,7 +344,7 @@
       "empty": "Nothing is selected yet.",
       "nothing": "No item is selected.",
       "runner": "Choose a runner.",
-      "textDraft": "The filter text is not applied yet — apply it or go back to the builder.",
+      "textDraft": "The filter text is not applied yet — apply it or cancel.",
       "network": "The server cannot be reached — check the connection and retry the preview.",
       "failed": "The preview could not be updated — retry it."
     },
@@ -370,7 +383,8 @@
     "usePreset": "Use",
     "usePresetNamed": "Use the preset {label}",
     "quickFilters": "Quick filters",
-    "presetsOfDeployment": "Presets of this deployment"
+    "presetsOfDeployment": "Presets of this deployment",
+    "runUncounted": "Run"
   },
   "runner": {
     "label": "Runner",
@@ -388,7 +402,9 @@
       "choice": "Choose one of the listed values.",
       "pattern": "This does not have the form the field expects.",
       "duplicate": "Every row needs a name, and each name only once.",
-      "line": "This must be a single line."
+      "line": "This must be a single line.",
+      "key": "A name does not have the form names must have here.",
+      "refusedForm": "The server did not accept this — it has to have the expected form."
     },
     "unhealthyHint": "This runner reports a problem. A run started on it may fail.",
     "checks": "What this runner checked",
@@ -400,7 +416,9 @@
     "mappingValueOf": "{label}, value {number}",
     "mappingRemoveOf": "Remove row {number} of {label}",
     "mappingAdd": "Add a row",
-    "expectedForm": "Expected form:"
+    "expectedForm": "Expected form:",
+    "expectedNameForm": "Expected form of a name:",
+    "expectedValueForm": "Expected form of a value:"
   },
   "labels": {
     "label": "Labels",
@@ -426,8 +444,8 @@
     "working": "Exporting…",
     "doneTitle": "Exported — the run is waiting for results",
     "doneIntro": "“{title}” is now waiting for results.",
-    "stepDownload": "Download the run document",
-    "download": "Download run spec ({format})",
+    "stepDownload": "Get the run document",
+    "download": "Download the run document ({format})",
     "downloadHint": "Use this file exactly as downloaded: results are matched to the run by its checksum.",
     "stepToken": "Keep the ingest token",
     "tokenOnce": "This token is shown only once. Whoever sends the results needs it.",
@@ -579,7 +597,7 @@
       "source": "Catalog",
       "expect": "Result format",
       "dispatch": "How it was run",
-      "spec": "Run spec",
+      "spec": "Run document",
       "downloads": "Downloads",
       "results": "Results",
       "resultsHint": "The latest results as a CTRF document, for other tools.",
@@ -629,7 +647,20 @@
       "one": "{count} shard without a failure",
       "other": "{count} shards without a failure"
     },
-    "fileOf": "{file} of the shard that ran {item}"
+    "fileOf": "{file} of the shard that ran {item}",
+    "technicalDetail": "Technical detail",
+    "jumpFailed": {
+      "one": "Go to the {count} failed result",
+      "other": "Go to the {count} failed results"
+    },
+    "jumpMissing": {
+      "one": "Go to the {count} missing result",
+      "other": "Go to the {count} missing results"
+    },
+    "moreShards": {
+      "one": "Show {count} more shard",
+      "other": "Show {count} more shards"
+    }
   },
   "rerun": {
     "titleAll": "Run again",
@@ -742,7 +773,7 @@
   },
   "saved": {
     "title": "Saved selections",
-    "where": "Saved selections are kept in this browser only: nobody else sees them, and another browser or device does not have them. Selections for everybody are the deployment's presets (ui.presets in its configuration).",
+    "where": "Saved selections are kept in this browser only: nobody else sees them, and another browser or device does not have them. A selection that everybody should find is a preset — whoever looks after this installation can add one.",
     "name": "Name",
     "save": "Save selection",
     "replace": "Replace the saved one",

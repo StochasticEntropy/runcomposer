@@ -8,6 +8,8 @@ export interface ParameterSpec {
   kind: "string" | "text" | "integer" | "boolean" | "choice" | "multi_choice" | "mapping";
   /** A regular expression the whole value must match (each value of a mapping). */
   pattern?: string | null;
+  /** For a mapping: a regular expression every NAME must match as a whole. */
+  key_pattern?: string | null;
   label: string;
   help: string;
   default: unknown;

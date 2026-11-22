@@ -203,6 +203,16 @@ test("a run in lanes: the plan, and each region has its own results, and so has 
   await good.locator("details.group-shards > summary").click();
   await expect(good.locator(".shard-card").first().getByRole("link", { name: /^log\.html/ })).toBeVisible();
 
+  // From the top of the results, one step leads to what failed — past all the groups and shards.
+  const jump = page.getByTestId("jump-to-results");
+  await expect(jump).toHaveText(msg("run.jumpFailed", { count: 1 }));
+  await jump.click();
+  await expect(page).toHaveURL(/status=failed/);
+  await expect(page.getByRole("heading", { name: msg("run.verdicts") })).toBeFocused();
+  await expect(page.getByRole("heading", { name: msg("run.verdicts") })).toBeInViewport();
+  await expect(page.locator(".verdict-table tbody tr[data-item-id]")).toHaveCount(1);
+  await page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}`) }).click();
+
   // The failed item is the first row, and the row itself leads to the log and the report of its shard.
   const first = page.locator(".verdict-table tbody tr[data-item-id]").first();
   await expect(first).toHaveAttribute("data-status", "FAIL");
@@ -233,4 +243,47 @@ test("a run in lanes: the plan, and each region has its own results, and so has 
   await expect(page.getByRole("button", { name: new RegExp(`^${msg("run.filter.all")}\\s+${us.count}$`) })).toBeVisible();
   const shardOptions = page.getByRole("combobox", { name: msg("run.shard"), exact: true }).getByRole("option");
   await expect(shardOptions).toHaveCount(us.declared_shards + 1);
+});
+
+test("after a cancel a lane and its shards say the same about what was reported", async ({ page, open, api }) => {
+  // Thirteen tests in two lanes, two per shard; the slow ones keep their shards busy long enough to cancel.
+  await open("#/compose?f=Checkout");
+  await expectPreview(page, 13, 58);
+  await page.getByRole("combobox", { name: msg("runner.label") }).selectOption("robot-lanes");
+  await runButton(page, 13).click();
+  const runId = await currentRunId(page);
+  // Cancel once a shard has delivered and others are still at work: a run that is partly reported.
+  await expect
+    .poll(async () => (await api.get<{ shards: { delivered: boolean }[]; state: string }>(`/runs/${runId}`)).shards.filter((shard) => shard.delivered).length, { timeout: 60_000 })
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: msg("run.cancel") }).click();
+  await page.getByRole("dialog", { name: msg("run.cancelTitle") }).getByRole("button", { name: msg("run.cancelConfirm") }).click();
+  await expect(status(page)).toContainText(msg("runState.CANCELLED"), { timeout: 60_000 });
+
+  interface Rolled {
+    count: number;
+    planned: number;
+    summary: Record<string, number>;
+  }
+  const detail = await api.get<{ groups: (Rolled & { group: string; shards: string[] })[]; shards: (Rolled & { shard: string; delivered: boolean })[] }>(`/runs/${runId}`);
+  const missing = detail.shards.filter((shard) => !shard.delivered);
+  expect(missing.length, "the run was cancelled before every shard delivered").toBeGreaterThan(0);
+  for (const group of detail.groups) {
+    const members = detail.shards.filter((shard) => group.shards.includes(shard.shard));
+    // The server counts reported items one way: a group's count is its shards' counts, and holds nothing MISSING.
+    expect(group.count).toBe(members.reduce((sum, shard) => sum + shard.count, 0));
+    expect(group.count).toBe(Object.values(group.summary).reduce((sum, value) => sum + value, 0) - (group.summary.MISSING ?? 0));
+
+    // The page says that number for the group — and its shard cards add up to it.
+    const card = page.locator(`.group-card[data-group="${group.group}"]`);
+    await expect(card.getByTestId("group-reported")).toContainText(msg("run.shardProgress", { done: group.count, total: group.planned }));
+    const shardLines = await card.locator(".shard-card .shard-numbers").evaluateAll((lines) => lines.map((line) => Number.parseInt(line.textContent ?? "", 10)));
+    expect(shardLines).toHaveLength(members.length);
+    expect(shardLines.reduce((sum, value) => sum + value, 0)).toBe(group.count);
+  }
+  // Somewhere a lane is short of its plan: that is what "cancelled" looks like, and no line says otherwise.
+  expect(detail.groups.some((group) => group.count < group.planned)).toBe(true);
+  // The head of the run says the same total.
+  const reported = detail.groups.reduce((sum, group) => sum + group.count, 0);
+  await expect(page.getByTestId("run-progress")).toHaveText(msg("progress.label", { done: reported, total: 13 }));
 });

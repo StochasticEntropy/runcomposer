@@ -168,6 +168,33 @@ describe("PreviewController", () => {
     expect(isFresh(controller.current)).toBe(true);
   });
 
+  it("asks again quietly: the error stays on screen until an answer replaces it", async () => {
+    const { controller, calls, states } = harness();
+    controller.request({ tag_filter: "Payments" });
+    await vi.runAllTimersAsync();
+    calls[0]!.reject(new ApiError(0, "network", "offline"));
+    await vi.runAllTimersAsync();
+    expect(controller.current.status).toBe("error");
+    const before = states.length;
+
+    // Still out of reach: asked, failed — and never "loading" in between.
+    controller.retryQuietly();
+    expect(calls).toHaveLength(2);
+    expect(controller.current.status).toBe("error");
+    calls[1]!.reject(new ApiError(0, "network", "offline"));
+    await vi.runAllTimersAsync();
+    expect(states.slice(before).map((state) => state.status)).toEqual(["error"]);
+
+    // Back: the answer is the preview.
+    controller.retryQuietly();
+    calls[2]!.resolve(result(CARDS));
+    await vi.runAllTimersAsync();
+    expect(isFresh(controller.current)).toBe(true);
+    // With a current preview there is nothing to ask again.
+    controller.retryQuietly();
+    expect(calls).toHaveLength(3);
+  });
+
   it("can be used again after dispose", async () => {
     const { calls, controller } = harness(0);
     controller.request({ tag_filter: "Payments" });

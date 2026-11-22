@@ -103,8 +103,10 @@ export function PreviewTable({ state, excluded, onExcludedChange, onRetry, landi
   const header = (
     <header className="panel-head">
       <h2>{t("preview.title")}</h2>
-      {state.result && (
-        <p className="preview-count" data-testid="preview-count">
+      {/* The count is the answer to ONE filter. While another is being asked it is the old answer
+          (dimmed, next to the note that it is being updated); once the question has failed it is the answer to nothing on screen, and gone. */}
+      {state.result && (fresh || state.status === "loading") && (
+        <p className={`preview-count${fresh ? "" : " is-stale"}`} data-testid="preview-count">
           {t("preview.matched", { count: state.result.count, total: state.result.total })}
           {excludedHere > 0 && <> · {t("preview.excluded", { count: excludedHere })}</>}
         </p>
