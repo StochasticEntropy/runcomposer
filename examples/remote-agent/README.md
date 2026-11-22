@@ -121,9 +121,8 @@ when nothing matches at all.
 `sync.sh` has exactly one seam — `transport_send`, `transport_receive`, and
 `remote_run`. The default `local` case is a directory copy; rsync, scp and
 git variants sit commented next to it, each one line. Nothing else in the kit
-knows how the bytes move, and no host, user, or path of anybody's
-infrastructure appears anywhere in this directory: set `RC_REMOTE_HOST`
-yourself when you uncomment an ssh-based case.
+knows how the bytes move; set `RC_REMOTE_HOST` yourself when you uncomment an
+ssh-based case.
 
 The git case is the one that shows the decoupling best: `remote_run` does
 nothing at all, because that side runs on its own schedule and the next pull

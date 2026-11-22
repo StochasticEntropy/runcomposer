@@ -4,7 +4,7 @@ and real worker processes:
 - configured callables take ``{call, with}`` — settings reach the callable,
   also across the process boundary of a worker;
 - the partition mode as a per-run choice;
-- a partition that is one environment never executes two chunks at once;
+- with `max_chunks_per_partition: 1` each partition runs one chunk at a time;
 - per-run Robot variables cannot override protected ones, in any spelling;
 - health checks of the deployment's own;
 - one merged result per group and for the run;

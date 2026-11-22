@@ -1939,12 +1939,12 @@ Deliberate, each for a reason:
   ([§5](#5-configuration)).
 - **The configured `robot-pool` stops where a composed runner begins.** Its
   per-run parameters have fixed names (`partitions`, `partition_mode`,
-  `allow_drift`); it runs nothing when a dispatch ends (`pre_dispatch` can
-  take a resource, nothing gives it back); it has no per-partition variable
-  whose value a run parameter chooses (`partition_variables` are fixed,
-  `parameter_variables` are the same for every partition); and it takes no
-  plan from outside — which item goes to which partition and chunk is its
-  own. Each of these would be one more switch whose meaning only some
+  `allow_drift`); no step of it follows the end of a dispatch (what a
+  `pre_dispatch` step holds stays held); a per-partition Robot variable is
+  either fixed (`partition_variables`) or one value for all partitions
+  (`parameter_variables`), never chosen per partition by the run; and the
+  distribution of items over partitions and chunks is its own planner's,
+  with no way to hand in another. Each of these would be one more switch whose meaning only some
   deployments share; a runner composed from the Robot toolkit
   ([§9.2](#92-compose-when-configuration-is-not-enough)) owns its
   parameters, its plan and its `dispatch`, and is the intended route. A
