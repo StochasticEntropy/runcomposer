@@ -56,6 +56,8 @@ PUBLIC_NAMES = {
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
     "RemoteLiveChannel", "corpus_drifted", "ConfiguredCall", "configured_calls",
     "push_results", "ResultsPushRefused",
+    # a file name every file system keeps as written, for what a plugin downloads
+    "portable_name_problem", "name_collision_key",
     # the callback URLs of a run, for an executor elsewhere
     "callback_urls", "CallbackUrls",
     # worker processes for any framework: lanes, a timeout, the stop protocol
@@ -177,7 +179,7 @@ class TestOneStopFile:
 
         package = Path(sdk.__file__).resolve().parent.parent
         defining = [
-            str(path.relative_to(package))
+            path.relative_to(package).as_posix()
             for path in package.rglob("*.py")
             if re.search(r"^STOP_FILE\s*=", path.read_text(encoding="utf-8"), re.MULTILINE)
         ]

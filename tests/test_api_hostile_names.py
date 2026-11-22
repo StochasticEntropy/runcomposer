@@ -160,6 +160,36 @@ class TestTheArtifactRoute:
         assert response.status_code == 404
         assert response.json()["code"] == "unknown-artifact"
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/artifacts//shop.example/share/output.xml",
+            "/artifacts/%5C%5Cshop.example%5Cshare%5Coutput.xml",
+            "/artifacts/%2F%2Fshop.example%2Fshare%2Foutput.xml",
+            "/artifacts/%5C%5C%3F%5CUNC%5Cshop.example%5Cshare%5Coutput.xml",
+            "/artifacts/C:%5Coutput.xml",
+            "/artifacts/C:output.xml",
+            "/artifacts/%5Coutput.xml",
+        ],
+    )
+    def test_a_share_a_drive_or_a_root_is_refused_before_it_is_resolved(self, deployment, monkeypatch, url):
+        """Resolving ``\\\\host\\share\\…`` on Windows connects to that host
+        (and offers it the server's credentials). Such a path, read the
+        POSIX or the Windows way, is a miss without ever being resolved."""
+        client, _service, _run_id, _token, _tmp = deployment
+        resolved: list[str] = []
+        real_resolve = Path.resolve
+
+        def watching(self: Path, strict: bool = False) -> Path:
+            resolved.append(str(self))
+            return real_resolve(self, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", watching)
+        response = client.get(url)
+        body = assert_error_document(response)
+        assert response.status_code == 404 and body["code"] == "unknown-artifact", body
+        assert not [path for path in resolved if "shop.example" in path or "output.xml" in path], resolved
+
     def test_the_recorded_artifact_is_still_served(self, deployment):
         client, _service, run_id, _token, _tmp = deployment
         response = client.get(f"/artifacts/{run_id}/dispatch-1/env1/output.xml")
@@ -218,6 +248,73 @@ class TestThePushRoute:
         )
         assert response.status_code == 200, response.text
         assert response.json()["completion"] == "PASS"
+
+
+#: Names a Linux file system keeps and Windows does not: a character it
+#: refuses (``:`` opens another stream of a file there), a device name with
+#: or without an extension, a trailing dot or space it drops.
+UNPORTABLE_NAMES = [
+    "CON", "con.json", "nul", "NUL.txt", "aux.xml", "prn", "COM1", "com9.json", "LPT1", "lpt¹.txt",
+    "conin$", "results.json:stream", "output.xml:Zone.Identifier", "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
+    "results.json.", "results.json ", "x.", " ", "...", "con .txt",
+]
+
+
+class TestAPushNameIsPortable:
+    """A bundle travels — pushed, dropped into an inbox, promoted out of the
+    quarantine — and is the same bundle on every server: a name some file
+    system cannot keep as written is a 400 on every platform, before a byte
+    of it is written."""
+
+    @pytest.mark.parametrize("name", UNPORTABLE_NAMES, ids=[repr(n) for n in UNPORTABLE_NAMES])
+    def test_a_name_windows_cannot_keep_is_a_400_everywhere(self, deployment, spool, name):
+        client, service, run_id, token, _tmp = deployment
+        response = client.post(
+            f"{API}/runs/{run_id}/results",
+            content=multipart(name, b"{}"),
+            headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}", "X-Runcomposer-Token": token},
+        )
+        body = assert_error_document(response)
+        assert response.status_code == 400 and body["code"] == "invalid-request", body
+        assert "not a portable file name" in body["detail"]
+        assert [path for path in spool.rglob("*") if path.is_file()] == []
+        assert service.quarantine.entries() == []
+
+    @pytest.mark.parametrize(
+        "names",
+        [("Results.json", "results.json"), ("results.json", "results.json"), ("café.json", "café.json")],
+        ids=["case", "twice", "normalization"],
+    )
+    def test_two_names_that_are_one_file_somewhere_are_a_400(self, deployment, spool, names):
+        """One file on Windows and macOS, two on Linux: whatever the server,
+        the bundle would not be the one that was sent."""
+        client, service, run_id, token, _tmp = deployment
+        response = client.post(
+            f"{API}/runs/{run_id}/results",
+            files=[("files", (name, b"{}", "application/json")) for name in names],
+            headers={"X-Runcomposer-Token": token},
+        )
+        body = assert_error_document(response)
+        assert response.status_code == 400 and "name one file" in body["detail"], body
+        assert [path for path in spool.rglob("*") if path.is_file()] == []
+        assert service.quarantine.entries() == []
+
+    def test_a_portable_name_with_dots_and_spaces_inside_is_kept(self, deployment):
+        client, _service, run_id, token, _tmp = deployment
+        payload = json.dumps({
+            "format": "runcomposer-verdicts",
+            "verdicts": [{"name": f"Shop.Auth.SSO.T00{n}", "status": "PASS"} for n in (1, 2, 3)],
+        }).encode()
+        response = client.post(
+            f"{API}/runs/{run_id}/results",
+            files=[
+                ("files", ("results.json", payload, "application/json")),
+                ("files", ("console.log .txt", b"connected", "text/plain")),
+                ("files", ("conference.notes", b"kept", "text/plain")),
+            ],
+            headers={"X-Runcomposer-Token": token},
+        )
+        assert response.status_code == 200, response.text
 
 
 class TestARefusedPushNamesItsFilesOnly:

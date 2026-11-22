@@ -89,7 +89,7 @@ import string
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from runcomposer.sdk import (
@@ -104,7 +104,9 @@ from runcomposer.sdk import (
     RunnerBase,
     RunnerInfo,
     callback_urls,
+    name_collision_key,
     parameters_from_config,
+    portable_name_problem,
 )
 from runcomposer.sdk.jenkins import (
     JenkinsClient,
@@ -725,7 +727,11 @@ class JenkinsRunner(RunnerBase):
         problems: list[str] = []
         for shard in outstanding:
             bundle = ctx.workdir / "results" if len(shards) == 1 else ctx.workdir / "results" / shard
-            fetched = self._download(ctx, build_url, archived, shard, bundle)
+            try:
+                fetched = self._download(ctx, build_url, archived, shard, bundle)
+            except _BundleNameError as exc:
+                problems.append(f"shard {shard}: {exc}" if len(shards) > 1 else str(exc))
+                continue
             if not fetched:
                 problems.append(
                     f"shard {shard}: the build ({build.get('result')}) left nothing matching "
@@ -761,17 +767,22 @@ class JenkinsRunner(RunnerBase):
         """Everything of one shard: archived artifacts matching
         ``artifact_paths``, and the ``result_urls`` below the build."""
         patterns = [path.replace("{shard}", shard) for path in self.artifact_paths]
+        matching = [
+            relative for relative in archived
+            if any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns)
+        ]
+        wanted = [relative.replace("{shard}", shard) for relative in self.result_urls]
+        names = _bundle_names(
+            [(relative, PurePosixPath(relative).name) for relative in matching]
+            + [(relative, PurePosixPath(urllib.parse.urlsplit(relative).path).name or "result")
+               for relative in wanted]
+        )
         fetched: list[Path] = []
-        for relative in archived:
-            if any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns):
-                fetched.append(
-                    self.client.download_artifact(build_url, relative, bundle / Path(relative).name)
-                )
-        for url in self.result_urls:
-            relative = url.replace("{shard}", shard)
-            name = Path(urllib.parse.urlsplit(relative).path).name or "result"
+        for relative in matching:
+            fetched.append(self.client.download_artifact(build_url, relative, bundle / names[relative]))
+        for relative in wanted:
             try:
-                fetched.append(self.client.download_build_file(build_url, relative, bundle / name))
+                fetched.append(self.client.download_build_file(build_url, relative, bundle / names[relative]))
             except JenkinsError as exc:
                 if exc.status != 404:
                     raise
@@ -794,6 +805,33 @@ class JenkinsRunner(RunnerBase):
                     level="warning")
             return
         ctx.log("jenkins: " + self.client.cancel(self.job, queue_url))
+
+
+class _BundleNameError(Exception):
+    """Files of a build that cannot be kept in one flat bundle as named."""
+
+
+def _bundle_names(files: list[tuple[str, str]]) -> dict[str, str]:
+    """``{build path: name in the bundle}`` for ``(build path, name)`` pairs.
+    A bundle is flat and the same on every machine: a name some file system
+    cannot keep, or two files that would be one there (``eu/junit.xml`` and
+    ``us/junit.xml``; ``Junit.xml`` and ``junit.xml``), raise
+    ``_BundleNameError`` rather than one file silently replacing another."""
+    names: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for relative, name in files:
+        problem = portable_name_problem(name) if name not in ("", ".", "..") else "is not a file name"
+        if problem is not None:
+            raise _BundleNameError(f"the build's file {relative!r} cannot be kept in the bundle: its name {problem}")
+        key = name_collision_key(name)
+        if key in seen and seen[key] != relative:
+            raise _BundleNameError(
+                f"the build's files {seen[key]!r} and {relative!r} would be one file {name!r} in the "
+                "bundle, which is flat — narrow artifact_paths or result_urls to one of them"
+            )
+        seen[key] = relative
+        names[relative] = name
+    return names
 
 
 def _text(value: Any) -> str:

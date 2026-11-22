@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 
 from runcomposer.core.errors import InvalidRequest, PayloadTooLarge
+from runcomposer.core.filenames import name_collision_key, portable_name_problem
 
 if TYPE_CHECKING:
     from python_multipart.exceptions import FormParserError
@@ -61,7 +62,8 @@ def upload_name(raw: str) -> str:
     path) are dropped — refused with ``InvalidRequest`` when that is not
     a plain file name: empty, ``.`` or ``..`` (also as compatibility
     look-alikes that normalize to them), a control character anywhere,
-    a drive or root of its own, or longer than a file system keeps."""
+    a drive or root of its own, longer than a file system keeps, or not
+    portable (:func:`portable_name_problem`)."""
     if any(unicodedata.category(char) == "Cc" for char in raw):
         raise InvalidRequest(
             f"upload file name {raw!r} contains a control character — not a file name"
@@ -82,6 +84,9 @@ def upload_name(raw: str) -> str:
         raise InvalidRequest(
             f"upload file name {name[:40]!r}… is longer than {MAX_NAME_BYTES} bytes"
         )
+    problem = portable_name_problem(name)
+    if problem is not None:
+        raise InvalidRequest(f"upload file name {raw!r} {problem} — not a portable file name")
     return name
 
 
@@ -111,6 +116,8 @@ class _Parts:
         self._field = ""
         self._out: BinaryIO | None = None
         self._value: bytearray | None = None
+        #: :func:`collision_key` → the name of the file part it came from.
+        self._keys: dict[str, str] = {}
 
     def callbacks(self) -> MultipartCallbacks:
         return {
@@ -161,6 +168,15 @@ class _Parts:
         if len(self.received.files) >= MAX_FILES:
             raise InvalidRequest(f"more than {MAX_FILES} files in one push")
         name = upload_name(_text(options[b"filename"]))
+        key = name_collision_key(name)
+        if key in self._keys:
+            # One file on Windows and macOS, two on Linux: whichever the
+            # server's file system, the bundle would differ by platform.
+            raise InvalidRequest(
+                f"upload file names {self._keys[key]!r} and {name!r} name one file where "
+                "case or Unicode normalization does not count — a bundle's names are distinct"
+            )
+        self._keys[key] = name
         target = self.directory / name
         if target.parent != self.directory:  # upload_name guarantees it; this proves it
             raise InvalidRequest(f"upload file name {name!r} does not name a file")

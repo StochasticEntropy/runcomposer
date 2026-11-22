@@ -47,7 +47,10 @@ runner produced, from the same origin as the API and the UI. Only a file a
 runner recorded — itself, or under a directory it recorded — is served. Paths
 are resolved fully and refused unless they land strictly inside
 `core.artifact_dir`; a refusal, and a path no file system can hold (a NUL
-byte, an over-long name), is the same `404` as a miss. Every artifact goes
+byte, an over-long name), is the same `404` as a miss. A path with a root, a
+drive or a share of its own (`//host/share`, `\\host\share`, `C:x`; on
+Windows any `:`) is refused before it is resolved, since resolving a share's
+path on Windows connects to that host and offers it the server's credentials. Every artifact goes
 out with these headers:
 
 ```
@@ -104,7 +107,9 @@ of a reset connection.
 The same holds for an executor's progress (`/live`, `/log`). The body of an
 authenticated push is then read as a stream, each file into a temporary
 bundle directory under its base name — a name that is not a file name (`..`,
-empty, a control character) is a `400` — and `max_upload_mb` is counted while
+empty, a control character), or not one every file system keeps as written
+(a character or a device name Windows refuses, a trailing dot or space, two
+names that differ only in case), is a `400` — and `max_upload_mb` is counted while
 the bytes arrive: the push is refused (`413`) as soon as it passes the limit,
 whatever length it declared, or none. A bundle refused for what it contains
 is named by its files' names in the answer and in the quarantine, never by

@@ -60,6 +60,7 @@ meaning given here and in its docstring.
 | `load_import_path` | Load ``"package.module:Attribute"``. |
 | `MARKER_FILENAME` | The file in a results bundle that names the run and dispatch it belongs to. |
 | `missing_verdicts` | One ``MISSING`` verdict per planned item nobody reported. |
+| `name_collision_key` | The key under which two names are one file on a file system that ignores case or Unicode normalization (Windows, macOS): two names of one directory with the same key are one file there. |
 | `new_ulid` | Mint a ULID. |
 | `normalize_time` | Any accepted spelling → the stored spelling. |
 | `NotFound` | Something asked for does not exist (HTTP 404). |
@@ -82,6 +83,7 @@ meaning given here and in its docstring.
 | `PlanPreview` | A runner's answer to "what would this dispatch do?" (``Runner.plan``). |
 | `PluginBase` | Defaults for :class:`Configurable`: options are the constructor's keyword parameters, the names in ``PATH_OPTIONS`` (single values or lists) are paths relative to the config file, and no ``connectors:`` mapping is handed over. |
 | `PluginError` | A declared plugin cannot be loaded. |
+| `portable_name_problem` | Why ``name`` — one path component — is not a file name every file system keeps as written, or ``None`` when it is. |
 | `push_results` | Push a results bundle to the run's results endpoint — what a job's post step does with ``curl -F files=@…`` — and return the server's answer (the ingest report: ``outcome``, ``verdict_count``, ``warnings`` …). |
 | `quote_pattern` | A pattern as the text form writes it: bare when it reads back as itself, else in double quotes with ``\`` and ``"`` escaped by a backslash — a space, a parenthesis, a quote or a backslash in it, or a pattern that is an operator word (``"AND"``) or the word for every item (``"*"``, the tag literally spelled so), is quoted. |
 | `read_filter_string` | A filter given as one string where a filter is taken (a selection's ``tag_filter``, the command line's filter argument, a configured quick filter, preset or default filter) → ``(AST data, None)``. |

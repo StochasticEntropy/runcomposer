@@ -732,6 +732,27 @@ class TestPollCompletion:
         assert run.state == "FAILED"
         assert "archived nothing matching ['reports/*.xml']" in run.latest_dispatch.error
 
+    @pytest.mark.parametrize(
+        ("paths", "said"),
+        [
+            (("reports/eu/junit.xml", "reports/us/junit.xml"), "would be one file 'junit.xml'"),
+            (("reports/eu/Junit.xml", "reports/us/junit.xml"), "would be one file 'junit.xml'"),
+            (("reports/eu/junit:eu.xml",), "cannot be kept in the bundle: its name contains ':'"),
+            (("reports/eu/nul.xml",), "its name is a device name on Windows"),
+        ],
+        ids=["same name", "case", "stream", "device"],
+    )
+    def test_files_a_flat_bundle_cannot_keep_as_named_fail_and_say_which(self, make_service, jenkins, paths, said):
+        """Before, the second ``junit.xml`` replaced the first without a word
+        (and on Windows a name it cannot keep ended in an error)."""
+        jenkins.add_job(JOB, junit_job(paths=paths))
+        service = jenkins_service(make_service, jenkins, **{**POLL, "artifact_paths": ["reports/*/*.xml"]})
+        run_id, _ = dispatch(service)
+        run = service.require_run(run_id)
+        assert run.state == "FAILED", run.latest_dispatch.error
+        assert said in run.latest_dispatch.error
+        assert service.store.verdicts_for(run_id) == []
+
 
 # -- when the trigger does not go through ----------------------------------------------
 

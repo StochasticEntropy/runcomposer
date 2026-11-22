@@ -81,6 +81,7 @@ from runcomposer.core.errors import (
     UnknownRunner,
 )
 from runcomposer.core.events import LIFECYCLE_KINDS
+from runcomposer.core.filenames import name_collision_key, portable_name_problem
 from runcomposer.core.filter import FilterError, format_filter, parse_filter, quote_pattern
 from runcomposer.core.filtertext import FilterSyntaxError, parse_filter_text, read_filter_string
 from runcomposer.core.handoff import corpus_drifted
@@ -255,6 +256,7 @@ __all__ = [
     "load_document",
     "load_import_path",
     "missing_verdicts",
+    "name_collision_key",
     "new_ulid",
     "normalize_time",
     "outstanding_shards",
@@ -264,6 +266,7 @@ __all__ = [
     "parse_time",
     "parse_xml",
     "plan_chunks",
+    "portable_name_problem",
     "push_results",
     "quote_pattern",
     "read_filter_string",

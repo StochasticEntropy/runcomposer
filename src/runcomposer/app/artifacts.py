@@ -24,7 +24,8 @@ exactly like a file that does not exist.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -37,6 +38,19 @@ ARTIFACT_ROUTE_PREFIX = "/artifacts/"
 
 class UnknownArtifact(NotFound):
     code = "unknown-artifact"
+
+
+def _names_its_own_place(path: str) -> bool:
+    """Whether ``path``, meant relative to the artifact directory, carries a
+    root, a drive or a share of its own — read the POSIX way and the
+    Windows way, whichever this machine is — or, on Windows, a ``:``."""
+    windows = PureWindowsPath(path)
+    return bool(
+        PurePosixPath(path).is_absolute()
+        or windows.drive
+        or windows.anchor
+        or (os.name == "nt" and ":" in path)
+    )
 
 
 def is_http_url(value: str) -> bool:
@@ -145,9 +159,15 @@ class Artifacts:
         absolute paths and symlinks out of the tree are one rule. A refusal
         is indistinguishable from a miss: probing learns nothing — and a
         path no file system could hold (a NUL byte, a name too long) is a
-        miss like any other."""
+        miss like any other.
+
+        A path that names a place of its own — a root, a drive, a share
+        (``//host/share``, ``\\\\host\\share``) — is refused before anything
+        is resolved: resolving a share's path on Windows connects to that
+        host. So is a ``:`` on Windows, where it names a drive or another
+        stream of a file."""
         root = self.root()
-        if root is None or not artifact_path or "\x00" in artifact_path:
+        if root is None or not artifact_path or "\x00" in artifact_path or _names_its_own_place(artifact_path):
             raise UnknownArtifact(f"unknown artifact {artifact_path!r}")
         try:
             candidate = (root / artifact_path).resolve()
