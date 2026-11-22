@@ -250,56 +250,127 @@ class TestThePushRoute:
         assert response.json()["completion"] == "PASS"
 
 
-#: Names a Linux file system keeps and Windows does not: a character it
-#: refuses (``:`` opens another stream of a file there), a device name with
-#: or without an extension, a trailing dot or space it drops.
-UNPORTABLE_NAMES = [
-    "CON", "con.json", "nul", "NUL.txt", "aux.xml", "prn", "COM1", "com9.json", "LPT1", "lpt¹.txt",
-    "conin$", "results.json:stream", "output.xml:Zone.Identifier", "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b",
-    "results.json.", "results.json ", "x.", " ", "...", "con .txt",
+ON_WINDOWS = os.name == "nt"
+
+#: (name, refused on a POSIX server?, refused on a Windows server?). A name
+#: that is not one file name anywhere is a 400 on every server, as it was;
+#: what only Windows cannot keep — a character it refuses (``:`` opens
+#: another stream of a file there), a device name with or without an
+#: extension, a trailing dot or space it drops — is a 400 where the server
+#: runs Windows, and kept as it always was on Linux and macOS.
+SERVER_NAMES = [
+    ("a:b.txt", True, True),  # read the Windows way, a drive: refused everywhere, as before
+    ("C:x", True, True),
+    ("reports\\..", True, True),  # its base name is ".."
+    ("CON", False, True),
+    ("con.json", False, True),
+    ("nul", False, True),
+    ("NUL.txt", False, True),
+    ("CON .txt", False, True),
+    ("aux.tar.gz", False, True),
+    ("prn", False, True),
+    ("COM0", False, True),
+    ("COM1", False, True),
+    ("com9.json", False, True),
+    ("LPT0", False, True),
+    ("lpt\u00b9.txt", False, True),
+    ("conin$", False, True),
+    ("results.json:stream", False, True),
+    ("output.xml:Zone.Identifier", False, True),
+    ("results.json::$DATA", False, True),
+    ("a<b", False, True),
+    ("a>b", False, True),
+    ('a"b', False, True),
+    ("a|b", False, True),
+    ("a?b", False, True),
+    ("a*b", False, True),
+    ("results.json.", False, True),
+    ("results.json ", False, True),
+    ("x.", False, True),
+    (" ", False, True),
+    ("...", False, True),
+    ("COM10", False, False),
+    ("PROGRA~1", False, False),
 ]
 
 
-class TestAPushNameIsPortable:
-    """A bundle travels — pushed, dropped into an inbox, promoted out of the
-    quarantine — and is the same bundle on every server: a name some file
-    system cannot keep as written is a 400 on every platform, before a byte
-    of it is written."""
+def push(client, run_id, token, names, content=b"{}"):
+    return client.post(
+        f"{API}/runs/{run_id}/results",
+        files=[("files", (name, content, "application/octet-stream")) for name in names],
+        headers={"X-Runcomposer-Token": token},
+    )
 
-    @pytest.mark.parametrize("name", UNPORTABLE_NAMES, ids=[repr(n) for n in UNPORTABLE_NAMES])
-    def test_a_name_windows_cannot_keep_is_a_400_everywhere(self, deployment, spool, name):
+
+def one_file_here(directory: Path, first: str, second: str) -> bool:
+    """Whether this file system keeps ``first`` and ``second`` as one file —
+    asked of the file system itself, as the server asks it."""
+    probe = directory / "probe"
+    probe.mkdir()
+    (probe / first).write_bytes(b"")
+    try:
+        (probe / second).open("xb").close()
+    except FileExistsError:
+        return True
+    return False
+
+
+class TestServerPushNames:
+    """The push refuses what is wrong everywhere, and what the server's own
+    file system cannot keep — decided by that file system, not by a list of
+    what some other machine refuses."""
+
+    @pytest.mark.parametrize(("name", "on_posix", "on_windows"), SERVER_NAMES, ids=[repr(n[0]) for n in SERVER_NAMES])
+    def test_a_name_is_refused_where_the_server_cannot_keep_it(self, deployment, spool, name, on_posix, on_windows):
         client, service, run_id, token, _tmp = deployment
         response = client.post(
             f"{API}/runs/{run_id}/results",
             content=multipart(name, b"{}"),
             headers={"Content-Type": f"multipart/form-data; boundary={BOUNDARY}", "X-Runcomposer-Token": token},
         )
-        body = assert_error_document(response)
-        assert response.status_code == 400 and body["code"] == "invalid-request", body
-        assert "not a portable file name" in body["detail"]
+        body = assert_error_document(response)  # "{}" holds no results: a 422 when the name is kept
+        if on_windows if ON_WINDOWS else on_posix:
+            assert response.status_code == 400 and body["code"] == "invalid-request", body
+            assert service.quarantine.entries() == []
+        else:
+            assert response.status_code == 422, body
         assert [path for path in spool.rglob("*") if path.is_file()] == []
-        assert service.quarantine.entries() == []
+
+    def test_a_linux_or_macos_server_keeps_a_time_stamp_in_a_name_again(self, deployment):
+        """``:`` in ``results-2026-01-01T10:00:00.json`` is a file name on
+        Linux and macOS, and was taken there before 0.2."""
+        client, _service, run_id, token, _tmp = deployment
+        payload = json.dumps({
+            "format": "runcomposer-verdicts",
+            "verdicts": [{"name": f"Shop.Auth.SSO.T00{n}", "status": "PASS"} for n in (1, 2, 3)],
+        }).encode()
+        response = push(client, run_id, token, ["results-2026-01-01T10:00:00.json"], payload)
+        if ON_WINDOWS:
+            assert response.status_code == 400 and "this server runs on Windows" in response.json()["detail"]
+        else:
+            assert response.status_code == 200, response.text
 
     @pytest.mark.parametrize(
         "names",
-        [("Results.json", "results.json"), ("results.json", "results.json"), ("café.json", "café.json")],
-        ids=["case", "twice", "normalization"],
+        [("Results.json", "results.json"), ("caf\u00e9.json", "cafe\u0301.json"), ("results.json", "results.json")],
+        ids=["case", "normalization", "twice"],
     )
-    def test_two_names_that_are_one_file_somewhere_are_a_400(self, deployment, spool, names):
-        """One file on Windows and macOS, two on Linux: whatever the server,
-        the bundle would not be the one that was sent."""
+    def test_two_names_that_are_one_file_here_are_a_400(self, deployment, spool, tmp_path, names):
+        """One file on Windows and on a default macOS volume, two on Linux:
+        the server asks its file system, and refuses only what it would keep
+        as one file. The same name twice is one file everywhere."""
         client, service, run_id, token, _tmp = deployment
-        response = client.post(
-            f"{API}/runs/{run_id}/results",
-            files=[("files", (name, b"{}", "application/json")) for name in names],
-            headers={"X-Runcomposer-Token": token},
-        )
+        expected_one = one_file_here(tmp_path, *names)
+        response = push(client, run_id, token, list(names))
         body = assert_error_document(response)
-        assert response.status_code == 400 and "name one file" in body["detail"], body
+        if expected_one:
+            assert response.status_code == 400 and "already holds" in body["detail"], body
+            assert service.quarantine.entries() == []
+        else:
+            assert response.status_code == 422, body
         assert [path for path in spool.rglob("*") if path.is_file()] == []
-        assert service.quarantine.entries() == []
 
-    def test_a_portable_name_with_dots_and_spaces_inside_is_kept(self, deployment):
+    def test_a_name_with_dots_and_spaces_inside_is_kept(self, deployment):
         client, _service, run_id, token, _tmp = deployment
         payload = json.dumps({
             "format": "runcomposer-verdicts",

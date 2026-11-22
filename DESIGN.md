@@ -588,11 +588,16 @@ concurrent deliveries to one shard leave exactly one.
   The body of an authenticated push is read as a
   stream into a temporary bundle directory, each file under its base name (a
   name that is not a file name — `..`, `.`, empty, a control character — is
-  a `400`; so is a name some file system cannot keep as written — a
-  character Windows refuses (`<>:"|?*`), a device name such as `CON` or
-  `nul.txt`, a trailing dot or space — and two names that are one file where
-  case or Unicode normalization does not count, on every platform alike, so
-  that a bundle is the same bundle on every server). Only an authenticated bundle that is then refused for what it
+  a `400` on every server, and so is a name this server's file system cannot
+  keep: on a Windows server a character Windows refuses (`<>:"|?*`, which
+  covers `name:stream`), a device name (`CON`, `nul.txt`, `COM0`), a trailing
+  dot or space — a Linux or macOS server keeps those, as it always did. Two
+  files of one push that the server's file system would keep as one are a
+  `400`, asked of the file system itself — each file is created exclusively:
+  the same name twice everywhere, `Results.json` with `results.json` on
+  Windows and a default macOS volume, not on Linux). A bundle dropped into
+  the inbox or given to `runcomposer ingest` is taken with the names its
+  files have on the server's disk. Only an authenticated bundle that is then refused for what it
   contains is quarantined, named by its files' names — never by where it lay
   on the server (tests/test_api_streamed_push.py,
   tests/test_api_hostile_names.py).

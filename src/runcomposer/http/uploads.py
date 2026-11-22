@@ -11,6 +11,7 @@ nothing — is refused once it passes the limit, not after it ended.
 
 from __future__ import annotations
 
+import os
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -20,7 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect, Request
 
 from runcomposer.core.errors import InvalidRequest, PayloadTooLarge
-from runcomposer.core.filenames import name_collision_key, portable_name_problem
+from runcomposer.core.filenames import child_path, name_collision_key, windows_name_problem
 
 if TYPE_CHECKING:
     from python_multipart.exceptions import FormParserError
@@ -62,8 +63,10 @@ def upload_name(raw: str) -> str:
     path) are dropped — refused with ``InvalidRequest`` when that is not
     a plain file name: empty, ``.`` or ``..`` (also as compatibility
     look-alikes that normalize to them), a control character anywhere,
-    a drive or root of its own, longer than a file system keeps, or not
-    portable (:func:`portable_name_problem`)."""
+    a drive or root of its own, or longer than a file system keeps. On a
+    server that runs Windows, also a name Windows cannot keep as written
+    (:func:`~runcomposer.core.filenames.windows_name_problem`); a Linux or
+    macOS server keeps such a name, as it always did."""
     if any(unicodedata.category(char) == "Cc" for char in raw):
         raise InvalidRequest(
             f"upload file name {raw!r} contains a control character — not a file name"
@@ -84,9 +87,9 @@ def upload_name(raw: str) -> str:
         raise InvalidRequest(
             f"upload file name {name[:40]!r}… is longer than {MAX_NAME_BYTES} bytes"
         )
-    problem = portable_name_problem(name)
+    problem = windows_name_problem(name) if os.name == "nt" else None
     if problem is not None:
-        raise InvalidRequest(f"upload file name {raw!r} {problem} — not a portable file name")
+        raise InvalidRequest(f"upload file name {raw!r} {problem} — this server runs on Windows")
     return name
 
 
@@ -116,8 +119,6 @@ class _Parts:
         self._field = ""
         self._out: BinaryIO | None = None
         self._value: bytearray | None = None
-        #: :func:`collision_key` → the name of the file part it came from.
-        self._keys: dict[str, str] = {}
 
     def callbacks(self) -> MultipartCallbacks:
         return {
@@ -168,18 +169,23 @@ class _Parts:
         if len(self.received.files) >= MAX_FILES:
             raise InvalidRequest(f"more than {MAX_FILES} files in one push")
         name = upload_name(_text(options[b"filename"]))
-        key = name_collision_key(name)
-        if key in self._keys:
-            # One file on Windows and macOS, two on Linux: whichever the
-            # server's file system, the bundle would differ by platform.
+        try:
+            target = child_path(self.directory, name)  # upload_name guarantees it; this proves it
+        except ValueError:
+            raise InvalidRequest(f"upload file name {name!r} does not name a file") from None
+        try:
+            # Exclusively: whether two names are one file is the file
+            # system's answer — `Results.json` after `results.json` is a
+            # second file on Linux, the same one on Windows and macOS.
+            target.touch(exist_ok=False)
+        except FileExistsError:
+            key = name_collision_key(name)
+            earlier = [kept for kept in self.received.files if name_collision_key(kept) == key]
             raise InvalidRequest(
-                f"upload file names {self._keys[key]!r} and {name!r} name one file where "
-                "case or Unicode normalization does not count — a bundle's names are distinct"
-            )
-        self._keys[key] = name
-        target = self.directory / name
-        if target.parent != self.directory:  # upload_name guarantees it; this proves it
-            raise InvalidRequest(f"upload file name {name!r} does not name a file")
+                f"upload file name {name!r} names a file this push already holds"
+                + (f" ({', '.join(map(repr, earlier))})" if earlier else "")
+                + " on this server's file system — the names of a bundle are distinct"
+            ) from None
         self._out = open(target, "wb")  # noqa: SIM115 — closed at the part's end or on any error
         self.received.files.append(name)
 

@@ -107,9 +107,10 @@ of a reset connection.
 The same holds for an executor's progress (`/live`, `/log`). The body of an
 authenticated push is then read as a stream, each file into a temporary
 bundle directory under its base name — a name that is not a file name (`..`,
-empty, a control character), or not one every file system keeps as written
-(a character or a device name Windows refuses, a trailing dot or space, two
-names that differ only in case), is a `400` — and `max_upload_mb` is counted while
+empty, a separator, a control character) is a `400` on every server; on a
+Windows server so is a name Windows cannot keep (a character or a device
+name it refuses, a trailing dot or space); and so are two files the server's
+file system would keep as one (each is created exclusively) — and `max_upload_mb` is counted while
 the bytes arrive: the push is refused (`413`) as soon as it passes the limit,
 whatever length it declared, or none. A bundle refused for what it contains
 is named by its files' names in the answer and in the quarantine, never by

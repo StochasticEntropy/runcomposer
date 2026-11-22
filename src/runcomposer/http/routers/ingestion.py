@@ -206,8 +206,8 @@ async def push_results(
     missing token 401, a wrong one 403, and the body stays unread. The body is
     then read as a stream: each file goes into a temporary bundle directory
     under its base name (a name that is not a file name — ``..``, empty, a
-    control character, a name Windows cannot keep, two names that are one
-    file where case does not count — is a 400), and ``core.ingestion.max_upload_mb`` is
+    control character —, on a Windows server a name Windows cannot keep, and
+    two names this server's file system keeps as one file, are a 400), and ``core.ingestion.max_upload_mb`` is
     counted while the bytes arrive (413 as soon as it is passed, whatever the
     request declared). A bundle that is then refused for what it contains
     lands in the quarantine and answers 422 (unreadable) or 409 (contradicts
