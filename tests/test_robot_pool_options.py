@@ -217,7 +217,7 @@ Checkout On The Environment Two
 *** Keywords ***
 Visit The Partition
     Enter Partition    ${MARKERS}    ${PARTITION}    ${TEST NAME}
-    Wait For Another Test On    ${MARKERS}    ${PARTITION}    ${TEST NAME}
+    Wait For Another Test On    ${MARKERS}    ${PARTITION}    ${TEST NAME}    ${WAIT}
     Leave Partition    ${MARKERS}    ${PARTITION}    ${TEST NAME}
 """
 
@@ -244,21 +244,26 @@ def overlaps(markers: Path) -> dict[str, int]:
 
 
 class TestExclusivePartitions:
-    def service(self, make_service, tmp_path, **options: Any) -> tuple[Service, Path]:
+    def service(self, make_service, tmp_path, *, wait: float = 3, **options: Any) -> tuple[Service, Path]:
+        """``wait``: how long a test gives another chunk of its partition to
+        enter — the time a worker may take to start, which on Windows (a new
+        process importing Robot) is longer than elsewhere."""
         (tmp_path / "lib").mkdir()
         (tmp_path / "lib" / "Markers.py").write_text(MARKERS_LIBRARY, encoding="utf-8")
         root = shop_suite(tmp_path, MARKED_SUITE)
         markers = tmp_path / "markers"
         service = pool_service(
             make_service, root, partitions=["eu", "us"], max_workers=4,
-            pythonpath=[str(tmp_path / "lib")], variables={"MARKERS": str(markers)}, **options,
+            pythonpath=[str(tmp_path / "lib")], variables={"MARKERS": str(markers), "WAIT": str(wait)},
+            **options,
         )
         return service, markers
 
     def test_without_a_bound_chunks_of_one_partition_run_side_by_side(self, make_service, tmp_path):
         """Today's default, shown: four workers over two partitions cut each
-        partition into two chunks, and both execute at once."""
-        service, markers = self.service(make_service, tmp_path)
+        partition into two chunks, and both execute at once. (The wait ends
+        as soon as the other chunk enters: a long one costs nothing here.)"""
+        service, markers = self.service(make_service, tmp_path, wait=60)
         run = execute(service, "Checkout")
         assert run.completion == "PASS", [v.message for v in service.store.verdicts_for(run.id)]
         assert sorted(run.latest_dispatch.shards) == ["eu-1", "eu-2", "us-1", "us-2"]
