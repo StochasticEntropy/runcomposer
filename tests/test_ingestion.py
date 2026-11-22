@@ -267,6 +267,16 @@ class TestIdempotency:
         assert report.outcome == "replaced"
         assert [v.message for v in service.store.verdicts_for(run_id)] == ["card declined"]
 
+    def test_a_message_with_a_lone_surrogate_is_stored_as_text(self, service, tmp_path):
+        """``"\\ud800"`` in a result file is valid JSON and no text: the
+        result is kept, the stray character replaced — not a store error."""
+        run_id, _export, _spec = exported(service, tmp_path)
+        report = service.ingest(
+            bundle(tmp_path / "one", {SSO[0]: "FAIL"}, message="card \ud800 declined"), run_id=run_id
+        )
+        assert report.outcome == "new"
+        assert [v.message for v in service.store.verdicts_for(run_id)] == ["card \ufffd declined"]
+
     def test_shards_accumulate_until_the_declared_set_is_in(self, service, tmp_path):
         """A spec that says `results.shards: 2` exports with shards 1 and 2."""
         composed = service.build_spec_document({"tag_filter": "Auth-SSO"}, title="Two shards")

@@ -104,6 +104,19 @@ class BrokenDescribeRunner(RunnerBase):
         raise AssertionError("dispatched without a description")
 
 
+class QuotingDescribeRunner(RunnerBase):
+    """Its describe() raises — quoting a configured option in the message."""
+
+    def __init__(self, token: str = "") -> None:
+        self.token = token
+
+    def describe(self) -> RunnerInfo:
+        raise RuntimeError(f"the pool refused the token {self.token}")
+
+    def dispatch(self, ctx: DispatchContext) -> None:  # pragma: no cover - never reached
+        raise AssertionError("dispatched without a description")
+
+
 BUILT: list[str] = []
 
 
@@ -272,6 +285,21 @@ class TestErrorBody:
         error = assert_error(response, 400, "invalid-request")
         assert [entry["field"] for entry in error["fields"]] == [field]
         assert "surrogate" in error["detail"]
+        assert client.get(f"{API}/runs").json()["total"] == 0
+
+    @pytest.mark.parametrize("depth", [990, 1200, 20000])
+    def test_a_body_nested_deeper_than_the_interpreter_recurses_is_a_400(self, client, depth):
+        """The surrogate check reads the whole body before any field does: it
+        walks with a stack of its own, so a deep body is still a bad request."""
+        nested = "[" * depth + "]" * depth
+        for route, body in (
+            ("/runs", '{"selection":{"tag_filter":"Auth"},"labels":{"a":' + nested + "}}"),
+            ("/selection/compile", '{"tag_filter":"Auth","x":' + nested + "}"),
+        ):
+            response = client.post(
+                f"{API}{route}", content=body.encode(), headers={"Content-Type": "application/json"}
+            )
+            assert response.status_code == 400, (route, depth, response.text[:200])
         assert client.get(f"{API}/runs").json()["total"] == 0
 
     def test_every_request_body_is_checked_for_lone_surrogates_in_one_place(self):
@@ -974,6 +1002,25 @@ class TestRunnersAreServerParts:
             assert "/srv" not in response.text and "Traceback" not in response.text
         assert client.get(f"{API}/runs").json()["total"] == 0
         assert client.post(f"{API}/runs", json={**body, "dispatch": {"runner": "demo"}}).status_code == 201
+
+    def test_a_describe_that_quotes_a_secret_is_logged_without_it(self, make_client, monkeypatch, caplog):
+        """The traceback is the operator's diagnostic and goes to the log as
+        text, with configured secrets blanked out like in every other line."""
+        monkeypatch.setenv("SHOP_POOL_TOKEN", "pool-token-example-77")
+        client, _service = make_client(
+            runners={"pool": {"module": "tests.test_api:QuotingDescribeRunner", "token": "${env:SHOP_POOL_TOKEN}"}}
+        )
+        with caplog.at_level("ERROR", logger="runcomposer"):
+            response = client.post(f"{API}/plan", json={"selection": {"tag_filter": "Auth-SSO"}, "runner": "pool"})
+        assert_error(response, 503, "runner-unavailable")
+        records = [record for record in caplog.records if "describe() raised" in record.getMessage()]
+        assert records, [record.getMessage() for record in caplog.records]
+        for record in records:
+            text = record.getMessage()
+            assert "pool-token-example-77" not in text
+            assert "RuntimeError: the pool refused the token" in text and "Traceback" in text
+            assert record.exc_info is None  # nothing a formatter would print unblanked
+        assert "pool-token-example-77" not in response.text
 
     def test_a_runner_is_built_once_per_server_not_per_request(self, make_client):
         BUILT.clear()

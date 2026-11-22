@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -49,7 +50,7 @@ from .catalog import Catalog
 from .compose import Composer, ComposeResult, ExportResult, Preview
 from .config import Config, _resolve_env, resolve_options
 from .ctrf import export_ctrf
-from .dispatching import DispatchManager, Outcome, PlanOutcome
+from .dispatching import TRACEBACK_FOLLOWS, DispatchManager, Outcome, PlanOutcome
 from .eventbus import EventBus, ObserverBinding
 from .expiry import expire_awaiting
 from .housekeeping import collect_garbage, remove_run_artifacts
@@ -302,12 +303,24 @@ class Service:
         try:
             info: RunnerInfo = runner.describe()
         except Exception as exc:
-            log.error("runner %r: describe() raised", runner_id, exc_info=exc)
+            self._log_failure(f"runner {runner_id!r}: describe() raised", exc)
             raise RunnerUnavailable(
                 f"runner {runner_id!r} could not describe itself ({type(exc).__name__}; "
-                "see the server log) — nothing can be planned or dispatched with it"
+                "the log has the traceback) — nothing can be planned or dispatched with it"
             ) from None
         return info
+
+    def _log_failure(self, what: str, error: BaseException) -> None:
+        """A plugin's exception, for the operator: one line saying what
+        failed and with which error, then the traceback — as text, with
+        configured secrets blanked out, since the exception may quote an
+        option. (The command line shows the first line only, unless ``-v``.)"""
+        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        first = f"{type(error).__name__}: {error}".splitlines()[0] if str(error) else type(error).__name__
+        log.error(
+            "%s: %s\n%s", what, self.redact(first), self.redact(trace.rstrip()),
+            extra={TRACEBACK_FOLLOWS: True},
+        )
 
     def connector_settings(self, name: str) -> Mapping[str, Any]:
         """``connectors.<name>`` as a plugin or a configured callable reads
@@ -353,10 +366,10 @@ class Service:
             except Exception as exc:  # surfaced, not hidden: the UI lists it with the reason
                 entry["error"] = (
                     str(exc) if isinstance(exc, RunComposerError)
-                    else f"runner {runner_id!r} could not be built ({type(exc).__name__}; see the server log)"
+                    else f"runner {runner_id!r} could not be built ({type(exc).__name__}; the log has the traceback)"
                 )
                 if not isinstance(exc, RunComposerError):
-                    log.error("runner %r could not be built", runner_id, exc_info=exc)
+                    self._log_failure(f"runner {runner_id!r} could not be built", exc)
                 infos.append(entry)
                 continue
             entry.update(

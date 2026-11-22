@@ -117,13 +117,24 @@ def check_reportable(verdicts: Iterable[Verdict]) -> list[Verdict]:
     return delivered
 
 
+def _as_text(message: str) -> str:
+    """A result's message as text a store can write: a lone UTF-16 surrogate
+    (an escaped one in a JSON result file) becomes the replacement character.
+    One stray character in a tool's output is no reason to lose the result
+    it belongs to."""
+    if not any("\ud800" <= char <= "\udfff" for char in message):
+        return message
+    return "".join("\ufffd" if "\ud800" <= char <= "\udfff" else char for char in message)
+
+
 def correlate(
     parser: Any, bundle: Path, format_id: str, resolve: Callable[[str], str | None]
 ) -> tuple[list[Verdict], list[str]]:
     """Parse native artifacts and correlate every native name through
     ``resolve`` (``TestSource.resolve``, §5). Names it does not know are
     warnings, never invented as ids. A parser that fails — ``ParseError`` or
-    anything else — and a bundle with no results are ``bad-bundle``."""
+    anything else — and a bundle with no results are ``bad-bundle``. A
+    message is stored as text (``_as_text``)."""
     try:
         parsed = list(parser.parse(bundle))
     except ParseError as exc:
@@ -155,7 +166,7 @@ def correlate(
                 item_id=item_id,
                 status=entry.status,
                 duration_ms=entry.duration_ms,
-                message=entry.message,
+                message=_as_text(entry.message) if isinstance(entry.message, str) else entry.message,
                 attempt=entry.attempt,
             )
         )

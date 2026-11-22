@@ -460,6 +460,21 @@ class TestRun:
         assert len(crash) == 1 and "RuntimeError: the worker pool collapsed" in crash[0]
         assert "Traceback" not in err and "in dispatch" not in err
 
+    def test_a_runner_that_cannot_describe_itself_is_one_line_and_exit_3(self, tmp_path, capsys):
+        """Nothing was planned or run: the "no result" exit, one line saying
+        which runner and which error, and no run left behind."""
+        runners = {"undescribable": {"module": "tests.test_api:BrokenDescribeRunner"}}
+        cli = Cli(write_config(tmp_path, runners=runners), capsys)
+        code, out, err = cli("run", "Auth-SSO", "--runner", "undescribable")
+        assert code == 3 and out == ""
+        logged = [line for line in err.splitlines() if "describe() raised" in line]
+        assert len(logged) == 1 and logged[0].endswith("(the traceback: run with -v)")
+        assert "error: runner 'undescribable' could not describe itself (RuntimeError" in err
+        assert "server log" not in err and "Traceback" not in err
+        assert stored_runs(cli) == []
+        code, _out, err = cli("-v", "plan", "Auth-SSO", "--runner", "undescribable", runner_crash=True)
+        assert code == 3 and "Traceback" in err and "in describe" in err
+
     def test_a_failed_run_shows_the_runners_traceback_with_v(self, cli):
         code, _out, err = cli("-v", "run", "Auth-SSO", "--runner", "broken", runner_crash=True)
         assert code == 3

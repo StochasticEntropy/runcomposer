@@ -166,7 +166,7 @@ The same four, for every command:
 | `0` | Done. For a command that waits on a run: the run is `COMPLETE (PASS)`. |
 | `1` | The answer is "no": the run completed but is not `PASS`, a spec is invalid, a selection cannot be compiled, a bundle was refused, a named run or runner does not exist, a check found drift or problems. |
 | `2` | The command line or the configuration is wrong: bad usage, a missing or invalid config file, an unknown plugin or plugin option, a malformed taxonomy, an unreadable spec file. |
-| `3` | The run ended without a result: the dispatch was refused, failed, was cancelled or went stale, or the wait timed out. |
+| `3` | The run ended without a result: the dispatch was refused, failed, was cancelled or went stale, the wait timed out, or the runner could not say what it is (its `describe()` raised — nothing was planned or run). |
 
 So a CI stage can tell "tests failed" (`1`) from "nothing was tested" (`3`)
 from "the pipeline is misconfigured" (`2`). `Ctrl-C` exits `130`.

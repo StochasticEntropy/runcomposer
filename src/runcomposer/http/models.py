@@ -32,26 +32,38 @@ __all__ = [
 MAX_TITLE_LENGTH = 1000
 
 
-def _lone_surrogate(value: Any, path: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+def _has_surrogate(text: str) -> bool:
+    return any("\ud800" <= char <= "\udfff" for char in text)
+
+
+def _lone_surrogate(value: Any) -> tuple[str, ...] | None:
     """The path of the first key or string in ``value`` holding a lone UTF-16
     surrogate (an escaped one in JSON) — text no store can write
-    as UTF-8."""
-    if isinstance(value, str):
-        return path if any("\ud800" <= char <= "\udfff" for char in value) else None
-    if isinstance(value, dict):
-        for key, item in value.items():
-            # A key is named with its surrogate escaped: the answer is text.
-            here = (*path, key.encode("utf-8", "backslashreplace").decode()) if isinstance(key, str) else path
-            if isinstance(key, str) and _lone_surrogate(key) is not None:
-                return here
-            found = _lone_surrogate(item, here)
-            if found is not None:
-                return found
-    if isinstance(value, (list, tuple)):
-        for index, item in enumerate(value):
-            found = _lone_surrogate(item, (*path, str(index)))
-            if found is not None:
-                return found
+    as UTF-8. Walked with a stack of its own, in document order: a body nested
+    deeper than the interpreter recurses is still only read, and refused by
+    whatever reads it next."""
+    pending: list[tuple[Any, tuple[str, ...]]] = [(value, ())]
+    while pending:
+        current, path = pending.pop()
+        if isinstance(current, str):
+            if _has_surrogate(current):
+                return path
+        elif isinstance(current, dict):
+            children: list[tuple[Any, tuple[str, ...]]] = []
+            for key, item in current.items():
+                if isinstance(key, str):
+                    # A key is named with its surrogate escaped: the answer is text.
+                    here = (*path, key.encode("utf-8", "backslashreplace").decode())
+                    if _has_surrogate(key):
+                        children.append((key, here))
+                else:
+                    here = path
+                children.append((item, here))
+            pending.extend(reversed(children))
+        elif isinstance(current, (list, tuple)):
+            pending.extend(
+                reversed([(item, (*path, str(index))) for index, item in enumerate(current)])
+            )
     return None
 
 

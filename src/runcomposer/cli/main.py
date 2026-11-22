@@ -11,7 +11,7 @@ import sys
 from runcomposer import __version__
 
 from . import admin, compose, results, runs
-from .common import EXIT_NO, EXIT_USAGE
+from .common import EXIT_NO, EXIT_NO_RESULT, EXIT_USAGE
 from .logs import configure_logging
 
 
@@ -34,7 +34,7 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from runcomposer.core.errors import ConfigError, RunComposerError
+    from runcomposer.core.errors import ConfigError, RunComposerError, RunnerUnavailable
     from runcomposer.core.taxonomy import TaxonomyError
 
     parser, handlers = build_parser()
@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         # Hand-written deployment data that is wrong: a clean one-liner (§8).
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except RunnerUnavailable as exc:
+        # A runner that cannot say what it is: nothing was planned or run.
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NO_RESULT
     except RunComposerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NO

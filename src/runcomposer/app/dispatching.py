@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     from .service import Service
 
 __all__ = [
+    "TRACEBACK_FOLLOWS",
     "DispatchManager",
     "Outcome",
     "PlanOutcome",

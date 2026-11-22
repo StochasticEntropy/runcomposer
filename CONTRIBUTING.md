@@ -98,7 +98,10 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
    hyphenated lower-case name (`shop-nightly`) in any string or URL; the
    words of a class name. Not read word by word: one lower-case word inside
    a string of TypeScript, of a test module or of TOML (hyphenated names
-   there are), and code identifiers, which are the code's own. A new word is added to `tests/example_world_words.txt`,
+   there are), inside a Markdown code span or code block, in a Docker build file, a CSV
+   or a `.robot` file, as a JSON key or as a JSON value ending in digits
+   (hosts, paths and ticket keys are caught in all of these), and code
+   identifiers, which are the code's own. A new word is added to `tests/example_world_words.txt`,
    under the heading it belongs to (a lower-case one to
    `tests/example_world_lowercase.txt`), in the same change — an English word, a technical term or a
    name of the example world; never the name of a person, or of a company,

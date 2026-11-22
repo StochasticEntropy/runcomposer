@@ -139,7 +139,8 @@ export function fromPython(expression: string): string | null {
     }
     if (char === "{") {
       const quantifier = /^\{(\d*)(,?)(\d*)\}/.exec(expression.slice(index));
-      if (quantifier && (quantifier[1] !== "" || (quantifier[2] === "," && quantifier[3] !== ""))) {
+      // `{,}` and `{,n}` count from zero in Python; only `{}` is literal text.
+      if (quantifier && (quantifier[1] !== "" || quantifier[2] === ",")) {
         if (!quantifiable) return null;
         out += `{${quantifier[1] || "0"}${quantifier[2]}${quantifier[3]}}`;
         index += quantifier[0].length;
