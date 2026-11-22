@@ -201,6 +201,7 @@ api
 appear
 appears
 appended
+appending
 appends
 application
 applying
@@ -762,6 +763,7 @@ cover
 covering
 covers
 cp
+cp1252
 crash
 crashes
 create
@@ -830,6 +832,7 @@ decline
 declines
 decoded
 decodes
+decoding
 decoration
 decoupled
 decoupling
@@ -913,6 +916,7 @@ detected
 dev
 development
 device
+devices
 diagnostic
 dialect
 dialogs
@@ -2505,6 +2509,7 @@ passing
 passt
 paste
 pasted
+pastes
 patches
 paths
 pathy
@@ -3727,6 +3732,7 @@ unpinned
 unpleasant
 unprivileged
 unquoted
+unreaped
 unrelated
 unreportable
 unresolved

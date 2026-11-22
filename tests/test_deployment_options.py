@@ -54,12 +54,13 @@ class TestPathsFromTheEnvironment:
     def test_an_absolute_path_from_a_variable_stays_where_the_variable_points(self, tmp_path, monkeypatch):
         """Substituted first, anchored second: before, the reference was
         anchored as text and ended up under the config directory."""
-        monkeypatch.setenv("SHOP_CHECKOUT", "/srv/shop/checkout")
+        checkout = tmp_path / "srv" / "shop" / "checkout"  # absolute on every platform
+        monkeypatch.setenv("SHOP_CHECKOUT", str(checkout))
         (tmp_path / "deploy").mkdir()
         runner = self.runner(tmp_path / "deploy", root="${env:SHOP_CHECKOUT}/tests",
                              extra_roots=["${env:SHOP_CHECKOUT}/api", "local/extra"])
-        assert runner.root == "/srv/shop/checkout/tests"
-        assert runner.extra_roots == ["/srv/shop/checkout/api", str(tmp_path / "deploy" / "local/extra")]
+        assert runner.root == f"{checkout}/tests"
+        assert runner.extra_roots == [f"{checkout}/api", str(tmp_path / "deploy" / "local/extra")]
 
     def test_a_relative_value_is_anchored_to_the_config_directory_like_any_other(self, tmp_path, monkeypatch):
         monkeypatch.setenv("SHOP_SUITES", "suites/ui")

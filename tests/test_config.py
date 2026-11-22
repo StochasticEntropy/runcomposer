@@ -4,6 +4,7 @@ at startup, secrets from the environment, one path base, zero-config mode."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -875,17 +876,18 @@ class TestOnePathBase:
     def test_declared_path_options_resolve_and_the_rest_do_not(self, tmp_path, monkeypatch):
         """A plugin says which options are paths (``PATH_OPTIONS``); a
         command line or a listener spec next to them is left as written."""
+        keywords, elsewhere = str(tmp_path / "shop" / "keywords"), str(tmp_path / "abs" / "b")  # absolute here
         config_file = self._config(
             tmp_path,
             {"runners": {
                 "robot-pool": {
                     "suite_root": "tests",
-                    "pythonpath": ["libs", "/opt/shop/keywords"],
+                    "pythonpath": ["libs", keywords],
                     "listener": "MyListener:arg",
                     "pre_run_hooks": ["echo ready"],
                 },
                 "pathy": runner_entry("PathyRunner", checkout="checkout",
-                                      extra_dirs=["a", "/abs/b", "c/d"], command="./run.sh tests"),
+                                      extra_dirs=["a", elsewhere, "c/d"], command="./run.sh tests"),
             }},
         )
         monkeypatch.chdir(tmp_path)
@@ -894,13 +896,13 @@ class TestOnePathBase:
 
         robot = config.plugin_spec("runners", "robot-pool").options
         assert Path(robot["suite_root"]) == base / "tests"
-        assert robot["pythonpath"] == [str(base / "libs"), "/opt/shop/keywords"]  # list, entry by entry
+        assert robot["pythonpath"] == [str(base / "libs"), keywords]  # list, entry by entry
         assert robot["listener"] == "MyListener:arg"  # not a path
         assert robot["pre_run_hooks"] == ["echo ready"]  # not a path
 
         pathy = config.build(config.plugin_spec("runners", "pathy"))
         assert Path(pathy.checkout) == base / "checkout"
-        assert pathy.extra_dirs == [str(base / "a"), "/abs/b", str(base / "c" / "d")]
+        assert pathy.extra_dirs == [str(base / "a"), elsewhere, str(base / "c" / "d")]
         assert pathy.command == "./run.sh tests"
 
     def test_the_hook_decides_when_the_rule_has_exceptions(self, tmp_path, monkeypatch):
@@ -955,13 +957,25 @@ class TestOnePathBase:
     def test_resolve_path_is_total_and_conservative(self, tmp_path):
         config = load_config(str(self._config(tmp_path, {})))
         base = config.base_dir
+        absolute = str(tmp_path / "abs" / "tests")  # absolute on every platform
         assert config.resolve_path("tests") == str(base / "tests")
-        assert config.resolve_path("/abs/tests") == "/abs/tests"
+        assert config.resolve_path(absolute) == absolute
         assert config.resolve_path("") == ""
         assert config.resolve_path(None) is None
         assert config.resolve_path(5) == 5
-        assert config.resolve_path(["a", "/b", 3]) == [str(base / "a"), "/b", 3]
+        assert config.resolve_path(["a", absolute, 3]) == [str(base / "a"), absolute, 3]
         assert isinstance(config.resolve_path("tests"), str)  # never a Path: options are data
+
+    def test_a_root_without_a_drive_lies_on_the_config_file_s_drive(self, tmp_path):
+        """``/abs/tests`` is absolute on POSIX and left as written. On Windows
+        it has a root but no drive: anchored, it lies on the config file's
+        drive — not on the drive of whatever directory a command starts in."""
+        config = load_config(str(self._config(tmp_path, {})))
+        rooted = config.resolve_path("/abs/tests")
+        if os.name == "nt":
+            assert rooted == str(Path(config.base_dir.drive + "\\", "abs", "tests"))
+        else:
+            assert rooted == "/abs/tests"
 
     def test_no_config_file_anchors_to_the_working_directory(self, tmp_path, monkeypatch):
         """Built-in defaults have no file to anchor to (§8)."""

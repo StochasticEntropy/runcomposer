@@ -325,7 +325,9 @@ class Config:
         and absolute paths come back untouched; a list is resolved entry by
         entry. A relative path comes back absolute, so a later change of
         working directory, or a worker process started elsewhere, finds the
-        same file. Returns ``str``, never ``Path``.
+        same file. On Windows a path with a root and no drive (``/checkout``) is
+        not absolute: it takes the drive of :attr:`base_dir`. Returns
+        ``str``, never ``Path``.
         """
         if isinstance(value, (list, tuple)):
             return [self.resolve_path(entry) for entry in value]

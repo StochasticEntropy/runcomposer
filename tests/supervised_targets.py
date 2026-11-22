@@ -35,11 +35,11 @@ def _running(payload: Any) -> None:
 
 
 def _pid_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    """Through runcomposer's own probe: ``os.kill(pid, 0)`` would end the
+    process on Windows."""
+    from runcomposer.app.liveness import pid_alive
+
+    return pid_alive(pid)
 
 
 def hand_back(payload: Any, stop: Callable[[], bool]) -> dict[str, Any]:

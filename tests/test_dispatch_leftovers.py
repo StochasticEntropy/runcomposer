@@ -45,7 +45,7 @@ class PreparingRunner(RunnerBase):
 
 
 def files_under(root: Path) -> list[str]:
-    return sorted(str(path.relative_to(root)) for path in root.rglob("*")) if root.exists() else []
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) if root.exists() else []
 
 
 @pytest.fixture()

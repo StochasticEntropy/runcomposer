@@ -231,16 +231,20 @@ class TestReferenceObservers:
             receiver.close()
 
     def test_command(self, tmp_path):
+        """Each call writes a file of its own: commands run side by side, and
+        appending to one shared file loses lines where appends are not
+        atomic between processes (Windows)."""
         script = write(tmp_path / "hook.py", (
-            "import json, sys\n"
-            "event = json.load(sys.stdin)\n"
-            "with open(sys.argv[1], 'a', encoding='utf-8') as out:\n"
-            "    out.write(event['kind'] + '\\n')\n"
+            "import json, sys, uuid\n"
+            "from pathlib import Path\n"
+            "event = json.loads(sys.stdin.buffer.read().decode('utf-8'))\n"
+            "Path(sys.argv[1], uuid.uuid4().hex).write_text(event['kind'], encoding='utf-8')\n"
         ))
-        out = tmp_path / "calls.txt"
+        out = tmp_path / "calls"
+        out.mkdir()
 
         def calls() -> list[str]:
-            return out.read_text(encoding="utf-8").splitlines() if out.exists() else []
+            return [call.read_text(encoding="utf-8") for call in out.iterdir()]
 
         check_observer(CommandObserver([PY, str(script), str(out)]), seen=calls, threads=2)
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import multiprocessing
+import os
 import pickle
 import ssl
 import subprocess
@@ -354,11 +355,17 @@ class TestTheConsumerOverHttps:
 
     def test_as_a_script_with_nothing_but_the_interpreter(self, spec_file, tmp_path, tls_server):
         """The vendored file, run by a bare interpreter in isolated mode (no
-        site packages, no environment), pushes over HTTPS with --ca-bundle."""
+        site packages, no environment), pushes over HTTPS with --ca-bundle.
+
+        "No environment" is the least the operating system starts a process
+        with: nothing on POSIX; on Windows ``SYSTEMROOT``, without which the
+        process cannot load its network stack (``WinError 10106``) — nothing
+        any program could reach a server without."""
+        bare = {"SYSTEMROOT": os.environ["SYSTEMROOT"]} if os.name == "nt" else {}
         done = subprocess.run(
             [sys.executable, "-I", str(EXEC_FILE), *exec_args(spec_file, tmp_path / "out", tls_server,
                                                           "--ca-bundle", str(tls_server.cert))],
-            capture_output=True, text=True, timeout=120, env={},
+            capture_output=True, text=True, timeout=120, env=bare,
         )
         assert done.returncode == 0, done.stderr
         assert "bundle pushed" in done.stderr

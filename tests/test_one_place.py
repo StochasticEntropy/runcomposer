@@ -26,7 +26,7 @@ def definitions(name: str) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-                found.append(str(path.relative_to(PACKAGE)))
+                found.append(path.relative_to(PACKAGE).as_posix())
     return found
 
 
@@ -56,14 +56,14 @@ def test_the_current_time_of_a_record_is_taken_in_one_place():
                 isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "now"
                 and any(isinstance(arg, ast.Attribute) and arg.attr == "utc" for arg in node.args)
             ):
-                users.append(str(path.relative_to(PACKAGE)))
+                users.append(path.relative_to(PACKAGE).as_posix())
     assert users == ["core/timeutil.py"]
 
 
 def test_a_doctype_is_refused_in_one_place():
     """The DOCTYPE refusal message is raised by ``forbid_dtd`` alone."""
     raising = [
-        str(path.relative_to(PACKAGE))
+        path.relative_to(PACKAGE).as_posix()
         for path in sorted(PACKAGE.rglob("*.py"))
         if "carries a DOCTYPE" in path.read_text(encoding="utf-8")
     ]

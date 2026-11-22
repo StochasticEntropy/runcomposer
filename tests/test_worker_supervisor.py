@@ -27,8 +27,17 @@ from runcomposer.sdk import WorkerOutcome, WorkerPayload, supervise_workers
 from runcomposer.testing import ConnectorHarness, FakeDispatchContext, check_runner
 
 from . import supervised_targets as targets
-from .conftest import posix_only, process_gone, wait_until
+from .conftest import process_gone, wait_until
 from .shop_check_runner import DECLINED, CheckRunner
+
+#: Windows limits of the stop protocol, stated in docs/connectors.md (Known
+#: limits); the tests of what is the same there run on every platform.
+no_process_groups = pytest.mark.skipif(
+    os.name == "nt", reason="Windows has no process groups: what a worker started is not stopped with it"
+)
+no_termination_signal = pytest.mark.skipif(
+    os.name == "nt", reason="Windows ends a terminated process outright: no signal reaches it to clean up on"
+)
 
 CARDS = [f"Shop.Payments.Cards.T{n:03d}" for n in range(1, 7)]
 GRACE = 0.5
@@ -40,7 +49,12 @@ def payload(tmp_path: Path, shard: str, **more: Any) -> WorkerPayload:
 
 def process_state(pid: int) -> str | None:
     """The state letter of ``pid`` (``Z`` for a process nobody reaped), or
-    ``None`` when there is no such process at all."""
+    ``None`` when there is no such process at all. Windows keeps no
+    unreaped processes and has no ``ps`` of its own (a POSIX ``ps`` there
+    numbers processes differently and finds none): runcomposer's own
+    probe answers, ``R`` for a running process."""
+    if os.name == "nt":
+        return None if process_gone(pid) else "R"
     if sys.platform.startswith("linux"):
         try:
             stat = Path(f"/proc/{pid}/stat").read_bytes()
@@ -72,7 +86,6 @@ class Recorder:
 
 
 class TestLanes:
-    @posix_only
     def test_lanes_run_side_by_side_and_a_lane_keeps_its_order(self, tmp_path):
         """``staging`` holds three shards, ``preview`` one. The first shard of
         each lane can only finish by meeting the other — both running at
@@ -180,7 +193,7 @@ class TestStopping:
             r"shard 1: stopped after \d+\.\ds", record.lines[-1][1]
         )
 
-    @posix_only
+    @no_termination_signal
     def test_a_worker_that_ignores_the_request_is_terminated(self, tmp_path):
         started = time.monotonic()
         supervise_workers(
@@ -192,7 +205,6 @@ class TestStopping:
         pid = int((tmp_path / "1" / "running").read_text(encoding="utf-8"))
         assert process_state(pid) is None, "terminated and reaped by the supervisor"
 
-    @posix_only
     def test_a_worker_that_ignores_every_signal_is_killed(self, tmp_path):
         supervise_workers(
             [payload(tmp_path, "1")], targets.ignores_every_signal,
@@ -201,7 +213,7 @@ class TestStopping:
         pid = int((tmp_path / "1" / "running").read_text(encoding="utf-8"))
         assert process_state(pid) is None, "killed and reaped by the supervisor"
 
-    @posix_only
+    @no_process_groups
     def test_the_stop_reaches_what_the_worker_started(self, tmp_path):
         """The worker's children are in its process group: one ends on the
         termination signal, the other ignores it and is killed once the
@@ -214,7 +226,6 @@ class TestStopping:
             child = int((tmp_path / "1" / f"child-{kind}.pid").read_text(encoding="utf-8"))
             wait_until(lambda child=child: process_gone(child), timeout=10, what=f"the {kind} child to be gone")
 
-    @posix_only
     def test_a_shard_over_its_timeout_is_stopped_and_reported(self, tmp_path):
         record = Recorder()
         (outcome,) = supervise_workers(
@@ -444,7 +455,6 @@ class TestWhichProcesses:
         for outcome in outcomes:
             assert outcome.pid == outcome.result["pid"] == dict(started)[outcome.payload.shard]
 
-    @posix_only
     def test_a_stopped_worker_is_told_to_on_end_but_not_to_on_done(self, tmp_path):
         done: list[str] = []
         ended: list[tuple[str, str]] = []
@@ -470,7 +480,7 @@ class TestWhichProcesses:
         assert ("warning", "on_start/on_end raised RuntimeError: the ledger is full") in lines
 
 
-@posix_only
+@no_process_groups
 class TestTheSupervisorIsGone:
     def test_its_worker_stops_itself_and_what_it_started(self, tmp_path):
         """The supervising process is killed outright (no stop protocol can
