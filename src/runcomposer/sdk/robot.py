@@ -21,6 +21,9 @@ is the evidence that they suffice.
   Robot end the execution in flight, terminate, kill).
 - :func:`deliver_shard` / :func:`collect_verdicts` — what a finished worker
   produced, delivered through the dispatch context.
+- :class:`GroupMerger` — one merged result per shard group and one for the
+  run, each merged in a spawned process and recorded before the delivery
+  that completes the run.
 - :func:`clean_output` — one ``output.xml`` rewritten without the keyword
   data Robot's own selectors pick, verdicts unchanged: the step
   ``ShardPayload.clean_output`` runs in the worker after every execution.
@@ -58,6 +61,7 @@ from pathlib import Path
 from typing import Any
 
 from runcomposer.sdk import (
+    STOP_FILE,
     ConfiguredCall,
     DispatchContext,
     Item,
@@ -74,6 +78,7 @@ __all__ = [
     "STOP_FILE",
     "ExactSelection",
     "Execution",
+    "GroupMerger",
     "LiveStatusListener",
     "MergeNoiseRemover",
     "MergePayload",
@@ -95,17 +100,17 @@ __all__ = [
     "run_merge",
     "run_shard",
     "spawn_merge",
-    "stop_worker",
     "supervise",
 ]
 
 #: What a worker writes into its output directory when it is done (or dies
 #: trying): the hand-back the supervising process reads.
 RESULT_FILE = ".shard-result.json"
-#: Written into a shard's directory before its worker is told to stop. Robot
-#: turns the first termination signal into a graceful end of the *current*
-#: execution; this marker is how the worker knows not to start the next one.
-STOP_FILE = ".stop-requested"
+# ``STOP_FILE`` is the SDK's own (``runcomposer.sdk.STOP_FILE``), re-exported:
+# the supervisor leaves it in a shard's directory when the worker is asked to
+# stop. Robot turns the first termination signal into a graceful end of the
+# *current* execution; the file is how :func:`run_shard` knows not to start
+# the next one.
 #: Robot's return code for an execution that was forcefully stopped.
 _STOPPED_BY_SIGNAL = 253
 _STATUS_MAP = {"PASS": "PASS", "FAIL": "FAIL", "SKIP": "SKIP", "NOT RUN": "SKIP"}
@@ -189,6 +194,7 @@ def attribute_roots(
     items: Iterable[Item] = (),
     *,
     name: str | None = None,
+    base: str | Path | None = None,
 ) -> dict[str, str]:
     """Which suite root each item is executed from — checked, also for a
     single root. Raises ``LookupError`` naming the items (the first few, and
@@ -200,8 +206,16 @@ def attribute_roots(
     root suite's name — the first segment of the id — does. A single root is
     checked by :func:`root_mismatches`. ``name`` is the top-level suite name
     the execution sets (``robot_options: {name: …}``), which every root's
-    suite then carries instead of its own."""
-    roots_of, problems = _assign_roots(suite_roots, item_ids, items, name)
+    suite then carries instead of its own.
+
+    ``base`` anchors relative roots: by default a relative root is resolved
+    against the working directory of the calling process. A runner that
+    plans for an executor elsewhere knows its roots relative to *that*
+    machine's checkout (``suites/checkout``) while the catalog records the
+    paths of this machine's: ``base=`` the directory of this machine's
+    checkout they correspond to, and the roots are checked there. The
+    answer still maps each item to the root as given."""
+    roots_of, problems = _assign_roots(suite_roots, item_ids, items, name, base)
     if problems:
         raise LookupError(_describe_mismatches(problems))
     return roots_of
@@ -226,21 +240,23 @@ def root_mismatches(
     items: Iterable[Item] = (),
     *,
     name: str | None = None,
+    base: str | Path | None = None,
 ) -> list[str]:
     """Every item of ``item_ids`` that belongs to none of ``suite_roots``,
     each as a sentence naming the item and the root — empty when all belong.
     The check :func:`attribute_roots` refuses on; ``runcomposer doctor``
     runs it over the whole catalog.
 
-    With a single root, an item belongs to it when its id begins with the
-    root suite's name (Robot's own name for that directory or file) and its
+    With a single root, an item belongs to it when the first segment of its
+    id is the name Robot gives that directory or file, and its
     recorded source (``Item.meta["source"]``, when the catalog records one)
     lies under the root. An item the Robot source collected from this very
     root (``Item.meta["root"]`` is the root) belongs whatever the root suite
     is called — a suite may rename itself. With ``name`` (the execution
     renames the top-level suite, ``robot_options: {name: …}``) that is the
-    root suite's name."""
-    return _assign_roots(suite_roots, item_ids, items, name)[1]
+    root suite's name. ``base`` anchors relative roots, as for
+    :func:`attribute_roots`."""
+    return _assign_roots(suite_roots, item_ids, items, name, base)[1]
 
 
 def _assign_roots(
@@ -248,13 +264,19 @@ def _assign_roots(
     item_ids: Sequence[str],
     items: Iterable[Item],
     name: str | None = None,
+    base: str | Path | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     roots = [str(root) for root in suite_roots]
     meta = {item.id: item.meta for item in items}
     if not roots:
         return {}, [f"item {item_id!r}: no suite root is configured" for item_id in item_ids]
-    resolved = {root: Path(root).resolve() for root in roots}
-    names = {root: name or _suite_name(root) for root in roots}
+
+    def anchored(root: str) -> Path:
+        path = Path(root)
+        return path if base is None or path.is_absolute() else Path(base) / path
+
+    resolved = {root: anchored(root).resolve() for root in roots}
+    names = {root: name or _suite_name(anchored(root)) for root in roots}
 
     def under(path: str, root: str) -> bool:
         base, found = resolved[root], Path(path).resolve()
@@ -448,8 +470,8 @@ class ShardPayload:
       execution with ``{shard, partition, run_id, dispatch_id, out_dir,
       variables, data}``; a mapping they return is added to the variables.
     - ``cwd`` — the worker changes into this directory before anything is
-      executed (a corpus that reads its files relative to the working
-      directory); ``env`` — set in the worker's process environment (they
+      executed (for suites that open data files by relative path);
+      ``env`` — set in the worker's process environment (they
       are not Robot variables); ``worker_data`` — a picklable mapping made
       by the dispatching process, handed to ``worker_setup`` as
       ``info["data"]``.
@@ -1049,8 +1071,8 @@ def merge_outputs(
     ``stdout``, ``stderr``) are refused by name with a ``ValueError``; a
     ``prerebotmodifier`` given there runs after the toolkit's own.
 
-    This runs Robot in the calling process — its result model and its
-    process-global logger. A server process merges with
+    Robot executes inside the calling process here, its shared logging
+    state included. A server process merges with
     :func:`spawn_merge` instead."""
     return _rebot(
         outputs, out_dir, log=log, report=report, merge=merge, rpa=rpa,
@@ -1312,29 +1334,11 @@ def _end_merge(signum: int, _frame: Any) -> None:
 # -- the supervisor ----------------------------------------------------------------------------
 
 
-def stop_worker(process: Any, out_dir: str | Path, *, grace_s: float = 5.0) -> None:
-    """The stop protocol for one worker process: leave the stop marker (so
-    the worker starts no further execution), terminate (Robot ends the
-    execution in flight and writes its output), and kill what has not ended
-    after ``grace_s``."""
-    if not process.is_alive():
-        return
-    try:
-        Path(out_dir, STOP_FILE).touch()
-    except OSError:
-        pass
-    process.terminate()
-    process.join(timeout=grace_s)
-    if process.is_alive():
-        process.kill()
-        process.join(timeout=grace_s)
-
-
 def supervise(
     payloads: Sequence[ShardPayload],
     *,
     max_workers: int,
-    on_done: Callable[[ShardOutcome], None] | None = None,
+    on_done: Callable[[ShardPayload, ShardOutcome], None] | None = None,
     cancelled: Callable[[], bool] = lambda: False,
     timeout_s: float | None = None,
     poll_s: float = 0.05,
@@ -1347,8 +1351,9 @@ def supervise(
 
     Payloads that share a ``lane`` never overlap and start in the order
     given — a lane is something only one execution may use at a time (a
-    partition's test environment). ``on_done(outcome)`` is called in the
-    calling thread for every payload that ended, in the order they ended —
+    partition's test environment). ``on_done(payload, outcome)`` — the
+    convention of ``supervise_workers`` — is called in the calling thread
+    for every payload that ended, in the order they ended —
     deliver there (:func:`deliver_shard`), so that a shard's results are in
     while the others still execute. ``timeout_s`` bounds one shard; a shard
     over it is stopped and reported as timed out. When ``cancelled()``
@@ -1357,7 +1362,7 @@ def supervise(
     killed after ``grace_s`` each, together with what they started — and
     the function returns what had ended by then: payloads that never
     started, and those stopped, are not in the result. ``log(message,
-    level)`` gets a line when a shard starts and when it ends; by default
+    level)`` is told of every shard's start and of its end; by default
     that is the ``log`` of the payloads' ``channel``.
     """
     shard_payloads = list(payloads)
@@ -1386,7 +1391,7 @@ def supervise(
         )
         outcomes.append(shard_outcome)
         if on_done is not None:
-            on_done(shard_outcome)
+            on_done(shard_outcome.payload, shard_outcome)
 
     supervise_workers(
         work,
@@ -1400,6 +1405,232 @@ def supervise(
         poll_s=poll_s,
     )
     return outcomes
+
+
+# -- merged results per group ----------------------------------------------------------------
+
+
+class GroupMerger:
+    """One merged result per shard group and one for the whole dispatch,
+    recorded as artifacts of the group and of the run — each merged in a
+    spawned process (:func:`spawn_merge`), so the dispatching process never
+    runs Robot itself.
+
+    A group is merged in the background as soon as its last shard has
+    ended, while the others still execute. What that leaves — the group of
+    the shard that ends last, and the whole run — is merged in
+    :meth:`finish`, and the shard that ended last is held back until then:
+    its delivery completes the run, and every merged artifact is recorded
+    before it. A merge never decides a verdict: one that fails is a log line
+    and no artifact, and once the dispatch is cancelled nothing more is
+    merged.
+
+    Use it from ``on_done`` and after :func:`supervise` returns::
+
+        merger = GroupMerger(ctx, payloads, groups)
+        supervise(payloads, max_workers=4, cancelled=lambda: ctx.cancelled,
+                  on_done=lambda _p, outcome: [deliver(o) for o in merger.shard_ended(outcome)])
+        for outcome in merger.finish():
+            deliver(outcome)
+
+    - ``groups`` maps a shard to its group (the ``groups`` of
+      ``ctx.declare``); a shard in no group is merged into the run only.
+      Groups are merged in the order their first shard appears in
+      ``payloads``.
+    - ``side_by_side`` — the run's result puts the groups' results next to
+      each other, each top-level suite named after its group (the same tests
+      executed on every partition), instead of merging them into one tree.
+    - ``log`` / ``report`` / ``rpa`` — as for :func:`merge_outputs`;
+      ``out_dir`` — where the merges are written (default
+      ``ctx.workdir / "_merged"``).
+    """
+
+    def __init__(
+        self,
+        ctx: DispatchContext,
+        payloads: Sequence[ShardPayload],
+        groups: Mapping[str, str],
+        *,
+        side_by_side: bool = False,
+        log: bool = True,
+        report: bool = True,
+        rpa: bool | None = None,
+        out_dir: str | Path | None = None,
+    ):
+        import threading
+
+        self._ctx = ctx
+        self._payloads = list(payloads)
+        self._group_of = dict(groups)
+        self._side_by_side = side_by_side
+        self._log, self._report, self._rpa = log, report, rpa
+        self._base = Path(out_dir) if out_dir is not None else ctx.workdir / "_merged"
+        self._groups: list[str] = []
+        for payload in self._payloads:
+            group = self._group_of.get(payload.shard)
+            if group is not None and group not in self._groups:
+                self._groups.append(group)
+        self._members = {
+            group: [p.shard for p in self._payloads if self._group_of.get(p.shard) == group]
+            for group in self._groups
+        }
+        self._outcomes: dict[str, ShardOutcome] = {}
+        self._results: list[tuple[str | None, MergeResult, int]] = []
+        self._lock = threading.Lock()
+        self._thread_class = threading.Thread
+        self._threads: list[Any] = []
+        self._started: set[str] = set()
+        self._held: list[ShardOutcome] = []
+
+    def shard_ended(self, outcome: ShardOutcome) -> list[ShardOutcome]:
+        """Note a shard that ended; returns what is to be delivered now —
+        the shard itself, unless it is the last of all payloads (held back
+        for :meth:`finish`). Records the merges that have finished since,
+        so call it in the dispatching thread (``on_done`` is)."""
+        self._outcomes[outcome.payload.shard] = outcome
+        if len(self._outcomes) >= len(self._payloads):
+            self._held.append(outcome)
+            return []
+        group = self._group_of.get(outcome.payload.shard)
+        if group is not None and group not in self._started and all(
+            shard in self._outcomes for shard in self._members[group]
+        ):
+            self._started.add(group)
+            thread = self._thread_class(
+                target=self._merge_group, args=(group,), name=f"runcomposer-merge-{group}", daemon=True
+            )
+            self._threads.append(thread)
+            thread.start()
+        self._record_finished()
+        return [outcome]
+
+    def finish(self) -> list[ShardOutcome]:
+        """Wait for the background merges, merge what is left — unless the
+        dispatch was cancelled or no shard is held back — record every
+        merged result, and return the held-back shard(s) to deliver now.
+        Call it after :func:`supervise` returned, also when it raised (in a
+        ``finally``)."""
+        for thread in self._threads:
+            thread.join()
+        if self._held and not self._ctx.cancelled:
+            for group in self._groups:
+                if group not in self._started and not self._ctx.cancelled:
+                    self._started.add(group)
+                    self._merge_group(group)
+            if not self._ctx.cancelled:
+                self._merge_run()
+        self._record_finished()
+        held, self._held = self._held, []
+        return held
+
+    # -- the merges --------------------------------------------------------------------------
+
+    def _record_finished(self) -> None:
+        with self._lock:
+            results, self._results = self._results, []
+        for group, result, count in results:
+            self._record(group, result, count)
+
+    def _outputs(self, shards: Sequence[str]) -> list[tuple[str, frozenset[str]]]:
+        """The ``output.xml`` of every delivered shard among ``shards``,
+        with the roots it executed."""
+        found = []
+        for shard in shards:
+            outcome = self._outcomes.get(shard)
+            if outcome is None or outcome.problem is not None:
+                continue
+            output = Path(outcome.payload.out_dir) / "output.xml"
+            if output.is_file():
+                found.append(
+                    (str(output), frozenset(execution.root for execution in outcome.payload.executions))
+                )
+        return found
+
+    def _merge_group(self, group: str) -> None:
+        outputs = self._outputs(self._members[group])
+        index = self._groups.index(group) + 1
+        result = self._merge(
+            [path for path, _roots in outputs],
+            self._base / f"group-{index}",
+            merge=len({roots for _path, roots in outputs}) <= 1,
+            titles=group,
+        )
+        with self._lock:
+            self._results.append((group, result, len(outputs)))
+
+    def _merge_run(self) -> None:
+        if self._groups:
+            sources: list[str] = []
+            names: list[str] = []
+            for index, group in enumerate(self._groups, start=1):
+                merged = self._base / f"group-{index}" / "output.xml"
+                own = self._outputs(self._members[group])
+                if len(own) == 1:
+                    sources.append(own[0][0])
+                    names.append(group)
+                elif merged.is_file():
+                    sources.append(str(merged))
+                    names.append(group)
+            side_by_side = self._side_by_side and len(sources) > 1
+            result = self._merge(
+                sources, self._base / "run", merge=not side_by_side,
+                names=names if side_by_side else None,
+            )
+            count = len(sources)
+        else:
+            outputs = self._outputs([payload.shard for payload in self._payloads])
+            result = self._merge(
+                [path for path, _roots in outputs], self._base / "run",
+                merge=len({roots for _path, roots in outputs}) <= 1,
+            )
+            count = len(outputs)
+        with self._lock:
+            self._results.append((None, result, count))
+
+    def _merge(
+        self,
+        outputs: list[str],
+        out_dir: Path,
+        *,
+        merge: bool,
+        titles: str | None = None,
+        names: list[str] | None = None,
+    ) -> MergeResult:
+        if not outputs:
+            return MergeResult(error="no shard delivered a result to merge")
+        if len(outputs) == 1:
+            # Nothing to merge: the one result is the merged one.
+            return MergeResult(output=outputs[0])
+        options: dict[str, Any] = {}
+        if titles:
+            options.update(logtitle=f"{titles} Log", reporttitle=f"{titles} Report")
+        if names:
+            options["prerebotmodifier"] = [NameTopSuites(names)]
+        return spawn_merge(
+            MergePayload(
+                outputs=tuple(outputs), out_dir=str(out_dir), log=self._log,
+                report=self._report, merge=merge, rpa=self._rpa, rebot_options=options,
+            ),
+            cancelled=lambda: self._ctx.cancelled,
+        )
+
+    def _record(self, group: str | None, result: MergeResult, count: int) -> None:
+        ctx = self._ctx
+        what = f"group {group}" if group is not None else "the run"
+        if not result.ok or result.output is None:
+            ctx.log(f"merged result of {what} not produced: {result.error}", level="warning")
+            return
+        label = f"group {group}" if group is not None else "run"
+        base = Path(result.output).parent
+        for name, media_type in (
+            ("log.html", "text/html"),
+            ("report.html", "text/html"),
+            ("output.xml", "application/xml"),
+        ):
+            file = base / name
+            if file.is_file():
+                ctx.add_artifact(f"{name} ({label})", file, media_type=media_type, group=group)
+        ctx.log(f"merged result of {what} recorded ({count} result(s) merged)")
 
 
 # -- delivering what a worker produced ------------------------------------------------------------

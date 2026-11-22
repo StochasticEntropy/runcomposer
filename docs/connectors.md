@@ -46,7 +46,10 @@ references are given where it matters.
 
 - the names in `runcomposer.sdk.__all__`, in the two toolkits' `__all__`
   and in the kit's (`runcomposer.testing`, `runcomposer.testing.jenkins`),
-  with the meaning this guide gives them;
+  with the meaning this guide and their docstrings give them —
+  [sdk-names.md](sdk-names.md) lists every one of them with the first
+  sentence of its documentation, generated from the code
+  (`tests/test_sdk_names.py`);
 - the run-spec document (`runspec/1.0`) and the error codes;
 - the reference runners' options as this guide and DESIGN.md §6.2 document
   them.
@@ -85,8 +88,8 @@ in a worker process; `runcomposer.sdk.robot` imports Robot Framework only
 inside the functions that execute it, so it and `robot-pool` import without it
 (`tests/test_sdk.py::TestLazyEmbedding`).
 
-**A minimal install for a machine that only executes.** A build agent that
-only executes what runcomposer hands out needs none of what reading,
+**A minimal install for a machine that only executes.** A CI worker whose
+sole job is running what runcomposer hands it needs none of what reading,
 validating and serving need. `pip install --no-deps runcomposer` gives
 `import runcomposer.sdk` with nothing else installed — `RemoteLiveChannel`
 and `push_results` for reporting back, `supervise_workers` — and the
@@ -523,12 +526,26 @@ as `X-Runcomposer-Token` or `Authorization: Bearer`:
   `source: push`.
 
 A token reports for its own dispatch only (`403` otherwise)
-(`tests/test_runner_contract.py::TestPushedProgress`). The client side ships
+(`tests/test_runner_contract.py::TestPushedProgress`).
+
+A runner does not format these URLs itself: `callback_urls(base, run_id,
+dispatch_id=None)` in the SDK returns them as a `CallbackUrls` — `run`,
+`results` (what a runner hands out as its callback URL), `live`, `log`, and
+`spec` (the document handed out for the dispatch, `GET`; `None` without a
+dispatch id) — under the deployment's base address, the address the
+executor reaches runcomposer by (a `callback_base` option such as
+`https://runcomposer.shop.example`; a base that already ends in `/api/v1`
+is taken as it is). The reference `jenkins` runner makes its
+`{callback_url}` and `{spec_url}` with it
+(`tests/test_callback_urls.py`). The client side ships
 in four forms (`tests/test_runner_contract.py::TestTheRemoteChannelAndTheConsumer`):
 `RemoteLiveChannel(callback_url, token, dispatch_id=…, ca_bundle=None,
 verify_tls=True)` in the SDK is a
 `LiveChannel` over HTTP — best-effort: what cannot be pushed is counted in
-`failures`, never raised into the execution;
+`failures`, never raised into the execution. It needs no closing: it holds
+no connection, and each `live` or `log` call is one request, answered
+before the call returns
+(`tests/test_callback_urls.py::TestTheyAreTheEndpointsADeploymentAnswersOn`);
 `push_results(callback_url, token, files, shard=…, dispatch_id=…,
 format=…, ca_bundle=None, verify_tls=True)` in the SDK pushes a finished bundle (one multipart POST) and
 returns the server's answer — a refusal raises `ResultsPushRefused` with the
@@ -1053,7 +1070,12 @@ as `serve` would, composes the run, dispatches it on the dispatch manager and
 waits — with a timeout, after which it cancels and fails — until the runner
 returned and the dispatch settled. The result is read from the store:
 `run`, `dispatch`, `verdicts`, `live` (`LiveStatus` records), `links`,
-`events`, `artifacts`, `refusal`, `warnings`, `logs()`. For results that
+`events`, `artifacts`, `refusal`, `invalid`, `warnings`, `logs()`. `refusal`
+is the reason when the dispatch was refused before the hand-off (`ctx.refuse`,
+an exception other than `InvalidParameter`, or no `declare`); `invalid` is the
+`InvalidParameter` the runner raised before declaring — `.parameter` and its
+message, the request's `400 invalid-parameter` — with `refusal` then `None`
+(`tests/test_parameter_refusals.py::TestTheHarnessSaysSo`). For results that
 arrive later: `harness.ingest(bundle, run_id=…)` and `harness.wait(run_id)`;
 `harness.flush_observers()` before reading what an observer wrote.
 `harness.plan(selection | run_id=…, runner=…, parameters=…)` asks for a
@@ -1076,7 +1098,7 @@ assert handle.wait(timeout=30).state == "CANCELLED"
 for "a test has started", `lambda run: "build" in run.links` for "the build is
 known" — and fails with an `AssertionError` saying where the run stood;
 `wait()` waits for the runner to return, as `run` does; `cancel()`, `read()`,
-`done` and `refusal` are there too (`tests/test_kit_additions.py::TestTheHarnessInTheBackground`,
+`done`, `refusal` and `invalid` are there too (`tests/test_kit_additions.py::TestTheHarnessInTheBackground`,
 `examples/connector-template/tests/test_connector.py::test_a_check_is_seen_running_and_the_run_cancelled_in_a_real_deployment`).
 
 **An executor that pushes.** `ConnectorHarness(serve=True, …)` also serves the
@@ -1133,7 +1155,11 @@ A job may declare its parameters — `fake.add_job("shop-nightly", nightly,
 parameters=["SPEC_B64", "REGIONS"])` — and then, as Jenkins does, drops
 any other form field at trigger time, recording it in
 `fake.ignored_parameters` as `(job, name)` (`fake.triggers()[0].form` keeps
-the whole form that was sent). `fake.down()` makes the server answer `503` to everything —
+the whole form that was sent). An entry may be a definition instead of a
+name — `{"name": "SPEED", "kind": "choice", "choices": ["normal", "fast"],
+"default": "normal"}` (`kind`: `string` by default, `text`, `boolean`,
+`password` …) — served with its type, choices and default as a real server
+serves them (`tests/test_jenkins_followup.py::TestDeclaredParameters`). `fake.down()` makes the server answer `503` to everything —
 `down(status=None)` closes each connection without an answer — until
 `fake.up()`: how a runner that rides out a restart is tested
 (`tests/test_jenkins_followup.py::TestFollowingThroughAnOutage`).
@@ -1231,7 +1257,7 @@ options in [ADOPTING.md §2](../ADOPTING.md#2-start-with-configuration-not-code)
 |---|---|
 | `partition_mode: each \| split` | `each` (default): the selection runs once *per* chosen partition — the same tests against every environment. `split`: every test runs *once*; the chosen partitions are parallel lanes the selection is distributed over, balanced by duration history |
 | `partition_mode_per_run: true` | the mode is also a per-run parameter `partition_mode` (a choice of `split` / `each`, default the configured mode), honoured alike by preview and dispatch. Without it, a run that sends `partition_mode` is refused as an invalid parameter |
-| `max_chunks_per_partition: N` | at most `N` chunks of one partition are cut, and so run at once; `1`: a partition that is one environment never executes two chunks at the same time (`split` is one lane per partition already) |
+| `max_chunks_per_partition: N` | at most `N` chunks of one partition are cut, and so run at once; `1`: each partition runs one chunk at a time, so a shared environment is never used twice at once (`split` is one lane per partition already) |
 | `max_tests_per_chunk: N`, `chunk_shards: true` | a chunk is executed in pieces of at most `N` tests, one after another. With `chunk_shards` every piece is a declared shard of its own, `<lane>-NN`, delivered as soon as it is done instead of merged into one result per chunk; shards are grouped by partition. `chunk_shards` without `max_tests_per_chunk` is a `ConfigError` |
 | `plan_checks: [callable]` | checks free of side effects, run for a preview and for a dispatch alike, after the plan stands and before any readiness step, as `check(ctx, info)`; `info` is `{partitions, partition_mode, parameters, shards, groups, item_ids, plan}`. A check may raise `InvalidParameter` (a `400`) or refuse; a preview whose checks passed notes it |
 | `pre_dispatch: [callable]` | each is run in the dispatching process, before the hand-off, as `callable(ctx, info)`; `info` is `{partitions, parameters, shards, groups, plan, item_ids, variables, workdir}`. It may `ctx.refuse(…)` — nothing has been handed off — `ctx.log`, and keep files in `ctx.private_dir`. What it returns goes into every shard: a mapping of Robot variables, or `{variables: {…}, env: {…}, worker_data: {…}}` — a mapping whose keys are only those three, each a mapping — for Robot variables, the workers' environment (over `worker_env`) and the data every `worker_setup` receives as `info["data"]` (it must survive a pickle, or the dispatch is refused). Later steps win; `None`, or an answer that is not a mapping, adds nothing (`tests/test_robot_pool_worker_surroundings.py::TestWhatAPreDispatchAnswerMeans`) |
@@ -1263,8 +1289,8 @@ from merged output" notes — relative links in their HTML messages
 rewritten for where the merged log lies, so a file a library wrote and
 linked is reached where it is served
 (`tests/test_robot_merge_process.py::TestLinksInMergedLogs`). Every item is checked against the suite roots,
-a single root included: an item belongs when its id begins with the root
-suite's name and its recorded source lies under the root, and a mismatch
+a single root included: an item belongs when the first segment of its id is
+the name Robot gives the root, and its recorded source lies under the root; a mismatch
 refuses preview and dispatch before the hand-off, naming the item and the
 root; `runcomposer doctor` runs the same check over the whole catalog. Its
 `plan` preview shows lanes, shards, groups and
@@ -1416,13 +1442,13 @@ test's longname):
 | Name | What |
 |---|---|
 | `ExactSelection(ids, tag=None, name=None)` | a pre-run modifier keeping exactly the tests whose longname is in `ids` — an id is never read as a pattern; `kept` counts what was found. `name` is the top-level suite's name when the execution renames it (`robot.run(…, name=…)`): Robot applies that name only after its pre-run modifiers, so the selection renames the top suite before it matches |
-| `attribute_roots(suite_roots, item_ids, items=(), *, name=None)`, `root_mismatches(…, *, name=None)` | which suite root each item is executed from — checked, a single root included: an item belongs when its id begins with the root suite's name (or `name`, for a renamed top suite) and its recorded source (`Item.meta["source"]`) lies under the root. `attribute_roots` raises `LookupError` naming the first mismatches and how many there are; `root_mismatches` returns them as sentences (empty when all belong) |
+| `attribute_roots(suite_roots, item_ids, items=(), *, name=None, base=None)`, `root_mismatches(…, *, name=None, base=None)` | which suite root each item is executed from — checked, a single root included: an item belongs when the first segment of its id is the name Robot gives the root (or `name`, for a renamed top suite) and its recorded source (`Item.meta["source"]`) lies under the root. `attribute_roots` raises `LookupError` naming the first mismatches and how many there are; `root_mismatches` returns them as sentences (empty when all belong). `base` anchors relative roots — by default they resolve against the working directory: a runner planning for an executor elsewhere, whose roots are relative to that machine's checkout, passes the directory of this machine's checkout they correspond to, and gets each item mapped to the root as given (`tests/test_attribute_roots_base.py`) |
 | `LiveStatusListener(channel, shard, stopped=None)`, `RemoteLiveStatusListener(callback_url=None, token=None, shard=None, dispatch_id=None, ca_bundle=None, verify_tls=None)` | Robot listeners: `RUNNING` when a test starts, its status when it ends — to a `LiveChannel`, or pushed to the API by an execution runcomposer did not start (each argument left out comes from the environment, `RUNCOMPOSER_CA_BUNDLE` and `RUNCOMPOSER_VERIFY_TLS` included). A test cut short by a stop is not reported as failed: what stays is that it was `RUNNING` |
 | `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup` (configured callables), `rerun_failed`, `rpa`, `robot_options`, `cwd` and `env` (the working directory and environment the worker executes in — `%{SHOP_REGION}` in a suite), `worker_data` (a picklable mapping its `worker_setup` sees as `info["data"]`), `clean_output` (the selectors every output is cleaned with — a selector Robot would refuse is a `ValueError` where the payload is made), `post_execution` (configured callables after every execution), … |
 | `run_shard(payload, stop=None)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `stop()` (or `STOP_FILE`) asks it to end early; `cwd` and `env` apply for the call only. `read_shard_result(out_dir)` reads the result back as a `ShardResult` of `ShardOutput`s — each with `item_ids`, and `failed` set when a step after its execution raised: its tests are then reported `ERROR` with that message by `collect_verdicts`, and `ShardOutcome.outputs` keeps it even when the step removed the file |
 | `clean_output(output, info=None, *, settings)` | one `output.xml` rewritten without the keyword data `settings` (`{remove_keywords: […], flatten_keywords: […]}`) selects, through Robot's result model, atomically; the tests, their statuses, messages, tags and times stay as they were. It runs Robot in the calling process — a worker, a `post_execution` step — not in a server (`tests/test_robot_post_execution.py::TestCleanOutput`) |
-| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; a line when a shard starts and ends through `log` (default: the payloads' channel); `on_done(outcome)` is called with a `ShardOutcome` in the calling thread as each payload ends |
-| `stop_worker(process, out_dir)`, `STOP_FILE` | the stop protocol on its own: no further execution, Robot ends the one in flight, then terminate and kill |
+| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; each shard's start and end reported to `log` (default: the payloads' channel); `on_done(payload, outcome)` — the same convention as `supervise_workers` — is called with the `ShardPayload` and its `ShardOutcome` in the calling thread as each payload ends. `STOP_FILE` is the SDK's `runcomposer.sdk.STOP_FILE`, re-exported: `run_shard` starts no further execution once it is there |
+| `GroupMerger(ctx, payloads, groups, *, side_by_side=False, log=True, report=True, rpa=None, out_dir=None)` | one merged result per shard group and one for the run, recorded as group and run artifacts before the delivery that completes the run — what `robot-pool`'s `merge_groups` is. Call `merger.shard_ended(outcome)` in `on_done` and deliver what it returns (every shard but the one that ends last); after `supervise` returns, deliver what `merger.finish()` returns. A group is merged in a spawned process as soon as its last shard ended; a failed merge is a warning and no artifact; nothing is merged once the dispatch is cancelled (`tests/test_robot_toolkit.py::TestGroupMerger`) |
 | `deliver_shard(ctx, outcome, *, format="robot-output-xml", group=None)`, `collect_verdicts(ctx, outcome, *, format)` | parse a finished shard through `ctx.parse`, label every attempt, record `log.html` / `report.html` / `output.xml` and the shard's directory as artifacts, then deliver; returns the reason when there is nothing to deliver |
 | `merge_outputs(outputs, out_dir, ..., rebot_options=None)`, `MergeNoiseRemover`, `NameTopSuites` | several `output.xml` merged into one, without merge notes; `rebot_options` are further options for Robot's `rebot` (one the function sets itself is a `ValueError` naming it). `NameTopSuites` names the top suites of outputs put side by side (`merge=False`) — `eu`, `us` instead of twice the same suite |
 | `MergePayload(...)`, `spawn_merge(payload, *, timeout_s=None, cancelled=…)`, `run_merge`, `MergeResult` | the same merge in a spawned process, waited for — a worker of `supervise_workers` — so the calling process loads nothing of Robot Framework, and a server can merge while it serves; options are checked before anything starts, a merge over its timeout or cancelled is stopped at once, and a failure comes back as `MergeResult.error` with Robot's own complaint (`tests/test_robot_merge.py`, `tests/test_robot_merge_process.py`) |
@@ -1436,6 +1462,7 @@ test's longname):
 | `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…, outage_tolerance_s=None)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by. With `outage_tolerance_s` (also on the waits) it rides out a Jenkins that has not answered for up to that long, probing with single attempts; `timeout_s` applies to each of its two waits (to start, then to finish) and is not extended by an outage |
 | `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now |
 | `job_parameters(job)` | the names of the parameters a job declares, `None` when it declares none — what to compare a trigger's parameters with, since Jenkins drops an undeclared one silently |
+| `job_parameter_definitions(job)`, `JobParameter` | the same parameters with what the job declares of each: `name`, `kind` (`string`, `text`, `choice`, `boolean`, `password`, … — Jenkins's type without `ParameterDefinition`), `choices`, `default`, `description`; `definition.accepts(value)` says whether a trigger with that value starts a build (a `choice` parameter takes only what it lists) (`tests/test_jenkins_followup.py::TestDeclaredParameters`) |
 | `artifacts`, `download_artifact`, `download_build_file`, `download`, `get_json`, `request`, `version`, `job_exists`, `job_url` | results — archived artifacts and any URL below the build — and the plumbing |
 | `JenkinsError` (`.status`), `JenkinsTimeout` (`.what`, `.timeout_s`), `JenkinsQueueCancelled` | what went wrong; `status == 404` for something Jenkins no longer knows; a connection dropped without an answer is a `JenkinsError` too. `JenkinsQueueCancelled` (`.queue_url`) is a queue item cancelled before it became a build — final, also during an outage |
 | `encode_spec`, `decode_spec`, `queue_id_of` | the compressed document form, and the id in a queue item URL |
@@ -1502,7 +1529,7 @@ class LaneRunner(RunnerBase):
         ctx.declare(preview.shards, plan=preview.text, groups=preview.groups)
         problems: list[str] = []
 
-        def finished(outcome: ShardOutcome) -> None:
+        def finished(_payload: ShardPayload, outcome: ShardOutcome) -> None:
             problem = deliver_shard(ctx, outcome, group=outcome.payload.partition)
             if problem:
                 problems.append(problem)
@@ -1615,9 +1642,10 @@ whatever executes inside the worker:
   `outcome.status` is `finished`, `raised` (the traceback in
   `outcome.error`), `died` (no result, `outcome.exitcode`) or `timed out`,
   and `outcome.problem` says what went wrong in one sentence, or is `None`;
-- `log` gets a line when a shard starts and one when it ends;
+- `log` is told of each shard's start and of its end;
 - `cancelled()` and `timeout_s` stop a worker by the stop protocol:
-  `stop()` becomes true, `.stop-requested` appears in `out_dir`, and the
+  `stop()` becomes true, the file `STOP_FILE` (`.stop-requested`, exported
+  by `runcomposer.sdk`) appears in `out_dir`, and the
   worker's process group gets `SIGTERM`, so what the worker started ends
   too; after `grace_s` the group is terminated, after another `grace_s`
   killed, and whatever is left of it is killed before the worker is
@@ -1709,107 +1737,6 @@ real deployment and is cancelled there while a check hangs, keeping the
 shard that was delivered
 (`tests/test_worker_supervisor.py::TestAComposedRunner`); the supervisor on
 its own is pinned by the rest of that file.
-
----
-
-> **Migrating a connector written against an earlier 0.2 state.** The 0.2
-> contract grew before its release. A connector written against an earlier
-> state of it needs these changes:
->
-> - `ctx.options` no longer contains the per-run parameters: it is the
->   runner's config entry and nothing else. Read what a run chose from
->   `ctx.parameters` ([§3.1](#31-describe--who-it-is-and-what-a-run-may-choose)).
-> - `FakeDispatchContext.delivered_shards` is a method now,
->   `delivered_shards()`, beside `outstanding_shards()`.
-> - `live_updates` of the fake context is the complete stream — `RUNNING`
->   included, and after the shard delivered; what a store holds at the moment
->   is `live_now` ([§6](#6-the-conformance-kit)).
-> - A `RunStore` implements `seed_durations`, `duration_aggregates(…,
->   statuses=…)`, `shard_groups` in `update_dispatch`, an artifact's `group`
->   in `add_artifact_ref`, and takes and returns `LiveStatus` records for live
->   status ([§4](#runstore--persistence)).
-> - A runner that does not derive from `RunnerBase` must define `plan(ctx)`
->   ([§3.2](#32-planctx--a-preview-without-side-effects)).
-> - Only recorded artifacts are served: a file in `ctx.workdir` is
->   downloadable once `ctx.add_artifact` recorded it, or a directory above
->   it — not because it is there ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
-> - An `${env:…}` value is a secret, blanked out of free text. Write an
->   address, a region or a port that is no secret as `${env-public:…}`; a
->   secret of fewer than four characters now refuses startup. Identifiers are
->   never blanked any more, and paths and numbers from the environment are
->   no secrets ([§5](#5-configuration)).
-> - An option your constructor annotates as `int`, `float` or `bool`
->   receives an environment value converted; drop your own `int(...)` of
->   such a value — or keep it, it is harmless — and expect a `ConfigError`
->   for one that does not convert.
-> - `robot-pool` with a single suite root now refuses a catalog item that
->   root does not hold, before the hand-off, instead of ending it `MISSING`;
->   `attribute_roots([root], ids)` raises `LookupError` for it instead of
->   returning every id unchecked ([§9.1](#91-configure-before-you-code)).
-> - Record a shard's artifacts **before** you deliver it — what is recorded
->   after the last delivery arrives after `run.completed`
->   ([§3.3](#33-dispatchctx--prepare-declare-execute-deliver)).
-> - An `InvalidParameter` your runner raises is answered `400
->   invalid-parameter` — from `POST /plan` too, which used to answer `200`
->   with `refused: true` — and from the dispatch routes, which used to
->   answer `409`. A client that told the two apart by status reads `code`.
-> - A string `tag_filter` (and a string `ui:` filter, taxonomy leaf or
->   `from_source` selection) is filter text: a tag spelled like an
->   expression is quoted (`'"Auth OR Cart"'`), and `*` is every item.
->   Send the AST to say the structure explicitly.
-> - A `RunStore` of your own implements `atomic()` — `StoreBase`'s default
->   guarantees nothing, and `check_store` fails it (`store.atomic`)
->   ([§4](#runstore--persistence)).
-> - `ctx.connector_settings(name)` is a member of `DispatchContext` and
->   `PlanContext`: a context of your own (a test double) adds it.
-> - A `robot-pool` `pre_dispatch` step that returns a mapping whose keys
->   are only `variables`, `env` and `worker_data`, each a mapping, now
->   gets the structured meaning — Robot variables, the workers'
->   environment, data for `worker_setup` — instead of three Robot
->   variables of those names; any other mapping is Robot variables as
->   before ([§9.1](#91-configure-before-you-code)).
-> - Code that reads `ShardOutcome.outputs` sees outputs a step after the
->   execution failed on, with `failed` set — also when the step removed
->   the file; `collect_verdicts` reports their tests `ERROR`
->   ([§9.2](#92-compose-when-configuration-is-not-enough)).
-> - Executing with `--name` through a `robot.run` of your own, pass the
->   same name to `ExactSelection`, `attribute_roots` and
->   `root_mismatches` (`name=`): the ids begin with it.
-> - `ShardPayload(clean_output=…)` with a selector Robot would refuse
->   raises `ValueError` where the payload is made.
-> - The `robot-output-xml` parser no longer needs Robot Framework, and no
->   longer raises "needs Robot Framework"; drop code that expected it.
->
-> What your own code no longer needs to do, because the SDK does it:
->
-> - supervise worker processes — lanes, a bound, a timeout, the stop
->   protocol and reaping: `supervise_workers` ([§9.2](#92-compose-when-configuration-is-not-enough));
-> - merge Robot outputs in the dispatching process: `spawn_merge`, or
->   `robot-pool`'s `merge_groups`;
-> - push a results bundle by hand: `push_results`, `ResultsPushRefused`;
-> - ride out a Jenkins restart with a loop of your own: `follow(…,
->   outage_tolerance_s=…)` and the runner's `outage_tolerance_s`; tell a
->   cancelled queue item apart: `JenkinsQueueCancelled`;
-> - ask a job which parameters it declares: `job_parameters`, or the
->   runner's `check_parameters`;
-> - pass settings to a configured callable through the environment or a
->   wrapper: `{call, with}`, and `ctx.connector_settings(name)`;
-> - check catalog ids against a suite root, lock a region against two
->   chunks, guard Robot variables a run must not set, or add health checks
->   in code: `robot-pool`'s suite-root check, `max_chunks_per_partition`,
->   `protected_variables`, `health_checks`;
-> - shrink outputs with a rebot or `ExecutionResult` pass of your own:
->   `clean_output` (the option, or `runcomposer.sdk.robot.clean_output`);
-> - wrap `run_shard` to post-process or push an `output.xml`:
->   `post_execution` steps;
-> - change directory or set the environment inside `worker_setup`:
->   `worker_cwd` and `worker_env`, or a `pre_dispatch` step's `env` and
->   `worker_data` for what is computed per dispatch;
-> - put a timeout of your own around a health check:
->   `health_check_timeout_s`;
-> - build TLS handling of your own for a push to a server behind a private
->   CA: `ca_bundle=` on `RemoteLiveChannel` and `push_results`,
->   `RUNCOMPOSER_CA_BUNDLE` for the listener and the consumer.
 
 ---
 

@@ -102,7 +102,8 @@ def test_a_dispatch_whose_owner_dies_under_a_running_server_becomes_stale(
             lambda: (lambda d: d if d["state"] == "STALE" else None)(run_detail(client, doomed)),
             timeout=30, what="the run of the killed process to become STALE",
         )
-        assert str(doomed_child.pid) in detail["dispatches"][-1]["error"]
+        assert detail["dispatches"][-1]["error_code"] == "interrupted"
+        assert f":{doomed_child.pid}:" in detail["dispatches"][-1]["error_owner"]
         assert detail["events"][-1]["kind"] == "run.stale"
         assert detail["dispatches"][-1]["executing"] is False
 

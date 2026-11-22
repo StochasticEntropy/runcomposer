@@ -113,6 +113,7 @@ def expire_awaiting(service: Service, *, now_ms: int | None = None) -> list[Disp
             moved = service.ledger.move(
                 dispatch.dispatch_id,
                 "FAILED",
+                error_code="expired",
                 error=(
                     f"expired: no results for {waited_s:.0f}s, longer than "
                     f"core.dispatch.awaiting_timeout_s ({float(timeout):g}s) — "

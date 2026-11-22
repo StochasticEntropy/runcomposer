@@ -68,6 +68,10 @@ def dispatch_json(dispatch: DispatchRecord) -> dict[str, Any]:
         "completed_at": dispatch.completed_at,
         "summary": dict(dispatch.summary),
         "error": dispatch.error,
+        # Why it ended with an error: one of DISPATCH_ERROR_CODES, or "".
+        "error_code": dispatch.error_code,
+        # For an interrupted dispatch: the process that was executing it.
+        "error_owner": dispatch.error_owner,
         "plan": dispatch.plan,
         "links": dict(dispatch.links),
         "parameters": dict(dispatch.parameters),

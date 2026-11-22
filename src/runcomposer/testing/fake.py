@@ -27,7 +27,6 @@ import mimetypes
 import shutil
 import tempfile
 import threading
-import warnings as _warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
@@ -180,7 +179,10 @@ class FakeDispatchContext:
     ``plan``, ``links``, ``spec_sha256``, ``deliveries``, ``live_updates``
     (everything it streamed, in order) and ``live_now`` (what a store would
     hold: the latest status per item of shards that have not delivered),
-    ``artifacts``, ``logs``, ``refusal``, ``exported`` and ``tokens``.
+    ``artifacts``, ``logs``, ``refusal``, ``exported`` and ``tokens``;
+    ``late_records`` lists what was recorded (``"artifact <name>"``, ``"link
+    <name>"``, ``"log <message>"``) after the delivery that completed every
+    declared shard — in runcomposer that arrives after ``run.completed``.
 
     A runner that looks at the catalog itself — where an item comes from,
     what its ``Item.meta`` holds — needs real items: build the fake from the source,
@@ -265,6 +267,11 @@ class FakeDispatchContext:
         self.exported: bytes | None = None
         self.tokens: list[str] = []
         self.cancel_calls = 0
+        #: Whether a delivery has completed the declared set.
+        self._completed = False
+        #: What was recorded after that delivery: ``"artifact <name>"``,
+        #: ``"link <name>"``, ``"log <message>"``.
+        self.late_records: list[str] = []
 
     # -- input ---------------------------------------------------------------------
 
@@ -307,11 +314,8 @@ class FakeDispatchContext:
         elif selection is not None:
             if isinstance(selection, str):
                 # One string is filter text, as wherever a filter is one
-                # string; a single pattern that is not filter text still
-                # means that pattern — with the API's warning.
-                selection, note = read_filter_string(selection)
-                if note:
-                    _warnings.warn(note, UserWarning, stacklevel=2)
+                # string: what does not parse is a FilterSyntaxError.
+                selection, _ = read_filter_string(selection)
             node = parse_filter(selection)
             items = [item for item in items if node.matches(item.tags)]
         return cls(items=items, source=source, **kwargs)
@@ -352,6 +356,7 @@ class FakeDispatchContext:
 
     def set_link(self, name: str, url: str) -> None:
         with self._lock:
+            self._late(f"link {name}")
             self._links[str(name)] = str(url)
 
     # Thread safety: as in runcomposer, every member may be called from
@@ -501,6 +506,8 @@ class FakeDispatchContext:
                 outcome = "replaced"
             labelled = tuple(dataclasses.replace(v, shard=shard) for v in delivered)
             self.deliveries.append(Delivery(shard, outcome, content_hash, format_id, labelled))
+            if self.declared is not None and not self.outstanding_shards():
+                self._completed = True
             return outcome
 
     def _check_marker(self, bundle: Path) -> None:
@@ -534,13 +541,22 @@ class FakeDispatchContext:
         target = str(path_or_url)
         guessed = media_type or mimetypes.guess_type(target)[0] or "application/octet-stream"
         with self._lock:
+            self._late(f"artifact {name}")
             self.artifacts.append(
                 ArtifactRef(self.run_id, self.dispatch_id, name, guessed, target, shard, group)
             )
 
     def log(self, message: str, level: str = "info") -> None:
         with self._lock:
+            self._late(f"log {message}")
             self.logs.append((str(level), str(message)))
+
+    def _late(self, what: str) -> None:
+        """Note a record that comes after the delivery that completed the
+        declared set — in runcomposer it would arrive after
+        ``run.completed``."""
+        if self._completed:
+            self.late_records.append(what)
 
     # -- for external executors -------------------------------------------------------------
 

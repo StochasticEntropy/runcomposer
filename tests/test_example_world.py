@@ -64,6 +64,10 @@ def test_every_tag_is_of_the_example_world():
     fail_with("tag", "tags outside the example world's tag vocabulary")
 
 
+def test_no_prose_carries_the_label_of_a_work_item():
+    fail_with("finding-id", "sentences, docstrings or comments labelled like entries of a work list")
+
+
 #: The prose vocabulary includes identifiers of the UI's code, and the
 #: allow-lists below are checked against every file that uses them: both need
 #: the whole tree. An sdist ships without the UI, the workflows and the media
@@ -428,6 +432,37 @@ def test_process_words_are_caught_in_commit_messages_with_their_carve_outs():
         "Send a user agent header; the run agent of examples/remote-agent reports back\n",
     )
     assert [f for f in fine if f.rule == "process-word"] == []
+
+
+def test_work_item_labels_are_caught_in_prose_and_left_alone_in_code(tmp_path):
+    label = "H" + "4"  # assembled: this file's own prose carries no label
+    found = plant(tmp_path, {
+        "tests/test_cart.py": (
+            "def test_refusal():\n"
+            f'    """{label}: the refusal used to reset the run."""\n'
+            f"    # (M{2}) a comment that begins with one\n"
+            f"    ROUTE = '{label}: not prose, a string'\n"
+        ),
+        "docs/notes.md": (
+            f"- {label}: a list entry that begins with one\n"
+            f"Timestamps are ISO-8601, text is UTF-8, and a sentence may name {label}: it does not begin with it.\n"
+            f"`{label}: in inline code` is code.\n"
+        ),
+    })
+    assert {(v.path, v.line, v.token) for v in found["finding-id"]} == {
+        ("tests/test_cart.py", 2, label),
+        ("tests/test_cart.py", 3, "M2"),
+        ("docs/notes.md", 1, label),
+    }
+    # The hyphenated form is a ticket-key-shaped token anywhere.
+    hyphenated = plant(tmp_path / "again", {"docs/notes.md": "Closes BL" + "3-1 of the list.\n"})
+    assert [v.token for v in hyphenated["ticket-key"]] == ["BL" + "3-1"]
+
+
+def test_work_item_labels_are_caught_in_commit_messages():
+    label = "N" + "6"
+    found = rules.scan_message("abc1234", f"{label}: name the cause of an interrupted dispatch\n")
+    assert [(f.rule, f.token) for f in found if f.rule == "finding-id"] == [("finding-id", label)]
 
 
 def test_a_commit_message_is_held_to_the_tree_rules():

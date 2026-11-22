@@ -54,6 +54,7 @@ import yaml
 
 from runcomposer.app.config import load_config
 from runcomposer.app.service import Service
+from runcomposer.core.errors import InvalidParameter
 from runcomposer.core.lifecycle import TERMINAL_STATES
 from runcomposer.core.model import (
     ArtifactRef,
@@ -84,9 +85,17 @@ class HarnessRun:
     live: list[LiveStatus]
     events: list[RunEvent]
     artifacts: list[ArtifactRef]
-    #: The refusal reason when the runner refused (or raised) before declaring.
+    #: Why the dispatch was rejected before the hand-off, when the runner
+    #: called ``ctx.refuse``, raised anything but ``InvalidParameter``, or
+    #: returned without declaring — what runcomposer records as a refusal
+    #: (HTTP ``409 dispatch-refused``). ``None`` otherwise.
     refusal: str | None = None
     warnings: list[str] = field(default_factory=list)
+    #: The ``InvalidParameter`` the runner raised before declaring — the
+    #: request was invalid (HTTP ``400 invalid-parameter``): ``.parameter``
+    #: names the parameter, ``str()`` is the message. ``refusal`` is then
+    #: ``None`` and no dispatch remains. ``None`` otherwise.
+    invalid: InvalidParameter | None = None
 
     @property
     def run_id(self) -> str:
@@ -167,9 +176,17 @@ class DispatchHandle:
         refusal: str | None = self._outcome.refusal
         return refusal
 
+    @property
+    def invalid(self) -> InvalidParameter | None:
+        """The ``InvalidParameter`` the runner raised before declaring, as
+        :attr:`HarnessRun.invalid`."""
+        invalid: InvalidParameter | None = self._outcome.invalid
+        return invalid
+
     def read(self) -> HarnessRun:
         result = self._harness.read(self.run_id)
         result.refusal = self._outcome.refusal
+        result.invalid = self._outcome.invalid
         return result
 
     def wait_until(
@@ -453,6 +470,7 @@ class ConnectorHarness:
             )
         result = self.read(run_id)
         result.refusal = outcome.refusal
+        result.invalid = outcome.invalid
         return result
 
     def wait(self, run_id: str, *, timeout: float = 120.0) -> HarnessRun:

@@ -56,6 +56,7 @@ from runcomposer.testing import (
     check_runner,
     check_source,
     check_store,
+    sample_events,
     xml_with_dtd,
 )
 
@@ -624,6 +625,38 @@ class RunnerWithBadHealth(_Runner):
         ctx.refuse("never")
 
 
+class RunnerRecordingLate(_Runner):
+    """Records something after the delivery that completes the dispatch —
+    in runcomposer it would arrive after ``run.completed``."""
+
+    def __init__(self, what: str) -> None:
+        self.what = what
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(item_id, "PASS") for item_id in ctx.item_ids])
+        if self.what == "artifact":
+            ctx.add_artifact("report", "https://ci.shop.example/report")
+        elif self.what == "link":
+            ctx.set_link("build", "https://ci.shop.example/job/12")
+        else:
+            ctx.log("all shards are in")
+
+
+class RunnerWithBlockingHealth(_Runner):
+    """``health()`` waits on a service that does not answer."""
+
+    def __init__(self) -> None:
+        self.answered = threading.Event()
+
+    def health(self) -> Health:
+        self.answered.wait(timeout=30)
+        return Health()
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.refuse("never")
+
+
 class RunnerWithoutCancel:
     """Not derived from RunnerBase and lacking ``cancel``."""
 
@@ -749,6 +782,14 @@ BROKEN = [
     pytest.param(lambda tmp: check_runner(RunnerWithUnresolvedNames()), "[runner.correlates]",
                  id="runner-names-do-not-resolve"),
     pytest.param(lambda tmp: check_runner(RunnerWithBadHealth()), "[runner.health]", id="runner-bad-health"),
+    pytest.param(lambda tmp: check_runner(RunnerWithBlockingHealth(), health_within=0.2),
+                 "[runner.health-bounded] health() did not answer within 0.2s", id="runner-health-blocks"),
+    pytest.param(lambda tmp: check_runner(RunnerRecordingLate("artifact")),
+                 "[runner.records-before-last-delivery]", id="runner-artifact-after-last-delivery"),
+    pytest.param(lambda tmp: check_runner(RunnerRecordingLate("link")),
+                 "[runner.records-before-last-delivery]", id="runner-link-after-last-delivery"),
+    pytest.param(lambda tmp: check_runner(RunnerRecordingLate("log")),
+                 "[runner.records-before-last-delivery]", id="runner-log-after-last-delivery"),
     pytest.param(lambda tmp: check_runner(RunnerWithoutCancel()), "[runner.contract]", id="runner-missing-cancel"),
     pytest.param(lambda tmp: check_runner(DemoRunner(), expect="refused"), "[runner.expected-outcome]",
                  id="runner-unexpected-outcome"),
@@ -767,6 +808,52 @@ def test_a_broken_implementation_is_caught_with_its_rule(call, rule, tmp_path):
     with pytest.raises(AssertionError) as caught:
         call(tmp_path)
     assert str(caught.value).startswith(rule), str(caught.value)
+
+
+class TestSampleEvents:
+    """``sample_events()`` is every kind an observer may be told about,
+    taken from the one list of kinds, so that the two cannot drift apart."""
+
+    def test_the_sample_holds_every_kind_of_the_event_stream_once(self):
+        from runcomposer.core import events
+
+        assert [event.kind for event in sample_events()] == list(events.ALL_KINDS)
+
+    def test_the_list_of_kinds_is_every_kind_the_events_module_defines(self):
+        from runcomposer.core import events
+
+        defined = {
+            value for name, value in vars(events).items()
+            if name.isupper() and isinstance(value, str)
+        }
+        assert set(events.ALL_KINDS) == defined and len(events.ALL_KINDS) == len(defined)
+        assert {"run.cancel_requested", "delivery.attached"} <= defined
+
+    def test_an_observer_filtering_on_run_kinds_is_held_to_the_cancel_request_too(self):
+        class RunKindsOnly(ObserverBase):
+            def __init__(self) -> None:
+                self.seen: list[Any] = []
+
+            def notify(self, event: Any) -> None:
+                if event.kind.startswith("run.") and event.kind != "run.cancel_requested":
+                    self.seen.append(event)
+
+        observer = RunKindsOnly()
+        with pytest.raises(AssertionError, match=r"^\[observer.delivers-each\]"):
+            check_observer(observer, seen=lambda: observer.seen, kinds=["run.*"])
+
+
+class TestTheFakeNotesLateRecords:
+    def test_nothing_recorded_before_the_last_delivery_is_late(self):
+        ctx = FakeDispatchContext(CART)
+        ctx.declare(["1", "2"])
+        ctx.deliver("1", verdicts=[Verdict(CART[0], "PASS")])
+        ctx.add_artifact("log (1)", "https://ci.shop.example/1/log")
+        ctx.log("shard 2 still running")
+        ctx.deliver("2", verdicts=[Verdict(item_id, "PASS") for item_id in CART[1:]])
+        assert ctx.late_records == []
+        ctx.set_link("portal", "https://ci.shop.example/run")
+        assert ctx.late_records == ["link portal"]
 
 
 # -- the fake enforces the order the real context enforces --------------------------

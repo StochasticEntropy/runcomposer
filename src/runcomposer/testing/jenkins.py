@@ -15,8 +15,11 @@ correctness:
   its archived artifacts and whatever else a job puts below its URL
   (``pages``: a console text, a publisher's report), and can be stopped; a
   queue item can be cancelled;
-- a job may declare its build parameters — then, as on a real server, a
-  trigger's form field the job does not declare is dropped without a word;
+- a job may declare its build parameters — names, or definitions with a
+  kind, choices, a default and a description, served in the job's
+  ``api/json`` as a real server serves them — and then, as on a real
+  server, a trigger's form field the job does not declare is dropped
+  without a word;
 - optional Basic authentication; injected faults, stalled answers, and a
   server that is down for a while (``down`` / ``up``).
 
@@ -115,7 +118,14 @@ class FakeJenkins:
       until ``fake.start(queue_number)``.
     - ``fake.add_job(name, job, parameters=[names])`` — a job that declares
       its build parameters: the job's ``api/json`` lists them (as a
-      ``ParametersDefinitionProperty``), and a trigger's form field it does
+      ``ParametersDefinitionProperty``). An entry may also be a definition,
+      ``{"name": "SPEED", "kind": "choice", "choices": ["normal", "fast"],
+      "default": "normal", "description": "…"}`` (``kind`` defaults to
+      ``string``; ``text``, ``boolean``, ``password`` … as Jenkins names its
+      types), served with its type, choices and default as Jenkins serves
+      them; as on a real server, a trigger with a value a choice parameter
+      does not list is answered ``500`` and queues nothing. A trigger's form
+      field it does
       not declare is dropped silently, as a real server does — it never
       reaches the queue item or ``Build.params``, and is recorded in
       ``fake.ignored_parameters`` as ``(job, name)``. Without
@@ -151,8 +161,11 @@ class FakeJenkins:
         self.auto_start = auto_start
         self.send_location = True
         self.jobs: dict[str, Callable[[Build], None] | None] = {}
-        #: job → the build parameters it declares (``None``: not parameterized).
+        #: job → the names of the build parameters it declares (``None``: not
+        #: parameterized).
         self.job_parameters: dict[str, list[str] | None] = {}
+        #: job → the definitions of its build parameters, as given to add_job.
+        self.job_parameter_definitions: dict[str, list[dict[str, Any]] | None] = {}
         #: ``(job, name)`` of every form field a trigger sent that the job
         #: does not declare — dropped, as a real server drops it.
         self.ignored_parameters: list[tuple[str, str]] = []
@@ -205,14 +218,20 @@ class FakeJenkins:
         self,
         name: str,
         job: Callable[[Build], None] | None = None,
-        parameters: Sequence[str] | None = None,
+        parameters: Sequence[str | dict[str, Any]] | None = None,
     ) -> None:
-        """Register (or replace) a job. ``parameters``: the names of the
-        build parameters it declares — see the class docstring."""
+        """Register (or replace) a job. ``parameters``: the build parameters
+        it declares, as names or definitions — see the class docstring."""
         if isinstance(parameters, str):
             raise TypeError("parameters is a list of names, not one string")
         self.jobs[name] = job
-        self.job_parameters[name] = [str(p) for p in parameters] if parameters is not None else None
+        if parameters is None:
+            self.job_parameters[name] = None
+            self.job_parameter_definitions[name] = None
+            return
+        definitions = [_definition(entry) for entry in parameters]
+        self.job_parameter_definitions[name] = definitions
+        self.job_parameters[name] = [definition["name"] for definition in definitions]
 
     def down(self, status: int | None = 503) -> None:
         """From now on answer every request with ``status`` — or, with
@@ -336,15 +355,15 @@ class FakeJenkins:
                 (b for (name, _n), b in self.builds.items() if name == job),
                 key=lambda b: b.number, reverse=True,
             )
-            declared = self.job_parameters.get(job)
+            definitions = self.job_parameter_definitions.get(job)
             return self._json(
                 request,
                 {
                     "name": job.rsplit("/", 1)[-1],
-                    "property": [] if declared is None else [
+                    "property": [] if definitions is None else [
                         {
                             "_class": "hudson.model.ParametersDefinitionProperty",
-                            "parameterDefinitions": [{"name": name} for name in declared],
+                            "parameterDefinitions": [_served(entry) for entry in definitions],
                         }
                     ],
                     "builds": [
@@ -378,6 +397,12 @@ class FakeJenkins:
         return ("/".join(names) or None), segments[index:]
 
     def _trigger(self, request: BaseHTTPRequestHandler, job: str, form: dict[str, str]) -> None:
+        for definition in self.job_parameter_definitions.get(job) or []:
+            name = definition["name"]
+            if definition["kind"] == "choice" and name in form and form[name] not in definition["choices"]:
+                # As a real server: an error answer, and no build queued.
+                message = f"illegal choice for parameter {name}: {form[name]}"
+                return self._send(request, 500, message.encode("utf-8"))
         declared = self.job_parameters.get(job)
         if declared is not None:
             self.ignored_parameters.extend((job, name) for name in form if name not in declared)
@@ -436,3 +461,47 @@ class FakeJenkins:
             request.wfile.write(body)
         except OSError:
             pass  # the client gave up waiting (a test about exactly that)
+
+
+#: Jenkins's own names of the core parameter types, by kind.
+_TYPES = {
+    "string": "String", "text": "Text", "choice": "Choice", "boolean": "Boolean",
+    "password": "Password", "file": "File", "run": "Run",
+}
+
+
+def _definition(entry: str | dict[str, Any]) -> dict[str, Any]:
+    """A parameter of ``add_job``: a name, or a definition, checked."""
+    if isinstance(entry, str):
+        return {"name": entry, "kind": "string", "choices": [], "default": None, "description": ""}
+    if not isinstance(entry, dict) or not entry.get("name"):
+        raise TypeError(f"a job parameter is a name or a mapping with a 'name', got {entry!r}")
+    unknown = sorted(set(entry) - {"name", "kind", "choices", "default", "description"})
+    if unknown:
+        raise TypeError(f"job parameter {entry['name']!r}: unknown key(s) {unknown}")
+    kind = str(entry.get("kind") or "string")
+    choices = [str(choice) for choice in entry.get("choices") or []]
+    if kind == "choice" and not choices:
+        raise TypeError(f"job parameter {entry['name']!r}: a choice parameter lists its choices")
+    default = entry.get("default", choices[0] if choices else None)
+    return {
+        "name": str(entry["name"]), "kind": kind, "choices": choices,
+        "default": default, "description": str(entry.get("description") or ""),
+    }
+
+
+def _served(definition: dict[str, Any]) -> dict[str, Any]:
+    """A definition as a job's ``api/json`` shows it."""
+    kind = definition["kind"]
+    type_name = _TYPES.get(kind, kind[:1].upper() + kind[1:]) + "ParameterDefinition"
+    served: dict[str, Any] = {
+        "_class": f"hudson.model.{type_name}",
+        "name": definition["name"],
+        "type": type_name,
+        "description": definition["description"],
+    }
+    if kind == "choice":
+        served["choices"] = list(definition["choices"])
+    if definition["default"] is not None and kind != "password":
+        served["defaultParameterValue"] = {"value": definition["default"]}
+    return served

@@ -107,6 +107,13 @@ The rules, and the structure each one relies on:
     there says, per word, which uses are flagged and which are the
     project's own — the run agent of ``examples/remote-agent``).
 
+``finding-id`` (the tree's prose and commit messages)
+    The same rule for the labels a list of work items gives its entries: no
+    sentence, docstring or comment begins with one (``H4: the refusal …``,
+    ``(M2) …``) — see ``FINDING_ID``. The sentence stays; the label goes. A
+    hyphenated label (capitals, a digit, a hyphen, digits) is a
+    ``ticket-key`` wherever it stands.
+
 Built bundles and lock files (``src/runcomposer/ui_dist/**``,
 ``package-lock.json`` and other lock files) are generated: only the
 ``host`` and ``path`` rules read them — minified identifiers and hashes
@@ -156,6 +163,8 @@ ADVICE = {
     "under the heading it belongs to — additions need review: no names of people, "
     "companies, products or systems from outside this project",
     "process-word": "describe the change in the project's own terms, not how it came about",
+    "finding-id": "drop the label of the work item and keep the sentence — the project's text "
+    "does not refer to an outside list of items",
 }
 
 
@@ -1495,6 +1504,27 @@ PROCESS_WORDS = re.compile(
 )
 
 
+#: A work item's label at the start of a prose line (after a comment marker,
+#: quotes, a list dash): one to three capitals and one or two digits —
+#: optionally ``-<n>`` and a letter — followed by a colon, or in
+#: parentheses, and then words (``H4: …``, ``(M2) …``). The hyphenated form
+#: anywhere in prose is already a ``ticket-key``.
+FINDING_ID = re.compile(
+    r"(?m)^[ \t#/*>\"'`\-]*(?:\(([A-Z]{1,3}\d{1,2}(?:-\d{1,2})?[a-z]?)\)|([A-Z]{1,3}\d{1,2}(?:-\d{1,2})?[a-z]?):)"
+    r"[ \t]+[A-Za-z(`]"
+)
+
+
+def check_finding_ids(name: str, text: str) -> list[Violation]:
+    """Work-item labels in ``text`` — the prose view of a file, or a commit
+    message."""
+    return [
+        Violation(name, line_of(text, match.start()), "finding-id",
+                  next(group for group in match.groups() if group))
+        for match in FINDING_ID.finditer(text)
+    ]
+
+
 def check_process_words(name: str, text: str) -> list[Violation]:
     return [
         Violation(name, line_of(text, match.start()), "process-word", match.group(0))
@@ -1506,7 +1536,7 @@ def check_process_words(name: str, text: str) -> list[Violation]:
 # Running the rules
 # ---------------------------------------------------------------------------
 
-RULES = ("host", "path", "ticket-key", "tag", "prose-token")
+RULES = ("host", "path", "ticket-key", "tag", "prose-token", "finding-id")
 
 
 def scan_file(name: str, text: str, root: Path, vocab: Vocabulary, facts: CodeFacts) -> dict[str, list[Violation]]:
@@ -1516,11 +1546,14 @@ def scan_file(name: str, text: str, root: Path, vocab: Vocabulary, facts: CodeFa
         "ticket-key": [],
         "tag": [],
         "prose-token": [],
+        "finding-id": [],
     }
     if not is_generated(name):
         found["ticket-key"] = check_ticket_keys(name, text)
         found["tag"] = check_tags(name, text, vocab, facts, root)
         found["prose-token"] = check_prose(name, text, vocab, facts)
+        if name != RULES_MODULE_NAME:  # this module spells the labels it describes
+            found["finding-id"] = check_finding_ids(name, prose_view(name, text))
     return found
 
 
@@ -1540,7 +1573,8 @@ def scan_tree(root: Path, vocabulary_root: Path | None = None) -> dict[str, tupl
 
 def scan_message(label: str, message: str, root: Path = REPO) -> list[Violation]:
     """The rules a commit message is held to: hosts, paths, ticket keys,
-    tags written in its text, prose tokens and process words."""
+    tags written in its text, prose tokens, process words and work-item
+    labels."""
     vocab, facts = vocabulary(root), code_facts(root)
     name = f"{label}.md"  # a commit message is Markdown-ish prose
     violations = [
@@ -1554,5 +1588,6 @@ def scan_message(label: str, message: str, root: Path = REPO) -> list[Violation]
         ),
         *check_prose(name, message, vocab, facts),
         *check_process_words(name, message),
+        *check_finding_ids(name, message),
     ]
     return [Violation(label, violation.line, violation.rule, violation.token) for violation in violations]

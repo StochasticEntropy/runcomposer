@@ -26,7 +26,7 @@ from runcomposer.core import events as kinds
 from runcomposer.core import lifecycle
 from runcomposer.core.errors import UnknownRun
 from runcomposer.core.ids import new_ulid
-from runcomposer.core.model import DispatchRecord, RunRecord, Verdict
+from runcomposer.core.model import DISPATCH_ERROR_CODES, DispatchRecord, RunRecord, Verdict
 from runcomposer.core.timeutil import utc_now
 
 from .eventbus import EventBus
@@ -150,12 +150,21 @@ class Ledger:
             return dispatch
 
     def move(
-        self, dispatch_id: str, target: str, *, error: str = "", extra: Mapping[str, Any] | None = None
+        self,
+        dispatch_id: str,
+        target: str,
+        *,
+        error: str = "",
+        error_code: str = "",
+        extra: Mapping[str, Any] | None = None,
     ) -> DispatchRecord:
         """Move a dispatch to ``target`` (validated by the state machine).
-        Terminal targets settle the outcome from what was delivered."""
+        Terminal targets settle the outcome from what was delivered.
+        ``error_code`` is one of ``DISPATCH_ERROR_CODES``, with ``error``."""
         with self._decision() as pending:
-            return self._move(pending, self._require(dispatch_id), target, error=error, extra=extra)
+            return self._move(
+                pending, self._require(dispatch_id), target, error=error, error_code=error_code, extra=extra
+            )
 
     def mark_stale(
         self, dispatch_id: str, *, owner: str, error: str, extra: Mapping[str, Any] | None = None
@@ -168,7 +177,10 @@ class Ledger:
             current = self._require(dispatch_id)
             if current.state not in _EXECUTING or current.owner != owner:
                 return None
-            return self._move(pending, current, "STALE", error=error, extra=extra)
+            return self._move(
+                pending, current, "STALE", error=error, error_code="interrupted",
+                error_owner=owner or None, extra=extra,
+            )
 
     def discard(self, dispatch_id: str, reason: str, *, crashed: bool = False) -> None:
         """A dispatch that never handed anything off is not a dispatch: the
@@ -220,6 +232,8 @@ class Ledger:
                 completed_at=current.completed_at if was_complete else utc_now(),
                 summary=lifecycle.summarize(scored),
                 error="" if not was_complete else current.error,
+                error_code="" if not was_complete else current.error_code,
+                error_owner=None if not was_complete else current.error_owner,
             )
             if not was_complete or completion != current.completion:
                 extra: dict[str, Any] = {}
@@ -272,11 +286,18 @@ class Ledger:
         *,
         error: str,
         extra: Mapping[str, Any] | None,
+        error_code: str = "",
+        error_owner: str | None = None,
     ) -> DispatchRecord:
         dispatch_id = current.dispatch_id
         changes: dict[str, Any] = {"state": lifecycle.advance(current.state, target)}
         if error:
             changes["error"] = self._redact(error)
+        if error_code:
+            if error_code not in DISPATCH_ERROR_CODES:
+                raise ValueError(f"unknown dispatch error code {error_code!r}")
+            changes["error_code"] = error_code
+            changes["error_owner"] = error_owner
         if target in lifecycle.TERMINAL_STATES:
             changes["owner"] = None
         dispatch: DispatchRecord = self._store.update_dispatch(dispatch_id, **changes)

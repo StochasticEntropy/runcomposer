@@ -110,7 +110,7 @@ class Parameter:
                 if self.key_pattern is not None and re.fullmatch(self.key_pattern, key) is None:
                     raise InvalidParameter(
                         f"parameter {self.name!r}: key {key!r} does not match the key pattern "
-                        f"{self.key_pattern!r}",
+                        f"'{self.key_pattern}'",  # as written, not as a repr doubles a backslash
                         parameter=self.name,
                     )
                 self._match(entry, f"[{key!r}]")
@@ -138,7 +138,7 @@ class Parameter:
         if self.pattern is not None and re.fullmatch(self.pattern, value) is None:
             raise InvalidParameter(
                 f"parameter {self.name!r}{where}: {value!r} does not match the pattern "
-                f"{self.pattern!r}",
+                f"'{self.pattern}'",  # as written, not as a repr doubles a backslash
                 parameter=self.name,
             )
 

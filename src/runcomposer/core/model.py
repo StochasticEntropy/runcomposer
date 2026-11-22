@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
+    "DISPATCH_ERROR_CODES",
     "LIVE_STATUSES",
     "REPORTABLE_STATUSES",
     "VERDICT_STATUSES",
@@ -31,6 +32,15 @@ VERDICT_STATUSES = (*REPORTABLE_STATUSES, "MISSING")
 #: executing now (``RUNNING``), or how it ended. ``RUNNING`` exists here only
 #: — it is never delivered, never stored as a verdict and never scored.
 LIVE_STATUSES = ("RUNNING", *REPORTABLE_STATUSES)
+#: Why a dispatch ended with an error (``DispatchRecord.error_code``), beside
+#: the free-text ``error``: ``runner-raised`` — the runner raised after the
+#: hand-off (``FAILED``); ``interrupted`` — the process that was executing it
+#: is gone, a server stopped or a machine restarted (``STALE``; the process
+#: is ``error_owner``); ``expired`` — no results came within
+#: ``core.dispatch.awaiting_timeout_s`` (``FAILED``); ``cancelled`` — on
+#: request, before the hand-off or while queued (``CANCELLED``). A closed
+#: list: ``""`` is no error.
+DISPATCH_ERROR_CODES = ("runner-raised", "interrupted", "expired", "cancelled")
 
 
 @dataclass(frozen=True)
@@ -135,6 +145,12 @@ class DispatchRecord:
     #: nothing in any process is working on it.
     owner: str | None = None
     cancel_requested: bool = False
+    #: Why it ended with an error — one of :data:`DISPATCH_ERROR_CODES`, or
+    #: ``""`` (no error, or one recorded before the codes existed).
+    error_code: str = ""
+    #: For an ``interrupted`` dispatch: the identity of the process that was
+    #: executing it and is gone (``host:pid:…``) — kept out of ``error``.
+    error_owner: str | None = None
 
     @property
     def declared_shards(self) -> int:

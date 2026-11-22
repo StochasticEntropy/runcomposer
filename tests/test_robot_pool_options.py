@@ -502,13 +502,11 @@ class TestMergeGroups:
         assert not (workdir(service, run) / "_merged" / "run").exists()
 
     def test_a_failed_merge_is_a_log_line_and_no_artifact(self, tmp_path):
-        from runcomposer.plugins.robot_pool import RobotPoolRunner, _Merger, _Plan
-        from runcomposer.sdk.robot import MergeResult
+        from runcomposer.sdk.robot import GroupMerger, MergeResult
         from runcomposer.testing import FakeDispatchContext
 
         ctx = FakeDispatchContext(CART)
-        plan = _Plan([], ["eu"], "split", [], {}, {}, {}, [], "", [], {})
-        merger = _Merger(RobotPoolRunner(suite_root=str(tmp_path)), ctx, plan, [])
+        merger = GroupMerger(ctx, [], {})
         merger._record("eu", MergeResult(error="rebot wrote no output.xml: [ ERROR ] boom"), 2)
         assert ctx.artifacts == []
         level, message = ctx.logs[-1]

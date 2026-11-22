@@ -281,7 +281,7 @@ class TestTheSupervisor:
         root = cart_root(tmp_path)
         done_at: dict[str, float] = {}
 
-        def finished(outcome: ShardOutcome) -> None:
+        def finished(_payload: ShardPayload, outcome: ShardOutcome) -> None:
             done_at[outcome.payload.shard] = time.time()
 
         setup = ("tests.shop_callables:record_window",)
@@ -749,7 +749,7 @@ class LaneRunner(RunnerBase):
         )
         problems: list[str] = []
 
-        def finished(outcome: ShardOutcome) -> None:
+        def finished(_payload: ShardPayload, outcome: ShardOutcome) -> None:
             problem = deliver_shard(ctx, outcome, group=outcome.payload.partition)
             if problem:
                 problems.append(problem)
@@ -844,3 +844,102 @@ class TestRobotPoolAgainstTheKit:
         )
         assert ctx.declared == ("staging-01", "staging-02", "preview-01")
         assert ctx.shard_groups == {"staging-01": "staging", "staging-02": "staging", "preview-01": "preview"}
+
+
+# -- merged results per group, and a step when a dispatch ends ------------------------------
+
+
+class MergingRunner(LaneRunner):
+    """``LaneRunner`` with one merged result per stage and one for the run
+    (``GroupMerger``), and a shared environment it holds for the whole
+    dispatch: taken before the hand-off, given back when the dispatch ends —
+    completed, failed or cancelled — in a ``finally``. The pattern for "a
+    step when a dispatch ends" in a composed runner: it owns ``dispatch``,
+    so it brackets the work itself."""
+
+    def __init__(self, root: str, stages: list[str], chunk_size: int = 2, lock_dir: str = ""):
+        super().__init__(root, stages, chunk_size)
+        self.lock_dir = lock_dir
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        import os
+
+        from runcomposer.sdk.robot import GroupMerger
+
+        shards = self._shards(ctx)
+        lock = Path(self.lock_dir) / "staging-shop.lock"
+        try:  # acquire before the hand-off: a refusal still leaves nothing behind
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            ctx.refuse("the staging shop is held by another dispatch")
+        try:
+            channel = ctx.live_channel()
+            payloads = [
+                ShardPayload(shard=shard, out_dir=str(ctx.workdir / shard),
+                             executions=(Execution(self.root, tuple(items)),),
+                             variables={"STAGE": stage}, partition=stage, lane=stage, channel=channel)
+                for shard, (stage, items) in shards.items()
+            ]
+            groups = {shard: stage for shard, (stage, _items) in shards.items()}
+            ctx.declare({shard: items for shard, (_stage, items) in shards.items()}, groups=groups)
+            merger = GroupMerger(ctx, payloads, groups)
+
+            def deliver(outcome: ShardOutcome) -> None:
+                deliver_shard(ctx, outcome, group=outcome.payload.partition)
+
+            def finished(_payload: ShardPayload, outcome: ShardOutcome) -> None:
+                for ready in merger.shard_ended(outcome):
+                    deliver(ready)
+
+            try:
+                supervise(payloads, max_workers=len(self.stages), on_done=finished,
+                          cancelled=lambda: ctx.cancelled)
+            finally:
+                for held in merger.finish():
+                    deliver(held)
+            ctx.raise_if_cancelled()
+        finally:  # the step when the dispatch ends, however it ends
+            lock.unlink(missing_ok=True)
+
+
+MERGING = "tests.test_robot_toolkit:MergingRunner"
+
+
+class TestGroupMerger:
+    def test_each_group_and_the_run_are_merged_and_recorded_before_the_last_delivery(self, tmp_path):
+        from runcomposer.plugins.robot_source import RobotFrameworkSource
+
+        root = cart_root(tmp_path)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        ctx = check_runner(
+            MergingRunner(str(root), ["staging", "preview"], lock_dir=str(locks)),
+            FakeDispatchContext.from_source(RobotFrameworkSource(root=str(root)), "Cart"),
+            expect="complete", allow_missing=False,
+        )
+        merged = {a.name for a in ctx.artifacts if a.shard is None}
+        assert {"output.xml (group staging)", "log.html (group staging)", "output.xml (run)"} <= merged
+        assert {a.group for a in ctx.artifacts if a.name.endswith("(group staging)")} == {"staging"}
+        assert len(executed_tests(Path(next(
+            a.url_or_path for a in ctx.artifacts if a.name == "output.xml (run)"
+        )))) == 5
+        assert ctx.late_records == [], "every merged result was recorded before the last delivery"
+        assert not any(locks.iterdir()), "the environment was given back"
+
+    def test_the_environment_is_given_back_on_cancel_and_a_held_one_refuses(self, tmp_path):
+        root = staged_suite(tmp_path, 120)
+        locks = tmp_path / "locks"
+        locks.mkdir()
+        with ConnectorHarness(
+            sources={"shop": {"plugin": "robotframework", "root": str(root)}},
+            runners={"merging": {"module": MERGING, "root": str(root), "stages": ["staging"],
+                                 "chunk_size": 1, "lock_dir": str(locks)}},
+        ) as harness:
+            handle = harness.start("Checkout", runner="merging")
+            handle.wait_until(lambda run: any(s.status == "RUNNING" for s in run.live), timeout=90)
+            assert (locks / "staging-shop.lock").exists(), "held while the dispatch executes"
+            second = harness.run("Checkout", runner="merging")
+            assert second.refusal == "the staging shop is held by another dispatch"
+            handle.cancel()
+            assert handle.wait(timeout=60).state == "CANCELLED"
+            assert not (locks / "staging-shop.lock").exists(), "given back when the dispatch ended"

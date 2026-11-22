@@ -16,7 +16,7 @@ from runcomposer.testing.jenkins import FakeJenkins
 
 from .conftest import REPO
 
-TOKEN = "shop-api-token-4711"
+TOKEN = "shop-api-token-example"
 CALLBACK_BASE = "http://runcomposer.shop.example:8100"
 
 

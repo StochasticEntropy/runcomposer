@@ -37,6 +37,7 @@ __all__ = [
     "summarize",
 ]
 
+#: Every state a run (and a dispatch) can be in, in lifecycle order.
 RUN_STATES = (
     "COMPOSED",
     "DISPATCHED",
@@ -49,7 +50,9 @@ RUN_STATES = (
 )
 #: A dispatch somebody is still expected to act on.
 ACTIVE_STATES = ("DISPATCHED", "RUNNING", "AWAITING_RESULTS")
+#: The states nothing moves out of by itself: the dispatch is over.
 TERMINAL_STATES = ("COMPLETE", "FAILED", "CANCELLED", "STALE")
+#: How a complete dispatch turned out, judged over its effective verdicts.
 COMPLETIONS = ("PASS", "FAIL", "ERROR", "INCOMPLETE")
 
 # The whole state machine. A dispatch is born DISPATCHED (queued, or the

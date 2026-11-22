@@ -39,6 +39,7 @@ PUBLIC_NAMES = {
     # vocabulary
     "RUN_STATES", "ACTIVE_STATES", "TERMINAL_STATES", "COMPLETIONS", "VERDICT_STATUSES",
     "REPORTABLE_STATUSES", "LIVE_STATUSES", "LIFECYCLE_KINDS", "MARKER_FILENAME", "SPEC_VERSION",
+    "DISPATCH_ERROR_CODES",
     # errors
     "RunComposerError", "InvalidRequest", "InvalidParameter", "UnknownRunner", "ParseError",
     "NotFound", "UnknownRun", "Conflict", "RunActive", "InvalidTransition", "SpecConflict",
@@ -55,8 +56,10 @@ PUBLIC_NAMES = {
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
     "RemoteLiveChannel", "corpus_drifted", "ConfiguredCall", "configured_calls",
     "push_results", "ResultsPushRefused",
+    # the callback URLs of a run, for an executor elsewhere
+    "callback_urls", "CallbackUrls",
     # worker processes for any framework: lanes, a timeout, the stop protocol
-    "supervise_workers", "WorkerPayload", "WorkerOutcome",
+    "supervise_workers", "WorkerPayload", "WorkerOutcome", "STOP_FILE",
     # embedding
     "Service", "load_config", "Config",
 }
@@ -68,15 +71,19 @@ ROBOT_TOOLKIT = {
     "ExactSelection", "attribute_roots",
     "LiveStatusListener", "RemoteLiveStatusListener",
     "Execution", "ShardPayload", "ShardOutput", "ShardResult", "ShardOutcome",
-    "run_shard", "read_shard_result", "supervise", "stop_worker", "RESULT_FILE", "STOP_FILE",
+    "run_shard", "read_shard_result", "supervise", "RESULT_FILE", "STOP_FILE",
     "collect_verdicts", "deliver_shard", "merge_outputs", "MergeNoiseRemover", "robot_version",
     # merging in a spawned process; the single-root check
     "MergePayload", "MergeResult", "run_merge", "spawn_merge", "NameTopSuites", "root_mismatches",
     # an execution's output.xml rewritten without keyword data, in the worker
     "clean_output",
+    # one merged result per shard group and one for the run, before the last delivery
+    "GroupMerger",
 }
 JENKINS_TOOLKIT = {
     "JenkinsClient", "JenkinsError", "JenkinsTimeout", "JenkinsQueueCancelled", "encode_spec", "decode_spec", "queue_id_of",
+    # what a job declares of each build parameter: kind, choices, default
+    "JobParameter",
 }
 
 
@@ -141,6 +148,36 @@ class TestSurface:
             )
             for name in module.__all__:
                 assert getattr(module, name) is not None, name
+
+
+class TestOneStopFile:
+    """The file the stop protocol leaves in a worker's directory has one
+    definition — the SDK's — and the Robot toolkit re-exports that object."""
+
+    def test_the_toolkit_re_exports_the_sdks_stop_file(self):
+        import runcomposer.sdk.robot as robot_toolkit
+        from runcomposer.core.supervise import STOP_FILE
+
+        assert robot_toolkit.STOP_FILE is sdk.STOP_FILE is STOP_FILE
+
+    def test_no_second_definition_is_written_anywhere_in_the_package(self):
+        import re
+        from pathlib import Path
+
+        package = Path(sdk.__file__).resolve().parent.parent
+        defining = [
+            str(path.relative_to(package))
+            for path in package.rglob("*.py")
+            if re.search(r"^STOP_FILE\s*=", path.read_text(encoding="utf-8"), re.MULTILINE)
+        ]
+        assert defining == ["core/supervise.py"]
+
+    def test_there_is_one_stop_protocol(self):
+        """A second, weaker protocol (terminate one process, leave what it
+        started) is not part of the surface: ``supervise_workers`` is."""
+        import runcomposer.sdk.robot as robot_toolkit
+
+        assert not hasattr(robot_toolkit, "stop_worker")
 
 
 class TestLazyEmbedding:

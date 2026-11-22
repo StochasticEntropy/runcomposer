@@ -29,6 +29,9 @@ class SelectionError(InvalidRequest):
 
 @dataclass(frozen=True)
 class Selection:
+    """What a run selects: a tag filter, explicit item ids, or both (their
+    intersection)."""
+
     tag_filter: FilterNode | None = None
     item_ids: tuple[str, ...] = ()
 

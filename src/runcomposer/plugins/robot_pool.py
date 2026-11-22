@@ -109,15 +109,12 @@ from runcomposer.sdk import (
 )
 from runcomposer.sdk.robot import (
     Execution,
-    MergePayload,
-    MergeResult,
-    NameTopSuites,
+    GroupMerger,
     ShardOutcome,
     ShardPayload,
     attribute_roots,
     deliver_shard,
     robot_version,
-    spawn_merge,
     supervise,
 )
 
@@ -908,11 +905,16 @@ class RobotPoolRunner(RunnerBase):
         if plan.drift_skips:
             ctx.deliver("drift", verdicts=plan.drift_skips, format=result_format)
         failures: list[str] = []
-        merger = _Merger(self, ctx, plan, payloads) if self.merge_groups else None
-        #: With merged results, the shard that finishes last is delivered
-        #: only after they are recorded: its delivery completes the run.
-        held: list[ShardOutcome] = []
-        ended = 0
+        # With merged results, the shard that finishes last is delivered
+        # only after they are recorded: its delivery completes the run.
+        merger = (
+            GroupMerger(
+                ctx, payloads, plan.groups, side_by_side=plan.mode == "each",
+                log=self.log, report=self.report, rpa=self.rpa,
+            )
+            if self.merge_groups
+            else None
+        )
 
         def deliver(outcome: ShardOutcome) -> None:
             problem = deliver_shard(
@@ -921,16 +923,9 @@ class RobotPoolRunner(RunnerBase):
             if problem:
                 failures.append(problem)
 
-        def finished(outcome: ShardOutcome) -> None:
-            nonlocal ended
-            ended += 1
-            if merger is not None:
-                merger.shard_ended(outcome, last=ended == len(payloads))
-                if ended == len(payloads):
-                    held.append(outcome)
-                    return
-                merger.record_finished()
-            deliver(outcome)
+        def finished(_payload: ShardPayload, outcome: ShardOutcome) -> None:
+            for ready in merger.shard_ended(outcome) if merger is not None else [outcome]:
+                deliver(ready)
 
         try:
             supervise(
@@ -941,9 +936,7 @@ class RobotPoolRunner(RunnerBase):
                 timeout_s=self.shard_timeout_s,
             )
         finally:
-            if merger is not None:
-                merger.finish(merge=bool(held) and not ctx.cancelled)
-            for outcome in held:
+            for outcome in merger.finish() if merger is not None else []:
                 deliver(outcome)
         ctx.raise_if_cancelled()
         if failures:
@@ -1075,181 +1068,6 @@ class RobotPoolRunner(RunnerBase):
                     f"pre_run_hook failed (rc {process.returncode}): {hook!r} — "
                     f"{(stderr or stdout).strip()[:300]}"
                 )
-
-
-class _Merger:
-    """``merge_groups``: one merged result per group of shards and one for
-    the whole run, each produced by a spawned process (the dispatching
-    process never runs Robot itself) and recorded as group / run artifacts.
-
-    A group is merged as soon as its last shard has ended, while the others
-    still execute; what that leaves — the last group and the whole run — is
-    merged before the shard that ended last is delivered, so that every
-    merged artifact is recorded before the run completes. A merge never
-    decides a verdict: one that fails is a log line and no artifact, and a
-    cancelled dispatch merges nothing more."""
-
-    def __init__(
-        self,
-        runner: RobotPoolRunner,
-        ctx: DispatchContext,
-        plan: _Plan,
-        payloads: list[ShardPayload],
-    ):
-        self._runner = runner
-        self._ctx = ctx
-        self._plan = plan
-        self._base = ctx.workdir / "_merged"
-        self._groups = sorted(set(plan.groups.values()), key=list(plan.partitions).index)
-        self._members = {
-            group: [payload.shard for payload in payloads if plan.groups.get(payload.shard) == group]
-            for group in self._groups
-        }
-        self._outcomes: dict[str, ShardOutcome] = {}
-        self._results: list[tuple[str | None, MergeResult, int]] = []
-        self._lock = threading.Lock()
-        self._threads: list[threading.Thread] = []
-        self._started: set[str] = set()
-
-    def shard_ended(self, outcome: ShardOutcome, *, last: bool) -> None:
-        self._outcomes[outcome.payload.shard] = outcome
-        group = self._plan.groups.get(outcome.payload.shard)
-        if group is None or last or group in self._started:
-            return
-        if all(shard in self._outcomes for shard in self._members[group]):
-            self._started.add(group)
-            thread = threading.Thread(
-                target=self._merge_group, args=(group,), name=f"runcomposer-merge-{group}",
-                daemon=True,
-            )
-            self._threads.append(thread)
-            thread.start()
-
-    def record_finished(self) -> None:
-        """Record what the merges that have finished produced — called in the
-        dispatching thread, between deliveries."""
-        with self._lock:
-            results, self._results = self._results, []
-        for group, result, count in results:
-            self._record(group, result, count)
-
-    def finish(self, *, merge: bool) -> None:
-        for thread in self._threads:
-            thread.join()
-        if merge:
-            for group in self._groups:
-                if group not in self._started and not self._ctx.cancelled:
-                    self._started.add(group)
-                    self._merge_group(group)
-            if not self._ctx.cancelled:
-                self._merge_run()
-        self.record_finished()
-
-    # -- the merges ------------------------------------------------------------------
-
-    def _outputs(self, shards: list[str]) -> list[tuple[str, frozenset[str]]]:
-        """The merged ``output.xml`` of every delivered shard among
-        ``shards``, with the roots it executed."""
-        found = []
-        for shard in shards:
-            outcome = self._outcomes.get(shard)
-            if outcome is None or outcome.problem is not None:
-                continue
-            output = Path(outcome.payload.out_dir) / "output.xml"
-            if output.is_file():
-                found.append(
-                    (str(output), frozenset(execution.root for execution in outcome.payload.executions))
-                )
-        return found
-
-    def _merge_group(self, group: str) -> None:
-        outputs = self._outputs(self._members[group])
-        index = self._groups.index(group) + 1
-        result = self._merge(
-            [path for path, _roots in outputs],
-            self._base / f"group-{index}",
-            merge=len({roots for _path, roots in outputs}) <= 1,
-            titles=group,
-        )
-        with self._lock:
-            self._results.append((group, result, len(outputs)))
-
-    def _merge_run(self) -> None:
-        if self._groups:
-            sources = []
-            names = []
-            for index, group in enumerate(self._groups, start=1):
-                merged = self._base / f"group-{index}" / "output.xml"
-                own = self._outputs(self._members[group])
-                if len(own) == 1:
-                    sources.append(own[0][0])
-                    names.append(group)
-                elif merged.is_file():
-                    sources.append(str(merged))
-                    names.append(group)
-            # The same tests on every partition are put side by side, named
-            # after their partitions; distributed ones are merged into one tree.
-            side_by_side = self._plan.mode == "each" and len(sources) > 1
-            result = self._merge(
-                sources, self._base / "run", merge=not side_by_side,
-                names=names if side_by_side else None,
-            )
-            count = len(sources)
-        else:
-            outputs = self._outputs(list(self._plan.shards))
-            result = self._merge(
-                [path for path, _roots in outputs], self._base / "run",
-                merge=len({roots for _path, roots in outputs}) <= 1,
-            )
-            count = len(outputs)
-        with self._lock:
-            self._results.append((None, result, count))
-
-    def _merge(
-        self,
-        outputs: list[str],
-        out_dir: Path,
-        *,
-        merge: bool,
-        titles: str | None = None,
-        names: list[str] | None = None,
-    ) -> MergeResult:
-        if not outputs:
-            return MergeResult(error="no shard delivered a result to merge")
-        if len(outputs) == 1:
-            # Nothing to merge: the one result is the merged one.
-            return MergeResult(output=outputs[0])
-        options: dict[str, Any] = {}
-        if titles:
-            options.update(logtitle=f"{titles} Log", reporttitle=f"{titles} Report")
-        if names:
-            options["prerebotmodifier"] = [NameTopSuites(names)]
-        runner = self._runner
-        return spawn_merge(
-            MergePayload(
-                outputs=tuple(outputs), out_dir=str(out_dir), log=runner.log,
-                report=runner.report, merge=merge, rpa=runner.rpa, rebot_options=options,
-            ),
-            cancelled=lambda: self._ctx.cancelled,
-        )
-
-    def _record(self, group: str | None, result: MergeResult, count: int) -> None:
-        ctx = self._ctx
-        what = f"group {group}" if group is not None else "the run"
-        if not result.ok or result.output is None:
-            ctx.log(f"merged result of {what} not produced: {result.error}", level="warning")
-            return
-        label = f"group {group}" if group is not None else "run"
-        base = Path(result.output).parent
-        for name, media_type in (
-            ("log.html", "text/html"),
-            ("report.html", "text/html"),
-            ("output.xml", "application/xml"),
-        ):
-            file = base / name
-            if file.is_file():
-                ctx.add_artifact(f"{name} ({label})", file, media_type=media_type, group=group)
-        ctx.log(f"merged result of {what} recorded ({count} result(s) merged)")
 
 
 #: The keys of a ``pre_dispatch`` answer that addresses more than Robot

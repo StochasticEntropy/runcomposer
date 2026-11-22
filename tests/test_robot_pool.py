@@ -1064,7 +1064,7 @@ class TestDrift:
         )
 
     def test_a_refused_redispatch_does_not_erase_the_finished_run(self, make_service, tmp_path):
-        """H4: the refusal used to reset a COMPLETE (FAIL) run to COMPOSED."""
+        """The refusal used to reset a COMPLETE (FAIL) run to COMPOSED."""
         corpus = tmp_path / "tests"
         shutil.copytree(ROBOT_SHOP, corpus)
         service = pool_service(make_service, corpus)

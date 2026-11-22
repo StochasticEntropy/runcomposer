@@ -83,6 +83,41 @@ class TestKeyPattern:
         assert "key 'locale'" in answer.json()["detail"]
 
 
+class TestTheMessageShowsThePatternAsWritten:
+    """A pattern is shown as the declaration writes it — one backslash where
+    it has one — not as a Python repr, which doubles every backslash."""
+
+    BUILD = Parameter("build", pattern=r"\d{4}\.\d{1,2}")
+    HEADERS = Parameter("headers", kind="mapping", key_pattern=r"X-[A-Za-z]+\d?")
+
+    def test_a_value_pattern(self):
+        with pytest.raises(InvalidParameter) as caught:
+            validate_parameters([self.BUILD], {"build": "2026-12"})
+        assert str(caught.value) == r"parameter 'build': '2026-12' does not match the pattern '\d{4}\.\d{1,2}'"
+
+    def test_a_key_pattern(self):
+        with pytest.raises(InvalidParameter) as caught:
+            validate_parameters([self.HEADERS], {"headers": {"Accept": "json"}})
+        assert str(caught.value) == r"parameter 'headers': key 'Accept' does not match the key pattern 'X-[A-Za-z]+\d?'"
+
+    def test_over_http_the_detail_is_the_same_sentence(self, make_client):
+        client, _service = make_client(runners={"versioned": {"module": f"{HERE}:VersionedRunner"}})
+        answer = client.post(f"{API}/runs", json={
+            "selection": {"tag_filter": "Checkout"},
+            "dispatch": {"runner": "versioned", "parameters": {"build": "2026-12"}}})
+        assert answer.status_code == 400
+        assert answer.json()["detail"] == r"parameter 'build': '2026-12' does not match the pattern '\d{4}\.\d{1,2}'"
+
+
+class VersionedRunner(RunnerBase):
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="versioned", parameters=(Parameter("build", pattern=r"\d{4}\.\d{1,2}"),))
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(item, "PASS") for item in ctx.item_ids])
+
+
 class CarefulRunner(RunnerBase):
     """Knows two regions; ``ap`` passes the declaration (it is a string) but
     has no build agent. ``when`` says where the refusal is raised."""
@@ -213,3 +248,33 @@ class TestARunnerRefusesAParameter:
         code = cli_main(["plan", "Checkout", "--runner", "careful", "--param", "region=ap",
                          "--config", str(config)])
         assert code == 1 and "error: parameter 'region': no build agent serves 'ap'" in capsys.readouterr().err
+
+
+class TestTheHarnessSaysSo:
+    """The conformance harness reports a runner-raised ``InvalidParameter``
+    on the run it hands back — not as a refusal, and not only in the
+    events."""
+
+    @pytest.fixture()
+    def harness(self):
+        from runcomposer.testing import ConnectorHarness
+
+        with ConnectorHarness(runners={"careful": {"module": f"{HERE}:CarefulRunner"}}) as harness:
+            yield harness
+
+    def test_run_carries_the_parameter_and_the_message(self, harness):
+        run = harness.run("Checkout", runner="careful", parameters={"region": "ap"})
+        assert run.invalid is not None and run.refusal is None
+        assert run.invalid.parameter == "region"
+        assert str(run.invalid) == "parameter 'region': no build agent serves 'ap'"
+        assert run.dispatch is None and run.state == "COMPOSED"
+
+    def test_a_started_dispatch_says_it_on_the_handle_and_its_reading(self, harness):
+        handle = harness.start("Checkout", runner="careful", parameters={"region": "ap"})
+        run = handle.wait()
+        assert handle.invalid is not None and handle.invalid.parameter == "region"
+        assert run.invalid is not None and run.refusal is None
+
+    def test_a_valid_run_has_neither(self, harness):
+        run = harness.run("Checkout", runner="careful", parameters={"region": "eu"})
+        assert (run.invalid, run.refusal, run.state) == (None, None, "COMPLETE")

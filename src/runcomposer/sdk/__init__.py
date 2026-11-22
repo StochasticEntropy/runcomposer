@@ -38,13 +38,15 @@ What is here, by role:
 - **Errors** — the taxonomy of ``runcomposer.core.errors``.
 - **Helpers** — the chunk planner, content hashes, the marker reader, the
   defused XML reader, lifecycle functions, ids and timestamps,
-  ``load_import_path`` (for a plugin's own ``"pkg.mod:callable"`` options)
-  and ``RemoteLiveChannel`` (live status and log lines pushed to the API by
+  ``load_import_path`` (for a plugin's own ``"pkg.mod:callable"`` options),
+  ``callback_urls`` (the results, live, log and document URLs of a run under
+  a deployment's base address) and ``RemoteLiveChannel`` (live status and log lines pushed to the API by
   an executor that runs elsewhere).
 - **Worker processes** — ``supervise_workers`` with ``WorkerPayload`` and
   ``WorkerOutcome``: shards executed in spawned processes, in lanes, with a
   timeout and a stop protocol that reaches what a worker started — for any
-  framework (the Robot toolkit's ``supervise`` is built on it).
+  framework (the Robot toolkit's ``supervise`` is built on it). ``STOP_FILE``
+  is the file the stop protocol leaves in a worker's ``out_dir``.
 - **Embedding** — ``load_config`` and ``Service``, for driving runcomposer
   from a Python program instead of through the CLI or the HTTP API.
 """
@@ -94,6 +96,7 @@ from runcomposer.core.lifecycle import (
 )
 from runcomposer.core.marker import MARKER_FILENAME, read_marker
 from runcomposer.core.model import (
+    DISPATCH_ERROR_CODES,
     LIVE_STATUSES,
     REPORTABLE_STATUSES,
     VERDICT_STATUSES,
@@ -133,10 +136,16 @@ from runcomposer.core.ports import (
     contract_members,
 )
 from runcomposer.core.registry import ConfiguredCall, configured_calls, load_import_path
-from runcomposer.core.remote import RemoteLiveChannel, ResultsPushRefused, push_results
+from runcomposer.core.remote import (
+    CallbackUrls,
+    RemoteLiveChannel,
+    ResultsPushRefused,
+    callback_urls,
+    push_results,
+)
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
-from runcomposer.core.supervise import WorkerOutcome, WorkerPayload, supervise_workers
+from runcomposer.core.supervise import STOP_FILE, WorkerOutcome, WorkerPayload, supervise_workers
 from runcomposer.core.timeutil import epoch_ms, normalize_time, parse_time, utc_now
 from runcomposer.core.xmlsafe import forbid_dtd, parse_xml
 
@@ -147,16 +156,19 @@ if TYPE_CHECKING:  # the embedding surface is loaded on first use (below)
 __all__ = [
     "ACTIVE_STATES",
     "COMPLETIONS",
+    "DISPATCH_ERROR_CODES",
     "LIFECYCLE_KINDS",
     "LIVE_STATUSES",
     "MARKER_FILENAME",
     "REPORTABLE_STATUSES",
     "RUN_STATES",
     "SPEC_VERSION",
+    "STOP_FILE",
     "TERMINAL_STATES",
     "VERDICT_STATUSES",
     "ArtifactRef",
     "AuthRequired",
+    "CallbackUrls",
     "ChunkPlan",
     "Config",
     "ConfigError",
@@ -218,6 +230,7 @@ __all__ = [
     "WorkerOutcome",
     "WorkerPayload",
     "bundle_hash",
+    "callback_urls",
     "canonical_json",
     "completion_of",
     "configured_calls",

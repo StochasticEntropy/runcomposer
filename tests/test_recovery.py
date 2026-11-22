@@ -113,7 +113,8 @@ class TestRecover:
         assert run.state == "STALE" and run.completion is None
         recovered = run.latest_dispatch
         assert recovered.owner is None
-        assert f"interrupted while {state}" in recovered.error and gone in recovered.error
+        assert f"interrupted while {state}" in recovered.error and gone not in recovered.error
+        assert (recovered.error_code, recovered.error_owner) == ("interrupted", gone)
         event = service.store.events(run_id)[-1]
         assert event.kind == "run.stale"
         assert event.data["was"] == state and event.data["owner"] == gone
@@ -269,7 +270,8 @@ def test_a_killed_process_leaves_a_run_that_recovery_marks_stale(tmp_path):
         assert [d.run_id for d in stale] == [run_id]
         run = service.require_run(run_id)
         assert run.state == "STALE"
-        assert str(child.pid) in run.latest_dispatch.error
+        assert f":{child.pid}:" in str(run.latest_dispatch.error_owner)
+        assert run.latest_dispatch.error_code == "interrupted"
         assert run.latest_dispatch.summary == {"MISSING": 46}
         events = service.store.events(run_id)
         assert events[-1].kind == "run.stale" and events[-1].data["was"] == "RUNNING"
@@ -288,5 +290,11 @@ def test_the_server_recovers_at_startup(make_client, tmp_path):
     detail = client.get(f"/api/v1/runs/{run_id}").json()
     assert detail["state"] == "STALE"
     assert detail["events"][-1]["kind"] == "run.stale"
-    assert "is gone" in detail["dispatches"][-1]["error"]
-    assert detail["dispatches"][-1]["executing"] is False
+    dispatch = detail["dispatches"][-1]
+    assert "is gone" in dispatch["error"]
+    assert dispatch["executing"] is False
+    # The cause is a field of its own, and the process's identity is kept out
+    # of the headline text.
+    assert dispatch["error_code"] == "interrupted"
+    assert dispatch["error_owner"].endswith(":01TOKENOFTHATPROCESS000000")
+    assert dispatch["error_owner"] not in dispatch["error"]

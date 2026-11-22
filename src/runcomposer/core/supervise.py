@@ -252,8 +252,8 @@ def supervise_workers(
       ``lambda: ctx.cancelled`` from a dispatch.
     - ``timeout_s`` bounds one shard, counted from its worker's start; a
       shard over it is stopped and reported with status ``"timed out"``.
-    - ``log(message, level)`` receives one line when a shard starts and one
-      when it ends (shard, lane, how it ended, seconds) — pass ``ctx.log``,
+    - ``log(message, level)`` is told of each shard's start, and of its end
+      (shard, lane, how it ended, seconds) — pass ``ctx.log``,
       or the ``log`` of a live channel.
 
     A payload or target that cannot be sent to a worker process is refused

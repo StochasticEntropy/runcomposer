@@ -18,6 +18,7 @@ _FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def utc_now() -> str:
+    """Now, in UTC, as the ISO 8601 text runcomposer stores (``…Z``)."""
     return datetime.now(timezone.utc).strftime(_FORMAT)
 
 
@@ -46,4 +47,5 @@ def normalize_time(text: str) -> str:
 
 
 def epoch_ms(text: str | None) -> int:
+    """An ISO 8601 time as milliseconds since the epoch; ``0`` for none."""
     return int(parse_time(text).timestamp() * 1000) if text else 0

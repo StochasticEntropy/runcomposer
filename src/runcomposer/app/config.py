@@ -219,6 +219,9 @@ class PluginSpec:
 
 @dataclass
 class Config:
+    """A loaded, validated configuration (:func:`load_config`): what a
+    :class:`~runcomposer.app.service.Service` is built from."""
+
     data: dict[str, Any]
     path: Path | None = None
     #: Where relative paths resolve, fixed when the configuration is made:

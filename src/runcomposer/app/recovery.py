@@ -56,9 +56,10 @@ def recover(service: Service) -> list[DispatchRecord]:
             marked = service.ledger.mark_stale(
                 dispatch.dispatch_id,
                 owner=owner,
+                # The process's identity is error_owner, not part of the text.
                 error=(
                     f"interrupted while {dispatch.state}: the process that was executing "
-                    f"this dispatch ({dispatch.owner}) is gone"
+                    "this dispatch is gone (a server stopped or a machine restarted)"
                 ),
                 extra={"was": dispatch.state, "owner": dispatch.owner},
             )

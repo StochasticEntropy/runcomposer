@@ -6,8 +6,8 @@ Measured in a fresh interpreter, where no other test's import can hide what
 the server's own calls load:
 
 - with a catalog that is not read through Robot (a manifest) the server
-  process loads **nothing** of Robot — no ``robot`` module at all, so its
-  result model and its process-global logger are never there: Robot runs in
+  process loads **nothing** of Robot — no ``robot`` module at all, neither
+  the parsed results nor Robot's shared logging state: Robot runs in
   the workers and merge processes only;
 - with the ``robotframework`` catalog source in the same process, Robot is
   loaded when the catalog is built (the source walks the suites with

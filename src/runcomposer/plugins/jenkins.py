@@ -103,6 +103,7 @@ from runcomposer.sdk import (
     PluginError,
     RunnerBase,
     RunnerInfo,
+    callback_urls,
     parameters_from_config,
 )
 from runcomposer.sdk.jenkins import (
@@ -425,7 +426,7 @@ class JenkinsRunner(RunnerBase):
                 "jenkins completion=callback needs the callback_base option (the URL under "
                 "which the job can reach this runcomposer's API)"
             )
-        return f"{self.callback_base}/api/v1/runs/{ctx.run_id}/results"
+        return callback_urls(self.callback_base, ctx.run_id).results
 
     def _uses(self, field: str) -> bool:
         """Does any template (a parameter, the shard list) use ``field``?"""
@@ -446,7 +447,7 @@ class JenkinsRunner(RunnerBase):
                     "jenkins: a parameter uses {spec_url}, which needs the callback_base option "
                     "(the URL under which the job can reach this runcomposer's API)"
                 )
-            spec_url = f"{self.callback_base}/api/v1/runs/{ctx.run_id}/dispatches/{dispatch_id}/spec"
+            spec_url = str(callback_urls(self.callback_base, ctx.run_id, dispatch_id).spec)
         document = ctx.export_spec() if self._uses_document() else b""
         fields = _Lenient(
             spec_json=document.decode("utf-8") if self._uses("spec_json") else "",

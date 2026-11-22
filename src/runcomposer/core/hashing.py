@@ -19,6 +19,7 @@ __all__ = ["bundle_hash", "canonical_json", "sha256_hex", "verdicts_hash"]
 
 
 def sha256_hex(data: bytes) -> str:
+    """The SHA-256 of ``data`` as lower-case hex."""
     return hashlib.sha256(data).hexdigest()
 
 

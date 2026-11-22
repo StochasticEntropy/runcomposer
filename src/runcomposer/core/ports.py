@@ -657,7 +657,8 @@ class RunStore(Protocol):
     def update_dispatch(self, dispatch_id: str, **changes: Any) -> DispatchRecord:
         """Set any of: ``state``, ``shards``, ``shard_items``, ``shard_groups``,
         ``spec_sha256``, ``error``, ``plan``, ``links``, ``completion``,
-        ``completed_at``, ``summary``, ``owner``, ``cancel_requested``."""
+        ``completed_at``, ``summary``, ``owner``, ``cancel_requested``,
+        ``error_code``, ``error_owner``."""
         ...
 
     def get_dispatch(self, dispatch_id: str) -> DispatchRecord | None: ...

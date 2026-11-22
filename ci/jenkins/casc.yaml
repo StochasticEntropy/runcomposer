@@ -78,6 +78,9 @@ jobs:
           stringParam('DISPATCH_ID', '', 'dispatch id minted by runcomposer for this hand-off')
           stringParam('CALLBACK_URL', '', 'results push endpoint; empty: print the results into the console log')
           stringParam('HOLD_SECONDS', '0', 'wait this long before executing (lets a test cancel a running build)')
+          // A choice: Jenkins starts no build for a value it does not list
+          // (e2e.py, step 3b, reads what the job declares of each parameter).
+          choiceParam('PACE', ['normal', 'brisk'], 'how the simulated execution paces itself')
         }
         configure { project ->
           project / 'properties' / 'hudson.model.ParametersDefinitionProperty' / 'parameterDefinitions' << 'hudson.model.PasswordParameterDefinition' {

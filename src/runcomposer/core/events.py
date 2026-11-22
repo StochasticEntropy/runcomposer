@@ -8,6 +8,7 @@ receiver and a shell script all read them the same way.
 from __future__ import annotations
 
 __all__ = [
+    "ALL_KINDS",
     "DELIVERY_ATTACHED",
     "DELIVERY_RECORDED",
     "DISPATCH_REFUSED",
@@ -40,6 +41,26 @@ DELIVERY_RECORDED = "delivery.recorded"
 DELIVERY_ATTACHED = "delivery.attached"
 LOG = "log"
 WARNING = "warning"
+
+#: Every kind the event stream holds — what an observer may be told about
+#: when it asks for more than the lifecycle (``events: ["*"]``). The one list
+#: of kinds; ``runcomposer.testing.sample_events`` is made from it.
+ALL_KINDS = (
+    RUN_COMPOSED,
+    RUN_DISPATCHED,
+    RUN_RUNNING,
+    RUN_AWAITING,
+    RUN_COMPLETED,
+    RUN_FAILED,
+    RUN_CANCELLED,
+    RUN_CANCEL_REQUESTED,
+    RUN_STALE,
+    DISPATCH_REFUSED,
+    DELIVERY_RECORDED,
+    DELIVERY_ATTACHED,
+    LOG,
+    WARNING,
+)
 
 #: The event a dispatch entering each state emits.
 STATE_EVENTS = {

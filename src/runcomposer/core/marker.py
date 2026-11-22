@@ -15,6 +15,7 @@ from .errors import IngestError
 
 __all__ = ["MARKER_FILENAME", "read_marker"]
 
+#: The file in a results bundle that names the run and dispatch it belongs to.
 MARKER_FILENAME = "runcomposer_run.json"
 
 

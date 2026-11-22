@@ -28,7 +28,13 @@ import pytest
 
 from runcomposer.core.remote import ResultsPushRefused, push_results
 from runcomposer.sdk import ConfigError, DispatchCancelled, DispatchContext, PlanContext
-from runcomposer.sdk.jenkins import JenkinsClient, JenkinsError, JenkinsQueueCancelled, JenkinsTimeout
+from runcomposer.sdk.jenkins import (
+    JenkinsClient,
+    JenkinsError,
+    JenkinsQueueCancelled,
+    JenkinsTimeout,
+    JobParameter,
+)
 from runcomposer.testing import ConnectorHarness
 
 from .conftest import compose, wait_until
@@ -327,6 +333,78 @@ class TestDeclaredParameters:
                 return {"actions": [{}, {"parameterDefinitions": [{"name": "SPEC_B64"}, {"name": "REGIONS"}]}]}
 
         assert Older("http://ci.shop.example").job_parameters(JOB) == ["SPEC_B64", "REGIONS"]
+
+    def test_the_definitions_carry_kind_choices_and_default(self, jenkins):
+        jenkins.add_job("shop-nightly", parameters=[
+            "SPEC_B64",
+            {"name": "SPEED", "kind": "choice", "choices": ["normal", "fast"], "description": "how fast"},
+            {"name": "REGIONS", "kind": "text", "default": "eu"},
+            {"name": "INGEST_TOKEN", "kind": "password", "default": "never-shown"},
+            {"name": "DRY_RUN", "kind": "boolean", "default": False},
+        ])
+        client = JenkinsClient(jenkins.url, retry_backoff_s=0.01)
+        definitions = client.job_parameter_definitions("shop-nightly")
+        assert definitions == [
+            JobParameter("SPEC_B64", "string"),
+            JobParameter("SPEED", "choice", ("normal", "fast"), "normal", "how fast"),
+            JobParameter("REGIONS", "text", default="eu"),
+            JobParameter("INGEST_TOKEN", "password"),
+            JobParameter("DRY_RUN", "boolean", default=False),
+        ]
+        speed = definitions[1]
+        assert speed.accepts("fast") and not speed.accepts("faster")
+        assert definitions[0].accepts("anything at all")
+        # The names, as before, from the same answer.
+        assert client.job_parameters("shop-nightly") == ["SPEC_B64", "SPEED", "REGIONS", "INGEST_TOKEN", "DRY_RUN"]
+        assert client.job_parameter_definitions(JOB) is None, "not parameterized"
+        with pytest.raises(JenkinsError) as missing:
+            client.job_parameter_definitions("shop-renamed-away")
+        assert missing.value.status == 404
+
+    def test_a_value_the_choice_does_not_list_starts_no_build(self, jenkins):
+        """What Jenkins 2.541 does (``ci/jenkins/e2e.py``, step 3b): an error
+        answer, nothing queued."""
+        jenkins.add_job("shop-nightly", parameters=[
+            {"name": "PACE", "kind": "choice", "choices": ["normal", "brisk"]}, "REGIONS",
+        ])
+        client = JenkinsClient(jenkins.url, retry_backoff_s=0.01)
+        with pytest.raises(JenkinsError) as refused:
+            client.trigger("shop-nightly", {"PACE": "warp", "REGIONS": "eu"})
+        assert refused.value.status == 500
+        assert jenkins.queue == {} and jenkins.builds == {}
+        client.trigger("shop-nightly", {"PACE": "brisk", "REGIONS": "eu"})
+        wait_until(lambda: ("shop-nightly", 1) in jenkins.builds, what="the build")
+        assert jenkins.builds[("shop-nightly", 1)].params == {"PACE": "brisk", "REGIONS": "eu"}
+
+    def test_definitions_are_read_as_a_real_server_shows_them(self):
+        """The fields a job's ``api/json`` carries for a definition — ``type``,
+        ``choices``, ``defaultParameterValue`` — read the way
+        ``ci/jenkins/e2e.py`` (step 3b) reads them from a real server."""
+
+        class Real(JenkinsClient):
+            def get_json(self, url: str, *, retry: bool = True) -> dict[str, Any]:
+                return {"actions": [{}], "property": [{
+                    "_class": "hudson.model.ParametersDefinitionProperty",
+                    "parameterDefinitions": [
+                        {"_class": "hudson.model.ChoiceParameterDefinition", "name": "SPEED",
+                         "type": "ChoiceParameterDefinition", "description": "",
+                         "choices": ["normal", "fast"],
+                         "defaultParameterValue": {"_class": "hudson.model.StringParameterValue", "value": "normal"}},
+                        {"_class": "hudson.model.PasswordParameterDefinition", "name": "INGEST_TOKEN",
+                         "type": "PasswordParameterDefinition", "description": "ingest token of this dispatch",
+                         "defaultParameterValue": {"_class": "hudson.model.PasswordParameterValue"}},
+                    ]}]}
+
+        assert Real("http://ci.shop.example").job_parameter_definitions(JOB) == [
+            JobParameter("SPEED", "choice", ("normal", "fast"), "normal"),
+            JobParameter("INGEST_TOKEN", "password", description="ingest token of this dispatch"),
+        ]
+
+    def test_a_definition_the_stand_in_cannot_serve_is_refused_where_it_is_given(self, jenkins):
+        with pytest.raises(TypeError, match="a choice parameter lists its choices"):
+            jenkins.add_job("shop-nightly", parameters=[{"name": "SPEED", "kind": "choice"}])
+        with pytest.raises(TypeError, match=r"unknown key\(s\) \['choise'\]"):
+            jenkins.add_job("shop-nightly", parameters=[{"name": "SPEED", "choise": ["a"]}])
 
     def test_the_stand_in_drops_what_the_job_does_not_declare(self, jenkins):
         jenkins.add_job("shop-nightly", parameters=["SPEC_B64", "REGIONS"])

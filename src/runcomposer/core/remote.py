@@ -31,12 +31,64 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .errors import RunComposerError
 
-__all__ = ["RemoteLiveChannel", "ResultsPushRefused", "progress_urls", "push_results", "results_url"]
+__all__ = [
+    "CallbackUrls",
+    "RemoteLiveChannel",
+    "ResultsPushRefused",
+    "callback_urls",
+    "progress_urls",
+    "push_results",
+    "results_url",
+]
+
+#: The API's path below a deployment's base address.
+_API_PATH = "/api/v1"
+
+
+@dataclass(frozen=True)
+class CallbackUrls:
+    """The URLs an executor that runs elsewhere reaches one run by (see
+    :func:`callback_urls`): ``run`` — the run's API resource; ``results`` —
+    where a bundle is pushed (``POST``, what a runner hands out as its
+    callback URL); ``live`` and ``log`` — where live status and log lines
+    are pushed; ``spec`` — the document handed out for the dispatch
+    (``GET``; ``None`` without a dispatch id)."""
+
+    run: str
+    results: str
+    live: str
+    log: str
+    spec: str | None = None
+
+
+def callback_urls(base: str, run_id: str, dispatch_id: str | None = None) -> CallbackUrls:
+    """The callback URLs of a run under a deployment's base address — the
+    address an executor elsewhere reaches this runcomposer by, such as a
+    runner's ``callback_base`` option (``https://runcomposer.shop.example``;
+    a base that already ends in ``/api/v1`` is taken as it is). With
+    ``dispatch_id``, ``spec`` is the document handed out for that dispatch.
+    Raises ``ValueError`` for an empty base or run id."""
+    root = str(base or "").strip().rstrip("/")
+    if not root:
+        raise ValueError("callback_urls needs the deployment's base address (callback_base)")
+    if not str(run_id or "").strip():
+        raise ValueError("callback_urls needs a run id")
+    if not root.endswith(_API_PATH):
+        root += _API_PATH
+    run = f"{root}/runs/{run_id}"
+    return CallbackUrls(
+        run=run,
+        results=f"{run}/results",
+        live=f"{run}/live",
+        log=f"{run}/log",
+        spec=f"{run}/dispatches/{dispatch_id}/spec" if dispatch_id else None,
+    )
 
 
 def _run_url(callback_url: str) -> str:

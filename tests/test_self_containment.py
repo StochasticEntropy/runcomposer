@@ -419,6 +419,29 @@ def test_the_reference_runners_are_built_on_the_toolkits():
     assert not {"multiprocessing", "robot", "robot.api"} & pool
     # … and no HTTP of its own in the Jenkins runner.
     assert not {"urllib.request", "http.cookiejar", "ssl", "base64"} & jenkins
+    # The callback URLs come from the SDK's helper, not from a format string.
+    assert "/api/v1" not in (PLUGINS_DIR / "jenkins.py").read_text(encoding="utf-8")
+    # The command runner executes its shards under the SDK's supervisor, and
+    # keeps no process supervision of its own: no worker processes, no
+    # signals, no sessions or process groups.
+    command_file = PLUGINS_DIR / "command_runner.py"
+    command = {name for name, _line in imported_modules(command_file)}
+    assert not {"multiprocessing", "signal", "concurrent.futures", "threading"} & command
+    tree = ast.parse(command_file.read_text(encoding="utf-8"))
+    imported_from_sdk = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "runcomposer.sdk"
+        for alias in node.names
+    }
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert "supervise_workers" in imported_from_sdk and "supervise_workers" in called
+    assert not {"killpg", "setsid", "setpgrp", "fork"} & called
+    assert "start_new_session" not in command_file.read_text(encoding="utf-8")
 
 
 # -- self-tests: a violation in a nested sub-package is seen ----------------------------

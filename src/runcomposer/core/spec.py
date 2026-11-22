@@ -39,6 +39,7 @@ __all__ = [
     "validate_document",
 ]
 
+#: The run spec version this runcomposer writes (``runspec: "1.0"``).
 SPEC_VERSION = "1.0"
 KNOWN_SECTIONS = ("runspec", "run", "selection", "source", "results", "runner")
 
@@ -190,6 +191,9 @@ class ValidationReport:
 
 
 def validate_document(doc: Any, *, for_dispatch: bool = False) -> ValidationReport:
+    """Check a run spec document against the schema and the rules beyond it;
+    the report lists errors and warnings instead of raising. With
+    ``for_dispatch``, also what a document handed to an executor needs."""
     report = ValidationReport()
     if not isinstance(doc, Mapping):
         report.errors.append(f"document must be a mapping, got {type(doc).__name__}")

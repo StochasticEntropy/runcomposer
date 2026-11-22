@@ -15,6 +15,11 @@ state), never on a fixed sleep:
    ``runcomposer serve`` on it, reachable from the container.
 3. **health** — ``GET /api/v1/runners?refresh=true``: both runner entries
    probe Jenkins and the job.
+3b. **what a job declares of its parameters** — ``JenkinsClient.
+    job_parameter_definitions`` reads the fan-out job's parameters with
+    their kinds (text, string, choice, password), the choice's choices and
+    the defaults; a trigger with a value the choice does not list starts no
+    build.
 4. **callback** — ``POST /api/v1/runs`` dispatching to ``jenkins``: the build
    runs ``runcomposer-exec`` and POSTs the bundle back, authorized by the ingest
    token of its dispatch; the run becomes ``COMPLETE``.
@@ -214,6 +219,38 @@ def what_jenkins_shows_of_the_parameters(jenkins: str, done: dict[str, Any]) -> 
     console_over = str(http("GET", f"{over}/consoleText")[1])
     check(info_over["result"] == "FAILURE" and "error=7, Argument list too long" in console_over,
           "a 131 072-byte SPEC_JSON never starts the build step: 'error=7, Argument list too long'")
+
+
+def declared_parameters(jenkins: str) -> None:
+    """Step 3b: the fan-out job's parameter definitions as the toolkit reads
+    them from a real server, and a choice value it does not list."""
+    from runcomposer.sdk.jenkins import JenkinsClient, JenkinsError, JobParameter
+
+    client = JenkinsClient(jenkins)
+    definitions = {d.name: d for d in client.job_parameter_definitions(FANOUT) or []}
+    say("parameter definitions: " + json.dumps({n: [d.kind, list(d.choices), d.default] for n, d in definitions.items()}))
+    check(definitions.get("PACE") == JobParameter("PACE", "choice", ("normal", "brisk"), "normal",
+                                                  "how the simulated execution paces itself"),
+          "the choice parameter is read with its kind, its choices in order and its default")
+    check((definitions["SPEC_B64"].kind, definitions["REGIONS"].kind, definitions["REGIONS"].default)
+          == ("text", "string", "eu"), "a text and a string parameter are read with their kinds and defaults")
+    check(definitions["INGEST_TOKEN"].kind == "password" and definitions["INGEST_TOKEN"].default is None,
+          "the password parameter is read as one, with no value shown")
+    check(client.job_parameters(FANOUT) == list(definitions), "job_parameters lists the same names in order")
+    check(not definitions["PACE"].accepts("warp") and definitions["PACE"].accepts("brisk"),
+          "accepts() refuses a value the choice does not list")
+    builds_before = len(http("GET", f"{jenkins}/job/{FANOUT}/api/json?tree=builds[number]")[1].get("builds") or [])
+    try:
+        queue_url = client.trigger(FANOUT, {"PACE": "warp", "REGIONS": "eu"})
+        refused = f"accepted, queue item {queue_url}"
+    except JenkinsError as exc:
+        refused = f"refused with status {exc.status}"
+    say(f"a trigger with PACE=warp: {refused}")
+    _, queue = http("GET", f"{jenkins}/queue/api/json?tree=items[task[name]]")
+    queued = [item for item in (queue.get("items") or []) if (item.get("task") or {}).get("name") == FANOUT]
+    builds_after = len(http("GET", f"{jenkins}/job/{FANOUT}/api/json?tree=builds[number]")[1].get("builds") or [])
+    check(refused.startswith("refused") and not queued and builds_after == builds_before,
+          "a value the choice does not list starts no build: nothing queued, no build")
 
 
 def cancel_while_queued(api: str, jenkins: str, settle: Callable[..., dict[str, Any]]) -> None:
@@ -422,6 +459,9 @@ def main() -> int:
         entries = {"jenkins", "jenkins-poll", "jenkins-fanout", "jenkins-fanout-push"}
         check(all(h["status"] == "ok" for h in health.values()) and set(health) == entries,
               "all four runner entries report ok health from the real Jenkins (server and job checked)")
+
+        # 3b. what a job declares of its parameters
+        declared_parameters(jenkins)
 
         def settle(run_id: str, states: tuple[str, ...], timeout: float = 180) -> dict[str, Any]:
             return wait_for(f"run {run_id} to reach {states}",

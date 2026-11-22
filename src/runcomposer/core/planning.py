@@ -17,6 +17,9 @@ __all__ = ["ChunkPlan", "plan_chunks", "split_max"]
 
 @dataclass(frozen=True)
 class ChunkPlan:
+    """Items distributed over chunks by :func:`plan_chunks`, balanced by the
+    durations known: the chunks, their estimates, and how much was known."""
+
     chunks: tuple[tuple[str, ...], ...]
     #: Estimated milliseconds per chunk (0.0 where nothing is known) — the
     #: sum of the *measured* durations of its items only.

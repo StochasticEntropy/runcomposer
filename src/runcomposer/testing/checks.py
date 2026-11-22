@@ -28,7 +28,7 @@ from runcomposer.core.errors import (
     ParseError,
     RunActive,
 )
-from runcomposer.core.events import LIFECYCLE_KINDS, LOG, WARNING
+from runcomposer.core.events import ALL_KINDS
 from runcomposer.core.lifecycle import ACTIVE_STATES
 from runcomposer.core.model import REPORTABLE_STATUSES, Item, LiveStatus, RunEvent, Verdict
 from runcomposer.core.parameters import PARAMETER_KINDS, Parameter, validate_parameters
@@ -283,6 +283,7 @@ def check_runner(
     cancel_within: float = 10.0,
     allow_missing: bool = False,
     timeout: float = 60.0,
+    health_within: float = 10.0,
 ) -> FakeDispatchContext:
     """Check a :class:`runcomposer.sdk.Runner`: its description, its health,
     and one dispatch against ``ctx`` (default: a
@@ -304,6 +305,16 @@ def check_runner(
       items unreported or delivered native names the catalog does not know
       (both are ``INCOMPLETE`` runs in runcomposer); off by default.
     - ``timeout`` — how long ``dispatch`` may take at all.
+    - ``health_within`` — how long ``health()`` may take: runcomposer asks
+      for it on every ``GET /api/v1/runners`` and in ``doctor``, so a check
+      that can block (a remote service that does not answer) needs a
+      timeout of its own (rule ``runner.health-bounded``).
+
+    A complete dispatch records everything — artifacts, links, log lines —
+    *before* the delivery that completes it: that delivery completes the
+    run, and what comes after it arrives after the run's completion event,
+    unseen by an observer reacting to ``run.completed`` (rule
+    ``runner.records-before-last-delivery``).
 
     When the runner's ``RunnerInfo.result_format`` is set and the context
     built its own document, the document expects that format — as a run
@@ -314,7 +325,7 @@ def check_runner(
     _members(runner, Runner, "runner.contract")
     info = runner.describe()
     _check_info(info)
-    health = runner.health()
+    health = _bounded_health(runner, health_within)
     _require(isinstance(health, Health), "runner.health", f"health() must return a Health, got {health!r}")
     _require(
         health.status in HEALTH_STATUSES,
@@ -407,6 +418,14 @@ def check_runner(
             )
         if ended == "complete" and not allow_missing:
             _check_reported(ctx)
+        if ended == "complete":
+            _require(
+                not ctx.late_records,
+                "runner.records-before-last-delivery",
+                f"recorded after the delivery that completed the dispatch: {ctx.late_records[:3]} — "
+                "in runcomposer that delivery completes the run, and what follows it arrives after "
+                "run.completed; record artifacts, links and log lines before the last deliver()",
+            )
     if expect is not None:
         _require(
             ended == expect,
@@ -431,6 +450,30 @@ def check_runner(
             "runner.cancel", f"after a cancellation the dispatch ended {ended!r}",
         )
     return ctx
+
+
+def _bounded_health(runner: Any, within: float) -> Any:
+    """``runner.health()``, required to answer within ``within`` seconds."""
+    answer: dict[str, Any] = {}
+
+    def ask() -> None:
+        try:
+            answer["health"] = runner.health()
+        except BaseException as exc:
+            answer["error"] = exc
+
+    thread = threading.Thread(target=ask, name="runcomposer-check-health", daemon=True)
+    thread.start()
+    thread.join(within)
+    if thread.is_alive():
+        raise _fail(
+            "runner.health-bounded",
+            f"health() did not answer within {within:g}s — it is asked on every GET "
+            "/api/v1/runners and by doctor; give a check that can block a timeout of its own",
+        )
+    if "error" in answer:
+        raise answer["error"]
+    return answer["health"]
 
 
 def _check_reported(ctx: FakeDispatchContext) -> None:
@@ -552,8 +595,10 @@ def _check_declared(ctx: FakeDispatchContext) -> None:
 
 
 def sample_events(run_id: str = "01KITRUN000000000000000000") -> list[RunEvent]:
-    """One event of every kind an observer may be told about."""
-    kinds = (*LIFECYCLE_KINDS, LOG, WARNING)
+    """One event of every kind an observer may be told about — made from the
+    one list of event kinds there is (``runcomposer.core.events.ALL_KINDS``),
+    so it cannot fall behind it."""
+    kinds = ALL_KINDS
     return [
         RunEvent(
             seq=index + 1,
@@ -746,7 +791,13 @@ def _check_dispatches(store: Any) -> None:
     _require(store.get_dispatch("01KITD1") == updated, rule, "get_dispatch differs from update_dispatch's answer")
     _require([d.dispatch_id for d in store.owned_dispatches()] == ["01KITD1"], "store.owned-dispatches",
              "owned_dispatches lists every dispatch that names an owner")
-    store.update_dispatch("01KITD1", state="COMPLETE", owner=None, completion="PASS", completed_at="2026-07-07T10:05:00Z")
+    caused = store.update_dispatch("01KITD1", error="interrupted while RUNNING", error_code="interrupted",
+                                   error_owner="host:1:token")
+    _require((caused.error_code, caused.error_owner) == ("interrupted", "host:1:token")
+             and store.get_dispatch("01KITD1") == caused, "store.dispatch-error-code",
+             f"update_dispatch(error_code=…, error_owner=…) must be kept and read back: {caused!r}")
+    store.update_dispatch("01KITD1", state="COMPLETE", owner=None, completion="PASS", completed_at="2026-07-07T10:05:00Z",
+                          error="", error_code="", error_owner=None)
     _require(store.owned_dispatches() == [], "store.owned-dispatches", "a released dispatch is not owned")
     store.add_dispatch(run.id, dispatch_id="01KITD2", mode="export", state="AWAITING_RESULTS", exclusive=True)
     _require([d.dispatch_id for d in store.get_run(run.id).dispatches] == ["01KITD1", "01KITD2"], rule,

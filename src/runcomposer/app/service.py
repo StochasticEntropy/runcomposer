@@ -113,6 +113,10 @@ def parameter_json(parameter: Parameter) -> dict[str, Any]:
 
 
 class Service:
+    """A runcomposer deployment in this process — catalog, store, runners,
+    dispatch manager — driven from Python (compose, dispatch, wait, read)
+    as the CLI and the HTTP API drive it; use it as a context manager."""
+
     def __init__(self, config: Config):
         self.config = config
         self._parts_lock = threading.RLock()

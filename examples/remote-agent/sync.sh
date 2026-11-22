@@ -20,9 +20,8 @@
 #   RC_PYTHON       interpreter on the executing machine (default: python3)
 #   RUNCOMPOSER     the runcomposer command (default: runcomposer)
 #
-# No host, user, or path of anybody's infrastructure appears in this file: the
-# default transport is a directory copy so the example runs on one machine, in
-# CI, and in the test suite.
+# The default transport is a directory copy, so the example runs on one
+# machine, in CI, and in the test suite.
 set -eu
 
 kit_dir=$(cd "$(dirname "$0")" && pwd)

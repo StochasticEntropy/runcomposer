@@ -93,10 +93,14 @@ class ParseError(RunComposerError, ValueError):
 
 
 class NotFound(RunComposerError, LookupError):
+    """Something asked for does not exist (HTTP 404)."""
+
     code = "not-found"
 
 
 class UnknownRun(NotFound):
+    """No run has this id."""
+
     code = "unknown-run"
 
     def __init__(self, run_id: object):
@@ -108,6 +112,8 @@ class UnknownRun(NotFound):
 
 
 class Conflict(RunComposerError):
+    """The request conflicts with the state of what it addresses (HTTP 409)."""
+
     code = "conflict"
 
 
@@ -148,14 +154,20 @@ class DispatchCancelled(RunComposerError):
 
 
 class AuthRequired(RunComposerError):
+    """A token is needed and none was sent (HTTP 401)."""
+
     code = "token-required"
 
 
 class Forbidden(RunComposerError):
+    """The token sent does not grant this request (HTTP 403)."""
+
     code = "token-rejected"
 
 
 class PayloadTooLarge(RunComposerError):
+    """An upload is over the configured size limit (HTTP 413)."""
+
     code = "payload-too-large"
 
 

@@ -858,7 +858,9 @@ class DispatchManager:
             return
         if not ctx.declared:
             if cancelled:
-                ledger.move(ctx.dispatch_id, "CANCELLED", error="cancelled before the hand-off")
+                ledger.move(
+                    ctx.dispatch_id, "CANCELLED", error="cancelled before the hand-off", error_code="cancelled"
+                )
                 return
             answered = isinstance(error, (DispatchRefused, InvalidParameter))
             if error is None:
@@ -883,12 +885,14 @@ class DispatchManager:
             ledger.discard(ctx.dispatch_id, reason, crashed=error is not None and not answered)
             return
         if cancelled:
-            ledger.move(ctx.dispatch_id, "CANCELLED", error="cancelled on request")
+            ledger.move(ctx.dispatch_id, "CANCELLED", error="cancelled on request", error_code="cancelled")
             return
         if error is not None:
             if not isinstance(error, (DispatchRefused, InvalidParameter)):
                 self._log_crash("failed after the hand-off", ctx, error)
-            ledger.move(ctx.dispatch_id, "FAILED", error=f"{type(error).__name__}: {error}")
+            ledger.move(
+                ctx.dispatch_id, "FAILED", error=f"{type(error).__name__}: {error}", error_code="runner-raised"
+            )
             return
         # A runner that declared no shards at all has nothing left to wait
         # for: the dispatch is settled as it stands (INCOMPLETE — nothing
@@ -969,7 +973,8 @@ class DispatchManager:
                 # of its to stop — settle it here.
                 try:
                     self._service.ledger.move(
-                        active.ctx.dispatch_id, "CANCELLED", error="cancelled while queued"
+                        active.ctx.dispatch_id, "CANCELLED", error="cancelled while queued",
+                        error_code="cancelled",
                     )
                 finally:
                     with self._lock:
@@ -999,7 +1004,9 @@ class DispatchManager:
             ctx.request_cancel()
             self._call_runner_cancel(runner, ctx)
         try:
-            service.ledger.move(dispatch.dispatch_id, "CANCELLED", error="cancelled on request")
+            service.ledger.move(
+                dispatch.dispatch_id, "CANCELLED", error="cancelled on request", error_code="cancelled"
+            )
         except InvalidTransition:
             # The last results arrived — from another process, say — while
             # the executor was being stopped: the run completed, and that is

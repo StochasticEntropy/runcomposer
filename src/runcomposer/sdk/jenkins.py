@@ -20,9 +20,12 @@ covers what a runner needs from a Jenkins server and nothing else:
   from queue item to its end that is taken back when the dispatch is
   cancelled meanwhile, and that can ride out the server being away for a
   while (``outage_tolerance_s``: a restart, a proxy that drops connections);
-- **the job's declared parameters** (``job_parameters``) — Jenkins ignores a
-  build parameter its job does not declare, silently, so this is how a
-  runner finds out before anybody wonders why the job did not get it;
+- **the job's declared parameters** (``job_parameters``: the names;
+  ``job_parameter_definitions``: name, kind, choices and default of each, as
+  :class:`JobParameter`) — Jenkins ignores a build parameter its job does
+  not declare, silently, and does not start a build whose choice parameter
+  gets a value it does not list, so this is how a runner finds out before
+  anybody wonders why the job did not get it;
 - **results**: the archived artifacts of a build, and any other URL below
   the build (what a publisher plugin serves without archiving it).
 
@@ -48,6 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +60,7 @@ __all__ = [
     "JenkinsError",
     "JenkinsQueueCancelled",
     "JenkinsTimeout",
+    "JobParameter",
     "decode_spec",
     "encode_spec",
     "queue_id_of",
@@ -94,6 +99,36 @@ class JenkinsTimeout(JenkinsError):
         super().__init__(f"the Jenkins build did not {what} within {timeout_s:g}s")
         self.what = what
         self.timeout_s = timeout_s
+
+
+@dataclass(frozen=True)
+class JobParameter:
+    """One build parameter a Jenkins job declares
+    (:meth:`JenkinsClient.job_parameter_definitions`).
+
+    - ``name`` — the parameter's name.
+    - ``kind`` — Jenkins's type of it without ``ParameterDefinition``, in
+      lower case: ``string``, ``text``, ``choice``, ``boolean``,
+      ``password``, or whatever a plugin adds; ``""`` when the server did
+      not say.
+    - ``choices`` — what a ``choice`` parameter lists, in its order (empty
+      for the other kinds).
+    - ``default`` — the default value the job declares, ``None`` when it
+      shows none (a password parameter never does).
+    - ``description`` — the job's description of it.
+    """
+
+    name: str
+    kind: str = ""
+    choices: tuple[str, ...] = ()
+    default: Any = None
+    description: str = ""
+
+    def accepts(self, value: str) -> bool:
+        """Whether a trigger with ``value`` for this parameter starts a
+        build: a ``choice`` parameter takes only what it lists; every other
+        kind takes any text."""
+        return self.kind != "choice" or str(value) in self.choices
 
 
 def encode_spec(content: bytes) -> str:
@@ -196,20 +231,35 @@ class JenkinsClient:
         value never arrives. The definitions are read where current servers
         keep them (the job's ``ParametersDefinitionProperty``) and where older
         ones did (an action of the job)."""
-        tree = "property[parameterDefinitions[name]],actions[parameterDefinitions[name]]"
+        definitions = self.job_parameter_definitions(job)
+        return [definition.name for definition in definitions] if definitions else None
+
+    def job_parameter_definitions(self, job: str) -> list[JobParameter] | None:
+        """The build parameters the job declares, in its order, each with its
+        kind, choices, default and description (:class:`JobParameter`) —
+        ``None`` when the job is not parameterized at all. Errors and the
+        single attempt as :meth:`job_parameters`.
+
+        What it adds to the names: a ``choice`` parameter refuses a value it
+        does not list, and Jenkins then starts no build — ``definition.
+        accepts(value)`` says beforehand whether a value will be taken."""
+        fields = "name,type,description,choices,defaultParameterValue[value]"
+        tree = f"property[parameterDefinitions[{fields}]],actions[parameterDefinitions[{fields}]]"
         document = self.get_json(
             f"{self.job_url(job)}/api/json?tree=" + urllib.parse.quote(tree, safe="[],{}"),
             retry=False,
         )
-        names: list[str] = []
+        found: dict[str, JobParameter] = {}
         for holder in [*(document.get("property") or []), *(document.get("actions") or [])]:
             if not isinstance(holder, Mapping):
                 continue
             for definition in holder.get("parameterDefinitions") or []:
-                name = definition.get("name") if isinstance(definition, Mapping) else None
-                if name and str(name) not in names:
-                    names.append(str(name))
-        return names or None
+                if not isinstance(definition, Mapping) or not definition.get("name"):
+                    continue
+                name = str(definition["name"])
+                if name not in found:
+                    found[name] = _job_parameter(name, definition)
+        return list(found.values()) or None
 
     # -- trigger → queue item → build -------------------------------------------------------
 
@@ -674,3 +724,19 @@ class _Answers:
                 f"outage_tolerance_s={self.tolerance_s:g}: {exc}",
                 status=exc.status,
             ) from exc
+
+
+def _job_parameter(name: str, definition: Mapping[str, Any]) -> JobParameter:
+    """A parameter definition of a job's ``api/json`` as a :class:`JobParameter`."""
+    kind = str(definition.get("type") or "")
+    if kind.endswith("ParameterDefinition"):
+        kind = kind[: -len("ParameterDefinition")]
+    choices = definition.get("choices")
+    default = definition.get("defaultParameterValue")
+    return JobParameter(
+        name=name,
+        kind=kind.lower(),
+        choices=tuple(str(choice) for choice in choices) if isinstance(choices, list) else (),
+        default=default.get("value") if isinstance(default, Mapping) else None,
+        description=str(definition.get("description") or ""),
+    )

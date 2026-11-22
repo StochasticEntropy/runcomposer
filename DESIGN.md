@@ -149,7 +149,7 @@ MAJOR. `runcomposer validate` pins to the newest schema it knows.
 runspec: "1.0"
 
 run:
-  id: "01JZ9GQ2W8KJ3F6M4P5R7T9V"   # ULID, minted at compose time; correlation key for the RUN
+  id: "01JZEXAMPLE0000000000000AA" # ULID, minted at compose time; correlation key for the RUN
   title: "Payments regression without quarantined tests"
   created_at: "2026-07-06T09:14:03Z"
   labels:                           # free-form provenance; stored, never interpreted
@@ -902,8 +902,8 @@ processes (started with the `spawn` method, one per shard, at most
   also a per-run parameter, `partition_mode` (a choice of `split` / `each`,
   default the configured mode), honoured alike by preview and dispatch.
   `max_chunks_per_partition: N` bounds how many chunks of one partition are
-  cut, and so run at once — `1`: a partition that is one environment never
-  executes two chunks at the same time. History comes from the store over the last
+  cut, and so run at once — `1`: each partition runs one chunk at a time,
+  so a shared environment is never used twice at once. History comes from the store over the last
   `history_depth` dispatches of runs matching `history_selector.labels`,
   restricted to `history_statuses` when set (`[PASS]`: a test that fails usually
   stops short of its normal length and would skew the balance), seeded durations filling the
@@ -925,8 +925,8 @@ processes (started with the `spawn` method, one per shard, at most
   containing `[` or `*` is that one test. `suite_root` or `suite_roots`: with
   several roots each item is executed from the root it came from. Every
   item is checked against the roots, a single root included: an item belongs
-  when its id begins with the root suite's name and its recorded source lies
-  under the root (an item the Robot source collected from that very root
+  when the first segment of its id is the name Robot gives the root, and its
+  recorded source lies under the root (an item the Robot source collected from that very root
   belongs whatever the suite calls itself). A mismatch — a catalog built
   from a parent directory, another copy of the suites — refuses preview and
   dispatch before the hand-off, naming the item and the root, instead of

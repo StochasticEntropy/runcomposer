@@ -66,7 +66,7 @@ from runcomposer.sdk import (
 __all__ = ["MIN_SQLITE_VERSION", "SCHEMA_VERSION", "SqliteRunStore", "sqlite_shortfall"]
 
 #: Bumped with every schema change; see ``_migrate``.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: The oldest SQLite library the store runs on (the upsert; see the module doc).
 MIN_SQLITE_VERSION = (3, 24, 0)
@@ -127,7 +127,9 @@ CREATE TABLE IF NOT EXISTS dispatches (
     completed_at TEXT,
     summary TEXT NOT NULL DEFAULT '{}',
     owner TEXT,
-    cancel_requested INTEGER NOT NULL DEFAULT 0
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT NOT NULL DEFAULT '',
+    error_owner TEXT
 );
 CREATE TABLE IF NOT EXISTS dispatch_specs (
     dispatch_id TEXT PRIMARY KEY,
@@ -205,7 +207,10 @@ CREATE INDEX IF NOT EXISTS idx_tokens_run ON ingest_tokens(run_id)
 
 #: Columns ``update_dispatch`` may set, and how each value is stored.
 _JSON_COLUMNS = ("shards", "shard_items", "shard_groups", "links", "summary", "parameters")
-_PLAIN_COLUMNS = ("state", "spec_sha256", "error", "plan", "completion", "completed_at", "owner")
+_PLAIN_COLUMNS = (
+    "state", "spec_sha256", "error", "plan", "completion", "completed_at", "owner",
+    "error_code", "error_owner",
+)
 
 
 def _fold(value: Any) -> str:
@@ -392,8 +397,13 @@ class SqliteRunStore(StoreBase):
         for statement in _SCHEMA.split(";"):
             if statement.strip():
                 conn.execute(statement)
-        # Columns added after a table first existed (schema 3: shard groups).
-        _add_columns(conn, "dispatches", {"shard_groups": "TEXT NOT NULL DEFAULT '{}'"})
+        # Columns added after a table first existed (schema 3: shard groups;
+        # schema 4: why a dispatch ended with an error).
+        _add_columns(conn, "dispatches", {
+            "shard_groups": "TEXT NOT NULL DEFAULT '{}'",
+            "error_code": "TEXT NOT NULL DEFAULT ''",
+            "error_owner": "TEXT",
+        })
         _add_columns(conn, "artifact_refs", {"shard_group": "TEXT"})
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -1079,6 +1089,8 @@ def _dispatch_record(row: sqlite3.Row) -> DispatchRecord:
         summary=json.loads(row["summary"]),
         owner=row["owner"],
         cancel_requested=bool(row["cancel_requested"]),
+        error_code=row["error_code"],
+        error_owner=row["error_owner"],
     )
 
 
