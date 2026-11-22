@@ -1,10 +1,11 @@
-"""Every place a filter is configured or handed over as one string reads it
-as filter text, like a string ``tag_filter`` over the API: the selections of
-the ``ui:`` section, the leaves of a taxonomy, and the testing kit's
+"""Every place a whole filter is configured or handed over as one string
+reads it as filter text, like a string ``tag_filter`` over the API: the
+selections of the ``ui:`` section and the testing kit's
 ``FakeDispatchContext.from_source``. A string that does not parse is
-refused there as it is over the API, naming the entry and the column. Also
-the language
-the server's own free text is written in (``core.text_language``)."""
+refused there as it is over the API, naming the entry and the column.
+Where exactly one pattern is expected — a taxonomy leaf's ``filter`` — the
+string is that pattern as written, as in 0.1. Also the language the
+server's own free text is written in (``core.text_language``)."""
 
 from __future__ import annotations
 
@@ -124,48 +125,101 @@ def _items() -> list[Item]:
 
 
 class TestTaxonomyLeaves:
-    def test_a_leaf_filter_is_filter_text_naming_one_pattern(self):
-        document = {"taxonomy": [{"label": "Sprint 12", "filter": '"Sprint 12"'}, {"label": "Odd", "filter": '"Auth OR Cart"'}]}
+    """A leaf's ``filter`` is one pattern written as itself — the taxonomy
+    file format of 0.1, unchanged — not filter text: nothing is lexed or
+    unquoted, spaces and parentheses are characters of the pattern."""
+
+    def test_a_leaf_filter_is_the_pattern_as_written(self):
+        document = {"taxonomy": [
+            {"label": "Sprint 12", "filter": "Sprint 12"},
+            {"label": "Cart", "filter": "regex:^Cart(V2)?$"},
+        ]}
         warnings: list[str] = []
         validate_taxonomy(document, warnings=warnings)
         assert warnings == []
         resolved = resolve_taxonomy(document, _items())
-        sprint, odd = resolved["taxonomy"][:2]
+        sprint, cart = resolved["taxonomy"][:2]
         # A resolved leaf's filter is the pattern itself — what a client adds as one rule.
         assert (sprint["filter"], sprint["item_count"]) == ("Sprint 12", 1)
-        assert (odd["filter"], odd["item_count"]) == ("Auth OR Cart", 1)
+        assert (cart["filter"], cart["tag_count"]) == ("regex:^Cart(V2)?$", 2)
         assert resolved["warnings"] == []
+        # And the resolved tree is a taxonomy document again.
+        assert validate_taxonomy({"taxonomy": resolved["taxonomy"]})
 
-    def test_a_leaf_that_reads_as_an_expression_is_refused_with_how_to_write_it(self):
-        with pytest.raises(TaxonomyError, match=r"reads as the filter expression 'Auth OR Cart'.*\"Auth OR Cart\" for the tag"):
-            validate_taxonomy({"taxonomy": [{"label": "Odd", "filter": "Auth OR Cart"}]})
-        with pytest.raises(TaxonomyError, match=r"taxonomy\[0\] \('All'\) has the filter '\*'"):
-            validate_taxonomy({"taxonomy": [{"label": "All", "filter": "*"}]})
+    def test_a_pattern_in_double_quotes_is_refused_saying_to_write_it_without(self):
+        with pytest.raises(TaxonomyError, match=r"\('Cart'\) has the filter '\"regex:\^Cart\(V2\)\?\$\"', a pattern "
+                                                r"wrapped in double quotes .* write 'regex:\^Cart\(V2\)\?\$' without the inner quotes"):
+            validate_taxonomy({"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]})
 
-    def test_unreadable_leaf_text_names_the_node(self):
-        with pytest.raises(TaxonomyError, match=r"taxonomy\[0\] \('Cart'\) filter: cannot read the filter text"):
-            validate_taxonomy({"taxonomy": [{"label": "Cart", "filter": "Cart AND"}]})
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("", r"has an empty 'filter'"),
+            ("   ", r"has an empty 'filter'"),
+            ("prefix:", r"empty pattern in 'prefix:'"),
+            ("regex:", r"empty pattern in 'regex:'"),
+            ("regex:^(unclosed", r"invalid regular expression"),
+        ],
+    )
+    def test_what_names_no_pattern_is_refused_naming_the_node(self, value, message):
+        with pytest.raises(TaxonomyError, match=message):
+            validate_taxonomy({"taxonomy": [{"label": "Cart", "filter": value}]})
 
-    def test_a_pattern_that_does_not_parse_unquoted_is_refused_with_the_column(self):
-        with pytest.raises(TaxonomyError, match=r"taxonomy\[0\] \('Cart'\) filter: cannot read the filter text at column 1: "
-                                                r"the pattern 'regex:\^Cart' runs into"):
-            resolve_taxonomy({"taxonomy": [{"label": "Cart", "filter": "regex:^Cart(V2)?$"}]}, _items())
-        with pytest.raises(TaxonomyError, match=r"\('Sprint'\) filter: cannot read the filter text at column 8"):
-            validate_taxonomy({"taxonomy": [{"label": "Sprint", "filter": "Sprint 12"}]})
-        resolved = resolve_taxonomy({"taxonomy": [{"label": "Cart", "filter": '"regex:^Cart(V2)?$"'}]}, _items())
-        cart = resolved["taxonomy"][0]
-        assert cart["filter"] == "regex:^Cart(V2)?$" and cart["tag_count"] == 2
-        assert resolved["warnings"] == []
+    def test_a_non_string_filter_is_refused_with_the_plain_example(self):
+        with pytest.raises(TaxonomyError, match=r'write alternatives as one regex, e\.g\. filter: "regex:\^\(Visa\|Mastercard\)\$"'):
+            validate_taxonomy({"taxonomy": [{"label": "Cards", "filter": ["Visa", "Mastercard"]}]})
 
-    def test_the_resolved_taxonomy_over_http_reads_a_quoted_leaf_without_a_warning(self, make_client, tmp_path):
+    @pytest.mark.parametrize("value", ["Cart OR Checkout", "NOT Smoke", "Payments AND Smoke", "*"])
+    def test_a_leaf_that_looks_like_an_expression_is_the_tag_spelled_so_with_a_warning(self, value):
+        warnings: list[str] = []
+        validate_taxonomy({"taxonomy": [{"label": "Odd", "filter": value}]}, warnings=warnings)
+        (warning,) = warnings
+        assert f"('Odd'): the filter {value!r} is read as the single tag spelled so" in warning
+        assert "write alternatives as one regex" in warning
+        resolved = resolve_taxonomy({"taxonomy": [{"label": "Odd", "filter": "Auth OR Cart"}]}, _items())
+        assert resolved["taxonomy"][0]["filter"] == "Auth OR Cart"  # the tag of that name
+        assert len(resolved["warnings"]) == 1
+
+    def test_the_documented_taxonomy_of_0_1_7_loads_unchanged(self):
+        """The example of 0.1.7's docs/taxonomy.md, as it was written then."""
+        import yaml
+
+        document = yaml.safe_load(OLD_DOCUMENTED_TAXONOMY)
+        warnings: list[str] = []
+        validate_taxonomy(document, warnings=warnings)
+        assert warnings == []
+
+    def test_the_resolved_taxonomy_over_http_serves_the_pattern_as_written(self, make_client, tmp_path):
         (tmp_path / "taxonomy.yaml").write_text(
-            "taxonomy:\n  - { label: Cart, filter: '\"regex:^Cart(V2)?$\"' }\n  - { label: Smoke, filter: Smoke }\n",
+            "taxonomy:\n  - { label: Cart, filter: 'regex:^Cart(V2)?$' }\n  - { label: Smoke, filter: Smoke }\n",
             encoding="utf-8",
         )
         client, _service = make_client(core={"taxonomy_file": "taxonomy.yaml"})
         body = client.get(f"{API}/taxonomy", params={"resolve": "true"}).json()
-        assert body["warnings"] == [] and body["taxonomy"][0]["tag_count"] >= 1
-        assert client.get(f"{API}/taxonomy").json()["taxonomy"][0]["filter"] == '"regex:^Cart(V2)?$"', "the file is served as written"
+        assert body["warnings"] == [] and body["taxonomy"][0]["filter"] == "regex:^Cart(V2)?$"
+        assert body["taxonomy"][0]["tag_count"] >= 1
+        assert client.get(f"{API}/taxonomy").json()["taxonomy"][0]["filter"] == "regex:^Cart(V2)?$"
+
+
+#: The example taxonomy of 0.1.7's docs/taxonomy.md (``git show v0.1.7:docs/taxonomy.md``).
+OLD_DOCUMENTED_TAXONOMY = """\
+taxonomy:
+  - label: Areas                                     # group: a heading, not clickable
+    children:
+      - { label: Payments, filter: "Payments" }      # literal tag — matched case-INsensitively
+      - { label: Checkout, filter: "prefix:Checkout-" }   # every tag starting "Checkout-" (case-sensitive)
+      - label: Cart                                  # both: clickable AND a parent
+        filter: "regex:^Cart(V2)?$"
+        children:
+          - { label: Cart v2 only, filter: "CartV2" }
+  - label: Suites
+    children:
+      - { label: Smoke, filter: "Smoke" }
+      - { label: Regression, filter: "Regression" }
+      - { label: Payment methods, filter: "regex:^(Visa|Mastercard|Paypal)$" }   # "any of these" — one regex
+  - label: Quarantine                                # a leaf needs no children, at any level
+    filter: "prefix:Quarantine-"
+"""
 
 
 # -- the testing kit ------------------------------------------------------------------------
@@ -209,19 +263,19 @@ def test_a_syntax_error_over_http_carries_problem_position_and_the_word_found(cl
 
 class TestTheDriftCheckReadsLeavesAsTheTreeDoes:
     """`taxonomy-check` holds the leaves against the catalog's tags: it reads
-    a leaf's filter as filter text, exactly as the resolved tree does — a
-    quoted pattern is the pattern, not a tag with quotes around it."""
+    a leaf's filter as the resolved tree does — the pattern as written."""
 
-    def test_a_quoted_leaf_claims_its_tags_and_is_not_reported_dead(self, tmp_path, capsys):
+    def test_a_leaf_claims_its_tags_and_an_expression_lookalike_is_noted_once(self, tmp_path, capsys):
         from runcomposer.cli import main
 
         from .conftest import write_config
 
         (tmp_path / "tree.yaml").write_text(
             "taxonomy:\n"
-            "  - {label: Cart, filter: '\"regex:^Cart(V2)?$\"'}\n"
-            "  - {label: Sprint, filter: '\"Sprint-12\"'}\n"
-            "  - {label: Returns, filter: '\"Returns\"'}\n",
+            "  - {label: Cart, filter: 'regex:^Cart(V2)?$'}\n"
+            "  - {label: Sprint, filter: Sprint-12}\n"
+            "  - {label: Returns, filter: Returns}\n"
+            "  - {label: Either, filter: Cart OR Checkout}\n",
             encoding="utf-8",
         )
         config = write_config(tmp_path, core={"taxonomy_file": "tree.yaml"})
@@ -230,8 +284,11 @@ class TestTheDriftCheckReadsLeavesAsTheTreeDoes:
         assert code == 1
         unclaimed = out.split("tags no leaf claims")[1].split("leaves that match nothing")[0].split()
         assert "Cart" not in unclaimed and "CartV2" not in unclaimed and "Sprint-12" not in unclaimed
-        assert "leaves that match nothing (clickable, selects nothing): 1" in out
-        assert 'Returns  →  "Returns"' in out
+        assert "leaves that match nothing (clickable, selects nothing): 2" in out
+        assert "Returns  →  Returns\n" in out
+        # The lookalike matches nothing: its note is on its own row, and nowhere else.
+        assert out.count("is read as the single tag spelled so") == 1
+        assert "Either  →  Cart OR Checkout  (the filter 'Cart OR Checkout' is read as the single tag" in out
 
     def test_the_bundled_demo_taxonomy_reads_without_a_warning(self, tmp_path):
         from runcomposer.sdk import Service, load_config

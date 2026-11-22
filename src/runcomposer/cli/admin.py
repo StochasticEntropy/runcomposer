@@ -190,6 +190,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"taxonomy: {len(unclaimed)} tag(s) no leaf claims, {len(dead)} leaf/leaves "
                     "matching nothing (details: runcomposer taxonomy-check)"
                 )
+            from runcomposer.core.taxonomy import leaf_warning
+
+            report["taxonomy"]["warnings"] = [
+                f"{label}: {note}" for label, written in leaves if (note := leaf_warning(written))
+            ]
             stale = service.recover()
             report["recovered_stale"] = [dispatch.run_id for dispatch in stale]
 
@@ -229,6 +234,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"taxonomy: {'configured' if taxonomy['configured'] else 'bundled demo taxonomy'}, "
               f"{taxonomy['leaves']} leaf pattern(s); {taxonomy['unclaimed_tags']} unclaimed "
               f"tag(s), {taxonomy['dead_leaves']} dead leaf/leaves")
+        for warning in taxonomy.get("warnings", []):
+            print(f"  warning: {warning}")
         if report["recovered_stale"]:
             print(f"recovered: {len(report['recovered_stale'])} interrupted run(s) marked STALE")
     if problems:

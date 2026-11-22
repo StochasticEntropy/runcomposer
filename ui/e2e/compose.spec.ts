@@ -120,6 +120,25 @@ test("build a filter: picker with counts, a group, NOT and a raw pattern — kep
   await expect(page.locator(".preview tbody tr[data-item-id]").first()).toContainText(compiled.items[0]!.name);
 });
 
+test("a taxonomy leaf with parentheses in its pattern lands as one rule, quoted in the text", async ({ page, open, api }) => {
+  await open();
+  await page.getByRole("button", { name: msg("filter.pick") }).click();
+  const dialog = page.getByRole("dialog", { name: msg("picker.title") });
+  // The demo taxonomy's Cart leaf is `filter: "regex:^Cart(V2)?$"`, written as itself.
+  await dialog.getByRole("treeitem", { name: /^Cart\b/ }).first().click();
+  await dialog.getByRole("button", { name: msg("picker.apply") }).click();
+  await expect(dialog).toBeHidden();
+  const rule = page.locator(".expr .chip");
+  await expect(rule).toHaveCount(1);
+  await expect(rule).toHaveAttribute("data-pattern", "regex:^Cart(V2)?$");
+  // One rule is its own sentence; its text form — the link's — is the pattern quoted.
+  await expect.poll(() => filterOf(page)).toBe('"regex:^Cart(V2)?$"');
+  // That text is filter text: the server reads it back to that one pattern.
+  const compiled = await api.post<Compiled>("/selection/compile", { tag_filter: '"regex:^Cart(V2)?$"', limit: 0 });
+  expect(compiled.count).toBeGreaterThan(0);
+  await expectPreview(page, compiled.count, 60);
+});
+
 test("in the picker a tick is a switch: unticking takes the tag out of the filter", async ({ page, open, api }) => {
   await open("#/compose?f=" + encodeURIComponent("(Payments OR Checkout) AND Smoke"));
   const before = await api.post<Compiled>("/selection/compile", {

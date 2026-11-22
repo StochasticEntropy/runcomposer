@@ -277,7 +277,8 @@ def format_filter_text(data: Any) -> str:
 def read_filter_string(text: str) -> tuple[Any, str | None]:
     """A filter given as one string where a filter is taken (a selection's
     ``tag_filter``, the command line's filter argument, a configured quick
-    filter or taxonomy leaf) → ``(AST data, None)``.
+    filter, preset or default filter) → ``(AST data, None)``. A taxonomy
+    leaf's ``filter`` is not one: it is one pattern, written as itself.
 
     The string is filter text, read by :func:`parse_filter_text` and by
     nothing else — one grammar, one answer, the same as the web UI's text

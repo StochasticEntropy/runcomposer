@@ -638,12 +638,12 @@ the union of two tags, so write it as `'"Auth OR Cart"'`.
 The same reading applies wherever a filter is configured or handed over as
 one string: the `filter` of `ui.quick_filters`, `ui.presets` and
 `ui.default_filter` (a string that does not parse refuses startup, naming
-the entry), a taxonomy leaf's `filter` (which must read as one pattern —
-quote a tag spelled like an expression or holding a space), and the
-testing kit's
+the entry), and the testing kit's
 `FakeDispatchContext.from_source(source, selection="Auth OR Cart")`. The SDK
 exports the text form: `parse_filter_text`, `read_filter_string`,
-`quote_pattern` and `FilterSyntaxError`.
+`quote_pattern` and `FilterSyntaxError`. A taxonomy leaf's `filter` is not
+filter text: it is one pattern, written as itself
+([docs/taxonomy.md](taxonomy.md#the-pattern-in-a-leaf)).
 
 ### A filter as a YAML/JSON AST
 

@@ -242,13 +242,28 @@ def cmd_taxonomy_check(args: argparse.Namespace) -> int:
         section("tags no leaf claims (invisible in the tree)", unclaimed)
     else:
         print("\nevery catalog tag is reachable from the taxonomy")
+    from runcomposer.core.taxonomy import leaf_warning
+
     if dead:
+        # A dead leaf that looks like an expression says why on its own row
+        # — once, not again among the warnings below.
         section(
             "leaves that match nothing (clickable, selects nothing)",
-            [f"{label}  →  {pattern}" for label, pattern in dead],
+            [
+                f"{label}  →  {pattern}" + (f"  ({note})" if (note := leaf_warning(pattern)) else "")
+                for label, pattern in dead
+            ],
         )
     else:
         print("every taxonomy leaf matches at least one tag")
+    dead_labels = {label for label, _pattern in dead}
+    noted = [
+        f"{label}  →  {note}"
+        for label, written in leaves
+        if label not in dead_labels and (note := leaf_warning(written))
+    ]
+    if noted:
+        section("warnings", noted)
 
     resolved = service.resolved_taxonomy()["resolved"]
     print(

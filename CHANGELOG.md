@@ -151,9 +151,8 @@ not exist or worked differently:
   exit `1`.
 - **A string filter is filter text, and nothing else** wherever a filter
   is one string — a selection's `tag_filter` over the API, the CLI's
-  `FILTER`, `ui.quick_filters`, `ui.presets`, `ui.default_filter`, a
-  taxonomy leaf's `filter`, `FakeDispatchContext.from_source(selection=…)`
-  — read by the same grammar as the web UI's text editor, with one answer
+  `FILTER`, `ui.quick_filters`, `ui.presets`, `ui.default_filter`,
+  `FakeDispatchContext.from_source(selection=…)` — read by the same grammar as the web UI's text editor, with one answer
   for every string (`tests/fixtures/filter-text.json`, "strings"). **Quote
   a pattern that contains whitespace, a parenthesis or a double quote, or
   is an operator word**: `'"regex:^Cart(V2)?$"'`, `'"Sprint 12"'`,
@@ -163,10 +162,13 @@ not exist or worked differently:
   so are an empty or blank string and a `prefix:` / `regex:` with nothing
   after it. `*` is every item (it was the tag `*`); `(Auth)` is `Auth`;
   outer whitespace is dropped; a filter nests at most 40 levels
-  (`filter-too-deep`). A configured filter or taxonomy leaf that does not
-  parse refuses the start, naming it. On the CLI a YAML-quoted or numeric
-  `FILTER` is no longer YAML-processed. A taxonomy leaf whose text reads as
-  an expression is refused. `format_filter`, and
+  (`filter-too-deep`). A configured filter that does not parse refuses the
+  start, naming it. On the CLI a YAML-quoted or numeric `FILTER` is no
+  longer YAML-processed. Where one pattern is expected — a string inside
+  the structured filter form, a taxonomy leaf's `filter` — the string is
+  the pattern as written and nothing is quoted: **the taxonomy file format
+  is unchanged from 0.1** (`regex:^Cart(V2)?$` and `Sprint 12` are leaves
+  as they were; see Added for what a leaf is checked for). `format_filter`, and
   the `text` of configured selections, now quote what needs it, so the text
   reads back to the same filter; a bare-string quick filter is labelled
   with its pattern.
@@ -970,8 +972,12 @@ API additions that came with it:
   definition at both levels. A derived `MISSING` is in `summary` and no
   longer in `count`, so a group's `count` is the sum of its shards'.
 - The resolved taxonomy (`GET /api/v1/taxonomy?resolve=true`) carries
-  `warnings`: leaves read as one pattern only by the fallback for strings
-  that are not filter text. A `filter-syntax` error carries `token` where
+  `warnings`: a leaf whose `filter` reads like an expression (`Cart OR
+  Checkout`) is the one tag spelled so, and says so here, in `runcomposer
+  taxonomy-check` and in `runcomposer doctor`. A leaf's `filter` that is
+  empty, a `prefix:`/`regex:` with nothing after it, a regex that does not
+  compile, or a pattern wrapped in double quotes refuses the start, naming
+  the file and the node. A `filter-syntax` error carries `token` where
   reading stopped at a word.
 
 - A dispatch reports `planned_verdicts`; each shard of a run's roll-up

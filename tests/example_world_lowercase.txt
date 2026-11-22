@@ -1933,6 +1933,7 @@ letter
 letting
 letzte
 letzten
+lexed
 lexical
 lexically
 lib
@@ -1997,6 +1998,7 @@ lokalen
 lokaler
 lone
 look
+lookalike
 looked
 looking
 looks

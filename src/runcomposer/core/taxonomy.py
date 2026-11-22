@@ -34,11 +34,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import RunComposerError
-from .filter import FilterError, format_filter, parse_filter, quote_pattern
-from .filtertext import read_filter_string
+from .filter import FilterError, format_filter, parse_filter
+from .filtertext import parse_filter_text
 from .model import Item
 
-__all__ = ["TaxonomyError", "leaf_pattern", "resolve_taxonomy", "validate_taxonomy"]
+__all__ = ["TaxonomyError", "leaf_pattern", "leaf_warning", "resolve_taxonomy", "validate_taxonomy"]
 
 NODE_KEYS = ("label", "filter", "children")
 
@@ -71,11 +71,9 @@ def validate_taxonomy(
 
     ``origin`` is the file name used in messages — the reader needs to know
     *which* taxonomy is wrong when a deployment has several. A leaf's
-    ``filter`` is filter text that names one pattern: a pattern holding a
-    space, a parenthesis or a quote is written quoted
-    (``'"regex:^Cart(V2)?$"'``), and one that does not parse is refused with
-    the column. ``warnings`` (a list) receives what is valid but worth
-    saying.
+    ``filter`` is one pattern written as itself (``regex:^Cart(V2)?$``,
+    ``Sprint 12``) — not filter text. ``warnings`` (a list) receives what is
+    valid but worth saying: a leaf that looks like an expression.
     """
     if document is None:
         raise TaxonomyError(
@@ -161,36 +159,62 @@ def _validate_nodes(
 def _validate_filter(
     value: Any, *, origin: str, named: str, warnings: list[str] | None = None
 ) -> None:
+    """A leaf's ``filter`` is ONE PATTERN, written as itself — an exact tag,
+    ``prefix:…`` or ``regex:…`` — not filter text: nothing is lexed or
+    unquoted, spaces and parentheses are characters of the pattern
+    (``Sprint 12`` is that tag, ``regex:^(Visa|Mastercard)$`` that regex).
+    The format of 0.1, unchanged."""
     if not isinstance(value, str):
         raise TaxonomyError(
             f"{origin}: {named} has a 'filter' of type {_type_name(value)} — the filter of "
             "a leaf is a single pattern string; write alternatives as one regex, e.g. "
-            "'\"regex:^(Visa|Mastercard)$\"' (docs/taxonomy.md)"
+            "filter: \"regex:^(Visa|Mastercard)$\" (docs/taxonomy.md)"
         )
-    try:
-        pattern, _ = read_filter_string(value)
-    except FilterError as exc:
-        raise TaxonomyError(f"{origin}: {named} filter: {exc}") from None
-    if not isinstance(pattern, str):
+    if not value.strip():
         raise TaxonomyError(
-            f"{origin}: {named} has the filter {value!r}, which reads as the filter expression "
-            f"{format_filter(parse_filter(pattern))!r} — the filter of a leaf is one pattern: "
-            "write alternatives as one regex, e.g. '\"regex:^(Visa|Mastercard)$\"', or write "
-            f"{quote_pattern(value.strip())} for the tag spelled so (docs/taxonomy.md)"
+            f"{origin}: {named} has an empty 'filter' — write the tag or pattern it selects, "
+            "or leave 'filter' out for a group heading"
+        )
+    if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+        raise TaxonomyError(
+            f"{origin}: {named} has the filter {value!r}, a pattern wrapped in double quotes — "
+            f"a leaf's filter is the pattern itself: write {value[1:-1]!r} without the inner "
+            "quotes (docs/taxonomy.md)"
         )
     try:
-        parse_filter(pattern, path=f"{named} filter")
+        parse_filter(value, path=f"{named} filter")
     except FilterError as exc:
         raise TaxonomyError(f"{origin}: {exc}") from None
+    note = leaf_warning(value)
+    if note is not None and warnings is not None:
+        warnings.append(f"{origin}: {named}: {note}")
+
+
+def leaf_warning(value: str) -> str | None:
+    """What to say about a valid leaf ``filter`` that looks like a filter
+    expression (``Cart OR Checkout``, ``NOT Smoke``): it is read as the one
+    tag spelled so — a tag may contain those words — which is rarely what was
+    meant. ``None`` for anything else."""
+    if value.startswith(("regex:", "prefix:")):
+        return None
+    try:
+        read = parse_filter_text(value)
+    except FilterError:
+        return None
+    if isinstance(read, str) or read is None:
+        return None
+    return (
+        f"the filter {value!r} is read as the single tag spelled so, not as the expression "
+        f"{format_filter(parse_filter(read))!r} — a leaf holds one pattern; write alternatives "
+        "as one regex (filter: \"regex:^(Cart|Checkout)$\"), combinations belong in the "
+        "filter builder"
+    )
 
 
 def leaf_pattern(value: str) -> str:
-    """The one pattern a validated leaf's ``filter`` names: the string read
-    as filter text (``'"Sprint 12"'`` is the tag ``Sprint 12``)."""
-    pattern, _ = read_filter_string(value)
-    if not isinstance(pattern, str):
-        raise TaxonomyError(f"the leaf filter {value!r} names more than one pattern")
-    return pattern
+    """The one pattern a validated leaf's ``filter`` names: the value as
+    written."""
+    return value
 
 
 # -- resolution against a catalog --------------------------------------------
@@ -473,7 +497,7 @@ def resolve_taxonomy(
             "nodes_dropped": resolver.dropped,
             "nodes_total": _count_nodes(nodes),
         },
-        # Leaves read as one pattern only by the fallback for strings that
-        # are not filter text, each with what to write instead.
+        # Leaves whose filter reads like an expression but is the one tag
+        # spelled so, each with what to write instead.
         "warnings": warnings,
     }

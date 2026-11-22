@@ -83,7 +83,7 @@ meaning given here and in its docstring.
 | `PluginError` | A declared plugin cannot be loaded. |
 | `push_results` | Push a results bundle to the run's results endpoint — what a job's post step does with ``curl -F files=@…`` — and return the server's answer (the ingest report: ``outcome``, ``verdict_count``, ``warnings`` …). |
 | `quote_pattern` | A pattern as the text form writes it: bare when it reads back as itself, else in double quotes with ``\`` and ``"`` escaped by a backslash — a space, a parenthesis, a quote or a backslash in it, or a pattern that is an operator word (``"AND"``) or the word for every item (``"*"``, the tag literally spelled so), is quoted. |
-| `read_filter_string` | A filter given as one string where a filter is taken (a selection's ``tag_filter``, the command line's filter argument, a configured quick filter or taxonomy leaf) → ``(AST data, None)``. |
+| `read_filter_string` | A filter given as one string where a filter is taken (a selection's ``tag_filter``, the command line's filter argument, a configured quick filter, preset or default filter) → ``(AST data, None)``. |
 | `read_marker` | The marker of a bundle directory, ``None`` when there is none (or the bundle is a single file). |
 | `RemoteLiveChannel` | A ``LiveChannel`` over HTTP: ``live`` and ``log`` are POSTed to the run's API, authorized by the ingest token of the dispatch. |
 | `REPORTABLE_STATUSES` | What an executor can report about an item. |

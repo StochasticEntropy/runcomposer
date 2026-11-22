@@ -968,18 +968,15 @@ ui:                            # selections people start from
   canonical text form, which reads back to the same `tag_filter`
   (DESIGN.md §3.1). Any other key under `ui:` is
   served as it is (`tests/test_deployment_options.py::TestUiSelections`).
-- **A filter given as one string** — a `filter` above, a taxonomy leaf's
-  `filter`, a selection's `tag_filter` over the API, the CLI's filter
-  argument, the kit's `FakeDispatchContext.from_source(source, selection)` —
-  is filter text: `AND`, `OR`, `NOT` (upper case), parentheses, `*` for
-  every item, and double quotes around a pattern that holds whitespace, a
-  parenthesis, a quote, a backslash or an operator word. A string that is
-  not filter text and contains neither an operator word nor a double quote
-  is still the one pattern it spells, with a warning showing how to quote it
-  (a startup warning for a `ui:` entry, `warnings` of the resolved taxonomy
-  for a leaf, `warnings` in an answer, a `UserWarning` in the kit); text
-  that cannot be read is a `ConfigError`, a `TaxonomyError`, a `400
-  filter-syntax` or CLI exit `2`. A connector or script that composes
+- **A filter given as one string** — a `filter` above, a selection's
+  `tag_filter` over the API, the CLI's filter argument, the kit's
+  `FakeDispatchContext.from_source(source, selection)` — is filter text:
+  `AND`, `OR`, `NOT` (upper case), parentheses, `*` for every item, and
+  double quotes around a pattern that holds whitespace, a parenthesis, a
+  quote, a backslash or an operator word. Text that cannot be read is a
+  `ConfigError`, a `400 filter-syntax` or CLI exit `2`, with its position.
+  A taxonomy leaf's `filter` is not filter text but one pattern written as
+  itself, unchanged from 0.1 ([docs/taxonomy.md](taxonomy.md#the-pattern-in-a-leaf)). A connector or script that composes
   through `Service` passes a string `tag_filter` as text, or the AST to
   state the structure explicitly. The grammar, and the cases the core and
   the web UI are both held to (`tests/fixtures/filter-text.json`), are in

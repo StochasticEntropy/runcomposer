@@ -38,6 +38,19 @@ describe("applyPicks", () => {
     expect(formatFilter(toAst(more.root))).toBe("(Payments OR Checkout) AND Smoke AND (Cart OR Catalog)");
   });
 
+  it("a leaf's pattern with a space or parentheses lands as one rule and is quoted in the text", () => {
+    // A resolved leaf's `filter` is the pattern as written (docs/taxonomy.md), never filter text.
+    const empty = fromAst(null);
+    const one = applyPicks(empty, ROOT_ID, new Set(), new Set(["regex:^Cart(V2)?$"]), "any");
+    expect(toAst(one.root)).toBe("regex:^Cart(V2)?$");
+    expect(formatFilter(toAst(one.root))).toBe('"regex:^Cart(V2)?$"');
+    const three = applyPicks(empty, ROOT_ID, new Set(), new Set(["regex:^Cart(V2)?$", "Sprint 12", "Cart OR Checkout"]), "any");
+    expect(toAst(three.root)).toEqual({ op: "OR", items: ["regex:^Cart(V2)?$", "Sprint 12", "Cart OR Checkout"] });
+    expect(formatFilter(toAst(three.root))).toBe('"regex:^Cart(V2)?$" OR "Sprint 12" OR "Cart OR Checkout"');
+    // Opening the picker again finds the same three ticks.
+    expect([...positivePatterns(three.root)].sort()).toEqual(["Cart OR Checkout", "Sprint 12", "regex:^Cart(V2)?$"]);
+  });
+
   it("falls back to the root when the target group was emptied away", () => {
     const groupId = root.children[0]!.id;
     const outcome = applyPicks(root, groupId, initial, new Set(["Smoke", "Auth"]), "any");

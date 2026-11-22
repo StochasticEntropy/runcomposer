@@ -232,10 +232,12 @@ Filter grammar notes (deliberate, not inherited):
   item — the one AST shape infix text cannot write otherwise. `*` is every
   item. Wherever a filter is given as one string — a selection's
   `tag_filter` over the API, the CLI's filter argument, the `filter` of
-  `ui.quick_filters`, `ui.presets` and `ui.default_filter`, a taxonomy
-  leaf's `filter` (which must read as one pattern), the kit's
+  `ui.quick_filters`, `ui.presets` and `ui.default_filter`, the kit's
   `FakeDispatchContext.from_source(selection=…)` — it is this text; a spec
-  stores the AST, never the text. **One grammar, one answer**: a single tag
+  stores the AST, never the text. Where exactly one pattern is expected — a
+  string inside the structured AST, a taxonomy leaf's `filter` — the string
+  is the pattern as written: nothing is lexed or unquoted, and spaces and
+  parentheses are characters of it. **One grammar, one answer**: a single tag
   or `prefix:`/`regex:` pattern is one word of the grammar and reads as
   itself, and a string that does not parse is refused — a `400`
   `filter-syntax` naming the `problem` and its `position` (in characters),
@@ -1974,12 +1976,13 @@ the document's own value and is never rewritten.
 
 **The taxonomy file is validated on the same terms** — it is the other thing a
 deployment writes by hand. Top-level `taxonomy` must be a list; each node
-needs a non-empty `label`, a `filter` (when present) that is a string whose
-filter text names a single pattern the §3.1 grammar accepts — a tag spelled
-like an expression is quoted (`'"Auth OR Cart"'`), and text that reads as an
-expression is refused, saying how to quote it, and text that does not parse
-is refused with its column — and a `children` (when present) that is a
-list; sibling labels must be distinct; a node with neither `filter` nor
+needs a non-empty `label`, a `filter` (when present) that is one pattern
+string written as itself (§3.1) — refused when it is not a string, empty or
+blank, a `prefix:`/`regex:` with nothing after it, a regex that does not
+compile, or wrapped in double quotes (with a sentence saying to write it
+without them); a `filter` that reads like an expression is the one tag
+spelled so and is listed as a warning, not refused — and a `children` (when
+present) that is a list; sibling labels must be distinct; a node with neither `filter` nor
 `children` is refused, because that is exactly what a misspelled key
 produces. Unknown *extra* node keys are ignored, matching §3's stance on
 unknown fields inside a known section. Checked at startup, and on every
