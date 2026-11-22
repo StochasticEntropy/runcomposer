@@ -1208,7 +1208,9 @@ class TestHooksAndListeners:
             encoding="utf-8",
         )
         root = shop_suite(tmp_path, FIVE_TESTS, name="cart.robot")
-        service = pool_service(make_service, root, listener=f"{listener_file}:{seen}")
+        # Robot reads ``;`` between a listener's arguments too, and it is the one that
+        # leaves a Windows path (``C:\\…``) whole.
+        service = pool_service(make_service, root, listener=f"{listener_file};{seen}")
         run = execute(service, "Cart")
         assert run.state == "COMPLETE"
         assert sorted(seen.read_text(encoding="utf-8").splitlines()) == sorted(

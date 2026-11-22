@@ -885,6 +885,12 @@ not exist or worked differently:
   - a `command` observer could not write an event whose title held a
     character outside the legacy code page to its stdin, and never ran; the
     event is UTF-8 on every platform;
+  - a stop request reached a `robot-pool` worker as no signal: a cancelled
+    or timed-out shard was ended outright after the grace period, without
+    what it had executed so far, and a merge waited the grace period out.
+    The worker watches the request and ends Robot's execution the way the
+    first signal does on POSIX; a merge ends at once;
+  - a refusal named a suite root with doubled backslashes;
   - the demo printed its workspace unquoted, so a path with a space was two
     arguments when pasted (on every platform), and `rm -rf` as the way to
     delete it; it prints `Remove-Item` there.

@@ -273,6 +273,46 @@ class TestExecutionMode:
         assert (run.state, run.completion, dict(run.latest_dispatch.summary)) == ("COMPLETE", "PASS", {"PASS": 2})
 
 
+class TestAStopRequestWithoutASignal:
+    """Windows has no signal for the supervisor to send: the worker watches
+    the request itself and does what the first signal does on POSIX. The
+    mechanism, run here with ``os.name`` set to Windows' value; the stop of
+    a real worker there is the next class's tests, in the Windows job."""
+
+    def test_the_request_acts_once_and_the_handler_is_restored(self, monkeypatch):
+        import signal
+        import threading
+
+        from runcomposer.sdk import robot as toolkit
+
+        monkeypatch.setattr(toolkit.os, "name", "nt")
+        before = signal.getsignal(signal.SIGTERM)
+        asked, acted = threading.Event(), []
+        with toolkit._stop_request_as_signal(asked.is_set, lambda: acted.append(True)):
+            assert signal.getsignal(signal.SIGTERM) is not before, "never Windows' default, which ends the process"
+            asked.set()
+            wait_until(lambda: acted, what="the request to act")
+        assert acted == [True]
+        assert signal.getsignal(signal.SIGTERM) is before
+
+    def test_outside_the_main_thread_nothing_is_added(self, monkeypatch):
+        import threading
+
+        from runcomposer.sdk import robot as toolkit
+
+        monkeypatch.setattr(toolkit.os, "name", "nt")
+        acted: list[bool] = []
+
+        def in_a_thread() -> None:
+            with toolkit._stop_request_as_signal(lambda: True, lambda: acted.append(True)):
+                pass
+
+        thread = threading.Thread(target=in_a_thread)
+        thread.start()
+        thread.join(10)
+        assert acted == []
+
+
 class TestTheSupervisor:
     def test_payloads_of_one_lane_never_overlap_and_keep_their_order(self, tmp_path):
         """A lane is something only one execution may use at a time. The

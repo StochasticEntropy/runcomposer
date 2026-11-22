@@ -324,11 +324,11 @@ def _assign_roots(
             if source and not under(source, root):
                 problems.append(
                     f"item {item_id!r} comes from {source}, which is not under the suite root "
-                    f"{root!r} — the catalog was built from other suites than this runner executes"
+                    f"'{root}' — the catalog was built from other suites than this runner executes"
                 )
             elif not collected_here and not named(item_id, root):
                 problems.append(
-                    f"item {item_id!r} is not under the suite root {root!r}: executed from there, "
+                    f"item {item_id!r} is not under the suite root '{root}': executed from there, "
                     f"every test's id begins with {names[root] + '.'!r} — the catalog was built "
                     "from another directory than this runner executes"
                 )
@@ -696,7 +696,7 @@ def run_shard(payload: ShardPayload, stop: Callable[[], bool] | None = None) -> 
         return (stop is not None and stop()) or (out_dir / STOP_FILE).exists()
 
     try:
-        with _working_in(payload.cwd, payload.env):
+        with _working_in(payload.cwd, payload.env), _stop_request_as_signal(asked, _signal_robot):
             _execute_shard(payload, out_dir, outputs, problems, asked)
         error = "; ".join(problems) or None
     except _Stopped:
@@ -713,6 +713,49 @@ def run_shard(payload: ShardPayload, stop: Callable[[], bool] | None = None) -> 
             "stopped": stopped,
         }
         (out_dir / RESULT_FILE).write_text(json.dumps(document), encoding="utf-8")
+
+
+@contextmanager
+def _stop_request_as_signal(asked: Callable[[], bool], act: Callable[[], None]) -> Iterator[None]:
+    """On Windows, where the supervisor's stop request arrives as no signal:
+    watch ``asked()`` and, once it is true, ``act()`` — what the first
+    termination signal does on POSIX. Elsewhere, and outside the main
+    thread (where no signal handler can be set), nothing is added."""
+    import threading
+
+    if os.name != "nt" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    import signal
+
+    # A handler of our own while nothing else has one: Windows' default for
+    # SIGTERM ends the process, and the signal raised below must never.
+    previous = signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
+    done = threading.Event()
+
+    def watch() -> None:
+        while not done.wait(0.05):
+            if asked():
+                act()
+                return
+
+    watcher = threading.Thread(target=watch, name="runcomposer-stop-request", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        done.set()
+        watcher.join()
+        signal.signal(signal.SIGTERM, previous)
+
+
+def _signal_robot() -> None:
+    """The termination signal, raised in this process: Robot, while it
+    executes, turns it into a graceful end of the execution (POSIX gets it
+    from the supervisor)."""
+    import signal
+
+    signal.raise_signal(signal.SIGTERM)
 
 
 @contextmanager
@@ -1365,7 +1408,9 @@ def _supervised_merge(work: WorkerPayload, stop: Callable[[], bool]) -> None:
         signal.signal(signal.SIGTERM, _end_merge)
     if stop():  # asked while it was starting
         raise SystemExit(1)
-    run_merge(work.data["payload"])
+    # On Windows no signal comes: the request itself ends the merge.
+    with _stop_request_as_signal(stop, lambda: os._exit(128 + 15)):
+        run_merge(work.data["payload"])
 
 
 def _end_merge(signum: int, _frame: Any) -> None:

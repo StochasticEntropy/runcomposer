@@ -164,18 +164,30 @@ class TestPartitionModePerRun:
 # -- one partition, one chunk at a time -----------------------------------------------
 
 MARKERS_LIBRARY = '''\
+import os
 import time
+import uuid
 from pathlib import Path
 
 
+def _mark(log, line):
+    # One file per marker, named by the clock every process shares: workers
+    # mark side by side, and appending to one file loses lines where appends
+    # are not atomic between processes (Windows).
+    Path(log).mkdir(exist_ok=True)
+    Path(log, f"{time.monotonic_ns():024d}-{os.getpid()}-{uuid.uuid4().hex}").write_text(line, encoding="utf-8")
+
+
+def marker_lines(log):
+    return [path.read_text(encoding="utf-8") for path in sorted(Path(log).iterdir())] if Path(log).is_dir() else []
+
+
 def enter_partition(log, partition, name):
-    with open(log, "a", encoding="utf-8") as file:
-        file.write(f"enter {partition} {name}\\n")
+    _mark(log, f"enter {partition} {name}")
 
 
 def leave_partition(log, partition, name):
-    with open(log, "a", encoding="utf-8") as file:
-        file.write(f"leave {partition} {name}\\n")
+    _mark(log, f"leave {partition} {name}")
 
 
 def wait_for_another_test_on(log, partition, name, timeout="3"):
@@ -183,9 +195,8 @@ def wait_for_another_test_on(log, partition, name, timeout="3"):
     (it does, at once, when chunks of one partition run side by side)."""
     deadline = time.monotonic() + float(timeout)
     while time.monotonic() < deadline:
-        lines = Path(log).read_text(encoding="utf-8").splitlines() if Path(log).exists() else []
         if any(line.split(" ", 2)[:2] == ["enter", partition] and line.split(" ", 2)[2] != name
-               for line in lines):
+               for line in marker_lines(log)):
             return
         time.sleep(0.05)
 '''
@@ -211,12 +222,17 @@ Visit The Partition
 """
 
 
+def marker_lines(markers: Path) -> list[str]:
+    """The markers the library left, in the order they were made."""
+    return [path.read_text(encoding="utf-8") for path in sorted(markers.iterdir())] if markers.is_dir() else []
+
+
 def overlaps(markers: Path) -> dict[str, int]:
     """Per partition: how often a test entered while another one of the
     same partition was inside — read from the order of the markers alone."""
     inside: dict[str, set[str]] = {}
     found: dict[str, int] = {}
-    for line in markers.read_text(encoding="utf-8").splitlines():
+    for line in marker_lines(markers):
         what, partition, name = line.split(" ", 2)
         current = inside.setdefault(partition, set())
         if what == "enter":
@@ -232,7 +248,7 @@ class TestExclusivePartitions:
         (tmp_path / "lib").mkdir()
         (tmp_path / "lib" / "Markers.py").write_text(MARKERS_LIBRARY, encoding="utf-8")
         root = shop_suite(tmp_path, MARKED_SUITE)
-        markers = tmp_path / "markers.log"
+        markers = tmp_path / "markers"
         service = pool_service(
             make_service, root, partitions=["eu", "us"], max_workers=4,
             pythonpath=[str(tmp_path / "lib")], variables={"MARKERS": str(markers)}, **options,
@@ -259,7 +275,7 @@ class TestExclusivePartitions:
         assert run.completion == "PASS", [v.message for v in service.store.verdicts_for(run.id)]
         # Every test on every partition, one shard per test — and still never two at once.
         assert sorted(run.latest_dispatch.shards) == ["eu-1-01", "eu-1-02", "us-1-01", "us-1-02"]
-        lines = markers.read_text(encoding="utf-8").splitlines()
+        lines = marker_lines(markers)
         assert len(lines) == 8 and overlaps(markers) == {"eu": 0, "us": 0}
 
     @pytest.mark.parametrize("value", [0, -1, True])
@@ -562,7 +578,7 @@ class TestASingleRootIsChecked:
         planned = preview(service)
         assert planned.preview is None
         assert "5 item(s) do not belong to the configured suite roots" in planned.refusal
-        assert f"is not under the suite root {str(root)!r}" in planned.refusal
+        assert f"is not under the suite root '{root}'" in planned.refusal
         assert "every test's id begins with 'Shop.'" in planned.refusal
         assert "… and 2 more" in planned.refusal and "checked before anything is handed off" in planned.refusal
 
@@ -578,7 +594,7 @@ class TestASingleRootIsChecked:
         copy = cart_root(tmp_path / "there")
         service = pool_service(make_service, root, source={"robotframework": {"root": str(copy)}})
         refusal = preview(service).refusal
-        assert f"comes from {copy / 'cart.robot'}, which is not under the suite root {str(root)!r}" in refusal
+        assert f"comes from {copy / 'cart.robot'}, which is not under the suite root '{root}'" in refusal
 
     def test_a_catalog_without_sources_is_checked_by_name(self, make_service, tmp_path):
         root = cart_root(tmp_path)
