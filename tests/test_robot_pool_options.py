@@ -166,16 +166,25 @@ class TestPartitionModePerRun:
 MARKERS_LIBRARY = '''\
 import os
 import time
-import uuid
 from pathlib import Path
 
 
 def _mark(log, line):
-    # One file per marker, named by the clock every process shares: workers
-    # mark side by side, and appending to one file loses lines where appends
-    # are not atomic between processes (Windows).
+    # One file per marker, numbered in the order they are made: workers mark
+    # side by side, and appending to one file loses lines where appends are
+    # not atomic between processes (Windows). The number is the count of
+    # markers there are, taken by creating the file exclusively — a clock
+    # would not do: where it ticks every few milliseconds, two markers of
+    # one tick have no order.
     Path(log).mkdir(exist_ok=True)
-    Path(log, f"{time.monotonic_ns():024d}-{os.getpid()}-{uuid.uuid4().hex}").write_text(line, encoding="utf-8")
+    while True:
+        number = len(os.listdir(log))
+        try:
+            with open(Path(log, f"{number:06d}"), "x", encoding="utf-8") as marker:
+                marker.write(line)
+            return
+        except FileExistsError:
+            continue
 
 
 def marker_lines(log):
