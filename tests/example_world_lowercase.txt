@@ -1753,8 +1753,6 @@ interprets
 interrupt
 intersects
 introduced
-introduces
-introducing
 invalid
 invalidates
 invariant

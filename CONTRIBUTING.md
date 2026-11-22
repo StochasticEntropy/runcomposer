@@ -98,8 +98,7 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
    product or system from outside this project. `python
    ci/check_commit_messages.py [RANGE]` (default `origin/main..HEAD`) holds
    the messages of your commits to the same rules; it exits `1` naming each
-   violation, `2` for a range it cannot read. Messages older than the
-   commit that added the check are not held to it.
+   violation, `2` for a range it cannot read.
 
 ## Pull requests
 
