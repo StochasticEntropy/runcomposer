@@ -757,6 +757,15 @@ run-time dependencies.
   While text is typed and not applied, the filter in effect stays in view
   and nothing can be run, planned or exported. The third-party filter
   widget is gone.
+- The field that adds a rule reads what is typed with that grammar:
+  `Payments AND Smoke` is two rules there as it is in the text editor and
+  on the command line, text that is no expression is refused in place with
+  its position, and a tag with a space or an operator word in it is typed
+  in quotes. A rule no tag of the catalog matches is flagged on its chip,
+  with the nearest tags offered for a plain tag.
+- A rule is a compact chip — three fit in a row of the filter column. Its
+  NOT switch keeps its word; its remove control is a ×, the one control
+  that is a sign without a word, with an accessible name and a tooltip.
 - The tag picker shows item counts, says what applying will add and remove
   and how many items result; unticking a tag removes it.
 - The preview is always the answer to the filter on screen or says it is not,
@@ -793,8 +802,21 @@ run-time dependencies.
   failures first with durations, attempts and each shard's log and report:
   groups and shards with a failure lead, then those still running; with many
   shards, those without a failure fold into one line; every result row links
-  to the log and report of its own shard.
+  to the log and report of its own shard. One step from the top leads to
+  the failed results; beyond the first few, the cards of failed shards are
+  one more line. "N of M reported" means the same for the run, a group and
+  a shard: items with a reported result. Items are shown by name, with
+  their id, and found by either.
   After a cancel a missing item says what it was doing when the run stopped.
+  A run the server stopped under says that, not that the runner reported an
+  error.
+- While the server cannot be reached, Compose asks again by itself and is
+  current once it is back; a count is never shown next to a filter it does
+  not belong to.
+- A mapping's names are checked against the declared `key_pattern` like its
+  values against `pattern`, both shown as the expected form; a value the
+  server refuses for a parameter with a declared form is said in the UI's
+  words.
   Run again, re-run what did not pass (optionally under a new title, with a
   link back to the source run), load the selection back into the builder,
   export, close as it stands, delete.
@@ -832,6 +854,11 @@ Known limits of the UI:
   deployment: runners do not declare the language they write.
 - A parameter's label and help, presets and quick filters are the
   deployment's own wording and are shown as written in every language.
+- The names of items on a run's page are the catalog's names as they are
+  now: a run stores ids. An item that has left the catalog is shown by id.
+- A rule is flagged as matching no tag by the server's matching rules as the
+  browser reads them; an expression only Python reads (an inline flag such
+  as `(?i)`) is not judged in the browser.
 - `*` for "every item" is a spelling of the text form, on the server and in
   the UI. The run spec says it as `{"not": "regex:^$"}` — `runspec/1.0`'s
   filter grammar is closed and has no other node for it — and that is what
@@ -841,6 +868,10 @@ Known limits of the UI:
 API additions that came with it:
 
 - `GET /api/v1/ui-config` and `GET /api/v1/meta` carry `text_language`.
+- In a run's roll-up, `count` of a shard (`shards[]`) and of a group
+  (`groups[]`) is the number of items with a reported result — the same
+  definition at both levels. A derived `MISSING` is in `summary` and no
+  longer in `count`, so a group's `count` is the sum of its shards'.
 - The resolved taxonomy (`GET /api/v1/taxonomy?resolve=true`) carries
   `warnings`: leaves read as one pattern only by the fallback for strings
   that are not filter text. A `filter-syntax` error carries `token` where

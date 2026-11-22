@@ -2198,6 +2198,10 @@ neither is a degraded version of the other:
    else: while the expression is being typed as text and differs from it,
    they are off, the filter in effect stays in view, and the bar says why —
    as it says that the server cannot be reached when that is the reason.
+   While the server is out of reach the preview asks again by itself, at
+   growing intervals, as long as the page is looked at; and a count is
+   shown only next to the filter it is the count of — a preview that could
+   not be updated shows none, in its head or on the Run button.
    Runs list shows dispatch mode + lifecycle state incl.
    `AWAITING_RESULTS`; an inbox view for unmatched (quarantined) deliveries.
 
@@ -2207,8 +2211,11 @@ without the server knowing a single UI route, and the UI works unchanged
 behind a reverse proxy that mounts it under a path prefix. Compose: the tag
 picker, the filter editor, the auto-compiled preview, a runner form rendered
 from the runner's declared parameters — every kind, `text` and `mapping`
-included, a `pattern` checked before sending and the server's refusal put on
-the field — with the runner's health status and, where it reports them, its
+included, a `pattern` and a mapping's `key_pattern` shown as the form a
+value or a name must have and checked before sending, and the server's
+refusal put on the field (in the UI's own words where the parameter
+declares such a form: only the server's sentence knows any other reason,
+and is then shown as the server's) — with the runner's health status and, where it reports them, its
 checks one by one (`health.data.checks`); a plan preview (`POST /plan`,
 §6.2) for a runner with the `plan` capability, showing shards, groups,
 estimates and notes or the refusal a dispatch would meet; and export with
@@ -2223,8 +2230,15 @@ result), the roll-up per shard and — where the runner declared groups — per
 group, with artifact links (a recorded directory is listed, not linked),
 `last_live` on a `MISSING` row after a cancel — what needs a look first:
 groups and shards with a failure, then those still running, the rest folded
-into one line once there are many, and each result row linking to the log
-and report of its own shard — cancel, rerun (all, or what
+into one line once there are many (also the cards of failed shards beyond
+the first few), one step from the top to the failed results, and each
+result row linking to the log and report of its own shard — "N of M
+reported" meaning the same for the run, a group and a shard: items with a
+reported result, never a `MISSING` one (the roll-ups' `count`) — an item
+shown by the name the catalog has for it now, with its id, and found by
+either; a run the server stopped under worded as that, not as an error of
+the runner (the dispatch is `STALE`; what the server noted is a detail
+line) — cancel, rerun (all, or what
 did not pass, optionally with a title; the new run links back through
 `rerun_of`), a plan for the stored run (`POST /runs/{id}/plan`) and delete.
 Inbox: attach, promote, discard. The footer links the API documentation
@@ -2238,7 +2252,16 @@ the server (§9), so a single pattern is sent as its quoted text
 `"regex:^Cart(V2)?$"` — which the server reads back to that one pattern; a
 run spec stores the pattern, never the quotes. Server text it receives
 (`text` of a configured filter) is canonical text, and what it acts on is
-the entry's `tag_filter`. The text editor checks text locally before
+the entry's `tag_filter`. The field that adds a rule reads what is typed
+with the same grammar: one pattern is one more rule, an expression the
+rules or the group it says, text that is no expression is refused in place
+with its position — so `Payments AND Smoke` means the same there, in the
+text editor and on the command line; a tag with a space or an operator
+word in it is typed in quotes (or chosen from the catalog's list). A rule
+whose pattern matches no tag of the catalog is flagged on its chip, with
+the nearest tags offered for a plain tag: the editor's early word on a
+typing mistake, by the server's matching rules (§3.1), claimed only where
+the browser can read the expression. The text editor checks text locally before
 applying it; a `filter-syntax` refusal (`problem`, `position`, `token`) is
 worded by the UI where it is shown. Positions are counted in code points,
 as the server and the shared cases count them; the UI converts to UTF-16
@@ -2250,6 +2273,14 @@ file name the server gives — never a path of the server's machine.
 
 Not in the UI: uploading results (§5), and the label-scoped history picker
 of §7 — a rerun is an action of one run.
+
+**Controls say what they do, in a word.** Every button of the UI carries a
+visible word; a sign alone is a guess for whoever has not learnt it. One
+exception, decided and kept to one: a rule's remove control is `×`. A rule
+is a chip, a chip is closed with `×` wherever chips exist, and the word
+cost a third of a chip's width — two rules to a row of the filter column
+instead of three. It has an accessible name and a tooltip that say which
+rule it removes; NOT keeps its word, because a box alone says nothing.
 
 **Stack — decided:** TypeScript and React, and nothing else at run time —
 React and React DOM are the only dependencies. What earlier versions took
