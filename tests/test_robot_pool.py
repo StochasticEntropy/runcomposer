@@ -1196,15 +1196,20 @@ class TestHooksAndListeners:
 
     def test_a_user_listener_receives_the_run(self, make_service, tmp_path):
         listener_file = tmp_path / "SentinelListener.py"
-        seen = tmp_path / "seen.txt"
+        seen = tmp_path / "seen"
+        # One file per test it hears of: the workers are several processes, and
+        # lines they append to one file are lost where appends are not atomic
+        # between processes (Windows).
         listener_file.write_text(
+            "import os, uuid\n"
             "class SentinelListener:\n"
             "    ROBOT_LISTENER_API_VERSION = 3\n"
             "    def __init__(self, out):\n"
             "        self.out = out\n"
             "    def end_test(self, data, result):\n"
-            "        with open(self.out, 'a') as fh:\n"
-            "            fh.write(result.name + '\\n')\n",
+            "        os.makedirs(self.out, exist_ok=True)\n"
+            "        with open(os.path.join(self.out, uuid.uuid4().hex), 'w', encoding='utf-8') as fh:\n"
+            "            fh.write(result.name)\n",
             encoding="utf-8",
         )
         root = shop_suite(tmp_path, FIVE_TESTS, name="cart.robot")
@@ -1213,7 +1218,7 @@ class TestHooksAndListeners:
         service = pool_service(make_service, root, listener=f"{listener_file};{seen}")
         run = execute(service, "Cart")
         assert run.state == "COMPLETE"
-        assert sorted(seen.read_text(encoding="utf-8").splitlines()) == sorted(
+        assert sorted(heard.read_text(encoding="utf-8") for heard in seen.iterdir()) == sorted(
             v.item_id.rsplit(".", 1)[1] for v in service.store.verdicts_for(run.id)
         )
         # …next to runcomposer's own listener, not instead of it.
