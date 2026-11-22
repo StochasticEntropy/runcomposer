@@ -51,14 +51,17 @@ def is_checkout(cwd: Path) -> bool:
         return False
 
 
-def default_range(cwd: Path) -> str:
+def default_range(cwd: Path) -> str | None:
+    """``origin/main..HEAD`` (else ``main..HEAD``); ``None`` when neither
+    exists — the whole history is never a default: it holds what was
+    published before these rules."""
     for base in ("origin/main", "main"):
         try:
             git(cwd, "rev-parse", "--verify", "--quiet", base)
         except subprocess.CalledProcessError:
             continue
         return f"{base}..HEAD"
-    return "HEAD"
+    return None
 
 
 def without_trailers(message: str) -> str:
@@ -93,6 +96,13 @@ def main(argv: list[str], cwd: Path = REPO) -> int:
         print("check_commit_messages: skipped — not a git checkout, there are no commits to check")
         return 0
     rev_range = argv[1] if len(argv) > 1 else default_range(cwd)
+    if rev_range is None:
+        print(
+            "check_commit_messages: there is no origin/main or main to compare with — "
+            "give the range of commits to check, e.g. `python ci/check_commit_messages.py BASE..HEAD`",
+            file=sys.stderr,
+        )
+        return 2
     try:
         checked = len(commits(rev_range, cwd))
         violations = check(rev_range, cwd)

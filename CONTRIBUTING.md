@@ -90,15 +90,23 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
    `Shop.Checkout.Cards.Pay By Card`, the demo corpus's tags, tickets
    `SHOP-12xx`. A guard test (`tests/test_example_world.py`) reads every text
    file of the tree — prose included — and fails on a host, an absolute
-   path, a ticket key, a tag, a capitalised word or a lower-case word it
-   does not know. A new word is added to `tests/example_world_words.txt`,
+   path, a ticket key, a tag, or a word it does not know: a capitalised,
+   CamelCase or ALL-CAPS word of prose (Markdown, HTML text, comments,
+   docstrings, the text of a JSON string, the UI's messages included); a
+   lower-case word of prose, of a JSON string, of any YAML key or value, of
+   a string in the package (`src/`), of a shell script's lines; a
+   hyphenated lower-case name (`shop-nightly`) in any string or URL; the
+   words of a class name. Not read word by word: one lower-case word inside
+   a string of TypeScript, of a test module or of TOML (hyphenated names
+   there are), and code identifiers, which are the code's own. A new word is added to `tests/example_world_words.txt`,
    under the heading it belongs to (a lower-case one to
    `tests/example_world_lowercase.txt`), in the same change — an English word, a technical term or a
    name of the example world; never the name of a person, or of a company,
    product or system from outside this project. `python
    ci/check_commit_messages.py [RANGE]` (default `origin/main..HEAD`) holds
    the messages of your commits to the same rules; it exits `1` naming each
-   violation, `2` for a range it cannot read.
+   violation, `2` for a range it cannot read — and `2`, asking for a range,
+   when no `origin/main` or `main` exists to default to.
 
 ## Pull requests
 

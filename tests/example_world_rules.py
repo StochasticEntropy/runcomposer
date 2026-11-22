@@ -156,6 +156,8 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parent.parent
 WORDS_FILE_NAME = "tests/example_world_words.txt"
 LOWERCASE_FILE_NAME = "tests/example_world_lowercase.txt"
@@ -586,8 +588,11 @@ def prose_view(name: str, text: str) -> str:
                 spans.append((offset, offset + len(line)))
             offset += len(line)
     elif kind == "json":
-        for match in re.finditer(r'"((?:\\.|[^"\\\n])*)"\s*(?![\s:])', text):
-            if " " in match.group(1):
+        # String tokens are read left to right, each from its opening quote —
+        # a key (a string followed by a colon) is skipped, not re-read from
+        # its closing quote as the start of another string.
+        for match in re.finditer(r'"((?:\\.|[^"\\\n])*)"', text):
+            if " " in match.group(1) and not re.match(r"\s*:", text[match.end():]):
                 spans.append(match.span(1))
     elif kind == "text":
         if name == WORDS_FILE_NAME or name.endswith("/" + WORDS_FILE_NAME):
@@ -1637,10 +1642,12 @@ def check_lowercase(name: str, text: str, vocab: Vocabulary, facts: CodeFacts) -
             data = None
         for value in _json_strings(data):
             # Text — a value with a space — or one plain word; an id, a hash
-            # or an encoded value is neither.
-            if " " in value.strip() or re.fullmatch(r"[A-Za-z][a-z]+", value):
-                for word in re.findall(r"(?<![\w-])[A-Za-z][a-z]+(?![\w-])", _URL.sub(" ", value)):
-                    if not _lower_known(word, vocab, facts):
+            # or an encoded value is neither. Words of any script (the German
+            # catalog's umlauts); CamelCase and ALL-CAPS words of text are the
+            # prose rule's (the string is prose).
+            if " " in value.strip() or (value.isalpha() and value[1:].islower()):
+                for word in _ANY_WORD.findall(_URL.sub(" ", value)):
+                    if word[1:].islower() and not _lower_known(word, vocab, facts):
                         flag(text.find(word), word)
     elif kind == "sql":
         # The statements' words — keywords, tables, columns — outside string
@@ -1649,6 +1656,31 @@ def check_lowercase(name: str, text: str, vocab: Vocabulary, facts: CodeFacts) -
         for match in re.finditer(r"(?<![\w])[A-Za-z][a-z]*(?=[_\W]|$)", code):
             if not _lower_known(match.group(), vocab, facts):
                 flag(match.start(), match.group())
+    if name.endswith((".yaml", ".yml")):
+        # Every key and string value: a one-word value (`job: nightly`) names
+        # something as much as a sentence does.
+        try:
+            documents = list(yaml.safe_load_all(text))
+        except yaml.YAMLError:
+            documents = []
+        for value in _data_strings(documents):
+            for word in _lower_words(value):
+                if not _lower_known(word, vocab, facts):
+                    flag(text.find(word), word)
+    elif kind == "python" and name.startswith("src/"):
+        parts = python_parts(text)
+        if parts is not None:
+            starts = _offsets(text)
+            for value, line in parts.constants:
+                for word in _lower_words(value):
+                    if not _lower_known(word, vocab, facts):
+                        flag(starts[line - 1], word)
+    elif name.endswith(".sh"):
+        code = mask(text, _complement(text, _hash_comments(text)))
+        for match in _ANY_WORD.finditer(code):
+            for word in _lower_words(match.group()):
+                if not _lower_known(word, vocab, facts):
+                    flag(match.start(), word)
     if kind == "python" and name.startswith(CODE_DIRS):
         parts = python_parts(text)
         if parts is not None:
@@ -1661,6 +1693,36 @@ def check_lowercase(name: str, text: str, vocab: Vocabulary, facts: CodeFacts) -
                 ):
                     flag(starts[line - 1], class_name)
     return found
+
+
+#: A word of any script, outside a hyphenated or underscored identifier.
+_ANY_WORD = re.compile(r"(?<![\w-])[^\W\d_][^\W_]*(?![\w-])")
+
+
+def _lower_words(value: str) -> list[str]:
+    """The lower-case words of a string, URLs left out — a word, not a hash
+    or filler (``aaaa``). A number at a word's end is dropped: ``web01``
+    names ``web`` as much as ``web`` does."""
+    words = []
+    for word in _ANY_WORD.findall(_URL.sub(" ", value)):
+        stem = re.sub(r"[0-9]+$", "", word)
+        if stem.islower() and stem.isalpha() and len(set(stem)) > 1:
+            words.append(stem)
+    return words
+
+
+def _data_strings(data: object) -> Iterator[str]:
+    """Every string of parsed YAML: keys and values, at any depth."""
+    if isinstance(data, str):
+        yield data
+    elif isinstance(data, list):
+        for value in data:
+            yield from _data_strings(value)
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(key, str):
+                yield key
+            yield from _data_strings(value)
 
 
 def _json_strings(data: object) -> Iterator[str]:

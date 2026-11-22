@@ -510,6 +510,33 @@ def test_a_foreign_lower_case_word_is_caught_wherever_it_hides(tmp_path):
     }, flagged
 
 
+def test_a_foreign_word_is_caught_in_a_message_catalog_a_one_word_value_and_a_shell_line(tmp_path):
+    """A word with an umlaut, a CamelCase and an ALL-CAPS word inside a JSON
+    message; one lower-case word as a YAML value, in a Python string of the
+    package and in a shell line (a number at its end dropped) — and known
+    words in the same shapes, left alone."""
+    umlaut = "Zör" + "kelkasse"
+    camel = LOWER_FOREIGN.title() + "Corp"
+    caps = LOWER_FOREIGN.upper()
+    found = plant(tmp_path, {
+        "ui/src/locales/de.json": '{"a": "die ' + umlaut + ' ist da", "b": "die ' + umlaut.lower() + ' auch", "c": "Ausführung"}\n',
+        "ui/src/locales/en.json": '{"a": "the ' + camel + ' is here", "b": "the ' + caps + ' is here"}\n',
+        "ci/jobs.yaml": f"job: {LOWER_FOREIGN}\nname: nightly\n",
+        "src/runcomposer/extra.py": f'HOST = "{LOWER_FOREIGN}"\nKIND = "nightly"\n',
+        "ci/deploy.sh": f"ssh deploy@{LOWER_FOREIGN}01 run\necho nightly\n",
+    })
+    flagged = {(v.path, v.token) for v in found["lowercase-token"]} | {(v.path, v.token) for v in found["prose-token"]}
+    assert flagged == {
+        ("ui/src/locales/de.json", umlaut),
+        ("ui/src/locales/de.json", umlaut.lower()),
+        ("ui/src/locales/en.json", camel),
+        ("ui/src/locales/en.json", caps),
+        ("ci/jobs.yaml", LOWER_FOREIGN),
+        ("src/runcomposer/extra.py", LOWER_FOREIGN),
+        ("ci/deploy.sh", LOWER_FOREIGN),
+    }, flagged
+
+
 def test_a_tag_shaped_literal_of_a_python_test_is_held_to_the_tag_vocabulary(tmp_path):
     """In a parametrize list, a plain list, a dict key, a call argument."""
     unknown = "Blorp" + "tag"
@@ -587,6 +614,24 @@ def test_the_commit_check_reads_a_range_and_leaves_trailers_alone(tmp_path):
     assert found == {(1, "host", FOREIGN_HOST), (3, "prose-token", UNKNOWN_WORD)}
     assert check.main(["check", "HEAD~1..HEAD"], repo) == 1
     assert check.main(["check", "HEAD~1"], repo) == 0  # the first commit alone passes
+
+
+def test_without_a_main_to_compare_with_the_commit_check_asks_for_a_range(tmp_path, capsys):
+    """The whole history is never the default: exit 2, asking for a range."""
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    check = commit_check()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "work"], ["commit", "-q", "--allow-empty", "-m", f"Talk to {FOREIGN_HOST}"]):
+        subprocess.run(
+            ["git", "-c", "user.name=shop", "-c", "user.email=ci@shop.example", "-c", "commit.gpgsign=false", *args],
+            cwd=repo, check=True, capture_output=True,
+        )
+    assert check.main(["check"], repo) == 2
+    assert "give the range of commits to check" in capsys.readouterr().err
 
 
 def test_the_commit_check_skips_outside_a_checkout(tmp_path, capsys):
