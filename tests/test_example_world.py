@@ -64,6 +64,25 @@ def test_every_tag_is_of_the_example_world():
     fail_with("tag", "tags outside the example world's tag vocabulary")
 
 
+def test_every_lower_case_word_is_reviewed():
+    fail_with("lowercase-token", "lower-case words outside the reviewed vocabulary")
+
+
+def test_every_reviewed_lower_case_word_is_still_used():
+    """The lower-case list is the vocabulary, not a dictionary: a word
+    nothing spells any more is removed."""
+    import re
+
+    spelled: set[str] = set()
+    for name, text in rules.text_files(REPO):
+        if name not in (rules.LOWERCASE_FILE_NAME, rules.RULES_MODULE_NAME) and not rules.is_generated(name):
+            for word in re.findall(r"[^\W_]+", text):
+                spelled.add(word.casefold())
+                spelled.update(part.casefold() for part in rules._CAMEL_PARTS.findall(word))
+    listed = rules.vocabulary(REPO).lowercase
+    assert not sorted(listed - spelled), f"listed in {rules.LOWERCASE_FILE_NAME} but spelled nowhere"
+
+
 def test_no_prose_carries_the_label_of_a_work_item():
     fail_with("finding-id", "sentences, docstrings or comments labelled like entries of a work list")
 
@@ -457,6 +476,61 @@ def test_work_item_labels_are_caught_in_prose_and_left_alone_in_code(tmp_path):
     # The hyphenated form is a ticket-key-shaped token anywhere.
     hyphenated = plant(tmp_path / "again", {"docs/notes.md": "Closes BL" + "3-1 of the list.\n"})
     assert [v.token for v in hyphenated["ticket-key"]] == ["BL" + "3-1"]
+
+
+#: A lower-case word of nobody's language, assembled.
+LOWER_FOREIGN = "vex" + "lund"
+
+
+def test_a_foreign_lower_case_word_is_caught_wherever_it_hides(tmp_path):
+    """Lower-case prose, a job name in YAML, Markdown and a Python string, a
+    plain JSON value, an SQL table, a class name — each made of a word nobody
+    reviewed — and the same shapes made of known words, left alone."""
+    job = LOWER_FOREIGN + "-regress-nightly"
+    found = plant(tmp_path, {
+        "docs/notes.md": (
+            f"the {LOWER_FOREIGN} team owns the nightly run\nThe job `x` runs {job} at night.\n"
+            f"Its builds: https://ci.shop.example/job/{job}/42/ and https://ci.shop.example/job/shop-nightly/7/\n"
+        ),
+        "deploy/jobs.yaml": f"job: {job}\nname: shop-nightly\n",
+        "tests/test_jobs.py": f'JOB = "{job}"\nOK = "shop-nightly"\n',
+        "tests/fixtures/env.json": '{"tenant": "' + LOWER_FOREIGN + '", "title": "Checkout before the release"}\n',
+        "tests/fixtures/x.sql": f"select * from {LOWER_FOREIGN}_runs where id = 1;\n",
+        "src/runcomposer/extra.py": f"class {LOWER_FOREIGN.title()}Runner:\n    pass\n\n\nclass ShopRunner:\n    pass\n",
+    })
+    flagged = {(v.path, v.token) for v in found["lowercase-token"]}
+    assert flagged == {
+        ("docs/notes.md", LOWER_FOREIGN),
+        ("docs/notes.md", job),
+        ("deploy/jobs.yaml", job),
+        ("tests/test_jobs.py", job),
+        ("tests/fixtures/env.json", LOWER_FOREIGN),
+        ("tests/fixtures/x.sql", LOWER_FOREIGN),
+        ("src/runcomposer/extra.py", f"{LOWER_FOREIGN.title()}Runner"),
+    }, flagged
+
+
+def test_a_tag_shaped_literal_of_a_python_test_is_held_to_the_tag_vocabulary(tmp_path):
+    """In a parametrize list, a plain list, a dict key, a call argument."""
+    unknown = "Blorp" + "tag"
+    found = plant(tmp_path, {
+        "tests/test_planted.py": (
+            "import pytest\n"
+            f'@pytest.mark.parametrize("tag", ["Checkout", "{unknown}"])\n'
+            "def test_x(tag):\n"
+            f'    WANT = {{"{unknown}": 1}}\n'
+            f'    compose(service, "Payments-Cards")\n'
+        ),
+    })
+    assert {(v.line, v.token) for v in found["tag"]} == {(2, unknown), (4, unknown)}
+
+
+def test_a_path_under_a_root_nobody_reviewed_is_caught(tmp_path):
+    """Exact reviewed paths, not whole roots: /opt/<anything> is somebody's
+    layout unless it is one of the reviewed paths."""
+    planted = "/o" + "pt/" + LOWER_FOREIGN + "/results"
+    found = plant(tmp_path, {"docs/notes.md": f"It writes to {planted} and /opt/shop/keywords.\n"})
+    assert [v.token for v in found["path"]] == [planted]
 
 
 def test_work_item_labels_are_caught_in_commit_messages():

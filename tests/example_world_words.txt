@@ -51,6 +51,13 @@ oops
 
 ## Ordinary English words
 # Capitalised mid-sentence: in test names, titles, labels and emphasis.
+Accept  # an HTTP header's name
+Backoffice  # an area of the example shop in a suite-root test
+Dir
+Hostile
+Moin  # a greeting in a variable test (German for hello)
+Nope
+Ops
 Above
 Adopter
 Air
@@ -181,6 +188,7 @@ CDATA
 CDN
 CLIs
 Crockford         # Crockford base32, the ULID alphabet (an eponymous term)
+CSP  # the content security policy header
 CSRF
 Ctrl
 DIVISION          # Unicode character names in a test of hostile names

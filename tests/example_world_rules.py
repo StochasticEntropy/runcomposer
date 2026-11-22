@@ -73,8 +73,12 @@ The rules, and the structure each one relies on:
     strings), the operands of an ``AND``/``OR``/``NOT`` expression,
     ``prefix:``/``regex:`` patterns anywhere, the filter argument of a
     ``runcomposer compile|spec|run|plan`` command line and ``--tag`` values,
-    a ``tags`` column of a CSV file, and every capitalised quoted literal in
-    the UI's test files that the product does not spell itself — is of the
+    a ``tags`` column of a CSV file, every capitalised quoted literal in
+    the UI's test files that the product does not spell itself, and every
+    string constant of a Python test shaped like this world's tags
+    (``Checkout``, ``Payments-Cards``) that the package does not spell
+    itself — in a parametrize list, a plain list, a dict key, a call
+    argument — is of the
     example world's tag vocabulary: the demo corpus, the tags of the shipped
     examples, the reviewed invented tags of the words file, and the derived
     forms (``DERIVED_TAGS``: ``RanOn-{partition}``, ``Sprint-<n>``,
@@ -106,6 +110,16 @@ The rules, and the structure each one relies on:
     of ``PROCESS_WORDS`` do not appear in a commit message (the comment
     there says, per word, which uses are flagged and which are the
     project's own — the run agent of ``examples/remote-agent``).
+
+``lowercase-token``
+    Every lower-case word of prose, every hyphenated lower-case identifier
+    wherever a host could be written (a job, cluster or queue name in a YAML
+    value, a string literal, a URL's path), every word of a JSON text value
+    and of an SQL statement, and the words of every class name, is a word of
+    the reviewed vocabulary, the reviewed lower-case list
+    (``tests/example_world_lowercase.txt``), the example world or the code
+    (a class name's words: the vocabulary and the list only). Foreign
+    names written in lower case are names all the same.
 
 ``finding-id`` (the tree's prose and commit messages)
     The same rule for the labels a list of work items gives its entries: no
@@ -144,6 +158,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 WORDS_FILE_NAME = "tests/example_world_words.txt"
+LOWERCASE_FILE_NAME = "tests/example_world_lowercase.txt"
 
 # ---------------------------------------------------------------------------
 # Violations
@@ -165,6 +180,9 @@ ADVICE = {
     "process-word": "describe the change in the project's own terms, not how it came about",
     "finding-id": "drop the label of the work item and keep the sentence — the project's text "
     "does not refer to an outside list of items",
+    "lowercase-token": f"use a word of the example world, or add the word to {LOWERCASE_FILE_NAME} "
+    "— additions need review: an English word or a technical term, never a name from outside "
+    "this project (a lower-case job, host, team or system name included)",
 }
 
 
@@ -359,6 +377,8 @@ class PythonParts:
     names: set[str] = field(default_factory=set)
     imports: set[str] = field(default_factory=set)  # top-level names of absolute imports
     tags: list[tuple[str, int]] = field(default_factory=list)  # see tags_in_python
+    classes: list[tuple[str, int]] = field(default_factory=list)  # class names, with their line
+    constants: list[tuple[str, int]] = field(default_factory=list)  # every string constant, with its line
 
 
 @functools.cache
@@ -382,6 +402,10 @@ def python_parts(text: str) -> PythonParts | None:
             parts.names.add(node.id)
         elif isinstance(node, ast.Attribute):
             parts.names.add(node.attr)
+        elif isinstance(node, ast.ClassDef):
+            parts.classes.append((node.name, node.lineno))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            parts.constants.append((node.value, node.lineno))
         if isinstance(node, ast.Expr):
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 docstring_at.add((node.lineno, node.col_offset))
@@ -869,18 +893,34 @@ FILESYSTEM_ROOTS = (
     "private", "data", "app", "workspace", "workspaces", "builds", "net", "nfs", "scratch",
     "export", "proj", "projects", "work", "Library", "System", "Applications", "cygdrive", "c", "d",
 )
-#: Generic absolute paths: not anybody's machine. Each prefix says where the
-#: tree uses it; an entry nothing uses is removed (``test_every_generic_path_is_used``).
+#: Generic absolute paths: not anybody's machine. Each entry is one reviewed
+#: path — an entry ending in ``/`` covers what lies below it, any other is
+#: that path (and what lies below it) only; never a whole filesystem root
+#: such as ``/opt/``, under which anybody's layout would pass. Each says
+#: where the tree uses it; an entry nothing uses is removed
+#: (``test_every_generic_path_is_used``).
 GENERIC_PATHS = {
-    "/tmp/": "throwaway virtualenvs and files of CI steps and tests",
+    "/tmp/fresh/": "a throwaway virtualenv of a CI step",
+    "/tmp/minimal/": "the CI step's minimal install",
+    "/tmp/rt/": "the CI step's round trip",
+    "/tmp/tpl/": "the CI step's connector template",
+    "/tmp/venv/": "a CI step's virtualenv",
+    "/tmp/verify/": "the release check's virtualenv",
+    "/tmp/work": "a CI step's work directory",
+    "/tmp/ids.txt": "the consumer tests' ids file",
+    "/tmp/out/": "the consumer tests' output directory",
+    "/tmp/x": "a planted path in the guard's own self-test",
     "/var/lib/apt/": "the package lists a Dockerfile removes after installing",
-    "/opt/": "where the CI Jenkins image installs runcomposer-exec; keyword paths in tests",
+    "/opt/runcomposer/runcomposer_exec.py": "where the CI Jenkins image installs runcomposer-exec",
+    "/opt/shop/keywords": "a keyword path of the example shop in a config test",
     "/usr/bin/": "system executables (the env shebang)",
     "/usr/share/": "the Jenkins image's reference files (ci/jenkins)",
-    "/data": "the container image's volume (Dockerfile)",
-    "/app": "the container image's working directory (Dockerfile)",
-    "/srv/": "a service directory in deployment tests (/srv/shop)",
+    "/srv/shop": "the example shop's service directory in deployment tests and docs",
+    "/srv/envs/broken/config.yaml": "a broken deployment's config in the CLI docs",
+    "/srv/robot-pool/": "the robot-pool example's directory in the CLI docs",
     "/etc/passwd": "the classic target a path-traversal test aims at",
+    "/etc/machine-id": "the system's machine id an owner identity is keyed by (app.liveness)",
+    "/var/lib/dbus/machine-id": "the older place of the system's machine id (app.liveness)",
 }
 _PLACEHOLDER = re.compile(r"[<{$…]|\.\.\.|%[A-Z]")
 _POSIX_PATH = re.compile(
@@ -964,6 +1004,7 @@ class Vocabulary:
     words: frozenset[str]  # case-folded: reviewed words + example-world words
     tags: frozenset[str]  # case-folded tag vocabulary
     sections: dict[str, frozenset[str]]  # words file: heading -> words (for the self-tests)
+    lowercase: frozenset[str] = frozenset()  # the reviewed lower-case words (LOWERCASE_FILE_NAME)
 
 
 def parse_words_file(text: str) -> dict[str, frozenset[str]]:
@@ -1029,10 +1070,21 @@ def vocabulary(root: Path) -> Vocabulary:
     # word nobody reviewed cannot, and fails where the example spells it).
     facts = code_facts(root)
     tags |= {tag for tag in example_tags(root) if _words_known(tag, base, facts)}
+    lowercase_path = root / LOWERCASE_FILE_NAME
+    lowercase = (
+        {
+            line.split("#", 1)[0].strip().casefold()
+            for line in lowercase_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if lowercase_path.is_file()
+        else set()
+    )
     return Vocabulary(
         words=frozenset(word.casefold() for word in world | reviewed | tags),
         tags=frozenset(tag.casefold() for tag in tags),
         sections=sections,
+        lowercase=frozenset(lowercase),
     )
 
 
@@ -1380,6 +1432,25 @@ def ui_own_vocabulary(root: Path) -> frozenset[str]:
     return frozenset(own)
 
 
+#: A tag shaped as this world's tags are: capitalised words, hyphenated.
+_TITLE_TAG = re.compile(r"[A-Z][a-z]+(?:-[A-Z][a-z]+)*")
+#: The guard's own self-tests plant what it must catch.
+_GUARD_SELF_TESTS = frozenset({"tests/test_example_world.py", "tests/test_self_containment.py"})
+
+
+@functools.cache
+def python_own_vocabulary(root: Path) -> frozenset[str]:
+    """What the package itself spells in a string constant — a status, a
+    state, an error code, a kind — which its tests may spell back."""
+    own: set[str] = set()
+    for name, text in text_files(root):
+        if name.startswith("src/") and kind_of(name) == "python":
+            parts = python_parts(text)
+            if parts is not None:
+                own.update(value for value, _line in parts.constants)
+    return frozenset(own)
+
+
 def check_tags(name: str, text: str, vocab: Vocabulary, facts: CodeFacts, root: Path) -> list[Violation]:
     if is_generated(name) or name in _NOT_EXAMPLE_DATA:
         return []
@@ -1394,6 +1465,23 @@ def check_tags(name: str, text: str, vocab: Vocabulary, facts: CodeFacts, root: 
             for value, offset in quoted_strings(text)
             if value.strip() not in own and value.strip()[:1].isupper()
         ]
+    elif name.startswith("tests/") and kind_of(name) == "python" and name not in _GUARD_SELF_TESTS | {RULES_MODULE_NAME}:
+        # Every string constant of a Python test shaped like a tag of this
+        # world — capitalised words, hyphenated (``Checkout``,
+        # ``Payments-Cards``), in a parametrize list, a plain list, a dict
+        # key or a call argument — is read as the UI tests' literals are: a
+        # tag of the vocabulary, or words of it, unless the product itself
+        # spells the literal. (ALL-CAPS names are configuration keys and
+        # parameter names, checked as prose tokens where they are prose.)
+        parts = python_parts(text)
+        own = python_own_vocabulary(root)
+        if parts is not None:
+            starts = _offsets(text)
+            candidates += [
+                (value, starts[line - 1], True)
+                for value, line in parts.constants
+                if _TITLE_TAG.fullmatch(value) and value not in own
+            ]
     violations = []
     for tag, offset, loose in candidates:
         if tag_is_allowed(tag, vocab, facts, loose=loose) is False:
@@ -1480,6 +1568,114 @@ def check_prose(name: str, text: str, vocab: Vocabulary, facts: CodeFacts) -> li
 
 
 # ---------------------------------------------------------------------------
+# Rule: lower-case tokens
+# ---------------------------------------------------------------------------
+
+#: A lower-case word of prose, hyphenated parts included.
+_LOWER_WORD = re.compile(r"(?<![\w$@/\\.-])([a-z\u00df-\u00ff][a-z0-9\u00df-\u00ff]*(?:['’][a-z]+)?(?:-[a-z0-9\u00df-\u00ff]+)*)(?![\w/\\@]|\.\w)")
+#: A hyphenated lower-case identifier anywhere a host could be written — a
+#: job name, a cluster, a queue (``shop-nightly-eu``).
+_HYPHENATED = re.compile(r"(?<![\w$@/\\.:%-])([a-z][a-z0-9]*(?:-[a-z0-9]+)+)(?![\w/\\@:-]|\.\w)")
+_CAMEL_PARTS = re.compile(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _lower_known(word: str, vocab: Vocabulary, facts: CodeFacts) -> bool:
+    folded = re.sub(r"['’].*$", "", word).casefold()
+    return (
+        len(folded) < 2 or folded.isdigit() or folded in vocab.words or folded in vocab.lowercase
+        or folded in facts.identifiers
+    )
+
+
+def _parts(token: str) -> list[str]:
+    return [part for part in token.split("-") if part]
+
+
+def check_lowercase(name: str, text: str, vocab: Vocabulary, facts: CodeFacts) -> list[Violation]:
+    """Lower-case words the vocabulary does not know: every word of prose
+    (``prose_view``), every hyphenated lower-case identifier in the string
+    view (a job or cluster name in a YAML value or a string literal), every
+    word of a JSON string value and of SQL, and the words of a class name.
+    Known is a word of the reviewed vocabulary, the reviewed lower-case
+    list (``LOWERCASE_FILE_NAME``), the example world or the code."""
+    if is_generated(name) or name in (RULES_MODULE_NAME, LOWERCASE_FILE_NAME):
+        return []
+    found: list[Violation] = []
+    seen: set[tuple[int, str]] = set()
+
+    def flag(offset: int, token: str) -> None:
+        key = (line_of(text, offset), token)
+        if key not in seen:
+            seen.add(key)
+            found.append(Violation(name, key[0], "lowercase-token", token))
+
+    view = prose_view(name, text)
+    for match in _LOWER_WORD.finditer(view):
+        token = match.group(1)
+        if any(not _lower_known(part, vocab, facts) for part in _parts(token)):
+            flag(match.start(1), token)
+    strings = string_view(name, text)
+    # A URL's path names things too: a job in a CI address.
+    for url in _URL.finditer(strings):
+        path = url.group().split("://", 1)[-1].partition("/")[2]
+        for segment in re.finditer(r"[^/?#&=]+", path):
+            token = segment.group()
+            if _HYPHENATED.fullmatch(token) and any(
+                not _lower_known(part, vocab, facts) for part in _parts(token) if not part.isdigit()
+            ):
+                flag(url.start(), token)
+    strings = mask(strings, _complement(strings, [m.span() for m in _URL.finditer(strings)]))
+    for match in _HYPHENATED.finditer(strings):
+        token = match.group(1)
+        if any(not _lower_known(part, vocab, facts) for part in _parts(token) if not part.isdigit()):
+            flag(match.start(1), token)
+    kind = kind_of(name)
+    if kind == "json":
+        try:
+            data = json.loads(text)
+        except ValueError:
+            data = None
+        for value in _json_strings(data):
+            # Text — a value with a space — or one plain word; an id, a hash
+            # or an encoded value is neither.
+            if " " in value.strip() or re.fullmatch(r"[A-Za-z][a-z]+", value):
+                for word in re.findall(r"(?<![\w-])[A-Za-z][a-z]+(?![\w-])", _URL.sub(" ", value)):
+                    if not _lower_known(word, vocab, facts):
+                        flag(text.find(word), word)
+    elif kind == "sql":
+        # The statements' words — keywords, tables, columns — outside string
+        # literals (values: hashes, encoded documents) and comments (prose).
+        code = mask(text, _complement(text, [m.span() for m in re.finditer(r"'(?:''|[^'])*'|--[^\n]*", text)]))
+        for match in re.finditer(r"(?<![\w])[A-Za-z][a-z]*(?=[_\W]|$)", code):
+            if not _lower_known(match.group(), vocab, facts):
+                flag(match.start(), match.group())
+    if kind == "python" and name.startswith(CODE_DIRS):
+        parts = python_parts(text)
+        if parts is not None:
+            starts = _offsets(text)
+            for class_name, line in parts.classes:
+                words = [w for w in _CAMEL_PARTS.findall(class_name.strip("_")) if not w.isdigit()]
+                if any(
+                    len(word) > 1 and word.casefold() not in vocab.words and word.casefold() not in vocab.lowercase
+                    for word in words
+                ):
+                    flag(starts[line - 1], class_name)
+    return found
+
+
+def _json_strings(data: object) -> Iterator[str]:
+    """The string values of parsed JSON, keys left out."""
+    if isinstance(data, str):
+        yield data
+    elif isinstance(data, list):
+        for value in data:
+            yield from _json_strings(value)
+    elif isinstance(data, dict):
+        for value in data.values():
+            yield from _json_strings(value)
+
+
+# ---------------------------------------------------------------------------
 # Rule: process words (commit messages)
 # ---------------------------------------------------------------------------
 
@@ -1536,7 +1732,7 @@ def check_process_words(name: str, text: str) -> list[Violation]:
 # Running the rules
 # ---------------------------------------------------------------------------
 
-RULES = ("host", "path", "ticket-key", "tag", "prose-token", "finding-id")
+RULES = ("host", "path", "ticket-key", "tag", "prose-token", "finding-id", "lowercase-token")
 
 
 def scan_file(name: str, text: str, root: Path, vocab: Vocabulary, facts: CodeFacts) -> dict[str, list[Violation]]:
@@ -1547,6 +1743,7 @@ def scan_file(name: str, text: str, root: Path, vocab: Vocabulary, facts: CodeFa
         "tag": [],
         "prose-token": [],
         "finding-id": [],
+        "lowercase-token": [],
     }
     if not is_generated(name):
         found["ticket-key"] = check_ticket_keys(name, text)
@@ -1554,6 +1751,7 @@ def scan_file(name: str, text: str, root: Path, vocab: Vocabulary, facts: CodeFa
         found["prose-token"] = check_prose(name, text, vocab, facts)
         if name != RULES_MODULE_NAME:  # this module spells the labels it describes
             found["finding-id"] = check_finding_ids(name, prose_view(name, text))
+        found["lowercase-token"] = check_lowercase(name, text, vocab, facts)
     return found
 
 

@@ -90,9 +90,10 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
    `Shop.Checkout.Cards.Pay By Card`, the demo corpus's tags, tickets
    `SHOP-12xx`. A guard test (`tests/test_example_world.py`) reads every text
    file of the tree — prose included — and fails on a host, an absolute
-   path, a ticket key, a tag or a capitalised word it does not know. A new
-   word is added to `tests/example_world_words.txt`, under the heading it
-   belongs to, in the same change — an English word, a technical term or a
+   path, a ticket key, a tag, a capitalised word or a lower-case word it
+   does not know. A new word is added to `tests/example_world_words.txt`,
+   under the heading it belongs to (a lower-case one to
+   `tests/example_world_lowercase.txt`), in the same change — an English word, a technical term or a
    name of the example world; never the name of a person, or of a company,
    product or system from outside this project. `python
    ci/check_commit_messages.py [RANGE]` (default `origin/main..HEAD`) holds
