@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from runcomposer.core.model import DispatchRecord
 
 from .liveness import owner_alive
+from .redaction import log_failure
 
 if TYPE_CHECKING:
     from .service import Service
@@ -99,8 +100,10 @@ class PeriodicRecovery:
         while not self._stop.wait(interval):
             try:
                 recover(self._service)
-            except Exception:
-                log.exception("recovering dispatches of processes that are gone failed")
+            except Exception as exc:
+                log_failure(
+                    log, "recovering dispatches of processes that are gone failed", exc, self._service.redact
+                )
 
     def stop(self) -> None:
         self._stop.set()

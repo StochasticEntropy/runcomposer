@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 from collections import Counter
+from collections.abc import Callable
 from typing import Any
 
 from runcomposer.core.hashing import sha256_hex
@@ -26,29 +27,40 @@ from runcomposer.core.model import Item
 from runcomposer.core.timeutil import utc_now
 
 from .config import Config, PluginSpec
+from .redaction import log_failure
 
 __all__ = ["Catalog"]
 
 log = logging.getLogger("runcomposer.catalog")
 
 
+def _as_it_is(value: Any) -> Any:
+    return value
+
+
 class _Loaded:
-    def __init__(self, spec: PluginSpec, source: Any, fingerprint: str | None = None):
+    def __init__(
+        self,
+        spec: PluginSpec,
+        source: Any,
+        fingerprint: str | None = None,
+        redact: Callable[[Any], Any] = _as_it_is,
+    ):
         self.spec = spec
         self.source = source
         #: The corpus state this source was built from. On a reload it is the
         #: token probed *before* building: if the corpus changes while it is
         #: being read, the next check sees a difference and reloads again —
         #: a token taken afterwards would mark stale content as current.
-        self.fingerprint = fingerprint if fingerprint is not None else _fingerprint(source)
+        self.fingerprint = fingerprint if fingerprint is not None else _fingerprint(source, redact)
 
 
-def _fingerprint(source: Any) -> str | None:
+def _fingerprint(source: Any, redact: Callable[[Any], Any] = _as_it_is) -> str | None:
     try:
         token = source.fingerprint()
         return None if token is None else str(token)
-    except Exception:  # a broken probe means "cannot tell" — reload on request
-        log.warning("source fingerprint failed", exc_info=True)
+    except Exception as exc:  # a broken probe means "cannot tell" — reload on request
+        log_failure(log, "source fingerprint failed", exc, redact, level=logging.WARNING)
         return None
 
 
@@ -57,8 +69,16 @@ class Catalog:
 
     __test__ = False
 
-    def __init__(self, config: Config, *, check_interval_s: float = 1.0):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        check_interval_s: float = 1.0,
+        redact: Callable[[Any], Any] = _as_it_is,
+    ):
         self._config = config
+        #: Blanks configured secrets out of what a source's failure is logged with.
+        self._redact = redact
         self._interval = check_interval_s
         self._lock = threading.RLock()
         self._loaded: list[_Loaded] | None = None
@@ -69,7 +89,7 @@ class Catalog:
     # -- loading -------------------------------------------------------------
 
     def _load(self, spec: PluginSpec, fingerprint: str | None = None) -> _Loaded:
-        return _Loaded(spec, self._config.build(spec), fingerprint)
+        return _Loaded(spec, self._config.build(spec), fingerprint, self._redact)
 
     def _sources(self) -> list[_Loaded]:
         with self._lock:
@@ -97,7 +117,7 @@ class Catalog:
         replacement = list(self._loaded)
         changed = False
         for index, loaded in enumerate(self._loaded):
-            current = None if loaded.fingerprint is None else _fingerprint(loaded.source)
+            current = None if loaded.fingerprint is None else _fingerprint(loaded.source, self._redact)
             if loaded.fingerprint is None:
                 stale = rebuild_unfingerprinted
             else:

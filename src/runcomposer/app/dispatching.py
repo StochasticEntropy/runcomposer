@@ -43,7 +43,6 @@ import logging
 import mimetypes
 import threading
 import time
-import traceback
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -79,6 +78,7 @@ from runcomposer.core.ports import PlanPreview, RunnerInfo
 from .ingestion import expected_format
 from .livechannel import FileLiveChannel, LiveTail
 from .liveness import LIVE_OWNERS, owner_alive, owner_identity
+from .redaction import TRACEBACK_FOLLOWS, error_summary, log_failure
 
 if TYPE_CHECKING:
     from .service import Service
@@ -93,8 +93,6 @@ __all__ = [
 
 log = logging.getLogger("runcomposer.dispatch")
 
-#: A log record whose message is one line of summary and then a traceback.
-TRACEBACK_FOLLOWS = "runcomposer_traceback_follows"
 
 _LIVE_DIR = ".live"
 #: How often the store is asked whether another process requested a cancel.
@@ -381,8 +379,10 @@ class _Context:
                 str(shard),
                 LiveStatus(item_id, status, int(duration_ms), str(message), shard=str(shard)),
             )
-        except Exception:
-            log.warning("live status could not be recorded", exc_info=True)
+        except Exception as exc:
+            log_failure(
+                log, "live status could not be recorded", exc, self._service.redact, level=logging.WARNING
+            )
 
     def live_channel(self) -> FileLiveChannel:
         with self._lock:
@@ -729,11 +729,8 @@ class DispatchManager:
             # request is invalid, as when the declaration refuses it.
             raise _redacted_invalid(service, exc) from None
         except Exception as exc:
-            log.error(
-                "runner %r raised while planning\n%s", runner_id,
-                service.redact("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))),
-            )
-            refusal = str(service.redact(f"{type(exc).__name__}: {exc}"))
+            log_failure(log, f"runner {runner_id!r} raised while planning", exc, service.redact)
+            refusal = str(service.redact(error_summary(exc)))
         return PlanOutcome(
             runner_id=runner_id,
             run_id=run_id,
@@ -850,13 +847,13 @@ class DispatchManager:
         try:
             ctx.close()
             self._settle(active, error)
-        except Exception:
-            log.exception("settling dispatch %s failed", ctx.dispatch_id)
+        except Exception as exc:
+            log_failure(log, f"settling dispatch {ctx.dispatch_id} failed", exc, service.redact)
         finally:
             try:
                 service.ledger.release(ctx.dispatch_id)
-            except Exception:
-                log.exception("releasing dispatch %s failed", ctx.dispatch_id)
+            except Exception as exc:
+                log_failure(log, f"releasing dispatch {ctx.dispatch_id} failed", exc, service.redact)
             with self._lock:
                 self._active.pop(ctx.dispatch_id, None)
             ctx.handoff.set()
@@ -939,17 +936,12 @@ class DispatchManager:
 
     def _log_crash(self, what: str, ctx: _Context, error: BaseException) -> None:
         """A runner's traceback is the operator's diagnostic — logged as
-        text, with configured secrets blanked out: the exception message may
-        quote an option. The first line says what failed and with which
-        error; the traceback follows it (``TRACEBACK_FOLLOWS``: the command
-        line's own output shows that first line only, unless ``-v``)."""
-        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-        log.error(
-            "runner %r %s (run %s, dispatch %s): %s\n%s",
-            ctx.runner_id, what, ctx.run_id, ctx.dispatch_id,
-            self._service.redact(f"{type(error).__name__}: {error}".splitlines()[0] if str(error) else type(error).__name__),
-            self._service.redact(trace.rstrip()),
-            extra={TRACEBACK_FOLLOWS: True},
+        text, with configured secrets blanked out (``log_failure``)."""
+        log_failure(
+            log,
+            f"runner {ctx.runner_id!r} {what} (run {ctx.run_id}, dispatch {ctx.dispatch_id})",
+            error,
+            self._service.redact,
         )
 
     # -- cancelling -------------------------------------------------------------------
@@ -1131,8 +1123,10 @@ class DispatchManager:
                         active.ctx.dispatch_id, cancel_requested=True
                     )
                     self._signal(active)
-                except Exception:
-                    log.exception("could not cancel dispatch %s", active.ctx.dispatch_id)
+                except Exception as exc:
+                    log_failure(
+                        log, f"could not cancel dispatch {active.ctx.dispatch_id}", exc, self._service.redact
+                    )
         self.join(timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
         LIVE_OWNERS.discard(self.owner)

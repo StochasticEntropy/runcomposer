@@ -277,6 +277,13 @@ class TestIdempotency:
         assert report.outcome == "new"
         assert [v.message for v in service.store.verdicts_for(run_id)] == ["card \ufffd declined"]
 
+    def test_a_marker_field_with_a_lone_surrogate_is_a_refused_bundle(self, service, tmp_path):
+        run_id, _export, _spec = exported(service, tmp_path)
+        marked = bundle(tmp_path / "one", {SSO[0]: "PASS"}, marker={"run_id": run_id, "shard": "s\ud800"})
+        with pytest.raises(IngestError) as refused:
+            service.ingest(marked)
+        assert refused.value.reason == "bad-bundle" and "'shard'" in str(refused.value)
+
     def test_shards_accumulate_until_the_declared_set_is_in(self, service, tmp_path):
         """A spec that says `results.shards: 2` exports with shards 1 and 2."""
         composed = service.build_spec_document({"tag_filter": "Auth-SSO"}, title="Two shards")

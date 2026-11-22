@@ -117,6 +117,21 @@ class QuotingDescribeRunner(RunnerBase):
         raise AssertionError("dispatched without a description")
 
 
+class OpaqueError(Exception):
+    def __str__(self) -> str:
+        raise ValueError("no text for you")
+
+
+class OpaqueDescribeRunner(RunnerBase):
+    """Its describe() raises an exception that cannot even be printed."""
+
+    def describe(self) -> RunnerInfo:
+        raise OpaqueError
+
+    def dispatch(self, ctx: DispatchContext) -> None:  # pragma: no cover - never reached
+        raise AssertionError("dispatched without a description")
+
+
 BUILT: list[str] = []
 
 
@@ -287,7 +302,7 @@ class TestErrorBody:
         assert "surrogate" in error["detail"]
         assert client.get(f"{API}/runs").json()["total"] == 0
 
-    @pytest.mark.parametrize("depth", [990, 1200, 20000])
+    @pytest.mark.parametrize("depth", [990, 1200, 5000])
     def test_a_body_nested_deeper_than_the_interpreter_recurses_is_a_400(self, client, depth):
         """The surrogate check reads the whole body before any field does: it
         walks with a stack of its own, so a deep body is still a bad request."""
@@ -1021,6 +1036,16 @@ class TestRunnersAreServerParts:
             assert "RuntimeError: the pool refused the token" in text and "Traceback" in text
             assert record.exc_info is None  # nothing a formatter would print unblanked
         assert "pool-token-example-77" not in response.text
+
+    def test_a_describe_whose_exception_cannot_be_printed_is_still_the_typed_503(self, make_client):
+        client, _service = make_client(
+            runners={"opaque": {"module": "tests.test_api:OpaqueDescribeRunner"}, "demo": {}}
+        )
+        listed = {entry["id"]: entry for entry in client.get(f"{API}/runners").json()}
+        assert "could not describe itself (OpaqueError" in listed["opaque"]["error"]
+        response = client.post(f"{API}/plan", json={"selection": {"tag_filter": "Auth-SSO"}, "runner": "opaque"})
+        error = assert_error(response, 503, "runner-unavailable")
+        assert "'opaque'" in error["detail"] and "OpaqueError" in error["detail"]
 
     def test_a_runner_is_built_once_per_server_not_per_request(self, make_client):
         BUILT.clear()

@@ -589,15 +589,23 @@ not exist or worked differently:
 - **`503 runner-unavailable`**: a runner whose `describe()` raises, named,
   without the exception's text; `GET /runners` keeps listing the others.
   The traceback goes to the log as text, with configured secrets blanked
-  out. On the command line it is one line (the traceback with `-v`) and
-  exit code `3`: nothing was planned or run. A foreground `runcomposer run`
+  out. On the command line it is one line (the traceback with `-v`), and
+  a command that plans or runs with that runner exits `3`: nothing was
+  planned or run. A foreground `runcomposer run`
   whose runner crashes prints one line with the error; the traceback with
   `-v`.
 - **For connector authors:** `runcomposer.sdk.ORPHAN_GRACE_S`, the seconds a
   worker whose supervisor is gone is given before it is killed;
-  `ShardOutcome.status` (`finished` or `stopped`), handed to `on_end` like
-  to `on_done`; `plugin()` answers a near-miss section name with the name
+  the `status` of the Robot toolkit's `ShardOutcome` (`finished`, `raised`,
+  `died`, `timed out` or `stopped`), handed to `on_end` like to `on_done`; `plugin()` answers a near-miss section name with the name
   it has (`'stores'` → did you mean `'store'`).
+- **An exception reaches a log line or an event as text, blanked:** an
+  observer, a parser, a source or a runner that raises while quoting a
+  configured secret is logged — and, for an observer, recorded as a
+  warning on the run — with the secret blanked out; a failure inside the
+  server (settling, recovery, the inbox, an unhandled request) likewise.
+  The command line prints the first line of such a failure; the traceback
+  with `-v`.
 - **A result message is stored as text:** a lone UTF-16 surrogate in a
   result file's message becomes the replacement character instead of
   failing the bundle.

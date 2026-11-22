@@ -21,6 +21,8 @@ from runcomposer.core.errors import InvalidTransition
 from runcomposer.core.model import DispatchRecord, RunRecord
 from runcomposer.core.timeutil import epoch_ms
 
+from .redaction import log_failure
+
 if TYPE_CHECKING:
     from .service import Service
 
@@ -55,8 +57,8 @@ class AwaitingExpiry:
         while not self._stop.wait(interval):
             try:
                 self._service.expire_awaiting()
-            except Exception:
-                log.exception("expiring dispatches that await results failed")
+            except Exception as exc:
+                log_failure(log, "expiring dispatches that await results failed", exc, self._service.redact)
 
     def stop(self) -> None:
         self._stop.set()

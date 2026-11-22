@@ -33,6 +33,10 @@ def build_parser() -> tuple[argparse.ArgumentParser, dict]:
     return parser, handlers
 
 
+#: The commands that plan or run with a runner.
+_PLANS_OR_RUNS = frozenset({"run", "dispatch", "rerun", "plan", "spec"})
+
+
 def main(argv: list[str] | None = None) -> int:
     from runcomposer.core.errors import ConfigError, RunComposerError, RunnerUnavailable
     from runcomposer.core.taxonomy import TaxonomyError
@@ -68,9 +72,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except RunnerUnavailable as exc:
-        # A runner that cannot say what it is: nothing was planned or run.
+        # A runner that cannot say what it is. For a command that plans or
+        # runs with it, nothing was planned or run: the "no result" exit.
         print(f"error: {exc}", file=sys.stderr)
-        return EXIT_NO_RESULT
+        return EXIT_NO_RESULT if args.command in _PLANS_OR_RUNS else EXIT_NO
     except RunComposerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_NO

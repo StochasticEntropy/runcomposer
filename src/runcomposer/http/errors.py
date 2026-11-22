@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Receive, Scope, Send
 
+from runcomposer.app.redaction import log_failure
 from runcomposer.core.errors import (
     AuthRequired,
     ConfigError,
@@ -211,7 +212,13 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
-        log.error("unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+        service = getattr(request.app.state, "service", None)
+        log_failure(
+            log,
+            f"unhandled error on {request.method} {request.url.path}",
+            exc,
+            service.redact if service is not None else (lambda value: value),
+        )
         return JSONResponse(
             status_code=500,
             content=error_body(

@@ -9,8 +9,10 @@ keys or identifiers.
 
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Mapping
+import traceback
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,9 @@ __all__ = [
     "FREE_TEXT_KEYS",
     "MIN_SECRET_LENGTH",
     "REDACTED",
+    "TRACEBACK_FOLLOWS",
+    "error_summary",
+    "log_failure",
     "redact",
     "redact_free_text",
     "without_location",
@@ -29,6 +34,45 @@ __all__ = [
 MIN_SECRET_LENGTH = 4
 
 REDACTED = "‹from the environment›"
+
+#: A log record whose message is one line of summary and then a traceback
+#: (the command line's own output shows that first line only, unless ``-v``).
+TRACEBACK_FOLLOWS = "runcomposer_traceback_follows"
+
+
+def error_summary(error: BaseException) -> str:
+    """``Type: the first line of its text`` — and only the type for an
+    exception without text, or one whose ``__str__`` raises itself."""
+    name = type(error).__name__
+    try:
+        lines = str(error).splitlines()
+    except Exception:
+        return name
+    first = lines[0].strip() if lines else ""
+    return f"{name}: {first}" if first else name
+
+
+def log_failure(
+    logger: logging.Logger,
+    what: str,
+    error: BaseException,
+    redact: Callable[[Any], Any],
+    *,
+    level: int = logging.ERROR,
+) -> None:
+    """Log an exception for the operator: one line saying what failed and
+    with which error, then its traceback — as text, through ``redact``. An
+    exception's text may quote a configured option; a record that carried
+    the exception itself would be printed by whatever formatter there is,
+    unblanked. This is the one way an exception reaches a log line; it does
+    not raise."""
+    try:
+        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__)).rstrip()
+        summary, trace = str(redact(error_summary(error))), str(redact(trace))
+    except Exception:
+        summary, trace = type(error).__name__, "(its traceback could not be written as text)"
+    logger.log(level, "%s: %s\n%s", what, summary, trace, extra={TRACEBACK_FOLLOWS: True})
+
 
 #: The keys of an event's data that hold free text — what a runner or a
 #: parser wrote — and are therefore blanked; every other key holds an

@@ -41,7 +41,7 @@ from runcomposer.core.registry import PARSER_GROUP, load_entry_point
 from runcomposer.core.spec import build_spec
 
 from .quarantine import QuarantineEntry
-from .redaction import without_location
+from .redaction import log_failure, without_location
 from .tokens import authorize_push, mint_token
 
 if TYPE_CHECKING:
@@ -139,7 +139,10 @@ class Ingestion:
         except IngestError as exc:
             cause = exc.__cause__
             if cause is not None and not isinstance(cause, (ParseError, IngestError)):
-                log.warning("parser %r raised on %s", format_id, bundle, exc_info=cause)
+                log_failure(
+                    log, f"parser {format_id!r} raised on {bundle}", cause, self._service.redact,
+                    level=logging.WARNING,
+                )
             raise
 
     # -- the pipeline ---------------------------------------------------------------
@@ -332,7 +335,7 @@ class Ingestion:
         except Exception as exc:
             reason = exc.reason if isinstance(exc, IngestError) else "bad-bundle"
             if not isinstance(exc, IngestError):
-                log.exception("ingestion of %s failed unexpectedly", bundle)
+                log_failure(log, f"ingestion of {bundle} failed unexpectedly", exc, self._service.redact)
             claimed = run_id
             if claimed is None:
                 try:

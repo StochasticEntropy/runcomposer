@@ -34,6 +34,7 @@ from runcomposer.core.ids import new_ulid
 from runcomposer.core.marker import MARKER_FILENAME
 
 from .ingestion import IngestReport, QuarantineReport
+from .redaction import log_failure
 
 if TYPE_CHECKING:
     from .service import Service
@@ -93,8 +94,8 @@ class InboxWatcher:
         while not self._stop.wait(self.poll_interval_s):
             try:
                 self.poll_once()
-            except Exception:  # the watcher outlives anything a bundle can do
-                log.exception("inbox poll failed")
+            except Exception as exc:  # the watcher outlives anything a bundle can do
+                log_failure(log, "inbox poll failed", exc, self.service.redact)
 
     # -- one deterministic pass (also the unit-test surface) -------------------
 
@@ -135,8 +136,8 @@ class InboxWatcher:
                         "inbox bundle %s ingested into run %s (%s)",
                         entry.name, result.run_id, result.outcome,
                     )
-            except Exception:
-                log.exception("inbox bundle %s could not be processed", entry.name)
+            except Exception as exc:
+                log_failure(log, f"inbox bundle {entry.name} could not be processed", exc, self.service.redact)
             finally:
                 self._archive(entry)
                 self._seen.pop(entry.name, None)
@@ -149,7 +150,9 @@ class InboxWatcher:
         target_root.mkdir(exist_ok=True)
         try:
             entry.rename(target_root / f"{entry.name}-{new_ulid()}")
-        except OSError:
+        except OSError as exc:
             # Cannot move it: remove it, so it is not processed forever.
-            log.exception("could not archive inbox bundle %s — removing it", entry.name)
+            log_failure(
+                log, f"could not archive inbox bundle {entry.name} — removing it", exc, self.service.redact
+            )
             shutil.rmtree(entry, ignore_errors=True)

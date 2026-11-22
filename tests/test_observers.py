@@ -117,6 +117,16 @@ class FaultyObserver(ObserverBase):
         raise RuntimeError(f"cannot cope with {event.kind}")
 
 
+class QuotingObserver(ObserverBase):
+    """Raises with what it was configured with in the message."""
+
+    def __init__(self, token: str = ""):
+        self.token = token
+
+    def notify(self, event: Any) -> None:
+        raise RuntimeError(f"the hook refused the token {self.token}")
+
+
 def recording(name: str, **extra: Any) -> dict[str, Any]:
     return {"module": "tests.test_observers:RecordingObserver", "name": name, **extra}
 
@@ -429,6 +439,28 @@ class TestAnObserverNeverAffectsARun:
         ]
         # The failure is recorded on the run, not fed back to observers.
         assert "warning" not in [event.kind for event in SEEN["after-faulty"]]
+
+    def test_an_observer_that_quotes_a_secret_is_recorded_and_logged_without_it(
+        self, make_service, monkeypatch, caplog
+    ):
+        """What an observer says when it fails is recorded on the run and
+        served by the API: a configured secret in it is blanked there and in
+        the log line, traceback included."""
+        monkeypatch.setenv("SHOP_HOOK_TOKEN", "hook-token-example-42")
+        service = make_service(
+            observers={"hook": {"module": "tests.test_observers:QuotingObserver", "token": "${env:SHOP_HOOK_TOKEN}"}}
+        )
+        with caplog.at_level("WARNING", logger="runcomposer"):
+            run_id = run_once(service)
+        warnings = warnings_of(service, run_id)
+        assert warnings and all("the hook refused the token" in warning for warning in warnings)
+        stored = repr([event.data for event in service.store.events(run_id)])
+        assert "hook-token-example-42" not in stored
+        failures = [record for record in caplog.records if "observer 'hook' failed on" in record.getMessage()]
+        assert failures
+        for record in failures:
+            assert "hook-token-example-42" not in record.getMessage()
+            assert "Traceback" in record.getMessage() and record.exc_info is None
 
     def test_several_observers_of_one_plugin_under_different_keys(self, make_service, tmp_path):
         service = make_service(

@@ -40,4 +40,11 @@ def read_marker(bundle: str | Path) -> dict[str, Any] | None:
     for key in ("dispatch_id", "shard", "spec_sha256"):
         if key in marker and marker[key] is not None and not isinstance(marker[key], str):
             raise IngestError(f"{marker_path}: marker field {key!r} must be a string", reason="bad-bundle")
+    for key in ("run_id", "dispatch_id", "shard", "spec_sha256"):
+        value = marker.get(key)
+        if isinstance(value, str) and any("\ud800" <= char <= "\udfff" for char in value):
+            raise IngestError(
+                f"{marker_path}: marker field {key!r} holds a lone UTF-16 surrogate, which is not text",
+                reason="bad-bundle",
+            )
     return marker

@@ -20,7 +20,6 @@ from __future__ import annotations
 import logging
 import threading
 import time
-import traceback
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -50,7 +49,7 @@ from .catalog import Catalog
 from .compose import Composer, ComposeResult, ExportResult, Preview
 from .config import Config, _resolve_env, resolve_options
 from .ctrf import export_ctrf
-from .dispatching import TRACEBACK_FOLLOWS, DispatchManager, Outcome, PlanOutcome
+from .dispatching import DispatchManager, Outcome, PlanOutcome
 from .eventbus import EventBus, ObserverBinding
 from .expiry import expire_awaiting
 from .housekeeping import collect_garbage, remove_run_artifacts
@@ -58,7 +57,7 @@ from .ingestion import Ingestion, IngestReport, QuarantineReport
 from .ledger import Ledger
 from .quarantine import Quarantine
 from .recovery import recover
-from .redaction import FREE_TEXT_KEYS, redact, redact_free_text, without_locations
+from .redaction import FREE_TEXT_KEYS, log_failure, redact, redact_free_text, without_locations
 from .taxonomy import read_taxonomy
 
 __all__ = ["Service", "parameter_json"]
@@ -141,7 +140,7 @@ class Service:
 
     @_part
     def catalog(self) -> Catalog:
-        return Catalog(self.config)
+        return Catalog(self.config, redact=self.redact)
 
     @property
     def source(self) -> Catalog:
@@ -163,7 +162,7 @@ class Service:
             if wanted is not None:
                 binding = ObserverBinding(spec.key, observer, tuple(wanted))
             bindings.append(binding)
-        return EventBus(self.store, bindings, redact=self.redact_event_data)
+        return EventBus(self.store, bindings, redact=self.redact_event_data, redact_text=self.redact)
 
     @_part
     def ledger(self) -> Ledger:
@@ -311,16 +310,8 @@ class Service:
         return info
 
     def _log_failure(self, what: str, error: BaseException) -> None:
-        """A plugin's exception, for the operator: one line saying what
-        failed and with which error, then the traceback — as text, with
-        configured secrets blanked out, since the exception may quote an
-        option. (The command line shows the first line only, unless ``-v``.)"""
-        trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-        first = f"{type(error).__name__}: {error}".splitlines()[0] if str(error) else type(error).__name__
-        log.error(
-            "%s: %s\n%s", what, self.redact(first), self.redact(trace.rstrip()),
-            extra={TRACEBACK_FOLLOWS: True},
-        )
+        """A plugin's exception, for the operator (``log_failure``)."""
+        log_failure(log, what, error, self.redact)
 
     def connector_settings(self, name: str) -> Mapping[str, Any]:
         """``connectors.<name>`` as a plugin or a configured callable reads

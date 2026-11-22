@@ -24,6 +24,8 @@ from runcomposer.core import events as kinds
 from runcomposer.core.model import RunEvent
 from runcomposer.core.timeutil import utc_now
 
+from .redaction import error_summary, log_failure
+
 __all__ = ["EventBus", "ObserverBinding"]
 
 log = logging.getLogger("runcomposer.events")
@@ -47,8 +49,12 @@ class EventBus:
         observers: Sequence[ObserverBinding] = (),
         *,
         redact: Callable[[Any], Any] | None = None,
+        redact_text: Callable[[Any], Any] | None = None,
     ):
         self._store = store
+        #: Blanks configured secrets out of free text: an observer's failure
+        #: as it is logged.
+        self._redact_text = redact_text or (lambda value: value)
         #: Blanks configured secrets out of whatever a runner put into an
         #: event — a refusal reason, a log line — before it is stored, logged
         #: or handed to an observer.
@@ -137,21 +143,29 @@ class EventBus:
         try:
             binding.observer.notify(event)
         except Exception as exc:  # the port's promise: never affects the run
-            log.warning("observer %r failed on %s: %s", binding.key, event.kind, exc, exc_info=True)
+            # An observer may quote what it was configured with — a hook's
+            # address, a token: what is logged and what is recorded are
+            # blanked like everything else a plugin says.
+            log_failure(
+                log, f"observer {binding.key!r} failed on {event.kind}", exc, self._redact_text,
+                level=logging.WARNING,
+            )
             try:
                 self._store.append_event(
                     event.run_id,
                     kind=kinds.WARNING,
                     at=utc_now(),
                     dispatch_id=event.dispatch_id,
-                    data={
-                        "message": f"observer {binding.key!r} failed on {event.kind}: "
-                        f"{type(exc).__name__}: {exc}",
-                        "observer": binding.key,
-                    },
+                    data=self._redact(
+                        {
+                            "message": f"observer {binding.key!r} failed on {event.kind}: "
+                            f"{error_summary(exc)}",
+                            "observer": binding.key,
+                        }
+                    ),
                 )
-            except Exception:
-                log.exception("could not record the observer failure")
+            except Exception as failure:
+                log_failure(log, "could not record the observer failure", failure, self._redact_text)
 
     def flush(self, timeout: float | None = 10.0) -> bool:
         """Wait until every queued notification was delivered."""
