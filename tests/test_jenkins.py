@@ -22,8 +22,10 @@ that is what the docker setup under ``ci/jenkins/`` is for.
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import json
+import os
 import secrets
 import socket
 import threading
@@ -733,25 +735,69 @@ class TestPollCompletion:
         assert "archived nothing matching ['reports/*.xml']" in run.latest_dispatch.error
 
     @pytest.mark.parametrize(
-        ("paths", "said"),
+        ("paths", "said", "refused_here"),
         [
-            (("reports/eu/junit.xml", "reports/us/junit.xml"), "would be one file 'junit.xml'"),
-            (("reports/eu/Junit.xml", "reports/us/junit.xml"), "would be one file 'junit.xml'"),
-            (("reports/eu/junit:eu.xml",), "cannot be kept in the bundle: its name contains ':'"),
-            (("reports/eu/nul.xml",), "its name is a device name on Windows"),
+            (("reports/eu/junit.xml", "reports/us/junit.xml"), "would be one file 'junit.xml'", True),
+            (("reports/eu/junit:eu.xml",), "contains ':', which a Windows file name cannot hold", os.name == "nt"),
+            (("reports/eu/nul.xml",), "is a device name on Windows", os.name == "nt"),
+            (("reports/eu/junit.xml.",), "ends in a dot or a space", os.name == "nt"),
         ],
-        ids=["same name", "case", "stream", "device"],
+        ids=["same name", "stream", "device", "trailing dot"],
     )
-    def test_files_a_flat_bundle_cannot_keep_as_named_fail_and_say_which(self, make_service, jenkins, paths, said):
-        """Before, the second ``junit.xml`` replaced the first without a word
-        (and on Windows a name it cannot keep ended in an error)."""
+    def test_files_this_server_cannot_keep_as_named_fail_and_say_which(
+        self, make_service, jenkins, paths, said, refused_here
+    ):
+        """Before, the second ``junit.xml`` replaced the first without a word,
+        and on Windows a name it cannot keep ended in an error. A name this
+        server keeps — ``:`` on Linux and macOS — is downloaded as it is."""
         jenkins.add_job(JOB, junit_job(paths=paths))
-        service = jenkins_service(make_service, jenkins, **{**POLL, "artifact_paths": ["reports/*/*.xml"]})
+        service = jenkins_service(make_service, jenkins, **{**POLL, "artifact_paths": ["reports/*/*"]})
+        run_id, _ = dispatch(service)
+        run = service.require_run(run_id)
+        if refused_here:
+            assert run.state == "FAILED", run.latest_dispatch.error
+            assert said in run.latest_dispatch.error
+            assert service.store.verdicts_for(run_id) == []
+        else:  # downloaded under its name (``junit:eu.xml`` is a result file; the others are not)
+            name = paths[0].rsplit("/", 1)[-1]
+            assert said not in (run.latest_dispatch.error or "")
+            assert [p.name for p in (service.config.artifact_dir / run_id).rglob(name)] == [name]
+            assert (run.state == "COMPLETE") == fnmatch.fnmatch(name, "junit*.xml"), run.latest_dispatch.error
+
+    def test_two_names_this_file_system_keeps_as_one_fail_and_say_which(self, make_service, jenkins, tmp_path):
+        """``Junit.xml`` and ``junit.xml``: one file on Windows and on a
+        default macOS volume — the second would replace the first — two on
+        Linux. The file system is asked, not a list."""
+        probe = tmp_path / "probe"
+        probe.mkdir()
+        (probe / "Junit.xml").write_bytes(b"")
+        one_file = (probe / "junit.xml").exists()
+        jenkins.add_job(JOB, junit_job(paths=("reports/eu/Junit.xml", "reports/us/junit.xml")))
+        service = jenkins_service(make_service, jenkins, **{**POLL, "artifact_paths": ["reports/*/*"]})
+        run_id, _ = dispatch(service)
+        error = service.require_run(run_id).latest_dispatch.error or ""
+        assert ("would be one file" in error) == one_file, error
+
+    @pytest.mark.parametrize(
+        "archived",
+        ["results/..\\..\\..\\evil.txt", "results/" + 2 * "\\" + "shop.example\\share\\evil.txt", "results/sub\\evil.txt"],
+        ids=["climbs", "share", "a backslash inside"],
+    )
+    def test_an_archived_path_with_a_backslash_fails_and_lands_nowhere(self, make_service, jenkins, tmp_path, archived):
+        """``fnmatch``'s ``*`` matches ``\\``: ``results/*`` let such a path
+        through, and its last ``/`` segment joined on Windows climbed out of
+        the bundle or named a share. A build that archives such a name is
+        not trusted to name a file: the shard fails naming it, nothing is
+        written."""
+        jenkins.add_job(JOB, junit_job(paths=(archived,)))
+        service = jenkins_service(make_service, jenkins, **{**POLL, "artifact_paths": ["results/*"]})
         run_id, _ = dispatch(service)
         run = service.require_run(run_id)
         assert run.state == "FAILED", run.latest_dispatch.error
-        assert said in run.latest_dispatch.error
-        assert service.store.verdicts_for(run_id) == []
+        assert "holds a backslash" in run.latest_dispatch.error
+        assert not list(tmp_path.rglob("*evil*"))
+        workdir = service.config.artifact_dir / run_id
+        assert not [p for p in workdir.rglob("*") if p.is_file() and p.parent.name == "results"]
 
 
 # -- when the trigger does not go through ----------------------------------------------

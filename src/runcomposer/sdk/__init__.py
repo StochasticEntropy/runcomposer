@@ -81,7 +81,12 @@ from runcomposer.core.errors import (
     UnknownRunner,
 )
 from runcomposer.core.events import LIFECYCLE_KINDS
-from runcomposer.core.filenames import name_collision_key, portable_name_problem
+from runcomposer.core.filenames import (
+    child_path,
+    local_name_problem,
+    name_collision_key,
+    portable_name_problem,
+)
 from runcomposer.core.filter import FilterError, format_filter, parse_filter, quote_pattern
 from runcomposer.core.filtertext import FilterSyntaxError, parse_filter_text, read_filter_string
 from runcomposer.core.handoff import corpus_drifted
@@ -244,6 +249,7 @@ __all__ = [
     "bundle_hash",
     "callback_urls",
     "canonical_json",
+    "child_path",
     "completion_of",
     "configured_calls",
     "contract_members",
@@ -255,6 +261,7 @@ __all__ = [
     "load_config",
     "load_document",
     "load_import_path",
+    "local_name_problem",
     "missing_verdicts",
     "name_collision_key",
     "new_ulid",

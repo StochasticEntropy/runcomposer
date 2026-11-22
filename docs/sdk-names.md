@@ -20,6 +20,7 @@ meaning given here and in its docstring.
 | `callback_urls` | The callback URLs of a run under a deployment's base address — the address an executor elsewhere reaches this runcomposer by, such as a runner's ``callback_base`` option (``https://runcomposer.shop.example``; a base that already ends in ``/api/v1`` is taken as it is). |
 | `CallbackUrls` | The URLs an executor that runs elsewhere reaches one run by (see :func:`callback_urls`): ``run`` — the run's API resource; ``results`` — where a bundle is pushed (``POST``, what a runner hands out as its callback URL); ``live`` and ``log`` — where live status and log lines are pushed; ``spec`` — the document handed out for the dispatch (``GET``; ``None`` without a dispatch id). |
 | `canonical_json` | Deterministic JSON bytes: sorted keys, no insignificant whitespace, non-ASCII kept as UTF-8. |
+| `child_path` | ``directory / name`` — when ``name`` is one component this machine keeps (:func:`local_name_problem`); else ``ValueError``. |
 | `ChunkPlan` | Items distributed over chunks by :func:`plan_chunks`, balanced by the durations known: the chunks, their estimates, and how much was known. |
 | `completion_of` | Aggregate verdicts — already including the derived ``MISSING`` ones — to a completion: ``ERROR`` > ``FAIL`` > ``INCOMPLETE`` > ``PASS``. |
 | `COMPLETIONS` | How a complete dispatch turned out, judged over its effective verdicts. |
@@ -58,9 +59,10 @@ meaning given here and in its docstring.
 | `load_config` | Load config from ``path``, else ``./config.yaml`` if present, else built-in defaults. |
 | `load_document` | Load a spec document from a YAML or JSON file (§3: JSON-isomorphic). |
 | `load_import_path` | Load ``"package.module:Attribute"``. |
+| `local_name_problem` | Why this machine's file system cannot keep ``name`` as one file of a directory: :func:`single_name_problem` everywhere, and on Windows :func:`windows_name_problem` too. |
 | `MARKER_FILENAME` | The file in a results bundle that names the run and dispatch it belongs to. |
 | `missing_verdicts` | One ``MISSING`` verdict per planned item nobody reported. |
-| `name_collision_key` | The key under which two names are one file on a file system that ignores case or Unicode normalization (Windows, macOS): two names of one directory with the same key are one file there. |
+| `name_collision_key` | The key under which two names may be one file where case or Unicode normalization does not count (Windows, a default macOS volume): NFC, then Unicode case folding. |
 | `new_ulid` | Mint a ULID. |
 | `normalize_time` | Any accepted spelling → the stored spelling. |
 | `NotFound` | Something asked for does not exist (HTTP 404). |
@@ -83,7 +85,7 @@ meaning given here and in its docstring.
 | `PlanPreview` | A runner's answer to "what would this dispatch do?" (``Runner.plan``). |
 | `PluginBase` | Defaults for :class:`Configurable`: options are the constructor's keyword parameters, the names in ``PATH_OPTIONS`` (single values or lists) are paths relative to the config file, and no ``connectors:`` mapping is handed over. |
 | `PluginError` | A declared plugin cannot be loaded. |
-| `portable_name_problem` | Why ``name`` — one path component — is not a file name every file system keeps as written, or ``None`` when it is. |
+| `portable_name_problem` | Why ``name`` is not a file name every file system keeps as written, or ``None`` — strict, and the same answer on every platform, for an author who wants portable names: :func:`single_name_problem`, :func:`windows_name_problem`, and an invisible format character (zero-width, bidirectional controls), which makes two names that read alike. |
 | `push_results` | Push a results bundle to the run's results endpoint — what a job's post step does with ``curl -F files=@…`` — and return the server's answer (the ingest report: ``outcome``, ``verdict_count``, ``warnings`` …). |
 | `quote_pattern` | A pattern as the text form writes it: bare when it reads back as itself, else in double quotes with ``\`` and ``"`` escaped by a backslash — a space, a parenthesis, a quote or a backslash in it, or a pattern that is an operator word (``"AND"``) or the word for every item (``"*"``, the tag literally spelled so), is quoted. |
 | `read_filter_string` | A filter given as one string where a filter is taken (a selection's ``tag_filter``, the command line's filter argument, a configured quick filter, preset or default filter) → ``(AST data, None)``. |

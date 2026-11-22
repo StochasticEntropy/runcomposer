@@ -338,6 +338,7 @@ backported
 backslash
 backslashes
 backslashreplace
+backtick
 backup
 backwards
 badges
@@ -423,6 +424,7 @@ bewegen
 bewegt
 beyond
 bezeichnung
+bidirectional
 bildet
 bin
 binary
@@ -596,6 +598,7 @@ clicking
 clicks
 client
 clients
+climbed
 closes
 closing
 cloudbees
@@ -717,6 +720,7 @@ containing
 containment
 contents
 context
+continues
 contracts
 contradict
 contradicted
@@ -833,6 +837,7 @@ declines
 decoded
 decodes
 decoding
+decomposed
 decoration
 decoupled
 decoupling
@@ -996,6 +1001,7 @@ door
 doppelt
 dort
 dorthin
+dotless
 dots
 dotted
 doubled
@@ -1219,6 +1225,7 @@ excluding
 exclusion
 exclusions
 exclusive
+exclusively
 executables
 executes
 execution
@@ -2509,7 +2516,6 @@ passing
 passt
 paste
 pasted
-pastes
 patches
 paths
 pathy
@@ -3699,6 +3705,7 @@ undocumented
 undoes
 unequal
 uneven
+unexpanded
 unexpected
 unexpectedly
 unfingerprinted

@@ -229,6 +229,9 @@ MINOR             # semantic versioning
 Morgan            # De Morgan's laws (an eponymous term)
 MUST
 NOTs
+NFC               # Unicode normalization forms
+NFKC
+NTFS              # the Windows file system, whose name rules the file-name checks follow
 NUL
 OIDC
 PNG
@@ -276,6 +279,7 @@ Linux             # platforms the test matrix runs on
 macOS
 ParametersDefinitionProperty
 Playwright        # the UI's browser tests
+PowerShell        # the shell the demo's printed commands are written for on Windows
 PyPI              # the package index the project is published to
 relativePath
 SVAR              # the UI component library of an earlier UI stack (decision log)

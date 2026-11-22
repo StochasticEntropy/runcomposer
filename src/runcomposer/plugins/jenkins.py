@@ -89,7 +89,7 @@ import string
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from runcomposer.sdk import (
@@ -104,9 +104,9 @@ from runcomposer.sdk import (
     RunnerBase,
     RunnerInfo,
     callback_urls,
+    child_path,
     name_collision_key,
     parameters_from_config,
-    portable_name_problem,
 )
 from runcomposer.sdk.jenkins import (
     JenkinsClient,
@@ -772,20 +772,21 @@ class JenkinsRunner(RunnerBase):
             if any(fnmatch.fnmatchcase(relative, pattern) for pattern in patterns)
         ]
         wanted = [relative.replace("{shard}", shard) for relative in self.result_urls]
-        names = _bundle_names(
-            [(relative, PurePosixPath(relative).name) for relative in matching]
-            + [(relative, PurePosixPath(urllib.parse.urlsplit(relative).path).name or "result")
-               for relative in wanted]
+        targets = _bundle_targets(
+            bundle,
+            [(relative, relative) for relative in matching]
+            + [(relative, urllib.parse.urlsplit(relative).path or "result") for relative in wanted],
         )
         fetched: list[Path] = []
         for relative in matching:
-            fetched.append(self.client.download_artifact(build_url, relative, bundle / names[relative]))
+            fetched.append(self.client.download_artifact(build_url, relative, targets[relative]))
         for relative in wanted:
             try:
-                fetched.append(self.client.download_build_file(build_url, relative, bundle / names[relative]))
+                fetched.append(self.client.download_build_file(build_url, relative, targets[relative]))
             except JenkinsError as exc:
                 if exc.status != 404:
                     raise
+                targets[relative].unlink(missing_ok=True)  # the place held for it
                 ctx.log(f"jenkins: {build_url}/{relative} does not exist", level="warning")
         return fetched
 
@@ -811,27 +812,47 @@ class _BundleNameError(Exception):
     """Files of a build that cannot be kept in one flat bundle as named."""
 
 
-def _bundle_names(files: list[tuple[str, str]]) -> dict[str, str]:
-    """``{build path: name in the bundle}`` for ``(build path, name)`` pairs.
-    A bundle is flat and the same on every machine: a name some file system
-    cannot keep, or two files that would be one there (``eu/junit.xml`` and
-    ``us/junit.xml``; ``Junit.xml`` and ``junit.xml``), raise
-    ``_BundleNameError`` rather than one file silently replacing another."""
-    names: dict[str, str] = {}
-    seen: dict[str, str] = {}
-    for relative, name in files:
-        problem = portable_name_problem(name) if name not in ("", ".", "..") else "is not a file name"
-        if problem is not None:
-            raise _BundleNameError(f"the build's file {relative!r} cannot be kept in the bundle: its name {problem}")
-        key = name_collision_key(name)
-        if key in seen and seen[key] != relative:
-            raise _BundleNameError(
-                f"the build's files {seen[key]!r} and {relative!r} would be one file {name!r} in the "
-                "bundle, which is flat — narrow artifact_paths or result_urls to one of them"
-            )
-        seen[key] = relative
-        names[relative] = name
-    return names
+def _bundle_targets(bundle: Path, files: list[tuple[str, str]]) -> dict[str, Path]:
+    """``{build path: file in the bundle}`` for ``(build path, path whose last
+    segment names the file)`` pairs, each place created empty and
+    exclusively before anything is downloaded. The bundle is flat: a file is
+    kept under the last ``/`` segment of its path. ``_BundleNameError``,
+    rather than a file written somewhere else or one file replacing
+    another, when a path holds a backslash (on Windows a separator: a build
+    that archives such a name is not trusted to name a file), when this
+    machine cannot keep the name, or when two files are one file on this
+    machine's file system (``eu/junit.xml`` and ``us/junit.xml``
+    everywhere; ``Junit.xml`` and ``junit.xml`` on Windows and macOS)."""
+    bundle.mkdir(parents=True, exist_ok=True)
+    targets: dict[str, Path] = {}
+    try:
+        for relative, path in dict(files).items():
+            if "\\" in path:
+                raise _BundleNameError(
+                    f"the build's file {relative!r} holds a backslash, a path separator on Windows — "
+                    "not a file name this runner keeps"
+                )
+            name = path.rsplit("/", 1)[-1]
+            try:
+                target = child_path(bundle, name)
+            except ValueError as exc:
+                raise _BundleNameError(f"the build's file {relative!r} cannot be kept in the bundle: {exc}") from None
+            try:
+                target.touch(exist_ok=False)
+            except FileExistsError:
+                key = name_collision_key(name)
+                earlier = [kept for kept, place in targets.items() if name_collision_key(place.name) == key]
+                raise _BundleNameError(
+                    f"the build's files {earlier[0] if earlier else 'before'!r} and {relative!r} would be "
+                    f"one file {name!r} in the bundle, which is flat — narrow artifact_paths or "
+                    "result_urls to one of them"
+                ) from None
+            targets[relative] = target
+    except _BundleNameError:
+        for target in targets.values():
+            target.unlink(missing_ok=True)
+        raise
+    return targets
 
 
 def _text(value: Any) -> str:

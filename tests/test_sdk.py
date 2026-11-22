@@ -56,8 +56,8 @@ PUBLIC_NAMES = {
     "validate_document", "validate_parameters", "parameters_from_config", "load_import_path",
     "RemoteLiveChannel", "corpus_drifted", "ConfiguredCall", "configured_calls",
     "push_results", "ResultsPushRefused",
-    # a file name every file system keeps as written, for what a plugin downloads
-    "portable_name_problem", "name_collision_key",
+    # a file named by someone else: kept by this machine, or by every one
+    "child_path", "local_name_problem", "portable_name_problem", "name_collision_key",
     # the callback URLs of a run, for an executor elsewhere
     "callback_urls", "CallbackUrls",
     # worker processes for any framework: lanes, a timeout, the stop protocol
