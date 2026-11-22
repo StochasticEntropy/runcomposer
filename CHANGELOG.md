@@ -592,8 +592,8 @@ not exist or worked differently:
   job that cannot say which item goes where), `check_parameters` (the job's
   declared parameters held against `parameters` in the health check),
   `outage_tolerance_s`; shard groups; `field_providers` and `postprocess`
-  take `{call, with}`; a line in the run's log when the server stops
-  answering and when it is back. **Jenkins toolkit**:
+  take `{call, with}`; the run's log says when Jenkins went silent during a
+  poll and when it was heard again. **Jenkins toolkit**:
   `JenkinsClient.job_parameters`, `job_parameter_definitions` and
   `JobParameter` (kind, choices, default), `outage_tolerance_s` and
   `on_outage` on the waits and on `follow`, `JenkinsQueueCancelled`.

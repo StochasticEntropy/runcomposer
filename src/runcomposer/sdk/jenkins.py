@@ -513,8 +513,8 @@ class JenkinsClient:
         to a server that is away), and neither timeout starts again. With a
         tolerance every probe is a single attempt — the tolerance is the
         retry policy, so the client's own retries do not multiply the time a
-        probe may take. ``on_outage`` is told when the server stops
-        answering and when it answers again, across both waits (see
+        probe may take. ``on_outage`` hears of each change between an
+        answering and a silent server, across both waits (see
         :meth:`wait`)."""
         if check is not None:
             try:

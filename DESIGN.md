@@ -1581,7 +1581,7 @@ are assembled from:
   default), and `follow`: a triggered build from its queue item to its end,
   taken back when the dispatch was cancelled before a link existed to stop
   it by, riding out an outage of up to `outage_tolerance_s` and telling
-  `on_outage` when the server stops answering and when it is back), `JenkinsError` / `JenkinsTimeout` /
+  `on_outage` of each change between an answering and a silent server), `JenkinsError` / `JenkinsTimeout` /
   `JenkinsQueueCancelled` (a queue item cancelled in Jenkins), and `encode_spec` /
   `decode_spec` for the compressed spec.
 
