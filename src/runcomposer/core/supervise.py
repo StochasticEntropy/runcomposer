@@ -53,7 +53,7 @@ from multiprocessing.connection import wait as wait_for
 from pathlib import Path
 from typing import Any
 
-__all__ = ["STOP_FILE", "WorkerOutcome", "WorkerPayload", "supervise_workers"]
+__all__ = ["ORPHAN_GRACE_S", "STOP_FILE", "WorkerOutcome", "WorkerPayload", "supervise_workers"]
 
 #: Left in a worker's ``out_dir`` when it is asked to stop.
 STOP_FILE = ".stop-requested"
@@ -63,7 +63,8 @@ STOP_FILE = ".stop-requested"
 #: stopped by a cancellation (or because ``on_done`` raised).
 FINISHED, RAISED, DIED, TIMED_OUT, STOPPED = "finished", "raised", "died", "timed out", "stopped"
 #: Seconds a worker whose supervisor is gone waits for what it asked to stop
-#: before it kills its process group.
+#: before it kills its process group: what a supervised worker started is
+#: gone at most this long (plus a moment) after the supervising process.
 ORPHAN_GRACE_S = 5.0
 
 

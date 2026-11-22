@@ -76,6 +76,51 @@ class GatedRunner(RunnerBase):
         ctx.deliver("1", verdicts=[Verdict(i, "PASS", 5) for i in ctx.item_ids])
 
 
+class LateReturnRunner(RunnerBase):
+    """Delivers every shard, then stays in its dispatch until the test opens
+    its gate — a runner tidying up after its last delivery. The dispatch is
+    COMPLETE before the runner's thread is done."""
+
+    def __init__(self, gate: str):
+        self.gate = gate
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="lingering")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(i, "PASS", 5) for i in ctx.item_ids])
+        GATES[self.gate + ":started"].set()
+        wait_until(lambda: GATES[self.gate].is_set(), what="the gate")
+
+
+class BrokenDescribeRunner(RunnerBase):
+    """Its describe() raises — with a server path in the message."""
+
+    def describe(self) -> RunnerInfo:
+        raise RuntimeError("cannot read /srv/shop-runner/state/descriptor.json")
+
+    def dispatch(self, ctx: DispatchContext) -> None:  # pragma: no cover - never reached
+        raise AssertionError("dispatched without a description")
+
+
+BUILT: list[str] = []
+
+
+class CountedRunner(RunnerBase):
+    """Counts how often it is constructed."""
+
+    def __init__(self, name: str):
+        BUILT.append(name)
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="counted")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        ctx.deliver("1", verdicts=[Verdict(i, "PASS", 5) for i in ctx.item_ids])
+
+
 class SlowRefusingRunner(RunnerBase):
     """Prepares until the test opens its gate, then refuses — a refusal that
     arrives after the request's hand-off wait is over."""
@@ -204,6 +249,48 @@ class TestErrorBody:
         assert [entry["field"] for entry in error["fields"]] == [field]
         assert all(isinstance(entry["message"], str) for entry in error["fields"])
         assert client.get(f"{API}/runs").json()["total"] == 0
+
+    @pytest.mark.parametrize(
+        ("route", "body", "field"),
+        [
+            ("/runs", '{"selection":{"tag_filter":"Auth"},"title":"\\ud800"}', "title"),
+            ("/runs", '{"selection":{"tag_filter":"Auth"},"labels":{"a\\udfff":"x"}}', "labels.a\\udfff"),
+            ("/runs", '{"selection":{"tag_filter":"Auth\\ud800"}}', "selection.tag_filter"),
+            (
+                "/runs",
+                '{"selection":{"tag_filter":"Auth"},"dispatch":{"runner":"demo","parameters":{"\\ud800":1}}}',
+                "dispatch.parameters.\\ud800",
+            ),
+            ("/selection/compile", '{"item_ids":["Shop.Auth.SSO.T001","\\ud800"]}', "item_ids.1"),
+            ("/selection/spec-preview", '{"selection":{"tag_filter":"Auth"},"title":"x\\ud800y"}', "title"),
+        ],
+    )
+    def test_a_lone_surrogate_anywhere_in_a_body_is_a_400_naming_the_field(self, client, route, body, field):
+        """``"\\ud800"`` is valid JSON and no text: it used to reach the store
+        and come back a 500."""
+        response = client.post(f"{API}{route}", content=body.encode(), headers={"Content-Type": "application/json"})
+        error = assert_error(response, 400, "invalid-request")
+        assert [entry["field"] for entry in error["fields"]] == [field]
+        assert "surrogate" in error["detail"]
+        assert client.get(f"{API}/runs").json()["total"] == 0
+
+    def test_every_request_body_is_checked_for_lone_surrogates_in_one_place(self):
+        from runcomposer.http import models
+
+        bodies = [getattr(models, name) for name in models.__all__ if name.endswith(("Request", "Push"))]
+        assert len(bodies) >= 10
+        assert all(issubclass(body, models._Text) for body in bodies)
+
+    def test_a_title_is_at_most_1000_characters(self, client):
+        from runcomposer.http.models import MAX_TITLE_LENGTH
+
+        assert MAX_TITLE_LENGTH == 1000
+        long = {"selection": {"tag_filter": "Auth"}, "title": "T" * 1001}
+        error = assert_error(client.post(f"{API}/runs", json=long), 400, "invalid-request")
+        assert [entry["field"] for entry in error["fields"]] == ["title"]
+        assert client.get(f"{API}/runs").json()["total"] == 0
+        fits = client.post(f"{API}/runs", json={**long, "title": "T" * 1000})
+        assert fits.status_code == 201 and fits.json()["run"]["title"] == "T" * 1000
 
     def test_a_body_that_is_not_json_is_a_400(self, client):
         response = client.post(
@@ -391,6 +478,37 @@ class TestComposeAndDispatch:
         final = client.get(f"{API}/runs/{run_id}").json()
         assert (final["state"], final["completion"]) == ("COMPLETE", "PASS")
         assert final["verdict_summary"] == {"PASS": 3} and final["dispatches"][0]["executing"] is False
+
+    def test_a_complete_dispatch_is_not_executing_while_its_runner_tidies_up(self, make_client, request):
+        """The window between the last delivery settling COMPLETE and the
+        runner's thread returning is held open: in it, the dispatch is
+        COMPLETE and owned by nothing — never "executing"."""
+        name = request.node.name
+        GATES[name] = threading.Event()
+        GATES[name + ":started"] = threading.Event()
+        client, service = make_client(
+            runners={"lingering": {"module": "tests.test_api:LateReturnRunner", "gate": name}}
+        )
+        try:
+            response = client.post(
+                f"{API}/runs", json={"selection": {"tag_filter": "Auth-SSO"}, "dispatch": {"runner": "lingering"}}
+            )
+            assert response.status_code == 201
+            run_id = response.json()["run"]["id"]
+            follow(client, run_id, until="run.completed")
+            assert GATES[name + ":started"].is_set() and not GATES[name].is_set()
+            seen = client.get(f"{API}/runs/{run_id}").json()
+            assert seen["state"] == "COMPLETE"
+            assert seen["dispatches"][0]["executing"] is False
+            stored = service.store.get_run(run_id).latest_dispatch
+            assert stored.state == "COMPLETE" and stored.owner is None
+            # Nothing is left for recovery to release, nor any other reader to
+            # take for a live owner.
+            assert all(d.dispatch_id != stored.dispatch_id for d in service.store.owned_dispatches())
+        finally:
+            GATES[name].set()
+            service.dispatcher.join(30)
+            del GATES[name], GATES[name + ":started"]
 
     def test_compose_and_dispatch_with_per_run_parameters(self, make_client):
         client, _service = make_client(runners={"demo": {"delay_s": 0.02}})
@@ -836,6 +954,39 @@ class TestResultsExport:
 
 
 # -- what a client asks first ------------------------------------------------------------------
+
+
+class TestRunnersAreServerParts:
+    def test_a_runner_whose_describe_raises_is_a_typed_503_and_the_others_stay_listed(self, make_client):
+        client, _service = make_client(
+            runners={"undescribable": {"module": "tests.test_api:BrokenDescribeRunner"}, "demo": {}}
+        )
+        listed = {entry["id"]: entry for entry in client.get(f"{API}/runners").json()}
+        assert set(listed) == {"undescribable", "demo"} and "parameters" in listed["demo"]
+        assert "undescribable" in listed["undescribable"]["error"]
+        body = {"selection": {"tag_filter": "Auth-SSO"}, "dispatch": {"runner": "undescribable"}}
+        for response in (
+            client.post(f"{API}/runs", json=body),
+            client.post(f"{API}/plan", json={"selection": {"tag_filter": "Auth-SSO"}, "runner": "undescribable"}),
+        ):
+            error = assert_error(response, 503, "runner-unavailable")
+            assert "'undescribable'" in error["detail"] and "RuntimeError" in error["detail"]
+            assert "/srv" not in response.text and "Traceback" not in response.text
+        assert client.get(f"{API}/runs").json()["total"] == 0
+        assert client.post(f"{API}/runs", json={**body, "dispatch": {"runner": "demo"}}).status_code == 201
+
+    def test_a_runner_is_built_once_per_server_not_per_request(self, make_client):
+        BUILT.clear()
+        client, service = make_client(runners={"counted": {"module": "tests.test_api:CountedRunner", "name": "c"}})
+        for _ in range(5):
+            assert client.get(f"{API}/runners").status_code == 200
+        for _ in range(2):
+            response = client.post(
+                f"{API}/runs", json={"selection": {"tag_filter": "Auth-SSO"}, "dispatch": {"runner": "counted"}}
+            )
+            assert response.status_code == 201
+            service.wait(response.json()["run"]["id"], timeout=30)
+        assert BUILT == ["c"]
 
 
 class TestMeta:

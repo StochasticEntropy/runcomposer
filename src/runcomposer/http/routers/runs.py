@@ -349,8 +349,8 @@ def rerun(run_id: str, body: RerunRequest, service: Service = Depends(service_of
     handed_off = service.dispatcher.wait_handoff(
         outcome, float(service.config.dispatch["handoff_wait_s"])
     )
-    if outcome.refusal is not None or outcome.invalid is not None:
-        error: RunComposerError = outcome.invalid or DispatchRefused(str(outcome.refusal))
+    if outcome.refusal is not None or outcome.invalid_parameter is not None:
+        error: RunComposerError = outcome.invalid_parameter or DispatchRefused(str(outcome.refusal))
         if target != run_id:
             service.delete_run(target)
             error.extra = {**(error.extra or {}), "run_kept": False, "run_id": None}

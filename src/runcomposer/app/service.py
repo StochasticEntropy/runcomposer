@@ -32,6 +32,8 @@ from runcomposer.core.errors import (
     InvalidRequest,
     NotFound,
     RunActive,
+    RunComposerError,
+    RunnerUnavailable,
     UnknownRun,
     UnknownRunner,
 )
@@ -257,7 +259,7 @@ class Service:
                     f"(configured: {self.config.runner_ids() or 'none'})"
                 )
             try:
-                validate_parameters(self.runner(runner_id).describe().parameters, preset["parameters"])
+                validate_parameters(self.describe_runner(runner_id).parameters, preset["parameters"])
             except InvalidRequest as exc:
                 raise ConfigError(f"{where}: {exc}") from None
 
@@ -290,6 +292,22 @@ class Service:
                     )
                 self._runners[runner_id] = self.config.build(spec)
             return self._runners[runner_id]
+
+    def describe_runner(self, runner_id: str) -> RunnerInfo:
+        """What the runner under ``runner_id`` says it is. A ``describe()``
+        that raises is ``RunnerUnavailable`` naming the runner — the
+        exception, with its traceback, goes to the server log, not into an
+        answer."""
+        runner = self.runner(runner_id)
+        try:
+            info: RunnerInfo = runner.describe()
+        except Exception as exc:
+            log.error("runner %r: describe() raised", runner_id, exc_info=exc)
+            raise RunnerUnavailable(
+                f"runner {runner_id!r} could not describe itself ({type(exc).__name__}; "
+                "see the server log) — nothing can be planned or dispatched with it"
+            ) from None
+        return info
 
     def connector_settings(self, name: str) -> Mapping[str, Any]:
         """``connectors.<name>`` as a plugin or a configured callable reads
@@ -331,9 +349,14 @@ class Service:
         for runner_id in self.config.runner_ids():
             entry: dict[str, Any] = {"id": runner_id}
             try:
-                info: RunnerInfo = self.runner(runner_id).describe()
+                info: RunnerInfo = self.describe_runner(runner_id)
             except Exception as exc:  # surfaced, not hidden: the UI lists it with the reason
-                entry["error"] = str(exc)
+                entry["error"] = (
+                    str(exc) if isinstance(exc, RunComposerError)
+                    else f"runner {runner_id!r} could not be built ({type(exc).__name__}; see the server log)"
+                )
+                if not isinstance(exc, RunComposerError):
+                    log.error("runner %r could not be built", runner_id, exc_info=exc)
                 infos.append(entry)
                 continue
             entry.update(
@@ -468,7 +491,7 @@ class Service:
         stored run, ``parameters=None`` means the ones its document carries."""
         if (run_id is None) == (selection is None):
             raise InvalidRequest("a plan is for a stored run or for a selection — give one of them")
-        info = self.runner(runner_id).describe()
+        info = self.describe_runner(runner_id)
         if run_id is not None:
             self.require_run(run_id)
             return self.dispatcher.plan(

@@ -392,7 +392,9 @@ Who asks, and what they get:
   (`pending`). A dispatch refused before the hand-off is a `409
   dispatch-refused`, an invalid parameter a `400 invalid-parameter` with
   `parameter`, `problem` and, for a mapping, `key`, and a full queue a `503
-  dispatch-queue-full`; each says `run_kept` (and `run_id`), since the run
+  dispatch-queue-full`; a runner whose `describe()` raises makes it a `503
+  runner-unavailable` naming the runner, before any run is composed.
+  The others say `run_kept` (and `run_id`), since the run
   composed for the request is removed unless `keep_run: true`
   (`tests/test_api.py::TestComposeAndDispatch`,
   `tests/test_parameter_refusals.py::TestTheReasonIsAField`,
@@ -1063,6 +1065,10 @@ ctx.deliveries, ctx.shard_groups, ctx.links, ctx.artifacts, ctx.logs, ctx.export
   `refused`, `undeclared` or `cancelled`. Any other exception the runner
   raises comes out of `run` — there is no "failed" return: in runcomposer one
   raised after the hand-off is a `FAILED` dispatch, and a test should see it.
+  That includes an `InvalidParameter` the runner raises itself (runcomposer
+  answers it `400 invalid-parameter`): `run` raises it, so a test writes
+  `with pytest.raises(InvalidParameter): ctx.run(runner)`
+  (`ConnectorHarness.run` hands the same back as `.invalid_parameter`).
 - **What is recorded.** `ctx.logs` is a list of `(level, message)` pairs —
   the runner's `ctx.log` lines and what its workers logged through the
   channel; `ctx.warnings()` the messages of the warnings among them.
@@ -1088,7 +1094,11 @@ ctx.deliveries, ctx.shard_groups, ctx.links, ctx.artifacts, ctx.logs, ctx.export
   reaches for `declare` or `log` fails here as it would there — and returns
   the `PlanPreview`, or `None` with the reason in `ctx.refusal`. Nothing of
   the fake is touched.
-- **Cancelling.** `ctx.request_cancel()` does what a cancel does.
+- **Cancelling.** `ctx.request_cancel()` does what a cancel does: it raises
+  the flag the runner watches (`ctx.cancelled`). `ctx.cancel_calls` counts the
+  calls of the runner's `cancel(ctx)` that `check_runner(…,
+  cancel_after_declare=True)` made — the way a unit test asserts that the
+  cancellation reached the runner once; `request_cancel` does not count.
 
 **A runner that looks at the catalog itself** — where an item comes from,
 what its `Item.meta` holds — needs real items, and gets them with
@@ -1096,9 +1106,10 @@ what its `Item.meta` holds — needs real items, and gets them with
 planned items are the source's own `Item` objects, `ctx.source` is the source,
 and the document carries its snapshot, so there is no drift. `selection` is
 `None` for every item, a filter — as text (`"Smoke"`, `"Auth OR Cart"`,
-read like a string `tag_filter` over the API; a single pattern that is not
-filter text still selects that pattern, with a `UserWarning`) or as an AST
-(`{"op": "AND", …}`) — or a list of ids (an id the source does not have is
+read like a string `tag_filter` over the API, strictly: text that does not
+parse, such as `"regex:^Zone-(A|B)$"` unquoted or `"Sprint 12"`, raises
+`FilterSyntaxError` with the column; quote the pattern, or pass it in the
+AST) or as an AST (`{"op": "AND", …}`) — or a list of ids (an id the source does not have is
 a `ValueError`); everything else goes to the constructor:
 
 ```python
@@ -1137,9 +1148,9 @@ as `serve` would, composes the run, dispatches it on the dispatch manager and
 waits — with a timeout, after which it cancels and fails — until the runner
 returned and the dispatch settled. The result is read from the store:
 `run`, `dispatch`, `verdicts`, `live` (`LiveStatus` records), `links`,
-`events`, `artifacts`, `refusal`, `invalid`, `warnings`, `logs()`. `refusal`
+`events`, `artifacts`, `refusal`, `invalid_parameter`, `warnings`, `logs()`. `refusal`
 is the reason when the dispatch was refused before the hand-off (`ctx.refuse`,
-an exception other than `InvalidParameter`, or no `declare`); `invalid` is the
+an exception other than `InvalidParameter`, or no `declare`); `invalid_parameter` is the
 `InvalidParameter` the runner raised before declaring — `.parameter` and its
 message, the request's `400 invalid-parameter` — with `refusal` then `None`
 (`tests/test_parameter_refusals.py::TestTheHarnessSaysSo`). For results that
@@ -1165,7 +1176,7 @@ assert handle.wait(timeout=30).state == "CANCELLED"
 for "a test has started", `lambda run: "build" in run.links` for "the build is
 known" — and fails with an `AssertionError` saying where the run stood;
 `wait()` waits for the runner to return, as `run` does; `cancel()`, `read()`,
-`done`, `refusal` and `invalid` are there too (`tests/test_kit_additions.py::TestTheHarnessInTheBackground`,
+`done`, `refusal` and `invalid_parameter` are there too (`tests/test_kit_additions.py::TestTheHarnessInTheBackground`,
 `examples/connector-template/tests/test_connector.py::test_a_check_is_seen_running_and_the_run_cancelled_in_a_real_deployment`).
 
 **An executor that pushes.** `ConnectorHarness(serve=True, …)` also serves the
@@ -1236,7 +1247,10 @@ what no stand-in covers is a real server's own behaviour.
 
 **A reference plugin beside yours.** `plugin(section, name, **options)` from
 the kit builds an installed plugin by the name a config file gives it,
-without importing its module — the Robot source as the catalog of a fake:
+without importing its module. `section` is the config section — `sources`,
+`runners`, `parsers`, `observers`, or `store` (singular, as in a config;
+a near miss such as `stores` is refused with the right name). The Robot
+source as the catalog of a fake:
 
 ```python
 from runcomposer.testing import FakeDispatchContext, check_runner, plugin
@@ -1618,7 +1632,7 @@ test's longname):
 | `Execution(root, item_ids)`, `ShardPayload(...)` | one Robot execution; everything one worker process needs — `shard`, `out_dir`, `executions`, `variables`, `partition`, `lane`, `channel`, `listeners`, `worker_setup` (configured callables), `rerun_failed`, `rpa`, `robot_options`, `cwd` and `env` (the working directory and environment the worker executes in — `%{SHOP_REGION}` in a suite), `worker_data` (a picklable mapping its `worker_setup` sees as `info["data"]`), `clean_output` (the selectors every output is cleaned with — a selector Robot would refuse is a `ValueError` where the payload is made), `post_execution` (configured callables after every execution), … |
 | `run_shard(payload, stop=None)` | the worker's entry point: executes the shard and writes `RESULT_FILE` into its directory; `stop()` (or `STOP_FILE`) asks it to end early; `cwd` and `env` apply for the call only. `read_shard_result(out_dir)` reads the result back as a `ShardResult` of `ShardOutput`s — each with `item_ids`, and `failed` set when a step after its execution raised: its tests are then reported `ERROR` with that message by `collect_verdicts`, and `ShardOutcome.outputs` keeps it even when the step removed the file |
 | `clean_output(output, info=None, *, settings)` | one `output.xml` rewritten without the keyword data `settings` (`{remove_keywords: […], flatten_keywords: […]}`) selects, through Robot's result model, atomically; the tests, their statuses, messages, tags and times stay as they were. It runs Robot in the calling process — a worker, a `post_execution` step — not in a server (`tests/test_robot_post_execution.py::TestCleanOutput`) |
-| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; each shard's start and end reported to `log` (default: the payloads' channel); `on_done(payload, outcome)` — the same convention as `supervise_workers` — is called with the `ShardPayload` and its `ShardOutcome` in the calling thread as each payload ends. `STOP_FILE` is the SDK's `runcomposer.sdk.STOP_FILE`, re-exported: `run_shard` starts no further execution once it is there |
+| `supervise(payloads, *, max_workers, on_done=None, cancelled=…, timeout_s=None, log=None, grace_s=5.0, on_start=None, on_end=None)` | `supervise_workers` for Robot shards: a bound on parallelism, lanes (payloads of one `lane` never overlap and keep their order), a per-shard timeout, the stop protocol — each worker in a session of its own, so a stop reaches what a suite started; each shard's start and end reported to `log` (default: the payloads' channel); `on_done(payload, outcome)` — the same convention as `supervise_workers` — is called with the `ShardPayload` and its `ShardOutcome` in the calling thread as each payload ends. `on_start(payload, pid)` and `on_end(payload, pid, outcome)` name the worker processes; `on_end` gets the same `ShardOutcome` object `on_done` got, for every worker — a stopped one included, `outcome.status == "stopped"` (`tests/test_robot_toolkit.py::TestWhichWorkerProcesses`). `STOP_FILE` is the SDK's `runcomposer.sdk.STOP_FILE`, re-exported: `run_shard` starts no further execution once it is there |
 | `GroupMerger(ctx, payloads, groups, *, side_by_side=False, log=True, report=True, rpa=None, out_dir=None)` | one merged result per shard group and one for the run, recorded as group and run artifacts before the delivery that completes the run — what `robot-pool`'s `merge_groups` is. Call `merger.shard_ended(outcome)` in `on_done` and deliver what it returns (every shard but the one that ends last); after `supervise` returns, deliver what `merger.finish()` returns. A group is merged in a spawned process as soon as its last shard ended; a failed merge is a warning and no artifact; nothing is merged once the dispatch is cancelled (`tests/test_robot_toolkit.py::TestGroupMerger`) |
 | `deliver_shard(ctx, outcome, *, format="robot-output-xml", group=None)`, `collect_verdicts(ctx, outcome, *, format)` | parse a finished shard through `ctx.parse`, label every attempt, record `log.html` / `report.html` / `output.xml` and the shard's directory as artifacts, then deliver; returns the reason when there is nothing to deliver |
 | `merge_outputs(outputs, out_dir, ..., rebot_options=None)`, `MergeNoiseRemover`, `NameTopSuites` | several `output.xml` merged into one, without merge notes; `rebot_options` are further options for Robot's `rebot` (one the function sets itself is a `ValueError` naming it). `NameTopSuites` names the top suites of outputs put side by side (`merge=False`) — `eu`, `us` instead of twice the same suite |
@@ -1823,7 +1837,9 @@ whatever executes inside the worker:
 - a worker watches the supervising process through a pipe only the
   supervisor holds open: when the supervisor is gone — the server or the
   foreground `run` was killed — the worker asks its process group to stop
-  and kills what is left after five seconds, so nothing of a dead
+  and kills what is left after `ORPHAN_GRACE_S` seconds (5, exported by
+  `runcomposer.sdk` for a connector that states how long a resource stays
+  held after its server died), so nothing of a dead
   dispatch executes beside the next one
   (`tests/test_worker_supervisor.py::TestTheSupervisorIsGone`; on Windows
   the worker process ends, what it started is not reached);
@@ -1950,6 +1966,16 @@ Deliberate, each for a reason:
   taken), give back in the `finally`, which runs on completion, failure and
   cancel alike (`tests/test_robot_toolkit.py::MergingRunner`, pinned by
   `TestGroupMerger::test_the_environment_is_given_back_on_cancel_and_a_held_one_refuses`).
+- **`GroupMerger` works inside a dispatch, and only supervised workers
+  share the supervisor's life.** `GroupMerger` records its merged results
+  as artifacts and holds back the last delivery, so it needs the
+  `DispatchContext` it records through; an executor without one — an agent
+  that writes merged results into a directory for its build to archive —
+  calls `merge_outputs` (or `spawn_merge`) for each group itself. The
+  lifeline that stops a worker when its supervisor is gone belongs to the
+  workers `supervise_workers` (and the toolkit's `supervise`) start; any
+  other process a dispatch starts lives by its own rules, and is the
+  runner's to stop.
 - **No per-runner custom "actions" endpoint.** A runner offers `dispatch`,
   `plan`, `cancel`, `health` and declared per-run parameters; an endpoint
   whose meaning only one runner knows would be an

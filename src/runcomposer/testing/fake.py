@@ -185,6 +185,9 @@ class FakeDispatchContext:
     ``late_records`` lists what was recorded (``"artifact <name>"``, ``"link
     <name>"``, ``"log <message>"``) after the delivery that completed every
     declared shard — in runcomposer that arrives after ``run.completed``.
+    ``cancel_calls`` counts the calls of the runner's ``cancel(ctx)`` that
+    ``check_runner(…, cancel_after_declare=True)`` made — once per check;
+    :meth:`request_cancel` only raises the flag and does not count.
 
     A runner that looks at the catalog itself — where an item comes from,
     what its ``Item.meta`` holds — needs real items: build the fake from the source,

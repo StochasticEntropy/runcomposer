@@ -28,6 +28,7 @@ __all__ = [
     "PluginError",
     "RunActive",
     "RunComposerError",
+    "RunnerUnavailable",
     "SpecConflict",
     "StoreError",
     "UnknownRun",
@@ -187,6 +188,15 @@ class DispatchQueueFull(RunComposerError):
     as this deployment queues: try again later (HTTP 503)."""
 
     code = "dispatch-queue-full"
+
+
+class RunnerUnavailable(RunComposerError):
+    """A configured runner failed to say what it is (its ``describe()``
+    raised): nothing can be planned or dispatched with it until it does
+    (HTTP 503). The message names the runner, never the exception's text —
+    that is in the server log."""
+
+    code = "runner-unavailable"
 
 
 class AuthRequired(RunComposerError):

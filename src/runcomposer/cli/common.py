@@ -159,10 +159,16 @@ def parse_params(pairs: list[str]) -> dict[str, Any] | None:
 
 
 def service_for(args: argparse.Namespace) -> Service:
+    """The service a command works with. Every command checks the whole
+    config as `serve` reads it — option names and environment references
+    of every plugin — before it does anything, whether or not it builds a
+    plugin (`Config.validate`)."""
     from runcomposer.app.config import load_config
     from runcomposer.app.service import Service
 
-    return Service(load_config(args.config))
+    config = load_config(args.config)
+    config.validate()
+    return Service(config)
 
 
 def emit_json(document: Any) -> None:

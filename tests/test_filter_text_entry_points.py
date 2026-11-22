@@ -95,7 +95,7 @@ class TestTextLanguage:
     def test_english_by_default(self, tmp_path):
         assert _load(tmp_path).text_language == "en"
 
-    @pytest.mark.parametrize("tag", ["de", "de-CH", "pt-BR", "zh-Hant-TW", "es-419", "EN"])
+    @pytest.mark.parametrize("tag", ["de", "de-AT", "pt-BR", "zh-Hant-TW", "es-419", "EN"])
     def test_a_language_tag_is_taken_as_written(self, tmp_path, tag):
         assert _load(tmp_path, core={"text_language": tag}).text_language == tag
 

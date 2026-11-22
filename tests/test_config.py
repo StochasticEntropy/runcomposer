@@ -728,9 +728,9 @@ class TestSecrets:
     def test_a_missing_variable_is_a_config_error_naming_it(self, tmp_path, monkeypatch):
         monkeypatch.delenv("SHOP_CI_TOKEN", raising=False)
         config = load(tmp_path, self.secretive(api_token="${env:SHOP_CI_TOKEN}"))
-        config.validate()  # names are fine…
-        with Service(config) as service, pytest.raises(ConfigError) as caught:
-            service.validate()  # …building is where the environment is needed
+        # Checked without building anything: what every command checks first.
+        with pytest.raises(ConfigError) as caught:
+            config.validate()
         message = str(caught.value)
         assert "runners.staging: environment variable 'SHOP_CI_TOKEN' is not set" in message
         assert "${env:SHOP_CI_TOKEN:-default}" in message

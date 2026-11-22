@@ -234,6 +234,11 @@ class Ledger:
                 error="" if not was_complete else current.error,
                 error_code="" if not was_complete else current.error_code,
                 error_owner=None if not was_complete else current.error_owner,
+                # Settled in the same write as every other terminal move
+                # (_move): no reader may find a COMPLETE dispatch still
+                # owned, i.e. executing, while the runner's thread is still
+                # on its way out.
+                owner=None,
             )
             if not was_complete or completion != current.completion:
                 extra: dict[str, Any] = {}
@@ -246,7 +251,10 @@ class Ledger:
 
     def release(self, dispatch_id: str, *, owner: str | None = None) -> None:
         """Nothing in this process is working on the dispatch any more. With
-        ``owner``, only a dispatch that still names that owner is released."""
+        ``owner``, only a dispatch that still names that owner is released.
+        A terminal dispatch was released by the move that settled it; this
+        is for a dispatch a runner returned from while it is still active
+        (awaiting deliveries from elsewhere)."""
         with self._decision():
             current = self._store.get_dispatch(dispatch_id)
             if current is None or current.owner is None:

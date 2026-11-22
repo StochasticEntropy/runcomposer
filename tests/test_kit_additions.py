@@ -19,6 +19,7 @@ import pytest
 from runcomposer.plugins.sqlite_store import SqliteRunStore
 from runcomposer.sdk import (
     DispatchContext,
+    InvalidParameter,
     Item,
     Parameter,
     PlanContext,
@@ -270,7 +271,44 @@ channel.live("a", sys.argv[2], "PASS", duration_ms=9)
 """
 
 
+class _SlowRunner(RunnerBase):
+    """Declares, then waits for the flag; its cancel(ctx) is counted by the kit."""
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="cancellable", capabilities=("cancel",))
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        ctx.declare(["1"])
+        while not ctx.cancelled:
+            threading.Event().wait(0.01)
+        ctx.raise_if_cancelled()
+
+    def cancel(self, ctx: DispatchContext) -> None:
+        return None
+
+
+class _RefusingRunner(RunnerBase):
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="refusing-a-value")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        raise InvalidParameter("stock", "no planned pick is for this value", problem="runner")
+
+
 class TestTheFake:
+    def test_cancel_calls_counts_the_kits_calls_of_cancel_not_the_flag(self):
+        ctx = check_runner(_SlowRunner(), FakeDispatchContext(CART), cancel_after_declare=True, expect="cancelled")
+        assert ctx.cancel_calls == 1
+        other = FakeDispatchContext(CART)
+        other.request_cancel()
+        assert other.cancelled and other.cancel_calls == 0
+
+    def test_run_raises_an_invalid_parameter_the_runner_raises(self):
+        ctx = FakeDispatchContext(CART)
+        with pytest.raises(InvalidParameter) as raised:
+            ctx.run(_RefusingRunner())
+        assert raised.value.parameter == "stock" and ctx.refusal is None
+
     def test_the_whole_live_stream_is_kept_and_live_now_is_what_a_store_holds(self):
         """Every status a runner streams stays readable — also for a shard
         that has delivered meanwhile, whose live status a store drops."""
@@ -396,6 +434,11 @@ class TestSmallHelpers:
         assert plugin("parsers", "junit-xml").format_id == "junit-xml"
         with pytest.raises(ValueError, match="unknown section 'plugins'"):
             plugin("plugins", "manifest")
+        # The entry-point group is `.stores`; the section a config writes is `store`.
+        with pytest.raises(ValueError, match="unknown section 'stores' — did you mean 'store'"):
+            plugin("stores", "sqlite")
+        with pytest.raises(ValueError, match="did you mean 'sources'"):
+            plugin("source", "manifest")
 
     def test_corpus_drifted_asks_the_question_every_runner_asks(self):
         from runcomposer.sdk import corpus_drifted

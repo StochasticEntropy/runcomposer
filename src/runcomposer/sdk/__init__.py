@@ -46,7 +46,9 @@ What is here, by role:
   ``WorkerOutcome``: shards executed in spawned processes, in lanes, with a
   timeout and a stop protocol that reaches what a worker started — for any
   framework (the Robot toolkit's ``supervise`` is built on it). ``STOP_FILE``
-  is the file the stop protocol leaves in a worker's ``out_dir``.
+  is the file the stop protocol leaves in a worker's ``out_dir``;
+  ``ORPHAN_GRACE_S`` the seconds a worker whose supervisor is gone gives
+  what it started before it kills its process group.
 - **Embedding** — ``load_config`` and ``Service``, for driving runcomposer
   from a Python program instead of through the CLI or the HTTP API.
 """
@@ -146,7 +148,13 @@ from runcomposer.core.remote import (
 )
 from runcomposer.core.selection import Selection, SelectionError
 from runcomposer.core.spec import SPEC_VERSION, load_document, validate_document
-from runcomposer.core.supervise import STOP_FILE, WorkerOutcome, WorkerPayload, supervise_workers
+from runcomposer.core.supervise import (
+    ORPHAN_GRACE_S,
+    STOP_FILE,
+    WorkerOutcome,
+    WorkerPayload,
+    supervise_workers,
+)
 from runcomposer.core.timeutil import epoch_ms, normalize_time, parse_time, utc_now
 from runcomposer.core.xmlsafe import forbid_dtd, parse_xml
 
@@ -161,6 +169,7 @@ __all__ = [
     "LIFECYCLE_KINDS",
     "LIVE_STATUSES",
     "MARKER_FILENAME",
+    "ORPHAN_GRACE_S",
     "PARAMETER_PROBLEMS",
     "REPORTABLE_STATUSES",
     "RUN_STATES",

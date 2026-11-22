@@ -72,6 +72,14 @@ nothing else) and `demo` (which writes its own). The rule is short:
 --config PATH      # default: ./config.yaml if it exists, else built-in defaults
 ```
 
+Every command that takes `--config` checks the whole file first, as `serve`
+does at startup: an unknown option of any configured plugin and an
+`${env:…}` reference to a variable that is not set exit `2` — also for a
+command that only reads the store, such as `runs` or `show`. Building the
+plugins (opening the store, reading the sources, the taxonomy) is left to
+the commands that use them; `serve` and `doctor` build every one
+(`tests/test_cli.py::TestCommonGround`).
+
 There is no `RUNCOMPOSER_CONFIG` environment variable and no config search
 path — plugin selection lives in that file, and picking it up from the
 environment is exactly the ambiguity [DESIGN.md](../DESIGN.md) §8 rules out. So
@@ -2599,7 +2607,8 @@ While it runs, the server:
   dispatch answers at once, and at most `core.dispatch.max_concurrent`
   (default `2`) dispatches execute at a time; at most
   `core.dispatch.max_queued` (default `100`) wait for a slot, and one more is
-  refused `503`, `dispatch-queue-full`;
+  refused `503`, `dispatch-queue-full` (`max_queued: 0`: nothing waits, a
+  free slot still takes a dispatch);
 - **watches the file-drop inbox** (`core.ingestion.inbox`, default
   `results_inbox/` next to the config; `inbox: null` turns it off). Each
   subdirectory dropped there is one bundle. It is taken in when it is

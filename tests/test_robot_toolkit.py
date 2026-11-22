@@ -956,3 +956,19 @@ class TestWhichWorkerProcesses:
             on_end=lambda p, pid, o: ended.append((p.shard, pid, o.status)),
         )
         assert started == [("eu-01", outcome.pid)] and ended == [("eu-01", outcome.pid, "finished")]
+
+    def test_on_end_hands_the_same_shard_outcome_as_on_done(self, tmp_path):
+        """One callback family, one outcome type: on_end gets the ShardOutcome
+        on_done got — the same object — with the worker's status."""
+        done: list[Any] = []
+        ended: list[Any] = []
+        root = cart_root(tmp_path)
+        (outcome,) = supervise(
+            [payload(root, tmp_path / "eu-01", CART[:1], shard="eu-01")], max_workers=1,
+            on_done=lambda p, o: done.append(o),
+            on_end=lambda p, pid, o: ended.append(o),
+        )
+        assert done == [outcome] and len(ended) == 1 and ended[0] is outcome
+        assert isinstance(ended[0], ShardOutcome) and ended[0].status == "finished" and ended[0].pid == outcome.pid
+        stopped = ShardOutcome(outcome.payload, None, None, pid=outcome.pid, status="stopped")
+        assert stopped.problem == "eu-01: stopped before it ended"

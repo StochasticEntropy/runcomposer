@@ -10,8 +10,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 __all__ = [
+    "MAX_TITLE_LENGTH",
     "AttachRequest",
     "CompileRequest",
     "ComposeRequest",
@@ -26,7 +28,52 @@ __all__ = [
 ]
 
 
-class _Body(BaseModel):
+#: The longest title a request may give a run, in characters.
+MAX_TITLE_LENGTH = 1000
+
+
+def _lone_surrogate(value: Any, path: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+    """The path of the first key or string in ``value`` holding a lone UTF-16
+    surrogate (an escaped one in JSON) — text no store can write
+    as UTF-8."""
+    if isinstance(value, str):
+        return path if any("\ud800" <= char <= "\udfff" for char in value) else None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            # A key is named with its surrogate escaped: the answer is text.
+            here = (*path, key.encode("utf-8", "backslashreplace").decode()) if isinstance(key, str) else path
+            if isinstance(key, str) and _lone_surrogate(key) is not None:
+                return here
+            found = _lone_surrogate(item, here)
+            if found is not None:
+                return found
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found = _lone_surrogate(item, (*path, str(index)))
+            if found is not None:
+                return found
+    return None
+
+
+class _Text(BaseModel):
+    """Every request body: text in it is text. A lone surrogate anywhere — in
+    a value or a key, however deep — is a 400 naming the field, before any
+    field is read."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_lone_surrogates(cls, data: Any) -> Any:
+        path = _lone_surrogate(data)
+        if path is not None:
+            raise PydanticCustomError(
+                "lone_surrogate",
+                "contains a lone UTF-16 surrogate, which is not text",
+                {"field": ".".join(path)},
+            )
+        return data
+
+
+class _Body(_Text):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
@@ -50,7 +97,7 @@ class DispatchRequest(_Body):
 
 class ComposeRequest(_Body):
     selection: dict[str, Any]
-    title: str = "Untitled run"
+    title: str = Field(default="Untitled run", max_length=MAX_TITLE_LENGTH)
     labels: dict[str, str] = Field(default_factory=dict)
     #: The result format expected back; defaults to the runner's, else the
     #: reference format.
@@ -65,13 +112,13 @@ class ComposeRequest(_Body):
 
 class SpecPreviewRequest(_Body):
     selection: dict[str, Any]
-    title: str = "Untitled run"
+    title: str = Field(default="Untitled run", max_length=MAX_TITLE_LENGTH)
     labels: dict[str, str] = Field(default_factory=dict)
     expect_format: str | None = Field(default=None, min_length=1)
     runner: dict[str, Any] | None = None
 
 
-class CompileRequest(BaseModel):
+class CompileRequest(_Text):
     """The selection itself is the body (``tag_filter`` / ``item_ids`` /
     ``history``); ``limit`` bounds how many matched items are returned."""
 
@@ -100,7 +147,7 @@ class RerunRequest(_Body):
     #: Title of the run a ``failed`` rerun composes; default: the source
     #: run's title. (That it is a rerun, and of what, is data in the answer
     #: and in the new run — not something to read out of a title.)
-    title: str | None = Field(default=None, min_length=1)
+    title: str | None = Field(default=None, min_length=1, max_length=MAX_TITLE_LENGTH)
 
 
 class PlanRequest(_Body):
@@ -109,7 +156,7 @@ class PlanRequest(_Body):
     selection: dict[str, Any]
     runner: str = Field(min_length=1)
     parameters: dict[str, Any] | None = None
-    title: str = "Plan preview"
+    title: str = Field(default="Plan preview", max_length=MAX_TITLE_LENGTH)
     labels: dict[str, str] = Field(default_factory=dict)
 
 

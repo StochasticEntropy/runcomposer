@@ -163,6 +163,20 @@ class TestCommonGround:
         code, _out, err = bad_tree("serve")
         assert code == 2 and "no top-level 'taxonomy' key" in err
 
+    @pytest.mark.parametrize("command", [["runs"], ["show", "latest"], ["compile", "Auth"], ["catalog"]])
+    def test_a_command_that_only_reads_the_store_checks_the_config_as_serve_does(
+        self, tmp_path, capsys, monkeypatch, command
+    ):
+        option_typo = Cli(write_config(tmp_path, runners={"demo": {"sead": 1}}), capsys)
+        code, out, err = option_typo(*command)
+        assert (code, out) == (2, "") and "unknown option(s) ['sead']" in err
+        monkeypatch.delenv("SHOP_RUNNER_TOKEN_UNSET", raising=False)
+        no_env = Cli(
+            write_config(tmp_path, runners={"demo": {"seed": "${env:SHOP_RUNNER_TOKEN_UNSET}"}}), capsys
+        )
+        code, out, err = no_env(*command)
+        assert (code, out) == (2, "") and "environment variable 'SHOP_RUNNER_TOKEN_UNSET' is not set" in err
+
     def test_usage_errors_are_exit_2(self, cli):
         assert cli("no-such-command", config=False)[0] == 2
         assert cli("run", "Auth-SSO")[0] == 2, "--runner is required"
@@ -438,11 +452,19 @@ class TestRun:
         assert stored_runs(cli) == []
 
     def test_a_failed_run_exits_3(self, cli):
-        code, out, err = cli("run", "Auth-SSO", "--runner", "broken", runner_crash=True)
+        code, out, err = cli("run", "Auth-SSO", "--runner", "broken")
         assert code == 3
         assert "state: FAILED — 3 MISSING" in out and "error: RuntimeError: the worker pool collapsed" in out
+        # One line says which runner failed and with what; no traceback.
+        crash = [line for line in err.splitlines() if "runner 'broken' failed after the hand-off" in line]
+        assert len(crash) == 1 and "RuntimeError: the worker pool collapsed" in crash[0]
+        assert "Traceback" not in err and "in dispatch" not in err
+
+    def test_a_failed_run_shows_the_runners_traceback_with_v(self, cli):
+        code, _out, err = cli("-v", "run", "Auth-SSO", "--runner", "broken", runner_crash=True)
+        assert code == 3
         # The runner's own traceback is logged for whoever has to fix it.
-        assert "runner 'broken' failed after the hand-off" in err and "in dispatch" in err
+        assert "runner 'broken' failed after the hand-off" in err and "Traceback" in err and "in dispatch" in err
 
     def test_param_values_are_read_as_yaml(self, tmp_path, capsys):
         seen: dict[str, Any] = {}

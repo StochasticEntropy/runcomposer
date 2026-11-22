@@ -77,7 +77,10 @@ def dispatch_json(dispatch: DispatchRecord) -> dict[str, Any]:
         "parameters": dict(dispatch.parameters),
         "spec_sha256": dispatch.spec_sha256,
         "cancel_requested": dispatch.cancel_requested,
-        "executing": dispatch.owner is not None,
+        # A runner in some process is executing it. A terminal dispatch never
+        # is: the move that settles it releases the owner in the same write;
+        # the state is read too, for a record an older version left owned.
+        "executing": dispatch.state not in lifecycle.TERMINAL_STATES and dispatch.owner is not None,
         # How many verdicts the dispatch owes over all its shards — what a
         # progress display divides by. None when no shard declared its items.
         "planned_verdicts": (

@@ -22,10 +22,10 @@ covers what a runner needs from a Jenkins server and nothing else:
   while (``outage_tolerance_s``: a restart, a proxy that drops connections);
 - **the job's declared parameters** (``job_parameters``: the names;
   ``job_parameter_definitions``: name, kind, choices and default of each, as
-  :class:`JobParameter`) — Jenkins ignores a build parameter its job does
-  not declare, silently, and does not start a build whose choice parameter
-  gets a value it does not list, so this is how a runner finds out before
-  anybody wonders why the job did not get it;
+  :class:`JobParameter`). A value for a name the job does not declare is
+  dropped without a word, and a value outside a choice parameter's list
+  keeps the build from being queued at all: reading the declaration first
+  is how a runner learns either before it hands off;
 - **results**: the archived artifacts of a build, and any other URL below
   the build (what a publisher plugin serves without archiving it).
 
@@ -240,9 +240,10 @@ class JenkinsClient:
         ``None`` when the job is not parameterized at all. Errors and the
         single attempt as :meth:`job_parameters`.
 
-        What it adds to the names: a ``choice`` parameter refuses a value it
-        does not list, and Jenkins then starts no build — ``definition.
-        accepts(value)`` says beforehand whether a value will be taken."""
+        What it adds to the names is each parameter's shape: with
+        ``definition.accepts(value)`` a runner checks a value against a
+        ``choice`` list before it triggers — outside the list, no build is
+        queued."""
         fields = "name,type,description,choices,defaultParameterValue[value]"
         tree = f"property[parameterDefinitions[{fields}]],actions[parameterDefinitions[{fields}]]"
         document = self.get_json(

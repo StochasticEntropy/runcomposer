@@ -247,7 +247,9 @@ Filter grammar notes (deliberate, not inherited):
   refused (`empty`). A filter nests at most `MAX_FILTER_DEPTH` (40) levels,
   NOT and groups alike, in the AST and in the text (`filter-too-deep`). The
   web UI's text editor and add field read the same strings with the same
-  outcome; both sides are held to the same cases,
+  outcome, a catalog tag spelled like an expression included (`Cart AND
+  Checkout` typed is two tags; the add field's list offers that tag as
+  `"Cart AND Checkout"`, one rule); both sides are held to the same cases,
   `tests/fixtures/filter-text.json` — its `strings` section is what a filter
   given as one string yields (tests/test_filter_text.py,
   tests/test_filter_text_entry_points.py, ui/src/lib/filter.fixture.test.ts).
@@ -468,7 +470,9 @@ error text, and whatever was delivered until then is kept.
 - **The dispatch queue is bounded.** Behind `core.dispatch.max_concurrent`
   executing dispatches at most `core.dispatch.max_queued` (default 100)
   wait for a slot; one more is refused before anything is recorded, `503`
-  `dispatch-queue-full` (tests/test_dispatch_queue.py).
+  `dispatch-queue-full`. A dispatch handed to the pool takes a free slot
+  whether or not a worker thread picked it up yet; `max_queued: 0` means
+  nothing waits (tests/test_dispatch_queue.py).
 - **Events.** Every state change emits an event — `run.composed`,
   `run.dispatched`, `run.running`, `run.awaiting_results`, `run.completed`,
   `run.failed`, `run.cancelled`, `run.stale` — as do `dispatch.refused`,
@@ -2118,7 +2122,10 @@ invalid request `400` (`invalid-request`, `unknown-host`, …), state conflict `
 `dispatch-refused`, `spec-conflict`, …), token `401`/`403`, unreadable bundle
 `422`, too large `413`; a deployment that broke under a running server (the
 taxonomy file) is a `500` that says what is wrong. Request bodies are
-validated before anything acts on them. Some errors carry fields of their
+validated before anything acts on them: closed, typed, a run's title at most
+1000 characters (`MAX_TITLE_LENGTH`), and no lone UTF-16 surrogate in any
+string or key — one check every body model inherits, naming the field
+(tests/test_api.py::TestErrorBody). Some errors carry fields of their
 own: `invalid-parameter` the `parameter`, the `problem` (one of
 `PARAMETER_PROBLEMS`: `unknown`, `required`, `type`, `choice`, `pattern`,
 `key-pattern`, `runner`) and, for a mapping, the `key`; `invalid-filter`
@@ -2129,7 +2136,11 @@ that cannot be read — the `problem` (`empty`, `unexpected-end`,
 `unbalanced-close`, `unterminated-quote`, `needs-quotes`, `too-deep`), its
 `position` (0-based, in characters) and, where reading stopped at a word,
 the `token`; `filter-too-deep` is a `400` as well; `dispatch-queue-full` is a
-`503`. A run's items and verdict rows carry each item's `name` as the run
+`503`, and so is `runner-unavailable`: a configured runner whose
+`describe()` raises names the runner and the exception's type, never its
+text (that, with the traceback, is in the server log), while `GET /runners`
+keeps listing the other runners and this one with its `error`
+(tests/test_api.py::TestRunnersAreServerParts). A run's items and verdict rows carry each item's `name` as the run
 was composed (the store keeps them; the id where it kept none).
 `runcomposer serve` speaks plain HTTP; TLS is terminated by a reverse proxy
 in front of it.
@@ -2231,7 +2242,7 @@ neither is a degraded version of the other:
    is in — `core.text_language` (§8), served as `text_language` by
    `/ui-config` and `/meta`; `en` by default, since the server and the
    reference plugins write English — and, while the page is in another
-   language (the primary subtags differ: `de-CH` text on a German page is
+   language (the primary subtags differ: `de-AT` text on a German page is
    not marked), a small mark in front, the same everywhere. Translating it would mean
    guessing at text the UI has never seen; leaving it unmarked would let it
    pass for a gap in the translation. Names and data are not marked: tags,

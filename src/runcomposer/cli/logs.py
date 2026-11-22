@@ -16,6 +16,11 @@ from typing import Any
 
 __all__ = ["configure_logging"]
 
+#: Set on a log record whose message is a summary line and then a traceback
+#: (app.dispatching.TRACEBACK_FOLLOWS — spelled here to keep this module free
+#: of the application's imports).
+_TRACEBACK_FOLLOWS = "runcomposer_traceback_follows"
+
 
 class _CurrentStderr(logging.StreamHandler):  # type: ignore[type-arg, unused-ignore]
     """Writes to whatever ``sys.stderr`` is when the record is emitted — not
@@ -26,6 +31,14 @@ class _CurrentStderr(logging.StreamHandler):  # type: ignore[type-arg, unused-ig
     def __init__(self) -> None:
         logging.Handler.__init__(self)
         self.quiet_events = True
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        # A runner's crash: its first line says what failed and why; the
+        # traceback after it is for `serve` and for `-v`.
+        if self.quiet_events and record.__dict__.get(_TRACEBACK_FOLLOWS, False):
+            return text.split("\n", 1)[0] + "  (the traceback: run with -v)"
+        return text
 
     def filter(self, record: logging.LogRecord) -> bool:
         return _not_a_repeated_event(record, self.quiet_events) and bool(super().filter(record))

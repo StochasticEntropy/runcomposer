@@ -235,13 +235,12 @@ def attribute_roots(
     the execution sets (``robot_options: {name: …}``), which every root's
     suite then carries instead of its own.
 
-    ``base`` anchors relative roots: by default a relative root is resolved
-    against the working directory of the calling process. A runner that
-    plans for an executor elsewhere knows its roots relative to *that*
-    machine's checkout (``suites/checkout``) while the catalog records the
-    paths of this machine's: ``base=`` the directory of this machine's
-    checkout they correspond to, and the roots are checked there. The
-    answer still maps each item to the root as given."""
+    ``base`` is the directory a relative root is joined to for the check
+    (default: the current directory). Pass it when the roots are spelled
+    for a different copy of the same suites — the one an execution will
+    use, ``suites/checkout`` — and the catalog's paths point into a local
+    copy: each root is looked for under ``base``, and the answer keeps
+    every root as given."""
     roots_of, problems = _assign_roots(suite_roots, item_ids, items, name, base)
     if problems:
         raise LookupError(_describe_mismatches(problems))
@@ -618,6 +617,10 @@ class ShardOutcome:
     timeout_s: float | None = None
     #: The worker process's id.
     pid: int | None = None
+    #: How the worker ended, as ``WorkerOutcome.status`` says: ``finished``,
+    #: ``raised``, ``died``, ``timed out``, or ``stopped`` (by a
+    #: cancellation — only ``on_end`` is handed those).
+    status: str = "finished"
 
     @property
     def outputs(self) -> tuple[ShardOutput, ...]:
@@ -638,6 +641,8 @@ class ShardOutcome:
         shard = self.payload.shard
         if self.timed_out:
             return f"{shard}: exceeded the shard timeout of {self.timeout_s:g}s"
+        if self.status == "stopped":
+            return f"{shard}: stopped before it ended"
         if self.result is None:
             return f"{shard}: the worker process ended (exit code {self.exitcode}) without a result"
         if not self.outputs:
@@ -1381,7 +1386,7 @@ def supervise(
     log: Callable[[str, str], None] | None = None,
     grace_s: float = 5.0,
     on_start: Callable[[ShardPayload, int], None] | None = None,
-    on_end: Callable[[ShardPayload, int, WorkerOutcome], None] | None = None,
+    on_end: Callable[[ShardPayload, int, ShardOutcome], None] | None = None,
 ) -> list[ShardOutcome]:
     """Run ``payloads`` on spawned worker processes, at most ``max_workers``
     at once, and hand each back as it finishes — ``supervise_workers`` of
@@ -1403,9 +1408,10 @@ def supervise(
     level)`` is told of every shard's start and of its end; by default
     that is the ``log`` of the payloads' ``channel``. ``on_start(payload,
     pid)`` and ``on_end(payload, pid, outcome)`` say which worker processes
-    were started and how each ended, as for ``supervise_workers``
-    (``outcome`` is its ``WorkerOutcome``); every worker stops itself when
-    the supervising process is gone.
+    were started and how each ended, as for ``supervise_workers``; ``outcome``
+    is a :class:`ShardOutcome`, as ``on_done`` gets — for every worker, a
+    stopped one included (``status`` ``stopped``). Every worker stops itself
+    when the supervising process is gone.
     """
     shard_payloads = list(payloads)
     work = [
@@ -1423,15 +1429,25 @@ def supervise(
         log = channel.log if channel is not None else None
     outcomes: list[ShardOutcome] = []
 
+    # One ShardOutcome per worker, handed to on_done and to on_end alike.
+    seen: dict[tuple[str, int | None], ShardOutcome] = {}
+
+    def shard_outcome_of(done: WorkerPayload, outcome: WorkerOutcome) -> ShardOutcome:
+        key = (done.shard, outcome.pid)
+        if key not in seen:
+            seen[key] = ShardOutcome(
+                done.data["payload"],
+                outcome.exitcode,
+                read_shard_result(done.out_dir),
+                timed_out=outcome.timed_out,
+                timeout_s=timeout_s if outcome.timed_out else None,
+                pid=outcome.pid,
+                status=outcome.status,
+            )
+        return seen[key]
+
     def finished(done: WorkerPayload, outcome: WorkerOutcome) -> None:
-        shard_outcome = ShardOutcome(
-            done.data["payload"],
-            outcome.exitcode,
-            read_shard_result(done.out_dir),
-            timed_out=outcome.timed_out,
-            timeout_s=timeout_s if outcome.timed_out else None,
-            pid=outcome.pid,
-        )
+        shard_outcome = shard_outcome_of(done, outcome)
         outcomes.append(shard_outcome)
         if on_done is not None:
             on_done(shard_outcome.payload, shard_outcome)
@@ -1447,7 +1463,10 @@ def supervise(
         log=log,
         poll_s=poll_s,
         on_start=(lambda work, pid: on_start(work.data["payload"], pid)) if on_start else None,
-        on_end=(lambda work, pid, outcome: on_end(work.data["payload"], pid, outcome)) if on_end else None,
+        on_end=(
+            (lambda work, pid, outcome: on_end(work.data["payload"], pid, shard_outcome_of(work, outcome)))
+            if on_end else None
+        ),
     )
     return outcomes
 

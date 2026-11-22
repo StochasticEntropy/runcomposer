@@ -64,6 +64,7 @@ meaning given here and in its docstring.
 | `normalize_time` | Any accepted spelling → the stored spelling. |
 | `NotFound` | Something asked for does not exist (HTTP 404). |
 | `ObserverBase` | Base class for a :class:`RunObserver` (configuration defaults). |
+| `ORPHAN_GRACE_S` | Seconds a worker whose supervisor is gone waits for what it asked to stop before it kills its process group: what a supervised worker started is gone at most this long (plus a moment) after the supervising process. |
 | `outstanding_shards` | Declared shards that have not delivered, in declaration order. |
 | `Parameter` | One per-run option. |
 | `PARAMETER_PROBLEMS` | What kind of refusal an :class:`InvalidParameter` is: ``unknown`` (the runner declares no such parameter), ``required`` (missing), ``type`` (the wrong kind of value — a string where an integer is declared, several lines for a ``string``), ``choice`` (not among the choices), ``pattern`` (a value does not match ``pattern``), ``key-pattern`` (a mapping's name does not match ``key_pattern``), ``runner`` (the runner refused it). |

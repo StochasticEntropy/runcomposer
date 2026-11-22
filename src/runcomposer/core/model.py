@@ -142,7 +142,8 @@ class DispatchRecord:
     #: aggregation.
     summary: Mapping[str, int] = field(default_factory=dict)
     #: Identity of the process executing an in-process dispatch; ``None`` once
-    #: nothing in any process is working on it.
+    #: nothing in any process is working on it, and always ``None`` for a
+    #: terminal dispatch (the move that settles it releases it).
     owner: str | None = None
     cancel_requested: bool = False
     #: Why it ended with an error — one of :data:`DISPATCH_ERROR_CODES`, or

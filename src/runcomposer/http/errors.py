@@ -35,6 +35,7 @@ from runcomposer.core.errors import (
     ParseError,
     PayloadTooLarge,
     RunComposerError,
+    RunnerUnavailable,
 )
 from runcomposer.core.taxonomy import TaxonomyError
 
@@ -56,6 +57,7 @@ _STATUS: tuple[tuple[type[BaseException], int], ...] = (
     (Forbidden, 403),
     (PayloadTooLarge, 413),
     (DispatchQueueFull, 503),
+    (RunnerUnavailable, 503),
     (ParseError, 422),
     (Conflict, 409),
     (InvalidRequest, 400),
@@ -179,7 +181,10 @@ def install_error_handlers(app: FastAPI) -> None:
         fields = []
         for error in exc.errors():
             location = [str(part) for part in error.get("loc", ()) if part != "body"]
-            fields.append({"field": ".".join(location), "message": str(error.get("msg", ""))})
+            # A check over the whole body names the field it found itself.
+            named = (error.get("ctx") or {}).get("field")
+            field = ".".join([*location, named] if named else location)
+            fields.append({"field": field, "message": str(error.get("msg", ""))})
         summary = "; ".join(
             f"{field['field']}: {field['message']}" if field["field"] else field["message"]
             for field in fields

@@ -95,7 +95,7 @@ class HarnessRun:
     #: request was invalid (HTTP ``400 invalid-parameter``): ``.parameter``
     #: names the parameter, ``str()`` is the message. ``refusal`` is then
     #: ``None`` and no dispatch remains. ``None`` otherwise.
-    invalid: InvalidParameter | None = None
+    invalid_parameter: InvalidParameter | None = None
 
     @property
     def run_id(self) -> str:
@@ -152,7 +152,11 @@ def plugin(section: str, name: str, **options: Any) -> Any:
     from runcomposer.core.registry import load_entry_point
 
     if section not in _SECTIONS:
-        raise ValueError(f"unknown section {section!r} (one of {sorted(_SECTIONS)})")
+        import difflib
+
+        near = difflib.get_close_matches(section, sorted(_SECTIONS), n=1, cutoff=0.6)
+        hint = f" — did you mean {near[0]!r}?" if near else ""
+        raise ValueError(f"unknown section {section!r}{hint} (one of {sorted(_SECTIONS)})")
     return load_entry_point(_SECTIONS[section], name)(**options)
 
 
@@ -177,16 +181,16 @@ class DispatchHandle:
         return refusal
 
     @property
-    def invalid(self) -> InvalidParameter | None:
+    def invalid_parameter(self) -> InvalidParameter | None:
         """The ``InvalidParameter`` the runner raised before declaring, as
-        :attr:`HarnessRun.invalid`."""
-        invalid: InvalidParameter | None = self._outcome.invalid
+        :attr:`HarnessRun.invalid_parameter`."""
+        invalid: InvalidParameter | None = self._outcome.invalid_parameter
         return invalid
 
     def read(self) -> HarnessRun:
         result = self._harness.read(self.run_id)
         result.refusal = self._outcome.refusal
-        result.invalid = self._outcome.invalid
+        result.invalid_parameter = self._outcome.invalid_parameter
         return result
 
     def wait_until(
@@ -470,7 +474,7 @@ class ConnectorHarness:
             )
         result = self.read(run_id)
         result.refusal = outcome.refusal
-        result.invalid = outcome.invalid
+        result.invalid_parameter = outcome.invalid_parameter
         return result
 
     def wait(self, run_id: str, *, timeout: float = 120.0) -> HarnessRun:

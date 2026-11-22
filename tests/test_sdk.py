@@ -59,7 +59,7 @@ PUBLIC_NAMES = {
     # the callback URLs of a run, for an executor elsewhere
     "callback_urls", "CallbackUrls",
     # worker processes for any framework: lanes, a timeout, the stop protocol
-    "supervise_workers", "WorkerPayload", "WorkerOutcome", "STOP_FILE",
+    "supervise_workers", "WorkerPayload", "WorkerOutcome", "STOP_FILE", "ORPHAN_GRACE_S",
     # embedding
     "Service", "load_config", "Config",
 }
@@ -161,6 +161,15 @@ class TestOneStopFile:
         from runcomposer.core.supervise import STOP_FILE
 
         assert robot_toolkit.STOP_FILE is sdk.STOP_FILE is STOP_FILE
+
+    def test_the_grace_of_an_orphaned_worker_is_the_sdks_number(self):
+        import inspect
+
+        from runcomposer.core import supervise
+
+        assert sdk.ORPHAN_GRACE_S is supervise.ORPHAN_GRACE_S == 5.0
+        # The watcher a worker runs waits exactly this long before it kills.
+        assert "ORPHAN_GRACE_S" in inspect.getsource(supervise._watch_supervisor)
 
     def test_no_second_definition_is_written_anywhere_in_the_package(self):
         import re

@@ -512,12 +512,16 @@ class Config:
         return frozenset(found)
 
     def validate(self) -> None:
-        """Resolve every configured plugin class and check every option name
-        without constructing anything. :meth:`Service.validate` goes further
+        """Resolve every configured plugin class, check every option name and
+        every environment reference (set, converted to the declared type)
+        without constructing anything — what every command checks, those that
+        only read the store included. :meth:`Service.validate` goes further
         and builds each one."""
         for section in _PLUGIN_SECTIONS:
             for spec in self.plugin_specs(section):
                 check_options(spec)
+                resolve_options(spec)
+        self.secret_values()
 
 
 # -- the contract and option checking ---------------------------------------------
@@ -829,7 +833,7 @@ def _check_core_values(config: Config, file_path: Path) -> None:
     if not isinstance(language, str) or not _LANGUAGE_TAG.fullmatch(language):
         raise ConfigError(
             f"{file_path}: core.text_language must be a BCP 47 language tag — the language "
-            f"the server and its runners write free text in, such as 'en', 'de' or 'de-CH' — "
+            f"the server and its runners write free text in, such as 'en', 'de' or 'de-AT' — "
             f"got {language!r}"
         )
     artifact_dir, private_dir = config.artifact_dir.resolve(), config.private_dir.resolve()

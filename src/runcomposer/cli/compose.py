@@ -353,7 +353,7 @@ def cmd_spec(args: argparse.Namespace) -> int:
 
         section, expect = None, args.expect_format
         if args.runner:
-            info = service.runner(args.runner).describe()
+            info = service.describe_runner(args.runner)
             section = {args.runner: validate_parameters(info.parameters, params)}
             expect = expect or info.result_format
         result = service.build_spec_document(

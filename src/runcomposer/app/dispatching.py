@@ -92,6 +92,9 @@ __all__ = [
 
 log = logging.getLogger("runcomposer.dispatch")
 
+#: A log record whose message is one line of summary and then a traceback.
+TRACEBACK_FOLLOWS = "runcomposer_traceback_follows"
+
 _LIVE_DIR = ".live"
 #: How often the store is asked whether another process requested a cancel.
 _CANCEL_POLL_S = 0.25
@@ -564,24 +567,27 @@ class Outcome:
         #: (``InvalidParameter``): the request was invalid, no dispatch
         #: remains. Transports answer it as they answer a parameter the
         #: declaration refuses (HTTP 400 ``invalid-parameter``).
-        self.invalid: InvalidParameter | None = None
+        self.invalid_parameter: InvalidParameter | None = None
         self.done = threading.Event()
 
     def raise_if_rejected(self) -> None:
         """Raise what the dispatch was rejected with before the hand-off:
         the runner's ``InvalidParameter``, or its refusal as
         ``DispatchRefused``. Nothing when it was not rejected."""
-        if self.invalid is not None:
-            raise self.invalid
+        if self.invalid_parameter is not None:
+            raise self.invalid_parameter
         if self.refusal is not None:
             raise DispatchRefused(self.refusal)
 
 
 class _Active:
-    def __init__(self, ctx: _Context, runner: Any, outcome: Outcome):
+    def __init__(self, ctx: _Context, runner: Any, outcome: Outcome, *, pooled: bool = False):
         self.ctx = ctx
         self.runner = runner
         self.outcome = outcome
+        #: Runs on the pool (not in a caller's thread): holds a slot of it,
+        #: or waits for one, from being recorded until it is over.
+        self.pooled = pooled
         self.future: Future[None] | None = None
         self.cancel_sent = False
         #: Set once the cancellation was carried out — the flag raised and
@@ -595,10 +601,11 @@ class DispatchManager:
         #: Dispatches that may wait for a free slot of the pool; one more is
         #: refused (``DispatchQueueFull``) before anything is recorded.
         self._max_queued = max(0, int(max_queued))
+        self._max_concurrent = max(1, int(max_concurrent))
         self.owner = owner_identity()
         LIVE_OWNERS.add(self.owner)
         self._pool = ThreadPoolExecutor(
-            max_workers=max(1, int(max_concurrent)), thread_name_prefix="runcomposer-dispatch"
+            max_workers=self._max_concurrent, thread_name_prefix="runcomposer-dispatch"
         )
         self._active: dict[str, _Active] = {}
         self._lock = threading.RLock()
@@ -641,7 +648,7 @@ class DispatchManager:
         """The runner, and the per-run parameters it accepts for ``spec`` —
         the part of a dispatch request a plan request shares."""
         runner = self._service.runner(runner_id)
-        info: RunnerInfo = runner.describe()
+        info: RunnerInfo = self._service.describe_runner(runner_id)
         materialized = (spec.get("selection") or {}).get("materialized") or {}
         if not materialized.get("item_ids"):
             run_id = (spec.get("run") or {}).get("id")
@@ -787,7 +794,7 @@ class DispatchManager:
                 options=service.runner_options(runner_id),
                 parameters=accepted,
             )
-            active = _Active(ctx, runner, Outcome(dispatch.dispatch_id, run_id))
+            active = _Active(ctx, runner, Outcome(dispatch.dispatch_id, run_id), pooled=not foreground)
             self._active[dispatch.dispatch_id] = active
         for warning in warnings:
             ctx.log(warning, level="warning")
@@ -797,20 +804,23 @@ class DispatchManager:
         self._ensure_monitor()
         if foreground:
             self._execute(active)
-            if active.outcome.invalid is not None:
-                raise active.outcome.invalid
+            if active.outcome.invalid_parameter is not None:
+                raise active.outcome.invalid_parameter
         else:
             active.future = self._pool.submit(self._execute, active)
         return active.outcome
 
     def _refuse_if_queue_full(self) -> None:
-        """Called under the lock: as many dispatches already wait for a free
-        slot as are queued at most."""
-        waiting = sum(
-            1 for active in self._active.values()
-            if active.future is not None and not active.future.running() and not active.future.done()
-        )
-        if waiting >= self._max_queued:
+        """Called under the lock: one more dispatch on the pool would make
+        more than ``max_queued`` wait for a free slot. Waiting is counted
+        from what the pool holds — every pooled dispatch recorded and not yet
+        over — beyond its ``max_concurrent`` slots, not from what a worker
+        thread has picked up yet: a burst of ``max_concurrent`` dispatches
+        all find a slot, and with ``max_queued: 0`` a free slot still runs
+        one."""
+        pooled = sum(1 for active in self._active.values() if active.pooled)
+        waiting = max(0, pooled - self._max_concurrent)
+        if pooled + 1 > self._max_concurrent + self._max_queued:
             raise DispatchQueueFull(
                 f"{waiting} dispatch(es) already wait for a free slot (core.dispatch.max_queued: "
                 f"{self._max_queued}, max_concurrent executing) — try again later"
@@ -895,7 +905,7 @@ class DispatchManager:
                 )
             elif isinstance(error, InvalidParameter):
                 invalid = _redacted_invalid(self._service, error)
-                active.outcome.invalid = invalid
+                active.outcome.invalid_parameter = invalid
                 reason = str(invalid)
             elif isinstance(error, DispatchRefused):
                 reason = str(error)
@@ -903,7 +913,7 @@ class DispatchManager:
                 self._log_crash("raised before the hand-off", ctx, error)
                 reason = f"{type(error).__name__}: {error}"
             reason = str(self._service.redact(reason))
-            if active.outcome.invalid is None:
+            if active.outcome.invalid_parameter is None:
                 active.outcome.refusal = reason
             # No record remains of this attempt, so neither do its files.
             ctx.remove_created_dirs()
@@ -929,12 +939,16 @@ class DispatchManager:
     def _log_crash(self, what: str, ctx: _Context, error: BaseException) -> None:
         """A runner's traceback is the operator's diagnostic — logged as
         text, with configured secrets blanked out: the exception message may
-        quote an option."""
+        quote an option. The first line says what failed and with which
+        error; the traceback follows it (``TRACEBACK_FOLLOWS``: the command
+        line's own output shows that first line only, unless ``-v``)."""
         trace = "".join(traceback.format_exception(type(error), error, error.__traceback__))
         log.error(
-            "runner %r %s (run %s, dispatch %s)\n%s",
+            "runner %r %s (run %s, dispatch %s): %s\n%s",
             ctx.runner_id, what, ctx.run_id, ctx.dispatch_id,
+            self._service.redact(f"{type(error).__name__}: {error}".splitlines()[0] if str(error) else type(error).__name__),
             self._service.redact(trace.rstrip()),
+            extra={TRACEBACK_FOLLOWS: True},
         )
 
     # -- cancelling -------------------------------------------------------------------

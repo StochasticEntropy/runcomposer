@@ -298,7 +298,7 @@ class Composer:
         values into ``runner.<id>`` of the document."""
         section = dict(runner_section or {})
         if runner_id is not None:
-            info = self._service.runner(runner_id).describe()
+            info = self._service.describe_runner(runner_id)
             section[runner_id] = validate_parameters(info.parameters, parameters)
             expect_format = expect_format or info.result_format
         elif parameters:

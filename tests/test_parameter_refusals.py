@@ -264,20 +264,20 @@ class TestTheHarnessSaysSo:
 
     def test_run_carries_the_parameter_and_the_message(self, harness):
         run = harness.run("Checkout", runner="careful", parameters={"region": "ap"})
-        assert run.invalid is not None and run.refusal is None
-        assert run.invalid.parameter == "region"
-        assert str(run.invalid) == "parameter 'region': no build agent serves 'ap'"
+        assert run.invalid_parameter is not None and run.refusal is None
+        assert run.invalid_parameter.parameter == "region"
+        assert str(run.invalid_parameter) == "parameter 'region': no build agent serves 'ap'"
         assert run.dispatch is None and run.state == "COMPOSED"
 
     def test_a_started_dispatch_says_it_on_the_handle_and_its_reading(self, harness):
         handle = harness.start("Checkout", runner="careful", parameters={"region": "ap"})
         run = handle.wait()
-        assert handle.invalid is not None and handle.invalid.parameter == "region"
-        assert run.invalid is not None and run.refusal is None
+        assert handle.invalid_parameter is not None and handle.invalid_parameter.parameter == "region"
+        assert run.invalid_parameter is not None and run.refusal is None
 
     def test_a_valid_run_has_neither(self, harness):
         run = harness.run("Checkout", runner="careful", parameters={"region": "eu"})
-        assert (run.invalid, run.refusal, run.state) == (None, None, "COMPLETE")
+        assert (run.invalid_parameter, run.refusal, run.state) == (None, None, "COMPLETE")
 
 
 PARAMETER_CASES = [
