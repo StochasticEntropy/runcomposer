@@ -43,6 +43,10 @@ npm run e2e:install              # once: the browser the end-to-end tests drive
 npm run e2e                      # rebuilds, then drives the built UI in a browser
 ```
 
+The end-to-end tests start real servers with stand-in runners from the test
+suite, so they need the development install (`pip install -e ".[dev,robot]"`),
+not the package alone.
+
 The end-to-end tests start a real `runcomposer serve` per test, on a free port
 in a temp directory, with the Python they find in `.venv/` (or the one named by
 `RUNCOMPOSER_PYTHON`); the robot extra must be installed. They wait on

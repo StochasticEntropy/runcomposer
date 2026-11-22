@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   browser:
@@ -17,8 +18,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install runcomposer with the robot extra
-        run: python -m pip install -e ".[robot]"
+      # The servers these tests start are configured with stand-in runners
+      # from the test suite (tests/test_api.py and others), which import
+      # pytest: hence the dev extra beside the robot one.
+      - name: Install runcomposer with the dev and robot extras
+        run: python -m pip install -e ".[dev,robot]"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
