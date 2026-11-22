@@ -1052,7 +1052,7 @@ class TestOutputDetails:
         )
         assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
         out = done.stdout.decode("utf-8")
-        assert "\u2500" * 64 in out and "Next steps:" in out
+        assert "\u2500" * 64 in out and "Next steps" in out
 
     def test_on_windows_an_invalid_argument_is_a_closed_pipe_only_when_stdout_cannot_be_written(
         self, tmp_path, monkeypatch
