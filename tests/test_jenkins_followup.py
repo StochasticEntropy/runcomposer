@@ -570,18 +570,20 @@ class TestFollowingThroughAnOutage:
         assert told == []
 
     def test_errors_with_answers_in_between_never_add_up(self, jenkins):
-        """Twelve failed probes, each 0.05 s after the last answer — 0.6 s of
-        failures in all, three times the tolerance, but never 0.2 s without
-        an answer. What counts is the time since the server last answered."""
+        """Fifteen failed probes, each 0.2 s after the last answer — 3 s of
+        failures in all, three times the tolerance, but never 1 s without an
+        answer. What counts is the time since the server last answered.
+        (The tolerance is five probe intervals: a machine that stalls for a
+        moment between an answer and the next probe does not use it up.)"""
         release = threading.Event()
-        jenkins.add_job(JOB, lambda build: release.wait(30))
+        jenkins.add_job(JOB, lambda build: release.wait(60))
         client = JenkinsClient(jenkins.url, retries=0, request_timeout_s=5)
         follower = Follower(
-            client, client.trigger(JOB, {}), timeout_s=30, poll_interval_s=0.05, outage_tolerance_s=0.2,
+            client, client.trigger(JOB, {}), timeout_s=60, poll_interval_s=0.2, outage_tolerance_s=1.0,
         )
         assert follower.on_build.wait(10)
         probe = f"/job/{JOB}/1/api/json"
-        for _ in range(12):
+        for _ in range(15):
             jenkins.faults.append(("GET", probe, 503))
             wait_until(lambda: not jenkins.faults, timeout=10, what="the fault to be answered")
             answered = len(jenkins.gets(probe))
