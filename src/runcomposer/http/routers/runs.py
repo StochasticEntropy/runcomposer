@@ -145,7 +145,7 @@ def list_runs(
         limit=limit, offset=offset,
     )
     return {
-        "runs": [run_row(run) for run in page.runs],
+        "runs": [run_row(run, listing=True) for run in page.runs],
         "total": page.total,
         "limit": limit,
         "offset": offset,

@@ -39,10 +39,12 @@ __all__ = [
     "EVERYTHING",
     "MATCH_ALL",
     "MAX_FILTER_DEPTH",
+    "MAX_FILTER_PATTERNS",
     "BoolOp",
     "FilterError",
     "FilterNode",
     "FilterTooDeep",
+    "FilterTooLarge",
     "NotNode",
     "TagPattern",
     "format_filter",
@@ -85,6 +87,25 @@ class FilterTooDeep(FilterError):
     """A filter nested deeper than :data:`MAX_FILTER_DEPTH` levels."""
 
     code = "filter-too-deep"
+
+
+#: How many patterns one filter may hold — in the AST and in the text form.
+#: Matching costs a pattern per item and tag: a filter that lists a
+#: 1000 tags is one that wants a ``prefix:`` or ``regex:`` pattern.
+MAX_FILTER_PATTERNS = 1000
+
+
+class FilterTooLarge(FilterError):
+    """A filter of more than :data:`MAX_FILTER_PATTERNS` patterns — an
+    ``invalid-filter`` like any other filter that cannot be used."""
+
+
+def too_many_patterns(path: str, at: Sequence[str | int] = ()) -> FilterTooLarge:
+    reason = (
+        f"the filter holds more than {MAX_FILTER_PATTERNS} patterns — select with fewer patterns "
+        "that each match more tags (a prefix: or regex: pattern)"
+    )
+    return FilterTooLarge(f"{path}: {reason}", at=at, reason=reason)
 
 
 @dataclass(frozen=True)
@@ -149,11 +170,16 @@ def parse_filter(data: Any, path: str = "tag_filter") -> FilterNode:
     :class:`FilterError` carries where (``path``, the keys and indices from
     the root); a filter nested deeper than :data:`MAX_FILTER_DEPTH` is a
     :class:`FilterTooDeep`."""
-    return _parse_node(data, path, (), 0)
+    return _parse_node(data, path, (), 0, [0])
 
 
-def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> FilterNode:
+def _parse_node(
+    data: Any, path: str, at: tuple[str | int, ...], depth: int, patterns: list[int]
+) -> FilterNode:
     if isinstance(data, str):
+        patterns[0] += 1
+        if patterns[0] > MAX_FILTER_PATTERNS:
+            raise too_many_patterns(path, at)
         return _parse_pattern(data, path, at)
     if depth >= MAX_FILTER_DEPTH:
         raise _refuse(
@@ -165,7 +191,7 @@ def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> 
     if isinstance(data, dict):
         keys = set(data)
         if keys == {"not"}:
-            return NotNode(item=_parse_node(data["not"], f"{path}.not", (*at, "not"), depth + 1))
+            return NotNode(item=_parse_node(data["not"], f"{path}.not", (*at, "not"), depth + 1, patterns))
         if keys == {"op", "items"}:
             op = data["op"]
             if op not in _OPS:
@@ -176,7 +202,7 @@ def _parse_node(data: Any, path: str, at: tuple[str | int, ...], depth: int) -> 
             return BoolOp(
                 op=op,
                 items=tuple(
-                    _parse_node(child, f"{path}.items[{index}]", (*at, "items", index), depth + 1)
+                    _parse_node(child, f"{path}.items[{index}]", (*at, "items", index), depth + 1, patterns)
                     for index, child in enumerate(items)
                 ),
             )

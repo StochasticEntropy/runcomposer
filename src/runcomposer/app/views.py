@@ -144,11 +144,20 @@ def ingest_json(report: IngestReport) -> dict[str, Any]:
     }
 
 
-def run_row(run: RunRecord) -> dict[str, Any]:
+#: What a list of runs leaves out of each dispatch: the run page reads them
+#: (``GET /runs/{id}``), a list never does — and they are where a run is
+#: large (a plan's text, the per-run values).
+LISTED_WITHOUT = ("plan", "parameters")
+
+
+def run_row(run: RunRecord, *, listing: bool = False) -> dict[str, Any]:
     """One run as a list shows it — complete without further requests.
     ``duration_s`` describes the latest dispatch, like every other headline
     field (state, completion, counts): a run dispatched again a week later
-    did not take a week. Each entry of ``dispatches`` carries its own."""
+    did not take a week. Each entry of ``dispatches`` carries its own. In a
+    ``listing`` (``GET /runs``, ``runcomposer runs --json``) the dispatches
+    leave out :data:`LISTED_WITHOUT`, so a row stays small whatever a run
+    was dispatched with."""
     latest = run.latest_dispatch
     duration_s = _duration_s(latest)
     return {
@@ -165,7 +174,11 @@ def run_row(run: RunRecord) -> dict[str, Any]:
         "mode": latest.mode if latest else None,
         "duration_s": duration_s,
         "dispatch_count": len(run.dispatches),
-        "dispatches": [dispatch_json(dispatch) for dispatch in run.dispatches],
+        "dispatches": [
+            {key: value for key, value in dispatch_json(dispatch).items() if key not in LISTED_WITHOUT}
+            if listing else dispatch_json(dispatch)
+            for dispatch in run.dispatches
+        ],
     }
 
 

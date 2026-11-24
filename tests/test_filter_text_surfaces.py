@@ -283,6 +283,38 @@ class TestDepth:
         assert "nests deeper than 40 levels" in err
 
 
+class TestPatternLimit:
+    """A filter of more than ``MAX_FILTER_PATTERNS`` (1000) patterns is a 400
+    ``invalid-filter`` wherever it arrives, as text or as the AST — before
+    a single item is matched against it."""
+
+    def test_every_route_refuses_it_and_a_thousand_patterns_still_pass(self, make_client):
+        from runcomposer.core.filter import MAX_FILTER_PATTERNS
+
+        assert MAX_FILTER_PATTERNS == 1000
+        client, _service = make_client()
+        tags = [f"Sprint-{index}" for index in range(1001)]
+        too_wide = [" OR ".join(tags), {"op": "OR", "items": tags}, {"not": {"op": "AND", "items": tags}}]
+        for tag_filter in too_wide:
+            for route, body in (
+                ("/runs", {"selection": {"tag_filter": tag_filter}}),
+                ("/plan", {"selection": {"tag_filter": tag_filter}, "runner": "demo"}),
+                ("/selection/spec-preview", {"selection": {"tag_filter": tag_filter}}),
+                ("/selection/compile", {"tag_filter": tag_filter}),
+            ):
+                answer = client.post(f"{API}{route}", json=body)
+                assert answer.status_code == 400, (route, answer.text[:200])
+                assert answer.json()["code"] == "invalid-filter", route
+                assert "more than 1000 patterns" in answer.json()["detail"], route
+        fits = client.post(f"{API}/selection/compile", json={"tag_filter": " OR ".join(tags[:1000])})
+        assert fits.status_code == 200, fits.text[:200]
+
+    def test_the_command_line_says_so_in_one_line(self, cli):
+        code, _out, err = cli("compile", " OR ".join(f"Sprint-{index}" for index in range(1001)))
+        assert code in (1, 2) and "Traceback" not in err
+        assert "more than 1000 patterns" in err
+
+
 class TestWhereAFilterIsWrong:
     """An ``invalid-filter`` answer says where in the filter: ``path``, the
     keys and indices from its root; filter text says ``position``."""

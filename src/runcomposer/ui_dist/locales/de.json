@@ -429,6 +429,7 @@
       "choice": "Bitte einen der angebotenen Werte wählen.",
       "pattern": "Das hat nicht die Form, die das Feld erwartet.",
       "key-pattern": "Ein Name hat nicht die Form, die Namen hier haben müssen.",
+      "too-long": "Das ist zu lang für dieses Feld (oder hat zu viele Zeilen).",
       "runner": "Der Runner hat diesen Wert nicht angenommen:"
     }
   },

@@ -101,8 +101,11 @@ class InvalidParameter(InvalidRequest):
 #: wrong kind of value — a string where an integer is declared, several
 #: lines for a ``string``), ``choice`` (not among the choices), ``pattern``
 #: (a value does not match ``pattern``), ``key-pattern`` (a mapping's name
-#: does not match ``key_pattern``), ``runner`` (the runner refused it).
-PARAMETER_PROBLEMS = ("unknown", "required", "type", "choice", "pattern", "key-pattern", "runner")
+#: does not match ``key_pattern``), ``too-long`` (a value, a mapping's name
+#: or its number of names over the bound), ``runner`` (the runner refused it).
+PARAMETER_PROBLEMS = (
+    "unknown", "required", "type", "choice", "pattern", "key-pattern", "too-long", "runner",
+)
 
 
 class UnknownRunner(InvalidRequest):

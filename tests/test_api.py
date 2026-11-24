@@ -460,6 +460,30 @@ class TestErrorBody:
         with pytest.raises(ConfigError, match=r"core\.api\.max_body_mb must be an integer ≥ 1"):
             load_config(str(write_config(tmp_path, core={"api": {"max_body_mb": value}})))
 
+    def test_a_list_row_stays_small_whatever_a_run_was_dispatched_with(self, client):
+        """A run's plan and per-run values are read on its page; a list of
+        runs leaves them out, and a value over its bound never gets in."""
+        refused = client.post(f"{API}/runs", json={"selection": {"tag_filter": "Auth-SSO"},
+                                                   "dispatch": {"runner": "demo", "parameters": {"seed": "s" * 9_000_000}}})
+        assert refused.status_code == 400 and refused.json()["problem"] == "too-long"
+        for _ in range(2):
+            run_id = client.post(f"{API}/runs", json={
+                "selection": {"tag_filter": "Auth-SSO"}, "labels": {f"suite{index}": "n" * 500 for index in range(50)},
+                "dispatch": {"runner": "demo", "parameters": {"seed": "s" * 1000}}}).json()["run"]["id"]
+            follow(client, run_id, until="run.completed")
+            redispatched = client.post(f"{API}/runs/{run_id}/dispatch", json={"runner": "demo", "parameters": {"seed": "t" * 1000}})
+            assert redispatched.status_code == 202, redispatched.text[:200]
+            wait_until(lambda run=run_id: client.get(f"{API}/runs/{run}").json()["state"] == "COMPLETE",
+                       what="the second dispatch")
+        detail = client.get(f"{API}/runs/{run_id}").json()
+        assert detail["dispatches"][0]["parameters"] == {"seed": "s" * 1000} and "plan" in detail["dispatches"][0]
+        rows = client.get(f"{API}/runs?limit=50").json()["runs"]
+        assert len(rows) == 2
+        for row in rows:
+            assert all("parameters" not in entry and "plan" not in entry for entry in row["dispatches"])
+            # 50 labels of 500 characters are most of it; nothing grows with a dispatch.
+            assert len(json.dumps(row)) < 30_000
+
     def test_a_body_that_is_not_json_is_a_400(self, client):
         response = client.post(
             f"{API}/runs", content=b"{not json", headers={"Content-Type": "application/json"}

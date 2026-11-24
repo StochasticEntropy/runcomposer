@@ -192,6 +192,9 @@ export interface Dispatch {
   shard_groups?: Record<string, string>;
 }
 
+/** A dispatch as a list of runs carries it: without its plan and parameters. */
+export type ListedDispatch = Omit<Dispatch, "plan" | "parameters">;
+
 export interface RunRow {
   id: string;
   title: string;
@@ -295,8 +298,13 @@ export interface RunDetail extends RunRow {
   source: { provider?: string; snapshot?: string };
 }
 
+/** A run as `GET /runs` lists it. */
+export interface ListedRun extends Omit<RunRow, "dispatches"> {
+  dispatches: ListedDispatch[];
+}
+
 export interface RunList {
-  runs: RunRow[];
+  runs: ListedRun[];
   total: number;
   limit: number;
   offset: number;

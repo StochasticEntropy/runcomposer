@@ -429,6 +429,7 @@
       "choice": "Choose one of the listed values.",
       "pattern": "This does not have the form the field expects.",
       "key-pattern": "A name does not have the form names must have here.",
+      "too-long": "This is longer than the field takes (or has more rows than it takes).",
       "runner": "The runner did not accept this value:"
     }
   },

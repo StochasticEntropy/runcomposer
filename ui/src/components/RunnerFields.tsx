@@ -21,7 +21,7 @@ export interface FieldProblem {
 }
 
 /** What kind of refusal an `invalid-parameter` answer is (its `problem`) — the server's closed list. */
-export const PARAMETER_PROBLEMS = ["unknown", "required", "type", "choice", "pattern", "key-pattern", "runner"] as const;
+export const PARAMETER_PROBLEMS = ["unknown", "required", "type", "choice", "pattern", "key-pattern", "too-long", "runner"] as const;
 type ParameterProblem = (typeof PARAMETER_PROBLEMS)[number];
 
 /**

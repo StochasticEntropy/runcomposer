@@ -45,12 +45,14 @@ from .filter import (
     EVERYTHING,
     MATCH_ALL,
     MAX_FILTER_DEPTH,
+    MAX_FILTER_PATTERNS,
     OPERATOR_WORDS,
     TEXT_WHITESPACE,
     FilterError,
     FilterTooDeep,
     format_filter,
     parse_filter,
+    too_many_patterns,
 )
 
 __all__ = [
@@ -250,6 +252,9 @@ def parse_filter_text(text: str) -> Any:
     tokens = _tokenize(text)
     if not tokens:
         return None
+    # Counted before anything is built: the bound of the AST, the same number.
+    if sum(1 for token in tokens if token.kind in ("pattern", "all")) > MAX_FILTER_PATTERNS:
+        raise too_many_patterns("filter text")
     parser = _Parser(text, tokens)
     try:
         ast = parser.expression()

@@ -549,7 +549,7 @@ def cmd_runs(args: argparse.Namespace) -> int:
             state=args.state, labels=labels or None, since=args.since, until=args.until,
             q=args.query, limit=args.limit, offset=args.offset,
         )
-        rows = [run_row(run) for run in page.runs]
+        rows = [run_row(run, listing=True) for run in page.runs]
         flagged = [_mark_owner_gone(service, run, row) for run, row in zip(page.runs, rows, strict=True)]
     if args.as_json:
         emit_json({"runs": rows, "total": page.total, "limit": args.limit, "offset": args.offset})

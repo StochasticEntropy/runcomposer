@@ -16,7 +16,7 @@ import { elapsedMs, formatDuration, parseLabel } from "../lib/format.ts";
 import { composeHref, runHref, runsHref } from "../lib/router.ts";
 import type { Route } from "../lib/router.ts";
 import { isActive } from "../lib/types.ts";
-import type { RunRow } from "../lib/types.ts";
+import type { ListedRun } from "../lib/types.ts";
 
 const PAGE_SIZE = 25;
 const ACTIVE_POLL_MS = 3000;
@@ -31,9 +31,9 @@ export function ModeName({ mode }: { mode: string | null }) {
   return <>{mode}</>;
 }
 
-const latestOf = (run: RunRow) => run.dispatches[run.dispatches.length - 1];
+const latestOf = (run: ListedRun) => run.dispatches[run.dispatches.length - 1];
 
-export function plannedVerdicts(run: RunRow): number {
+export function plannedVerdicts(run: ListedRun): number {
   return latestOf(run)?.planned_verdicts ?? run.planned_count;
 }
 

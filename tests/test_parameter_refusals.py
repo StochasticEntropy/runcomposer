@@ -288,6 +288,12 @@ PARAMETER_CASES = [
     ({"headers": {"Accept": "json"}}, "headers", "key-pattern", "Accept"),
     ({"headers": {"X-Tenant": "x y"}}, "headers", "pattern", "X-Tenant"),
     ({"region": "ap"}, "region", "runner", None),
+    ({"region": "e" * 1001}, "region", "too-long", None),
+    ({"notes": "n" * 41}, "notes", "too-long", None),
+    ({"headers": {"X-Tenant": "v" * 1001}}, "headers", "too-long", "X-Tenant"),
+    ({"headers": {f"X-Tenant-{index}": "v" for index in range(101)}}, "headers", "too-long", None),
+    ({"headers": {"X-" + "t" * 199: "v"}}, "headers", "too-long", "X-" + "t" * 198),
+    ({"lanes": ["eu", "eu"]}, "lanes", "choice", None),
 ]
 
 
@@ -300,7 +306,9 @@ class TestTheReasonIsAField:
     def test_the_vocabulary_is_closed(self):
         from runcomposer.sdk import PARAMETER_PROBLEMS
 
-        assert PARAMETER_PROBLEMS == ("unknown", "required", "type", "choice", "pattern", "key-pattern", "runner")
+        assert PARAMETER_PROBLEMS == (
+            "unknown", "required", "type", "choice", "pattern", "key-pattern", "too-long", "runner",
+        )
         with pytest.raises(ValueError, match="unknown parameter problem"):
             InvalidParameter("region", "x", problem="mood")
 
@@ -313,6 +321,38 @@ class TestTheReasonIsAField:
         body = answer.json()
         assert (body["code"], body["parameter"], body.get("problem")) == ("invalid-parameter", parameter, problem), body
         assert body.get("key") == key
+
+    def test_a_declaration_may_raise_the_bound_and_values_up_to_it_pass(self, make_client):
+        client, _service = make_client(runners={"formed": {"module": f"{HERE}:FormedRunner"}})
+        answer = client.post(f"{API}/runs", json={
+            "selection": {"tag_filter": "Checkout"},
+            "dispatch": {"runner": "formed", "parameters": {
+                "comment": "c" * 5000, "notes": "n" * 40, "region": "eu", "lanes": ["eu", "us"],
+                "headers": {f"X-Tenant-{chr(65 + index // 26)}{chr(65 + index % 26)}": "v" * 1000
+                            for index in range(100)}}}})
+        assert answer.status_code == 201, answer.text[:300]
+
+    def test_the_answer_names_the_length_never_the_value(self, make_client):
+        client, _service = make_client(runners={"formed": {"module": f"{HERE}:FormedRunner"}})
+        body = client.post(f"{API}/runs", json={"selection": {"tag_filter": "Checkout"}, "dispatch": {
+            "runner": "formed", "parameters": {"region": "secretish" * 200}}}).json()
+        assert "1800 characters — at most 1000" in body["detail"] and "secretish" not in body["detail"]
+
+    @pytest.mark.parametrize(("declaration", "message"), [
+        (dict(name="n", kind="integer", max_length=5), "applies to the kinds"),
+        (dict(name="n", max_length=0), "max_length must be an integer"),
+    ])
+    def test_a_bound_is_declared_where_it_means_something(self, declaration, message):
+        with pytest.raises(ValueError, match=message):
+            Parameter(**declaration)
+
+    def test_a_configured_declaration_takes_a_bound(self):
+        from runcomposer.core.parameters import parameters_from_config
+
+        (declared,) = parameters_from_config([{"name": "ticket", "max_length": 12}], "runners.x.parameters")
+        with pytest.raises(InvalidParameter) as raised:
+            declared.check("T" * 13)
+        assert raised.value.problem == "too-long"
 
     def test_a_missing_required_parameter(self, make_client):
         client, _service = make_client(runners={"formed": {"module": f"{HERE}:FormedRunner", "strict": True}})
@@ -331,6 +371,9 @@ class FormedRunner(RunnerBase):
             Parameter("lane", kind="choice", choices=("eu", "us"), default="eu"),
             Parameter("headers", kind="mapping", key_pattern=r"X-[A-Za-z-]+", pattern=r"\S+"),
             Parameter("region", default="eu"),
+            Parameter("notes", kind="text", max_length=40),
+            Parameter("comment", max_length=5000),
+            Parameter("lanes", kind="multi_choice", choices=("eu", "us")),
             *((Parameter("ticket", required=True),) if self.strict else ()),
         ))
 
