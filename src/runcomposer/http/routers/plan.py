@@ -13,10 +13,11 @@ from fastapi import APIRouter, Depends
 from runcomposer.app.service import Service
 from runcomposer.app.views import plan_json
 
+from ..bodies import BodyLimitRoute
 from ..models import PlanRequest, RunPlanRequest
 from . import service_of
 
-router = APIRouter(prefix="/api/v1", tags=["plan"])
+router = APIRouter(prefix="/api/v1", tags=["plan"], route_class=BodyLimitRoute)
 
 
 @router.post("/plan")

@@ -196,6 +196,13 @@ page in a closed network. `GET /api/v1/meta` says whether they are on
 These are documented design decisions, not bugs. Reporting them is welcome as a
 normal issue, but they will not get an advisory:
 
+- **Requests are bounded in size, not in number.** A JSON request body is read under
+  `core.api.max_body_mb` (10 MB by default) and a push under
+  `core.ingestion.max_upload_mb`, each counted while it arrives (`413`
+  beyond); a run's title (1000 characters) and labels (50, keys of 100 and
+  values of 500 characters) are bounded, so one request cannot make a stored
+  run heavy for every reader. How many requests arrive is not limited:
+  whoever can reach the API can send many.
 - **There is no login.** Full authN/authZ is explicitly out of scope for v1
   (DESIGN.md §13). runcomposer expects to sit on a trusted network or behind a
   reverse proxy that authenticates. The ingest token exists so the results

@@ -2658,6 +2658,14 @@ $ curl -s -X POST -H 'Origin: https://elsewhere.example' -H 'Content-Type: appli
 {"detail":"refused a state-changing request from a page on 'https://elsewhere.example': it is neither this server's own origin nor listed in core.api.cors","code":"cross-site-request"}
 ```
 
+What a request may carry is bounded: a JSON body is read under
+`core.api.max_body_mb` (default `10`) and refused beyond it with `413
+payload-too-large`, naming the limit; a push of results or progress under
+`core.ingestion.max_upload_mb` (default `200`); a run's title is at most
+1000 characters, and its labels at most 50, with keys of at most 100 and
+values of at most 500 characters (`400 invalid-request`, naming the field)
+(`tests/test_api.py::TestErrorBody`).
+
 `Ctrl-C` shuts down in order: dispatches still executing are cancelled, the
 inbox watcher stops. A server that is *killed* leaves its dispatches to the
 next startup's reconciliation (`STALE`).

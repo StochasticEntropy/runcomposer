@@ -408,6 +408,58 @@ class TestErrorBody:
         fits = client.post(f"{API}/runs", json={**long, "title": "T" * 1000})
         assert fits.status_code == 201 and fits.json()["run"]["title"] == "T" * 1000
 
+    def test_labels_are_bounded_in_number_and_length(self, client):
+        from runcomposer.http.models import MAX_LABEL_KEY_LENGTH, MAX_LABEL_VALUE_LENGTH, MAX_LABELS
+
+        assert (MAX_LABELS, MAX_LABEL_KEY_LENGTH, MAX_LABEL_VALUE_LENGTH) == (50, 100, 500)
+        selection = {"tag_filter": "Auth"}
+        for labels in (
+            {f"suite{index}": "nightly" for index in range(51)},
+            {"s" * 101: "nightly"},
+            {"suite": "n" * 501},
+        ):
+            error = assert_error(client.post(f"{API}/runs", json={"selection": selection, "labels": labels}),
+                                 400, "invalid-request")
+            assert error["fields"][0]["field"].startswith("labels")
+        assert client.get(f"{API}/runs").json()["total"] == 0
+        fits = {f"suite{index}": "n" * 500 for index in range(50)}
+        assert client.post(f"{API}/runs", json={"selection": selection, "labels": fits}).status_code == 201
+
+    @pytest.mark.parametrize("route", ["/runs", "/plan", "/selection/compile", "/selection/spec-preview"])
+    def test_a_json_body_over_core_api_max_body_mb_is_a_413_naming_the_limit(self, make_client, route):
+        client, service = make_client(core={"api": {"max_body_mb": 1}})
+        assert service.config.api["max_body_mb"] == 1
+        # Over the limit by its declared length, and — sent in chunks with no
+        # declared length — by what arrives.
+        body = json.dumps({"selection": {"tag_filter": "Auth"}, "runner": "demo",
+                           "title": "x", "padding": "p" * (1024 * 1024)}).encode()
+        for kwargs in ({"content": body}, {"content": iter([body[i:i + 65536] for i in range(0, len(body), 65536)])}):
+            response = client.post(f"{API}{route}", headers={"Content-Type": "application/json"}, **kwargs)
+            error = assert_error(response, 413, "payload-too-large")
+            assert "core.api.max_body_mb (1 MB)" in error["detail"]
+        assert client.get(f"{API}/runs").json()["total"] == 0
+
+    def test_the_default_body_limit_is_10_mb_and_a_push_keeps_its_own(self, make_client):
+        client, service = make_client(runners={"staged": {"module": "tests.test_api:GatedRunner", "gate": "x"}},
+                                      core={"api": {"max_body_mb": 1}, "ingestion": {"tokens": "disabled"}})
+        from runcomposer.app.config import load_config
+
+        assert load_config(None).api["max_body_mb"] == 10
+        run_id = compose(service, "Auth-SSO")
+        export = client.post(f"{API}/runs/{run_id}/dispatch", json={"mode": "export"})
+        assert export.status_code == 202, export.text
+        # A live push over core.api.max_body_mb but under max_upload_mb is read.
+        updates = [{"shard": "1", "item_id": SSO[0], "status": "RUNNING", "message": "m" * 4000}
+                   for _ in range(400)]
+        pushed = client.post(f"{API}/runs/{run_id}/live", json={"updates": updates})
+        assert len(json.dumps({"updates": updates})) > 1024 * 1024
+        assert pushed.status_code == 200, pushed.text
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5, True, "10"])
+    def test_the_body_limit_is_a_positive_number_of_megabytes(self, tmp_path, value):
+        with pytest.raises(ConfigError, match=r"core\.api\.max_body_mb must be an integer ≥ 1"):
+            load_config(str(write_config(tmp_path, core={"api": {"max_body_mb": value}})))
+
     def test_a_body_that_is_not_json_is_a_400(self, client):
         response = client.post(
             f"{API}/runs", content=b"{not json", headers={"Content-Type": "application/json"}

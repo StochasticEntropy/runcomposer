@@ -12,9 +12,10 @@ from runcomposer.app.service import Service
 from runcomposer.core import lifecycle
 from runcomposer.core.registry import installed_plugins
 
+from ..bodies import BodyLimitRoute
 from . import service_of
 
-router = APIRouter(prefix="/api/v1", tags=["meta"])
+router = APIRouter(prefix="/api/v1", tags=["meta"], route_class=BodyLimitRoute)
 
 
 @router.get("/health")

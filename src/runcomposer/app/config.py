@@ -155,7 +155,13 @@ _ROLES: dict[str, tuple[type, str]] = {
 #: Keys of a plugin entry that select the plugin rather than configure it.
 _SELECTOR_KEYS = ("module", "plugin")
 
-_DEFAULT_API = {"host": "127.0.0.1", "port": 8100, "cors": [], "docs": False, "hosts": None}
+_DEFAULT_API = {
+    "host": "127.0.0.1", "port": 8100, "cors": [], "docs": False, "hosts": None,
+    # The largest request body the JSON API reads (results pushes have
+    # core.ingestion.max_upload_mb instead): far above any compose, plan or
+    # run request, short of what would make one stored run heavy for all.
+    "max_body_mb": 10,
+}
 _DEFAULT_INGESTION = {
     "tokens": "required",
     "inbox": "results_inbox",
@@ -883,6 +889,12 @@ def _check_core_values(config: Config, file_path: Path) -> None:
             f"got {config.api.get('docs')!r}"
         )
     _check_api_hosts(config.api.get("hosts"), file_path)
+    body = config.api.get("max_body_mb")
+    if isinstance(body, bool) or not isinstance(body, int) or body < 1:
+        raise ConfigError(
+            f"{file_path}: core.api.max_body_mb must be an integer ≥ 1 (the largest JSON request "
+            f"body the API reads, in MB), got {body!r}"
+        )
 
 
 def _check_api_hosts(hosts: Any, file_path: Path) -> None:

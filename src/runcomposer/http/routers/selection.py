@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends
 from runcomposer.app.service import Service
 from runcomposer.app.views import item_json
 
+from ..bodies import BodyLimitRoute
 from ..models import CompileRequest, SpecPreviewRequest
 from . import service_of
 
-router = APIRouter(prefix="/api/v1/selection", tags=["selection"])
+router = APIRouter(prefix="/api/v1/selection", tags=["selection"], route_class=BodyLimitRoute)
 
 
 @router.post("/compile")

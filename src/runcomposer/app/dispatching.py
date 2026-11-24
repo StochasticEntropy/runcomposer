@@ -373,10 +373,9 @@ class _Context:
         if status not in LIVE_STATUSES or item_id not in self._planned:
             return  # live status is best-effort; it never invents an item
         try:
-            self._service.store.record_live_verdict(
+            self._service.ingestion.record_live(
                 self.run_id,
                 self.dispatch_id,
-                str(shard),
                 LiveStatus(item_id, status, int(duration_ms), str(message), shard=str(shard)),
             )
         except Exception as exc:

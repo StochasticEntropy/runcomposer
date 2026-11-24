@@ -22,7 +22,6 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.concurrency import run_in_threadpool
-from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive
 
 from runcomposer.app.ingestion import QuarantineReport, expected_format
@@ -36,6 +35,7 @@ from runcomposer.core.errors import (
     RunComposerError,
 )
 
+from ..bodies import BodyLimitRoute, declared_too_large, read_within
 from ..errors import error_body, error_response, status_of
 from ..models import AttachRequest, LivePush, LogPush, PromoteRequest
 from ..uploads import FILES_FIELD, receive_bundle
@@ -112,32 +112,17 @@ class TokenFirstRoute(APIRoute):
                 bound = await run_in_threadpool(
                     _authorize, service, request.path_params["run_id"], request.headers
                 )
-                declared = request.headers.get("content-length", "")
-                if declared.isdigit() and int(declared) > limit:
+                if declared_too_large(request, limit):
                     raise too_large
             except RunComposerError as exc:
                 return error_response(request, exc, close=True)
             request.state.ingest_dispatch = bound
             if not reads_body:
                 return await handler(request)
-            body = bytearray()
-            try:
-                async for chunk in request.stream():
-                    body.extend(chunk)
-                    if len(body) > limit:
-                        raise too_large
-            except PayloadTooLarge as exc:
-                return error_response(request, exc, close=True)
-            except ClientDisconnect:
-                return error_response(
-                    request, InvalidRequest("the client went away"), close=True, unread=False
-                )
-            replayed = bytes(body)
-
-            async def replay() -> Message:
-                return {"type": "http.request", "body": replayed, "more_body": False}
-
-            return await handler(Request(request.scope, replay))
+            read = await read_within(request, limit, too_large)
+            if isinstance(read, Response):
+                return read
+            return await handler(read)
 
         return authorized_first
 
@@ -158,7 +143,7 @@ def ingest_dispatch(
     return bound
 
 
-router = APIRouter(prefix="/api/v1", tags=["ingestion"])
+router = APIRouter(prefix="/api/v1", tags=["ingestion"], route_class=BodyLimitRoute)
 _executor = APIRouter(route_class=TokenFirstRoute)
 
 _PUSH_BODY: dict[str, Any] = {

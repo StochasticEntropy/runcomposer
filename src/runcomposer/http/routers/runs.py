@@ -19,10 +19,11 @@ from runcomposer.core.model import (
     DispatchRecord,
 )
 
+from ..bodies import BodyLimitRoute
 from ..models import ComposeRequest, DispatchRequest, RerunRequest
 from . import service_of
 
-router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
+router = APIRouter(prefix="/api/v1/runs", tags=["runs"], route_class=BodyLimitRoute)
 
 
 def _labels(pairs: list[str]) -> dict[str, str]:

@@ -249,6 +249,17 @@ class Ingestion:
             warnings=warnings,
         )
 
+    def record_live(self, run_id: str, dispatch_id: str, status: LiveStatus) -> None:
+        """Store one live status — the single write path for it, whoever
+        reports it: a runner's ``ctx.live`` (and through it a worker's live
+        channel) and an executor's ``POST /runs/{id}/live``. Its message is
+        free text and is stored with the configured secrets blanked out, as
+        a result's message is (:meth:`record`)."""
+        blanked = str(self._service.redact(status.message))
+        if blanked != status.message:
+            status = replace(status, message=blanked)
+        self._service.store.record_live_verdict(run_id, dispatch_id, status.shard, status)
+
     def record(
         self,
         dispatch: DispatchRecord,
@@ -583,10 +594,9 @@ class Ingestion:
         for update in updates:
             if update["item_id"] not in planned or update["shard"] in delivered:
                 continue
-            store.record_live_verdict(
+            self.record_live(
                 dispatch.run_id,
                 dispatch.dispatch_id,
-                str(update["shard"]),
                 LiveStatus(
                     str(update["item_id"]),
                     str(update["status"]),

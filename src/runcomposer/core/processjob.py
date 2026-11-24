@@ -29,6 +29,7 @@ Stdlib only.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 from collections.abc import Callable, Sequence
@@ -207,8 +208,15 @@ class ProcessJob:
 
 
 def _win32() -> Kernel:
-    """The real calls, made ready once per process."""
+    """The real calls, made ready once per process. Off Windows there are
+    none: a job object is a Windows thing, and asking for one is an
+    ``OSError`` that says what to use instead."""
     global _KERNEL
+    if os.name != "nt":
+        raise OSError(
+            "a job object exists on Windows only; on this platform start the process with "
+            "start_new_session=True and stop it and what it started with os.killpg"
+        )
     if _KERNEL is None:
         _KERNEL = _Win32Kernel()
     return _KERNEL

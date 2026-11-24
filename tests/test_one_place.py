@@ -89,6 +89,32 @@ def test_an_exception_reaches_a_log_line_in_one_place():
     assert carrying == []
 
 
+def callers_of(method: str) -> list[str]:
+    """``path:function`` of every call of ``….method(…)`` in the package."""
+    found = []
+    for path in sorted(PACKAGE.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == method:
+                    found.append(f"{path.relative_to(PACKAGE).as_posix()}:{function.name}")
+    return sorted(set(found))
+
+
+def test_a_live_status_reaches_the_store_in_one_place():
+    """Every live status — a runner's ``ctx.live``, a worker's live channel
+    through it, an executor's ``POST /runs/{id}/live`` — is stored by
+    ``Ingestion.record_live``, which blanks its message. Apart from the
+    store's own conformance check, nothing else calls the store's
+    ``record_live_verdict``; and both entry points go through it."""
+    assert [caller for caller in callers_of("record_live_verdict") if not caller.startswith("testing/checks.py")] == [
+        "app/ingestion.py:record_live"
+    ]
+    assert callers_of("record_live") == ["app/dispatching.py:live", "app/ingestion.py:push_live"]
+
+
 def test_a_failure_is_logged_as_blanked_text_whatever_the_exception_does(caplog):
     import logging
 

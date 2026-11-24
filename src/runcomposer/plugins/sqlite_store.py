@@ -34,8 +34,10 @@ lock (an in-memory database has no second process to be safe against).
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -91,6 +93,22 @@ def sqlite_shortfall(version: Sequence[int], *, json: bool) -> str | None:
     return None
 
 _BUSY_TIMEOUT_MS = 30_000
+
+
+def _until_unlocked(step: Any) -> Any:
+    """``step()``, asked again while SQLite answers that the database is
+    locked or busy without having waited — for at most the busy timeout,
+    after which the error stands. Short waits, each of its own random length,
+    between the tries, so that processes starting together do not retry in step."""
+    deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            return step()
+        except sqlite3.OperationalError as exc:
+            text = str(exc).lower()
+            if ("locked" not in text and "busy" not in text) or time.monotonic() >= deadline:
+                raise
+        time.sleep(random.uniform(0.005, 0.05))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -313,7 +331,14 @@ class SqliteRunStore(StoreBase):
         conn.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
         if not self._memory:
-            conn.execute("PRAGMA journal_mode = WAL")
+            # Switching a file to WAL takes an exclusive lock for a moment,
+            # and SQLite answers "database is locked" at once instead of
+            # waiting on the busy timeout while another connection does the
+            # same — which is what several processes opening a store that
+            # does not exist yet all do. So the switch is asked again until
+            # it is through (the mode is the file's: whoever asks first
+            # switches it, the others find it switched).
+            _until_unlocked(lambda: conn.execute("PRAGMA journal_mode = WAL").fetchone())
             conn.execute("PRAGMA synchronous = NORMAL")
         conn.create_function("rc_fold", 1, _fold, deterministic=True)
         return conn

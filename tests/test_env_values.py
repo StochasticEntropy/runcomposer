@@ -400,3 +400,71 @@ def test_a_secret_from_the_environment_reaches_no_surface(surfaces, surface):
         assert REDACTED in text or json.dumps(REDACTED)[1:-1] in text, (
             f"{surface}: the runner quoted the secret here — it should be blanked: {text[:400]}"
         )
+
+
+# -- live status: one write path, blanked like every other message ------------------------
+
+LIVE_TOKENS: dict[str, str] = {}
+
+
+class LiveQuotingRunner(RunnerBase):
+    """Reports a live status whose message quotes its configured token,
+    delivers one of two shards and returns: the second shard's results are
+    to come from outside, through the dispatch's ingest token."""
+
+    def __init__(self, token: str):
+        self.token = token
+
+    def describe(self) -> RunnerInfo:
+        return RunnerInfo(id="live-quoting")
+
+    def dispatch(self, ctx: DispatchContext) -> None:
+        first, rest = list(ctx.item_ids[:1]), list(ctx.item_ids[1:])
+        ctx.declare({"1": first, "2": rest})
+        LIVE_TOKENS[ctx.run_id] = ctx.ingest_token() or ""
+        ctx.live("2", rest[0], "RUNNING", message=f"live, signed in with {self.token}")
+        ctx.deliver("1", verdicts=[Verdict(item, "PASS") for item in first])
+
+
+class TestLiveStatusIsBlanked:
+    """A live status's message is free text (DESIGN.md §8): whoever reports
+    it — a runner's ``ctx.live`` or an executor's ``POST /runs/{id}/live`` —
+    it is stored with the configured secrets blanked out, and so neither an
+    answer, the CLI nor the store's row holds the secret."""
+
+    def test_a_runners_and_a_pushed_live_message_reach_no_surface(self, make_client, monkeypatch, tmp_path):
+        import sqlite3
+
+        monkeypatch.setenv("SHOP_GATEWAY_KEY", SECRET)
+        client, service = make_client(runners={
+            "quoting": {"module": f"{HERE}:LiveQuotingRunner", "token": "${env:SHOP_GATEWAY_KEY}"}})
+        started = client.post(f"{API}/runs", json={
+            "selection": {"tag_filter": "Auth-SSO"}, "dispatch": {"runner": "quoting"}})
+        assert started.status_code == 201, started.text
+        run_id = started.json()["run"]["id"]
+        service.dispatcher.join(30)
+        items = list(service.require_spec(run_id)["selection"]["materialized"]["item_ids"])
+        pushed = client.post(
+            f"{API}/runs/{run_id}/live",
+            headers={"X-Runcomposer-Token": LIVE_TOKENS[run_id]},
+            json={"updates": [{"shard": "2", "item_id": items[-1], "status": "RUNNING",
+                               "message": f"pushed with {SECRET} in hand"}]},
+        )
+        assert pushed.status_code == 200 and pushed.json()["accepted"] == 1, pushed.text
+
+        stored = service.store.live_verdicts(run_id, service.require_run(run_id).latest_dispatch.dispatch_id)
+        assert sorted(status.message for status in stored) == [
+            f"live, signed in with {REDACTED}", f"pushed with {REDACTED} in hand"]
+        detail, verdicts = client.get(f"{API}/runs/{run_id}").text, client.get(f"{API}/runs/{run_id}/verdicts").text
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            cli_main(["show", run_id, "--json", "--config", str(service.config.path)])
+        # The default test config keeps the store in runcomposer.db next to the config.
+        database = Path(service.config.path).parent / "runcomposer.db"
+        with contextlib.closing(sqlite3.connect(database)) as connection:
+            rows = repr(connection.execute("SELECT message FROM live_verdicts").fetchall())
+        for surface, text in {"run detail": detail, "verdicts": verdicts,
+                              "CLI show --json": out.getvalue() + err.getvalue(), "sqlite rows": rows}.items():
+            assert text, f"{surface}: nothing was collected"
+            assert SECRET not in text, surface
+            assert REDACTED in text or json.dumps(REDACTED)[1:-1] in text, f"{surface}: {text[:300]}"

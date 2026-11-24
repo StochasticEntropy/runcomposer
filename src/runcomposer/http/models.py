@@ -7,12 +7,15 @@ something to drop silently.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 __all__ = [
+    "MAX_LABELS",
+    "MAX_LABEL_KEY_LENGTH",
+    "MAX_LABEL_VALUE_LENGTH",
     "MAX_TITLE_LENGTH",
     "AttachRequest",
     "CompileRequest",
@@ -30,6 +33,21 @@ __all__ = [
 
 #: The longest title a request may give a run, in characters.
 MAX_TITLE_LENGTH = 1000
+#: How many labels a request may give a run, and how long a key and a value
+#: may be, in characters: labels name a run (suite, branch, environment) —
+#: a handful of short words, never data.
+MAX_LABELS = 50
+MAX_LABEL_KEY_LENGTH = 100
+MAX_LABEL_VALUE_LENGTH = 500
+
+#: A run's labels, bounded in number and length.
+Labels = Annotated[
+    dict[
+        Annotated[str, Field(min_length=1, max_length=MAX_LABEL_KEY_LENGTH)],
+        Annotated[str, Field(max_length=MAX_LABEL_VALUE_LENGTH)],
+    ],
+    Field(max_length=MAX_LABELS),
+]
 
 
 def _has_surrogate(text: str) -> bool:
@@ -110,7 +128,7 @@ class DispatchRequest(_Body):
 class ComposeRequest(_Body):
     selection: dict[str, Any]
     title: str = Field(default="Untitled run", max_length=MAX_TITLE_LENGTH)
-    labels: dict[str, str] = Field(default_factory=dict)
+    labels: Labels = Field(default_factory=dict)
     #: The result format expected back; defaults to the runner's, else the
     #: reference format.
     expect_format: str | None = Field(default=None, min_length=1)
@@ -125,7 +143,7 @@ class ComposeRequest(_Body):
 class SpecPreviewRequest(_Body):
     selection: dict[str, Any]
     title: str = Field(default="Untitled run", max_length=MAX_TITLE_LENGTH)
-    labels: dict[str, str] = Field(default_factory=dict)
+    labels: Labels = Field(default_factory=dict)
     expect_format: str | None = Field(default=None, min_length=1)
     runner: dict[str, Any] | None = None
 
@@ -169,7 +187,7 @@ class PlanRequest(_Body):
     runner: str = Field(min_length=1)
     parameters: dict[str, Any] | None = None
     title: str = Field(default="Plan preview", max_length=MAX_TITLE_LENGTH)
-    labels: dict[str, str] = Field(default_factory=dict)
+    labels: Labels = Field(default_factory=dict)
 
 
 class RunPlanRequest(_Body):

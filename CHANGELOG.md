@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — 2026-11-20
+## 0.2.0 — unreleased
 
 A rework of the backbone. 0.1 proved the product idea; its runner contract,
 lifecycle, store, configuration, API and CLI were a proof of concept, and 0.2
@@ -379,6 +379,13 @@ not exist or worked differently:
 
 ### Added
 
+- The connector guide explains keeping a file named by someone else
+  (`local_name_problem`, `child_path`, exclusive creation,
+  `portable_name_problem`, `name_collision_key` and what it cannot see)
+  and stopping a process a plugin starts itself (`ProcessJob.start` on
+  Windows, a process group elsewhere), each run by a test; ADOPTING.md
+  lists the optional fields of a manifest item (`name`, `hierarchy`,
+  `meta`, `aliases`); CONTRIBUTING.md says what a release consists of.
 - **`runcomposer.testing`, the conformance kit**: `check_source`,
   `check_runner`, `check_parser`, `check_store`, `check_observer` (each fails
   naming the violated rule), `FakeDispatchContext` (a recording in-memory
@@ -741,6 +748,13 @@ not exist or worked differently:
 
 ### Fixed
 
+- Several processes opening a sqlite store that did not exist yet at the
+  same moment — two servers, a server and a CLI command — could fail with
+  `database is locked`: switching the new file to WAL does not wait on the
+  busy timeout. The switch is asked again until it is through.
+- `ProcessJob` off Windows raised an `AttributeError` from `ctypes`; it is
+  an `OSError` saying what to use there (`start_new_session=True`,
+  `os.killpg`).
 - A per-run Robot variable whose name held a colon (`BASE_URL:https`) set
   the variable named before the colon, past `protected_variables`: Robot
   reads `NAME:value` up to the first colon. Such a name is refused.
@@ -947,6 +961,18 @@ not exist or worked differently:
   `127.0.0.1`. A server now answers only to `core.api.hosts`, and on a
   loopback address by default only to the loopback names (`400
   unknown-host` otherwise, `GET` included).
+- A live status's message was stored as given: a runner that quoted a
+  configured `${env:…}` secret in `ctx.live(…, message=…)` (or a worker
+  through its live channel), or an executor's `POST /runs/{id}/live`,
+  showed it in `GET /runs/{id}`, `…/verdicts` and `runcomposer show`. Every
+  live status is now stored through one write path that blanks its
+  message, like a result's.
+- A JSON request body had no size bound: one request carrying a very large number
+  of labels made the runs list heavy for every reader. The JSON API reads a
+  body under `core.api.max_body_mb` (default 10, `413 payload-too-large`
+  beyond, naming the limit; pushes keep `core.ingestion.max_upload_mb`),
+  and a run's labels are bounded: at most 50, keys of at most 100 and
+  values of at most 500 characters (`400`, naming the field).
 
 ### Web UI
 
@@ -1141,7 +1167,7 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
   toolkits and of the kit, the run-spec document, the error codes and the
   reference runners' documented options. Provisional: `Service` and
   `Config` beyond the members the connector guide names, members the
-  `RunStore` protocol (33 today) may gain in a minor release — with a
+  `RunStore` protocol may gain in a minor release — with a
   `StoreBase` default where one can be right — fields with defaults a
   record may gain, and fields a response may
   gain ([docs/connectors.md](docs/connectors.md#1-the-surface)).

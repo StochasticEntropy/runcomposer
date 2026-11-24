@@ -1877,8 +1877,9 @@ execution takes over. `runcomposer history durations [--label] [--last N]
 core:
   api: { host: 127.0.0.1, port: 8100, cors: [...],
          docs: false,                  # true: also serve the /docs and /redoc viewers (§9)
-         hosts: null }                 # the host names it answers to; null: the loopback
+         hosts: null,                  # the host names it answers to; null: the loopback
                                        #   names on a loopback bind, else every name (below)
+         max_body_mb: 10 }             # the largest JSON request body read (pushes: max_upload_mb)
   taxonomy_file: taxonomy.yaml        # curated tree over tag patterns; format: docs/taxonomy.md
   artifact_dir: artifacts/
   private_dir: private/               # ctx.private_dir — never served; outside artifact_dir
@@ -1954,16 +1955,21 @@ Rules:
   (below); a `:-default` is written in the file and is no secret.
   Configured options never travel into a run spec, an API response or a log
   line; where a plugin quotes one anyway, secrets are blanked out of free
-  text — messages (a result's message included, whoever delivered it),
+  text — messages (a result's and a live status's message included,
+  whoever reported it: each has one write path that blanks it),
   refusal reasons, errors (a parser's, an observer's and what the
   quarantine keeps of a refused bundle included), plan text and notes,
   health details, error documents, log lines — and out of the string
   values of
   runner-defined data (health and plan `data`), never out of identifiers:
   shard, group and runner names, item, run and dispatch ids, states, event
-  kinds, parameter names, mapping keys, links, and the names and file
-  paths of artifacts are recorded as they are
-  (tests/test_env_values.py). A secret shorter than four characters cannot
+  kinds, parameter names, mapping keys, links, the names and file
+  paths of artifacts, and the item names of the catalog (served by the
+  catalog as it has them) are recorded as they are
+  (tests/test_env_values.py). What a request gives — a run's title,
+  labels, selection and per-run parameters, a history file — is the
+  text of whoever sent it, not a plugin quoting its configuration, and is
+  stored as given. A secret shorter than four characters cannot
   be blanked without mangling ordinary text and is refused at startup,
   naming the option and the variable — write `${env-public:…}` if it is no
   secret. The links a runner records are stored as given, because a later
@@ -2215,8 +2221,14 @@ invalid request `400` (`invalid-request`, `unknown-host`, …), state conflict `
 `422`, too large `413`; a deployment that broke under a running server (the
 taxonomy file) is a `500` that says what is wrong. Request bodies are
 validated before anything acts on them: closed, typed, a run's title at most
-1000 characters (`MAX_TITLE_LENGTH`), and no lone UTF-16 surrogate in any
-string or key — one check every body model inherits, naming the field
+1000 characters (`MAX_TITLE_LENGTH`), at most 50 labels with a key of at
+most 100 and a value of at most 500 characters, and no lone UTF-16
+surrogate in any string or key — one check every body model inherits,
+naming the field. A JSON request body is read under `core.api.max_body_mb`
+(10 MB by default), counted while it arrives: a declared length over it,
+or a body that passes it, is a `413 payload-too-large` naming the limit,
+with the connection closed. The executor pushes keep their own limit,
+`core.ingestion.max_upload_mb`, read the same way
 (tests/test_api.py::TestErrorBody). Some errors carry fields of their
 own: `invalid-parameter` the `parameter`, the `problem` (one of
 `PARAMETER_PROBLEMS`: `unknown`, `required`, `type`, `choice`, `pattern`,
