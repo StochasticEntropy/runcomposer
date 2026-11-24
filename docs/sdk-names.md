@@ -86,6 +86,7 @@ meaning given here and in its docstring.
 | `PluginBase` | Defaults for :class:`Configurable`: options are the constructor's keyword parameters, the names in ``PATH_OPTIONS`` (single values or lists) are paths relative to the config file, and no ``connectors:`` mapping is handed over. |
 | `PluginError` | A declared plugin cannot be loaded. |
 | `portable_name_problem` | Why ``name`` is not a file name every file system keeps as written, or ``None`` — strict, and the same answer on every platform, for an author who wants portable names: :func:`single_name_problem`, :func:`windows_name_problem`, and an invisible format character (zero-width, bidirectional controls), which makes two names that read alike. |
+| `ProcessJob` | One job object. |
 | `push_results` | Push a results bundle to the run's results endpoint — what a job's post step does with ``curl -F files=@…`` — and return the server's answer (the ingest report: ``outcome``, ``verdict_count``, ``warnings`` …). |
 | `quote_pattern` | A pattern as the text form writes it: bare when it reads back as itself, else in double quotes with ``\`` and ``"`` escaped by a backslash — a space, a parenthesis, a quote or a backslash in it, or a pattern that is an operator word (``"AND"``) or the word for every item (``"*"``, the tag literally spelled so), is quoted. |
 | `read_filter_string` | A filter given as one string where a filter is taken (a selection's ``tag_filter``, the command line's filter argument, a configured quick filter, preset or default filter) → ``(AST data, None)``. |

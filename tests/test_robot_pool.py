@@ -1194,6 +1194,53 @@ class TestHooksAndListeners:
 
         wait_until(lambda: process_gone(child), timeout=10, what="the hook's child process to be gone")
 
+    def hook_with_a_child(self, tmp_path: Path) -> tuple[str, Path, Path]:
+        """A hook — on every platform's shell — that starts a process of its
+        own and waits; each writes its process id into a file of its own."""
+        import shlex
+        import subprocess
+        import sys
+
+        child, own = tmp_path / "hook-grandchild.pid", tmp_path / "hook.pid"
+        code = (
+            "import os, pathlib, subprocess, sys, time; "
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)']); "
+            "pathlib.Path(sys.argv[1]).write_text(str(c.pid)); "
+            "pathlib.Path(sys.argv[2]).write_text(str(os.getpid())); "
+            "time.sleep(600)"
+        )
+        argv = [sys.executable, "-c", code, str(child), str(own)]
+        return (subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)), child, own
+
+    def test_a_hook_over_its_timeout_is_stopped_with_what_it_started(self, make_service, tmp_path):
+        """Eight seconds leave the hook time to start its child (a new
+        interpreter on a slow machine); then the hook and its child end —
+        through the session on POSIX, the hook's job on Windows."""
+        hook, child, own = self.hook_with_a_child(tmp_path)
+        service = pool_service(make_service, pre_run_hooks=[hook], hook_timeout_s=8)
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        outcome = service.dispatch(run_id, RUNNER, foreground=True)
+        assert "pre_run_hook did not finish within 8s" in outcome.refusal
+        for path in (child, own):
+            pid = int(path.read_text(encoding="utf-8"))
+            wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"{path.name} to be gone")
+
+    def test_a_cancelled_hook_is_stopped_with_what_it_started(self, make_service, tmp_path):
+        hook, child, own = self.hook_with_a_child(tmp_path)
+        service = pool_service(make_service, pre_run_hooks=[hook], hook_timeout_s=600)
+        run_id = compose(service, "Smoke", runner_id=RUNNER)
+        outcome = service.dispatch(run_id, RUNNER)
+        pids = [
+            int(wait_until(lambda path=path: path.exists() and path.read_text(encoding="utf-8").strip(),
+                           timeout=60, what=f"{path.name} to be written"))
+            for path in (child, own)
+        ]
+        service.cancel(run_id)
+        assert outcome.done.wait(60)
+        assert service.require_run(run_id).latest_dispatch.state == "CANCELLED"
+        for pid in pids:
+            wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"process {pid} to be gone")
+
     def test_a_user_listener_receives_the_run(self, make_service, tmp_path):
         listener_file = tmp_path / "SentinelListener.py"
         seen = tmp_path / "seen"

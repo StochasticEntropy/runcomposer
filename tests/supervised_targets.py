@@ -142,6 +142,13 @@ def starts_children(payload: Any, stop: Callable[[], bool]) -> None:
         time.sleep(0.01)
 
 
+def leaves_a_child(payload: Any, stop: Callable[[], bool]) -> int:
+    """Starts a process that would run for ten minutes, and returns its id
+    without waiting for it."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    return child.pid
+
+
 def where_am_i(payload: Any, stop: Callable[[], bool]) -> dict[str, Any]:
     """Reports its working directory and environment — and those of a
     process it starts."""

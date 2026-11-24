@@ -302,10 +302,9 @@ def _run_command(payload: WorkerPayload, stop: Callable[[], bool]) -> dict[str, 
     working directory and environment): write the ids file, run the command
     with its output in ``command.log``, and hand back its exit code.
 
-    The command runs in the worker's process group, so the supervisor's stop
-    protocol reaches it and whatever it started; once asked to stop, the
-    worker also terminates the command itself (on Windows there is no group
-    to signal)."""
+    The command runs in the worker's process group (on Windows: its job),
+    so the supervisor's stop protocol reaches it and whatever it started;
+    once asked to stop, the worker also terminates the command itself."""
     out_dir = Path(payload.out_dir)
     (out_dir / "item_ids.txt").write_text("\n".join(payload.item_ids) + "\n", encoding="utf-8")
     command = payload.data["command"]
@@ -334,8 +333,8 @@ def _run_command(payload: WorkerPayload, stop: Callable[[], bool]) -> dict[str, 
                 except subprocess.TimeoutExpired:
                     if stop() and not asked:
                         # The group's signal has reached the command already —
-                        # unless it started just after; and on Windows there is
-                        # no group signal at all.
+                        # unless it started just after; on Windows no signal
+                        # comes, and the job is terminated after the grace.
                         asked = True
                         process.terminate()
         finally:

@@ -437,6 +437,58 @@ class TestCancel:
         assert run_to_end(again, run_id, RUNNER).state == "COMPLETE"
 
 
+#: A command that starts a process of its own and waits: each writes its
+#: process id into a file of its own (no two processes append to one file).
+STARTS_A_CHILD = r'''
+import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+pathlib.Path(sys.argv[2]).write_text(str(__import__("os").getpid()), encoding="utf-8")
+time.sleep(600)
+'''
+
+
+class TestWhatTheCommandStarted:
+    """On every platform — through the process group on POSIX, the worker's
+    job on Windows — what the command started ends with it."""
+
+    def pids(self, tmp_path: Path) -> tuple[Path, Path]:
+        return tmp_path / "grandchild.pid", tmp_path / "command.pid"
+
+    def service(self, make_service, tmp_path: Path, **options: Any) -> Service:
+        parent = tmp_path / "starts_a_child.py"
+        parent.write_text(STARTS_A_CHILD, encoding="utf-8")
+        grandchild, command = self.pids(tmp_path)
+        return command_service(make_service, [PY, str(parent), str(grandchild), str(command)], **options)
+
+    def written(self, path: Path) -> int:
+        return int(wait_until(lambda: path.exists() and path.read_text(encoding="utf-8").strip(),
+                              timeout=60, what=f"{path.name} to be written"))
+
+    def test_a_cancel_ends_the_command_and_what_it_started(self, make_service, tmp_path):
+        service = self.service(make_service, tmp_path)
+        run_id = compose(service, "Payments", runner_id=RUNNER)
+        service.dispatch(run_id, RUNNER)  # in the background
+        pids = [self.written(path) for path in self.pids(tmp_path)]
+        assert not any(process_gone(pid) for pid in pids)
+        service.cancel(run_id)
+        assert service.wait(run_id, timeout=60).state == "CANCELLED"
+        for pid in pids:
+            wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"process {pid} to be gone")
+
+    def test_a_timeout_ends_the_command_and_what_it_started(self, make_service, tmp_path):
+        """The timeout leaves the command time to start its child (fifteen
+        seconds: a new interpreter on a slow machine), then stops both."""
+        service = self.service(make_service, tmp_path, timeout_s=15)
+        run_id = compose(service, "Payments", runner_id=RUNNER)
+        service.dispatch(run_id, RUNNER)
+        pids = [self.written(path) for path in self.pids(tmp_path)]
+        run = service.wait(run_id, timeout=90)
+        assert run.state == "FAILED" and "exceeded timeout_s=15" in (run.latest_dispatch.error or "")
+        for pid in pids:
+            wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"process {pid} to be gone")
+
+
 # -- formats and parsers ----------------------------------------------------------------
 
 

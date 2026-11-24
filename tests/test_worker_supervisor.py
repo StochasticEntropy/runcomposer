@@ -32,9 +32,6 @@ from .shop_check_runner import DECLINED, CheckRunner
 
 #: Windows limits of the stop protocol, stated in docs/connectors.md (Known
 #: limits); the tests of what is the same there run on every platform.
-no_process_groups = pytest.mark.skipif(
-    os.name == "nt", reason="Windows has no process groups: what a worker started is not stopped with it"
-)
 no_termination_signal = pytest.mark.skipif(
     os.name == "nt", reason="Windows ends a terminated process outright: no signal reaches it to clean up on"
 )
@@ -232,15 +229,40 @@ class TestStopping:
         pid = int((tmp_path / "1" / "running").read_text(encoding="utf-8"))
         assert process_state(pid) is None, "killed and reaped by the supervisor"
 
-    @no_process_groups
     def test_the_stop_reaches_what_the_worker_started(self, tmp_path):
-        """The worker's children are in its process group: one ends on the
-        termination signal, the other ignores it and is killed once the
-        worker is gone."""
+        """The worker's children are in its process group (on Windows: its
+        job): one ends on the termination signal, the other ignores it and is
+        killed once the worker is gone. On Windows both end with the job."""
         supervise_workers(
             [payload(tmp_path, "1")], targets.starts_children,
             cancelled=running_marker(tmp_path), grace_s=GRACE,
         )
+        for kind in ("plain", "stubborn"):
+            child = int((tmp_path / "1" / f"child-{kind}.pid").read_text(encoding="utf-8"))
+            wait_until(lambda child=child: process_gone(child), timeout=10, what=f"the {kind} child to be gone")
+
+    def test_a_shard_that_ends_on_its_own_leaves_nothing_in_its_job_on_windows(self, tmp_path):
+        """On Windows reaping closes the job's last handle, which ends what
+        the worker left behind — and so proves that no child holds a copy of
+        the handle. On POSIX the group's leftover runs on, as it always did."""
+        (outcome,) = supervise_workers([payload(tmp_path, "1")], targets.leaves_a_child)
+        child = outcome.result
+        try:
+            if os.name == "nt":
+                wait_until(lambda: process_gone(child), timeout=30, what="the left child to be gone")
+            else:
+                assert not process_gone(child)
+        finally:
+            if not process_gone(child):
+                os.kill(child, 9)
+
+    def test_a_shard_over_its_timeout_is_stopped_with_what_it_started(self, tmp_path):
+        """A timeout is the stop protocol too: the worker's children — one of
+        them ignoring the termination signal — are gone with it."""
+        (outcome,) = supervise_workers(
+            [payload(tmp_path, "1")], targets.starts_children, timeout_s=15, grace_s=GRACE,
+        )
+        assert outcome.status == "timed out"
         for kind in ("plain", "stubborn"):
             child = int((tmp_path / "1" / f"child-{kind}.pid").read_text(encoding="utf-8"))
             wait_until(lambda child=child: process_gone(child), timeout=10, what=f"the {kind} child to be gone")
@@ -499,13 +521,13 @@ class TestWhichProcesses:
         assert ("warning", "on_start/on_end raised RuntimeError: the ledger is full") in lines
 
 
-@no_process_groups
 class TestTheSupervisorIsGone:
     def test_its_worker_stops_itself_and_what_it_started(self, tmp_path):
         """The supervising process is killed outright (no stop protocol can
         run): the worker sees its lifeline close, asks its process group to
         stop and kills what does not — the child that ignores the request
-        included."""
+        included. On Windows: asks, waits ``ORPHAN_GRACE_S``, terminates its
+        job through the handle it holds."""
         from .conftest import REPO
 
         out = tmp_path / "1"

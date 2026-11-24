@@ -99,6 +99,7 @@ from runcomposer.sdk import (
     PlanContext,
     PlanPreview,
     PluginError,
+    ProcessJob,
     RunnerBase,
     RunnerInfo,
     Verdict,
@@ -1058,42 +1059,61 @@ class RobotPoolRunner(RunnerBase):
         anything executes. A failing or overrunning hook refuses the dispatch."""
         for hook in self.pre_run_hooks:
             ctx.raise_if_cancelled()
-            # In a session of its own, so that a hook that overruns is stopped
-            # together with whatever it started — not just its shell.
-            process = subprocess.Popen(
-                hook,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
+            # In a session of its own (on Windows: a job of its own), so that
+            # a hook that overruns is stopped together with whatever it
+            # started — not just its shell. A hook that ends on its own
+            # leaves what it started running, on every platform.
+            options: dict[str, Any] = {
+                "shell": True,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
                 # A hook's output only words a refusal: a byte the locale's
                 # encoding cannot read must not turn that into a traceback.
-                errors="replace",
-                start_new_session=os.name != "nt",
-            )
-            # Waited for in short steps, so that a cancellation stops a hook
-            # that is still running instead of waiting for its timeout.
-            # (Retrying communicate() after TimeoutExpired loses no output.)
-            deadline = time.monotonic() + self.hook_timeout_s
-            while True:
-                try:
-                    step = max(0.0, min(_HOOK_POLL_S, deadline - time.monotonic()))
-                    stdout, stderr = process.communicate(timeout=step)
-                    break
-                except subprocess.TimeoutExpired:
-                    if ctx.cancelled:
-                        _stop_hook(process)
-                        ctx.raise_if_cancelled()
-                    if time.monotonic() >= deadline:
-                        _stop_hook(process)
-                        ctx.refuse(
-                            f"pre_run_hook did not finish within {self.hook_timeout_s:g}s: {hook!r}"
-                        )
+                "errors": "replace",
+            }
+            job: ProcessJob | None = None
+            if os.name == "nt":
+                process, job = ProcessJob.start(
+                    hook, kill_on_close=False, say=lambda message: ctx.log(message, "warning"), **options
+                )
+            else:
+                process = subprocess.Popen(hook, start_new_session=True, **options)
+            try:
+                stdout, stderr = self._wait_for_hook(ctx, hook, process, job)
+            finally:
+                if job is not None:
+                    job.close()
             if process.returncode != 0:
                 ctx.refuse(
                     f"pre_run_hook failed (rc {process.returncode}): {hook!r} — "
                     f"{(stderr or stdout).strip()[:300]}"
                 )
+
+    def _wait_for_hook(
+        self, ctx: DispatchContext, hook: str, process: subprocess.Popen[str], job: ProcessJob | None
+    ) -> tuple[str, str]:
+        """The hook's output once it ended — or, cancelled or over its
+        timeout, the hook stopped with what it started."""
+        # Waited for in short steps, so that a cancellation stops a hook
+        # that is still running instead of waiting for its timeout.
+        # (Retrying communicate() after TimeoutExpired loses no output.)
+        deadline = time.monotonic() + self.hook_timeout_s
+        while True:
+            try:
+                step = max(0.0, min(_HOOK_POLL_S, deadline - time.monotonic()))
+                stdout, stderr = process.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                if ctx.cancelled:
+                    _stop_hook(process, job)
+                    ctx.raise_if_cancelled()
+                if time.monotonic() >= deadline:
+                    _stop_hook(process, job)
+                    ctx.refuse(
+                        f"pre_run_hook did not finish within {self.hook_timeout_s:g}s: {hook!r}"
+                    )
+        return stdout, stderr
 
 
 #: The keys of a ``pre_dispatch`` answer that addresses more than Robot
@@ -1140,10 +1160,12 @@ def _spec_format(spec: Mapping[str, Any]) -> str | None:
     return named if named and named != "runcomposer-verdicts" else None
 
 
-def _stop_hook(process: subprocess.Popen[str]) -> None:
-    """Kill an overrunning hook and its whole process group."""
+def _stop_hook(process: subprocess.Popen[str], job: ProcessJob | None = None) -> None:
+    """Kill an overrunning hook and its whole process group — on Windows
+    its job, or the shell alone where Windows refused the job."""
     if os.name == "nt":
-        process.kill()
+        if job is None or not job.terminate(1):
+            process.kill()
     else:
         import signal
 

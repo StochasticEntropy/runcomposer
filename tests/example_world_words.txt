@@ -263,6 +263,7 @@ Unicode
 UTF
 VCS
 WAL               # write-ahead logging
+Win32             # the Windows interface job objects are made through
 WCAG
 WebP
 WebVTT

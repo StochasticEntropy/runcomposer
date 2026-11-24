@@ -24,16 +24,26 @@ signal to its process group reaches what it started as well:
 3. after ``grace_s``: **kill** — ``SIGKILL`` to the group.
 
 Finally whatever is left of the worker's group is killed, and the worker
-process is reaped by the supervisor. (On Windows there is no process group
-to signal: ``stop()`` is the request, then the worker process is terminated
-and killed.)
+process is reaped by the supervisor.
+
+On Windows there are no process groups and no signal to send: each worker
+runs in a job object of its own (:class:`~runcomposer.core.processjob.ProcessJob`),
+and everything it starts is in that job. The worker waits at a gate until
+the supervisor has put it there, so nothing escapes. ``stop()`` and the
+file ask; after ``grace_s`` the job is terminated — the worker and what it
+started — and finally whatever is left in it. The supervisor holds the
+job's handle and gives the worker a copy; the job ends its processes when
+the last handle closes, so a worker reaped by the supervisor leaves nothing
+running in it.
 
 A worker also watches the process that supervises it, through a pipe that
 only the supervisor holds open: when the supervisor is gone — killed, its
 machine's server stopped — the pipe reads its end, and the worker stops
-itself the same way, ask then kill, together with what it started (on
-Windows, the worker process alone). So a re-dispatch after a restart never
-executes beside workers of the dispatch before it.
+itself the same way, ask, wait :data:`ORPHAN_GRACE_S`, then kill, together
+with what it started (on Windows: terminating its job through its copy of
+the handle — and should the worker be gone as well, the last handle closing
+ends the job). So a re-dispatch after a restart never executes beside
+workers of the dispatch before it.
 
 Stdlib only.
 """
@@ -137,6 +147,12 @@ def _first_line(text: str | None, default: str) -> str:
     return lines[0] if lines else default
 
 
+def _windows() -> bool:
+    """Whether this is Windows — one place to ask, so that the Windows half of
+    the stop protocol is tested with a stand-in on every platform."""
+    return os.name == "nt"
+
+
 # -- the worker side ---------------------------------------------------------------------
 
 
@@ -157,10 +173,13 @@ class _StopFlag:
             raise SystemExit(128 + signal.SIGTERM)
 
 
-def _watch_supervisor(lifeline: Any, event: Any) -> None:
+def _watch_supervisor(lifeline: Any, event: Any, job: Any = None) -> None:
     """In the worker: wait until the supervisor's end of ``lifeline`` is
     closed — it never sends, so the read returns only when the supervising
-    process is gone — then stop this worker and what it started."""
+    process is gone — then stop this worker and what it started. On Windows
+    ``job`` is the worker's own job (a :class:`ProcessJob` it holds a handle
+    to): asked, given :data:`ORPHAN_GRACE_S`, then terminated with every
+    process in it, this worker included."""
     import threading
 
     def watch() -> None:
@@ -171,7 +190,12 @@ def _watch_supervisor(lifeline: Any, event: Any) -> None:
         except Exception:  # anything else means the supervisor went as well
             pass
         event.set()
-        if os.name == "nt":
+        if _windows():
+            if job is not None:  # ask (the flag above), give the grace, end the job
+                deadline = time.monotonic() + ORPHAN_GRACE_S
+                while time.monotonic() < deadline:
+                    time.sleep(0.05)
+                job.terminate(1)
             os._exit(1)
         try:  # ask, as the supervisor would …
             os.killpg(0, signal.SIGTERM)
@@ -189,20 +213,37 @@ def _watch_supervisor(lifeline: Any, event: Any) -> None:
 
 
 def _worker_main(
-    target: Callable[..., Any], payload: WorkerPayload, event: Any, conn: Any, lifeline: Any = None
+    target: Callable[..., Any], payload: WorkerPayload, event: Any, conn: Any, lifeline: Any = None,
+    gate: Any = None,
 ) -> None:
     """The spawned process: its own session, the payload's working directory
     and environment, then ``target``; the outcome goes back through
-    ``conn``. ``lifeline`` is read until the supervisor is gone."""
+    ``conn``. ``lifeline`` is read until the supervisor is gone.
+
+    ``gate`` (Windows): before anything else, the worker waits until the
+    supervisor has put it into its job and says so — with a handle to the
+    job for the worker to hold, or ``None`` when there is no job. So
+    nothing the worker starts is started outside the job."""
+    job = None
+    if gate is not None:
+        try:
+            shared = gate.recv()
+        except (EOFError, OSError):  # the supervisor is gone before it said
+            os._exit(1)
+        gate.close()
+        if shared is not None:
+            from .processjob import ProcessJob
+
+            job = ProcessJob.adopt(shared)
     stop = _StopFlag(event)
-    if os.name != "nt":
+    if not _windows():
         signal.signal(signal.SIGTERM, stop.on_signal)
         try:
             os.setsid()
         except OSError:
             pass
     if lifeline is not None:
-        _watch_supervisor(lifeline, event)
+        _watch_supervisor(lifeline, event, job)
     try:
         if payload.cwd:
             os.chdir(payload.cwd)
@@ -242,6 +283,9 @@ class _Running:
     lifeline: Any = None
     message: tuple[str, Any] | None = None
     closed: bool = False
+    #: Windows: the worker's job (a ``ProcessJob``) — ``None`` elsewhere, or
+    #: where Windows refused it.
+    job: Any = None
 
     def ended(self) -> bool:
         """Whether the worker process has ended — without reaping it, so
@@ -277,7 +321,11 @@ class _Running:
         )
 
     def release(self) -> None:
-        """The worker is reaped: its lifeline is no longer needed."""
+        """The worker is reaped: its lifeline is no longer needed, nor its
+        job — closing the job's last handle ends what is left in it."""
+        if self.job is not None:
+            self.job.close()
+            self.job = None
         if self.lifeline is not None:
             try:
                 self.lifeline.close()
@@ -377,7 +425,7 @@ def supervise_workers(
                     index += 1
                     continue
                 pending.pop(index)
-                started = _start(spawn, target, payload)
+                started = _start(spawn, target, payload, lambda message: say(message, "warning"))
                 running.append(started)
                 say(f"{_named(payload)}: started")
                 tell(on_start, payload, started.process.pid)
@@ -433,7 +481,10 @@ def _refuse_what_cannot_travel(target: Callable[..., Any], payloads: Sequence[Wo
             ) from None
 
 
-def _start(spawn: Any, target: Callable[..., Any], payload: WorkerPayload) -> _Running:
+def _start(
+    spawn: Any, target: Callable[..., Any], payload: WorkerPayload,
+    say: Callable[[str], None] = lambda _message: None,
+) -> _Running:
     Path(payload.out_dir).mkdir(parents=True, exist_ok=True)
     try:
         Path(payload.out_dir, STOP_FILE).unlink(missing_ok=True)
@@ -445,15 +496,46 @@ def _start(spawn: Any, target: Callable[..., Any], payload: WorkerPayload) -> _R
     # open and never writes — the worker's read returns when this process
     # is gone.
     watched, held = spawn.Pipe(duplex=False)
+    if not _windows():
+        process = spawn.Process(
+            target=_worker_main,
+            args=(target, payload, event, send, watched),
+            name=f"runcomposer-shard-{payload.shard}",
+        )
+        process.start()
+        send.close()  # the worker holds its end; EOF here means it is gone
+        watched.close()
+        return _Running(process, payload, event, receive, time.monotonic(), lifeline=held)
+    # Windows: the worker waits at its gate until it is in a job of its own.
+    gate_out, gate_in = spawn.Pipe(duplex=False)
     process = spawn.Process(
         target=_worker_main,
-        args=(target, payload, event, send, watched),
+        args=(target, payload, event, send, watched, gate_out),
         name=f"runcomposer-shard-{payload.shard}",
     )
     process.start()
-    send.close()  # the worker holds its end; EOF here means it is gone
+    send.close()
     watched.close()
-    return _Running(process, payload, event, receive, time.monotonic(), lifeline=held)
+    gate_out.close()
+    job = _job_for(process.pid, say)
+    try:
+        gate_in.send(job.share_with(process.pid) if job is not None else None)
+    except OSError:
+        pass  # the worker is gone already: its outcome says how
+    gate_in.close()
+    return _Running(process, payload, event, receive, time.monotonic(), lifeline=held, job=job)
+
+
+def _job_for(pid: int, say: Callable[[str], None]) -> Any:
+    """A job object holding process ``pid`` — ended when its last handle
+    closes — or ``None`` where Windows refuses one (said once)."""
+    from .processjob import ProcessJob
+
+    job = ProcessJob(kill_on_close=True, say=say)
+    if not job.add(pid):
+        job.close()
+        return None
+    return job
 
 
 def _named(payload: WorkerPayload) -> str:
@@ -477,10 +559,14 @@ def _how(outcome: WorkerOutcome, timeout_s: float | None) -> str:
 
 def _signal(entry: _Running, signum: int) -> None:
     """``signum`` to the worker's process group — or to the worker alone
-    while it has no group of its own yet (it is still starting), and on
-    Windows."""
+    while it has no group of its own yet (it is still starting). On Windows
+    there is no signal: the worker's job is terminated, every process in it
+    with it, or — without a job — the worker alone."""
     process = entry.process
-    if os.name != "nt":
+    if _windows() and entry.job is not None and not entry.ended():
+        entry.job.terminate(1)
+        return
+    if not _windows():
         try:
             os.killpg(process.pid, signum)
             return
@@ -520,20 +606,23 @@ def _stop(entries: Sequence[_Running], grace_s: float) -> None:
         except OSError:
             pass
         entry.event.set()
-        if os.name != "nt":
+        if not _windows():
             _signal(entry, signal.SIGTERM)
     _wait(entries, grace_s)
     for entry in entries:
         if not entry.ended():
             _signal(entry, signal.SIGTERM)
     _wait(entries, grace_s)
-    kill = signal.SIGTERM if os.name == "nt" else signal.SIGKILL
+    kill = signal.SIGTERM if _windows() else signal.SIGKILL
     for entry in entries:
         if not entry.ended():
             _signal(entry, kill)
     _wait(entries, grace_s)
     for entry in entries:
-        if os.name != "nt" and entry.ended():
+        if _windows() and entry.job is not None:
+            # What the worker started and left behind: the rest of its job.
+            entry.job.terminate(1)
+        if not _windows() and entry.ended():
             # What the worker started and left behind. The worker is not
             # reaped yet (``ended`` does not reap), so its group id cannot
             # have passed to another process.

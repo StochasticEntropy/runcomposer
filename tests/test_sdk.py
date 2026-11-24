@@ -62,6 +62,8 @@ PUBLIC_NAMES = {
     "callback_urls", "CallbackUrls",
     # worker processes for any framework: lanes, a timeout, the stop protocol
     "supervise_workers", "WorkerPayload", "WorkerOutcome", "STOP_FILE", "ORPHAN_GRACE_S",
+    # Windows: a process and what it starts in one job object, stopped together
+    "ProcessJob",
     # embedding
     "Service", "load_config", "Config",
 }

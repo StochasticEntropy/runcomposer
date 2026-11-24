@@ -819,6 +819,7 @@ dazu
 db
 dbus
 deal
+death
 debounces
 decide
 decided
@@ -1042,6 +1043,7 @@ durchsehen
 durchsuchen
 during
 dv
+dying
 dynamic
 earns
 east
@@ -1322,6 +1324,7 @@ fewer
 fi
 fictional
 field
+fifteen
 fifth
 fifty
 fighting
@@ -1792,6 +1795,7 @@ ingesting
 ingestion
 ingests
 inherit
+inheritable
 inherited
 inherits
 injected
@@ -2003,6 +2007,7 @@ leads
 leaf
 leak
 leaking
+leaks
 leaky
 learn
 learns
@@ -2947,6 +2952,7 @@ result
 resulting
 results
 resume
+resumes
 retagging
 retain
 retention
@@ -3447,6 +3453,7 @@ surroundings
 survive
 survived
 surviving
+suspended
 swallow
 swallowed
 swallows
@@ -3505,6 +3512,7 @@ ten
 tends
 terminal
 terminated
+terminating
 termination
 terms
 ternary

@@ -144,6 +144,7 @@ from runcomposer.core.ports import (
     TestSource,
     contract_members,
 )
+from runcomposer.core.processjob import ProcessJob
 from runcomposer.core.registry import ConfiguredCall, configured_calls, load_import_path
 from runcomposer.core.remote import (
     CallbackUrls,
@@ -220,6 +221,7 @@ __all__ = [
     "PlanPreview",
     "PluginBase",
     "PluginError",
+    "ProcessJob",
     "RemoteLiveChannel",
     "ResultParser",
     "ResultsPushRefused",
