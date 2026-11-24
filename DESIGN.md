@@ -424,11 +424,21 @@ error text, and whatever was delivered until then is kept.
   two lies the moment a dispatch is being settled — its runner has handed
   off and returned, and the manager has already decided that it now waits
   for results: a cancel that comes then still finds the dispatch executing
-  and tells its runner, so the request is read once more in the very step
-  that takes the dispatch off the list of what executes here, and the
-  dispatch is closed `CANCELLED` there. No cancel leaves a dispatch in
+  and tells its runner. So releasing a dispatch and reading the request are
+  one decision of the store, taken in the step that takes the dispatch off
+  the list of what executes here: a request made before it is honoured by
+  the process that executed the dispatch, which closes it `CANCELLED`; one
+  made after it finds the dispatch nobody's. No cancel leaves a dispatch in
   flight with its executor stopped (tests/test_cancel_paths.py,
-  `TestACancelWhileTheDispatchSettles`).
+  `TestACancelWhileTheDispatchSettles`). And whoever closes a dispatch that
+  is nobody's **claims it first**, in one decision of the store: of two
+  cancels at once — in one process or in two — one stops the executor and
+  closes the dispatch, the other leaves it to that one, so the runner's
+  `cancel(ctx)` is called once for a cancel however many ask
+  (`TestTwoRequestsTogether`). A dispatch a live process has is left to it;
+  `--force` takes it whatever its owner, and a dispatch whose owner is gone
+  is taken over — the two cases in which a runner hears of a cancel a second
+  time.
 - **Restart recovery.** While a runner executes, the dispatch names its owner
   (host, process id, a per-process token). At startup — `serve`, the
   dispatching CLI commands, and `doctor` — every `DISPATCHED`/`RUNNING`
@@ -1258,15 +1268,17 @@ retried only when it provably did not take effect (a refused connection, a
 `502`/`504`), and within one server process the client sends one stop per
 build whoever asks — the runner's `cancel` and the take-back of `follow`,
 two cancels at once (`JenkinsClient.stop_build`;
-tests/test_jenkins_toolkit.py, `TestOneStopPerBuild`). A stop is remembered for 60 minutes, so that a build
-number used again by a job that was deleted and created again is not taken
-for the build stopped before. What a client
-remembers is its own, and only while its process lives, so two processes
-are not covered. Three ways to a second stop remain: two cancels of one
-dispatch from two processes at the same moment; `cancel --force` while the
-process executing the dispatch is alive and stops the build too; and a
-process that sent the stop and ended before the dispatch was recorded as
-cancelled — the next cancel, from another process, stops the build again.
+tests/test_jenkins_toolkit.py, `TestOneStopPerBuild`). A stop is remembered for 60 minutes: within
+them a build of the same URL is taken for the build stopped before — also
+one that a job deleted and created again numbers again from 1 — and
+after them it is stopped like any other. What a client remembers is its
+own, and only while its process lives; that two processes do not both stop
+the build of one dispatch is the dispatch manager's doing — whoever closes
+a dispatch that only waits for results claims it first (§4). Two ways to a
+second stop remain: `cancel --force` while the process that has the
+dispatch is alive and stops the build too; and a process that sent the stop
+and ended before the dispatch was recorded as cancelled — the next cancel,
+from another process, stops the build again.
 A stop Jenkins loses — one that arrives while a
 pipeline is entering its `node` step can leave the build running — is not
 made good by another: the dispatch is `CANCELLED` all the same, results of

@@ -871,10 +871,6 @@ class DispatchManager:
             log_failure(log, f"settling dispatch {ctx.dispatch_id} failed", exc, service.redact)
         finally:
             try:
-                service.ledger.release(ctx.dispatch_id)
-            except Exception as exc:
-                log_failure(log, f"releasing dispatch {ctx.dispatch_id} failed", exc, service.redact)
-            try:
                 self._leave(active)
             except Exception as exc:
                 log_failure(log, f"closing dispatch {ctx.dispatch_id} failed", exc, service.redact)
@@ -886,25 +882,31 @@ class DispatchManager:
             raise error  # KeyboardInterrupt / SystemExit belong to the caller
 
     def _leave(self, active: _Active) -> None:
-        """Take a settled dispatch off the list of what executes here —
-        unless a cancel was requested for it while it was being settled.
+        """A settled dispatch is no longer this process's: release it and
+        take it off the list of what executes here — unless a cancel was
+        requested for it while it was being settled.
 
         ``_settle`` decides how a dispatch ends from what it knows when it
         starts. A cancel that comes after that still finds the dispatch
         listed, tells its runner, and leaves the closing to this thread —
         which has already decided, so the dispatch would stay in flight with
-        its executor stopped. The request is therefore read once more, in
-        the same step that takes the dispatch off the list: a cancel that
-        finds it listed is honoured here, and one that finds it gone closes
-        the dispatch itself (``_cancel_detached``). The runner's
-        ``cancel(ctx)`` is called once either way (``_signal``)."""
-        ctx = active.ctx
+        its executor stopped. So the request is read once more, in the one
+        decision that releases the dispatch (``release_unless_cancel_requested``),
+        taken in the step that takes it off the list. A cancel requested
+        before that decision is honoured here: the dispatch stays owned and
+        listed until it is closed. One requested after it finds the dispatch
+        free and off the list and closes it itself (``_cancel_detached``, which
+        claims it first). The runner's ``cancel(ctx)`` is called once either
+        way: by ``_signal``, once per dispatch executing here, or by the one
+        who got the claim."""
+        ctx, service = active.ctx, self._service
         with self._lock:
-            dispatch = self._service.store.get_dispatch(ctx.dispatch_id)
-            late = (
-                dispatch is not None and dispatch.cancel_requested and dispatch.state in ACTIVE_STATES
-            )
-            if not late:
+            try:
+                released = service.ledger.release_unless_cancel_requested(ctx.dispatch_id, owner=self.owner)
+            except Exception as exc:
+                log_failure(log, f"releasing dispatch {ctx.dispatch_id} failed", exc, service.redact)
+                released = True
+            if released:
                 self._active.pop(ctx.dispatch_id, None)
                 return
         try:
@@ -916,14 +918,17 @@ class DispatchManager:
                     level="warning",
                 )
             try:
-                self._service.ledger.move(
+                service.ledger.move(
                     ctx.dispatch_id, "CANCELLED", error="cancelled on request", error_code="cancelled"
                 )
             except InvalidTransition:
                 pass  # its last results arrived meanwhile: complete is the answer
         finally:
-            with self._lock:
-                self._active.pop(ctx.dispatch_id, None)
+            try:
+                service.ledger.release(ctx.dispatch_id, owner=self.owner)
+            finally:
+                with self._lock:
+                    self._active.pop(ctx.dispatch_id, None)
 
     def _settle(self, active: _Active, error: BaseException | None) -> None:
         ctx, ledger = active.ctx, self._service.ledger
@@ -1044,10 +1049,10 @@ class DispatchManager:
             active = self._active.get(dispatch.dispatch_id)
         if active is not None:
             self._signal(active)
-        elif force or not (dispatch.owner and owner_alive(dispatch.owner, self.owner)):
-            # Nobody is executing it: stop the executor if the runner can, and
-            # close the dispatch here.
-            self._cancel_detached(dispatch)
+        else:
+            # Nobody is executing it here: if nobody is anywhere, stop the
+            # executor if the runner can, and close the dispatch.
+            self._cancel_detached(dispatch, force=force)
         refreshed = service.store.get_dispatch(dispatch.dispatch_id)
         return refreshed if refreshed is not None else dispatch
 
@@ -1082,7 +1087,32 @@ class DispatchManager:
         finally:
             active.cancel_done.set()
 
-    def _cancel_detached(self, dispatch: DispatchRecord) -> None:
+    def _cancel_detached(self, dispatch: DispatchRecord, *, force: bool = False) -> None:
+        """Close a dispatch that is not executing in this process — if it is
+        nobody's: its owner is none or gone, or ``force`` says whatever its
+        owner. It is claimed first, in one decision of the store, so that of
+        two cancels at once — in this process or in two — one stops the
+        executor and closes the dispatch, and the other leaves it to that
+        one. A dispatch a live process owns is left to it: that process
+        reads the request and honours it."""
+        service = self._service
+        claimed, found = service.ledger.claim(
+            dispatch.dispatch_id, owner=self.owner, force=force,
+            alive=lambda owner: owner_alive(owner, self.owner),
+        )
+        if not claimed:
+            if found is not None and found.state not in ACTIVE_STATES and found.state != "CANCELLED":
+                raise Conflict(
+                    f"run {dispatch.run_id} has nothing in flight to cancel any more: it became "
+                    f"{found.state} before the cancel took effect"
+                )
+            return  # cancelled already, or its owner's to close
+        try:
+            self._close_claimed(dispatch)
+        finally:
+            service.ledger.release(dispatch.dispatch_id, owner=self.owner)
+
+    def _close_claimed(self, dispatch: DispatchRecord) -> None:
         service = self._service
         try:
             runner = service.runner(dispatch.mode)
@@ -1109,6 +1139,8 @@ class DispatchManager:
             # the answer, as for a cancel that came after it.
             current = service.store.get_dispatch(dispatch.dispatch_id)
             state = current.state if current is not None else "gone"
+            if state == "CANCELLED":
+                return  # somebody took it with force and closed it: cancelled, as asked
             raise Conflict(
                 f"run {dispatch.run_id} has nothing in flight to cancel any more: it became "
                 f"{state} before the cancel took effect"
@@ -1142,12 +1174,26 @@ class DispatchManager:
                     self._monitor = None
                     return
             for active in actives:
-                try:
-                    dispatch = self._service.store.get_dispatch(active.ctx.dispatch_id)
-                except Exception:
-                    continue
-                if dispatch is not None and dispatch.cancel_requested:
-                    self._signal(active)
+                self._honour_request(active)
+
+    def _honour_request(self, active: _Active) -> None:
+        """Signal a dispatch executing here if the store holds a cancel
+        request for it — and it is still listed once the request was read.
+        Then it has not been released yet, and whoever releases it reads the
+        request too (``_leave``). One that is no longer listed was released
+        before the request came: it is for the one who cancels to close
+        (``_cancel_detached``), and its runner is not told from here — it
+        would be told twice."""
+        try:
+            dispatch = self._service.store.get_dispatch(active.ctx.dispatch_id)
+        except Exception:
+            return
+        if dispatch is None or not dispatch.cancel_requested:
+            return
+        with self._lock:
+            listed = self._active.get(active.ctx.dispatch_id) is active
+        if listed:
+            self._signal(active)
 
     def exclusive(self) -> Any:
         """The lock under which a dispatch is checked for and recorded — for
@@ -1183,10 +1229,17 @@ class DispatchManager:
         if cancel:
             for active in actives:
                 try:
-                    self._service.store.update_dispatch(
-                        active.ctx.dispatch_id, cancel_requested=True
-                    )
-                    self._signal(active)
+                    # Requested and checked in one step with the list: a
+                    # dispatch released meanwhile only waits for results —
+                    # that is not what a shutdown stops.
+                    with self._lock:
+                        listed = self._active.get(active.ctx.dispatch_id) is active
+                        if listed:
+                            self._service.store.update_dispatch(
+                                active.ctx.dispatch_id, cancel_requested=True
+                            )
+                    if listed:
+                        self._signal(active)
                 except Exception as exc:
                     log_failure(
                         log, f"could not cancel dispatch {active.ctx.dispatch_id}", exc, self._service.redact

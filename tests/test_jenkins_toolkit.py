@@ -861,8 +861,8 @@ class TestOneStopPerBuild:
 
     def test_two_cancels_at_once_send_one_stop(self, make_service, jenkins):
         """Two cancel requests for a dispatch that awaits results — a double
-        click — both reach the runner's ``cancel`` before either has closed
-        the dispatch."""
+        click. The first has the dispatch and is stopping its build; the
+        second finds it taken and leaves it to the first."""
         jenkins.add_job(JOB, lambda build: build.stop.wait(30))
         service = jenkins_service(make_service, jenkins)
         run_id, _ = dispatch(service)
@@ -880,13 +880,13 @@ class TestOneStopPerBuild:
         first.start()
         try:
             wait_until(lambda: jenkins.posts("/stop"), what="the first stop to be in flight")
-            assert service.cancel(run_id).state == "CANCELLED"
+            assert service.cancel(run_id).state == "AWAITING_RESULTS", "left to the first"
         finally:
             stalled.set()
             first.join(30)
         assert len(jenkins.posts("/stop")) == 1
+        assert [a.state for a in answers] == ["CANCELLED"], answers
         assert service.require_run(run_id).latest_dispatch.state == "CANCELLED"
-        assert any("not sent again" in e["message"] for e in events_of(service, run_id, "log"))
 
 
 # -- 3. the same, composed from the client ----------------------------------------------

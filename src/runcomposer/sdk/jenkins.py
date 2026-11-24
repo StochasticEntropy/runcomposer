@@ -79,7 +79,7 @@ _NOT_ACTED_ON = (429, 503)
 #: retry, a runner's cancel and a take-back, two cancels at once — while a
 #: job's own clean-up runs. A build URL does not name one build for ever: a
 #: job that is deleted and created again counts from 1 once more, and its new
-#: build must not find a stop remembered from the old one.
+#: build must not find a stop remembered from the old one for longer than this.
 _STOPS_KEPT = 4096
 _STOP_REMEMBERED_S = 3600.0
 
@@ -613,19 +613,21 @@ class JenkinsClient:
         be told apart from here.
 
         A stop is remembered for 60 minutes — far longer than the seconds
-        in which a second one comes, and short enough that a build number
-        used again (a job deleted and created again counts from 1) is not
-        taken for the build stopped before.
+        in which a second one comes. Within them a build of the same URL is
+        taken for the build stopped before, also one that a job deleted and
+        created again has numbered from 1 once more; after them it is
+        stopped like any other.
 
         What a client remembers is its own, and only while its process
         lives. One server process has one client per runner, so every way to
-        a build inside it is covered; two processes that stop the same build
-        are not. Three ways to a second stop remain: two cancels of one
-        dispatch from two processes at the same moment; a forced cancel
-        (``cancel --force``) while the process executing the dispatch is
-        alive and stops it too; and a process that sent the stop and ended
-        before the dispatch was recorded as cancelled — the next cancel,
-        from another process, stops the build again.
+        a build inside it is covered. That two processes do not both stop
+        the build of one dispatch is not this client's doing: runcomposer
+        lets one of them close a dispatch. Two ways to a second stop
+        remain: a forced cancel (``cancel --force``) while the process that
+        has the dispatch is alive and stops the build too; and a process
+        that sent the stop and ended before the dispatch was recorded as
+        cancelled — the next cancel, from another process, stops the build
+        again.
 
         A stop can still be lost by the server: one that arrives while a
         pipeline is entering a ``node`` step may leave the build running.

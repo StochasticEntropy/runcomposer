@@ -772,10 +772,20 @@ not exist or worked differently:
   had handed off and returned, and the dispatch was about to wait for
   results — told the runner (the executor was stopped) and then left the
   dispatch in flight: `AWAITING_RESULTS` with a cancel requested, until
-  somebody cancelled again. The request is now read once more in the step
-  that takes the dispatch off the list of what executes, and the dispatch
-  is closed `CANCELLED`; the runner's `cancel(ctx)` is still called once
-  (`tests/test_cancel_paths.py::TestACancelWhileTheDispatchSettles`).
+  somebody cancelled again. Releasing a dispatch and reading the request
+  are now one decision, taken in the step that takes the dispatch off the
+  list of what executes: a request made before it is honoured there and
+  the dispatch closed `CANCELLED`, one made after it closes the dispatch
+  itself (`tests/test_cancel_paths.py::TestACancelWhileTheDispatchSettles`).
+- One cancel could reach a runner's `cancel(ctx)` twice: two cancels at
+  once of a dispatch that only waits for results — in one process or in
+  two — each stopped the executor, and so did the watch on the store for a
+  dispatch released a moment before the request came. Whoever closes a
+  dispatch that is nobody's now claims it first, in one decision of the
+  store, and the other leaves it to that one; the watch tells only a
+  dispatch that is still listed. A shutdown no longer requests the cancel
+  of a dispatch that was released meanwhile and only waits for results
+  (`tests/test_cancel_paths.py::TestTwoRequestsTogether`).
 - A Jenkins build could be sent a second stop, which ends what the job
   runs after the first one — its own clean-up, a pipeline's `post` steps.
   `JenkinsClient.stop_build` repeated a stop that timed out after it had
@@ -787,13 +797,12 @@ not exist or worked differently:
   connection, a `429` or `503` answer), and within one process a client
   sends one stop per build whoever asks: `stop_build` returns `False` and
   sends nothing for a build it has stopped before, and
-  `cancel(job, queue_url)` says so. A stop is remembered for 60 minutes: a
-  build number used again by a job that was deleted and created again is
-  not taken for the build stopped before. Two processes are not covered: two
-  cancels of one dispatch from two processes at the same moment,
-  `cancel --force` while the process executing the dispatch is alive, or a
-  cancel after a process that sent the stop ended before recording it, can
-  still send two.
+  `cancel(job, queue_url)` says so. A stop is remembered for 60 minutes;
+  after them a build of the same URL — a job deleted and created again
+  numbers its builds from 1 once more — is stopped like any other. Two
+  ways to a second stop remain: `cancel --force` while the process that
+  has the dispatch is alive, and a cancel after a process that sent the
+  stop ended before recording it.
   A trigger answered `502` or `504` by a gateway is no longer sent again
   either: the server behind it may have queued the build, and the refusal
   says so — as it does after a timeout or a dropped connection, and not

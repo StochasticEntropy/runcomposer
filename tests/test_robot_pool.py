@@ -977,6 +977,11 @@ class TestCancel:
         assert dict(dispatch.summary) == {"PASS": 1, "MISSING": 1}
         scored = {v.item_id: v.status for v in service.ledger.scored_verdicts(dispatch)}
         assert scored == {QUICK: "PASS", SLOW: "MISSING"}
+        # The state is written before its event: wait for the event itself.
+        wait_until(
+            lambda: "run.cancelled" in [e.kind for e in service.store.events(run_id)],
+            what="the event of the cancelled run",
+        )
         kinds = [e.kind for e in service.store.events(run_id)]
         assert kinds.index("run.cancel_requested") < kinds.index("run.cancelled")
         assert "run.completed" not in kinds

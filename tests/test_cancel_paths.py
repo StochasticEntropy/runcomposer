@@ -37,6 +37,10 @@ HERE = "tests.test_cancel_paths"
 STARTED: dict[str, float] = {}
 CANCELS: dict[str, list[str]] = {}
 SERVICES: dict[str, Service] = {}
+#: By run id: an event ``cancel(ctx)`` sets when it is entered, and one it
+#: waits for before it returns — a stop that takes its time.
+ENTERED: dict[str, threading.Event] = {}
+HELD: dict[str, threading.Event] = {}
 
 
 class PollingRunner(RunnerBase):
@@ -69,6 +73,9 @@ class PollingRunner(RunnerBase):
         service = SERVICES.get(ctx.run_id)
         state = service.store.get_dispatch(ctx.dispatch_id).state if service else "?"
         CANCELS.setdefault(ctx.dispatch_id, []).append(state)
+        if ctx.run_id in ENTERED:
+            ENTERED[ctx.run_id].set()
+            assert HELD[ctx.run_id].wait(30)
 
 
 @pytest.fixture()
@@ -258,3 +265,157 @@ class TestACancelWhileTheDispatchSettles:
         assert service.require_run(run_id).state == "AWAITING_RESULTS"
         assert outcome.dispatch_id not in CANCELS
         assert outcome.dispatch_id not in service.dispatcher.active_dispatch_ids()
+
+    def test_a_request_from_another_process_is_left_to_the_one_settling_it(self, polling, monkeypatch):
+        """The other process finds the dispatch owned by a live one, and
+        leaves it to that one — which reads the request when it releases
+        the dispatch. One call of cancel(ctx), not one from each."""
+        others: list[Service] = []
+        answers: list[str] = []
+
+        def cancel_from_elsewhere(service: Service, run_id: str) -> None:
+            other = Service(load_config(str(service.config.path)))   # stands for the other process
+            others.append(other)
+            answers.append(other.cancel(run_id).state)
+
+        try:
+            service, run_id, outcome = self.settling(polling, monkeypatch, cancel_from_elsewhere)
+            assert service.require_run(run_id).state == "CANCELLED"
+            assert answers == ["RUNNING"], "left to its owner"
+            assert len(CANCELS.get(outcome.dispatch_id, [])) == 1, "cancel(ctx) exactly once"
+        finally:
+            for other in others:
+                other.close()
+
+    def test_the_watch_on_the_store_does_not_tell_a_runner_it_no_longer_lists(self, polling):
+        """The manager's watch looks at what it listed a moment ago. A
+        dispatch released since, and cancelled only after that, is for the one who
+        cancels to close: told from here as well, its runner would hear
+        of one cancel twice."""
+        service = polling(mode="hands-off")
+        run_id = compose(service, "Auth-SSO", runner_id="polling")
+        SERVICES[run_id] = service
+        listed: list[Any] = []
+        release = service.ledger.release_unless_cancel_requested
+
+        def note_what_is_listed(dispatch_id: str, **options: Any) -> bool:
+            listed.append(service.dispatcher._active[dispatch_id])   # what the watch would hold
+            return release(dispatch_id, **options)
+
+        service.ledger.release_unless_cancel_requested = note_what_is_listed
+        outcome = service.dispatch(run_id, "polling")
+        assert outcome.done.wait(30) and len(listed) == 1
+        service.store.update_dispatch(outcome.dispatch_id, cancel_requested=True)   # the request, afterwards
+        service.dispatcher._honour_request(listed[0])
+        assert outcome.dispatch_id not in CANCELS and listed[0].cancel_sent is False
+        assert service.cancel(run_id).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"], "cancel(ctx) exactly once"
+
+    def test_a_shutdown_does_not_cancel_what_only_waits_for_results(self, polling):
+        service = polling(mode="hands-off")
+        run_id = compose(service, "Auth-SSO", runner_id="polling")
+        SERVICES[run_id] = service
+        outcome = service.dispatch(run_id, "polling")
+        assert outcome.done.wait(30)
+        service.dispatcher.shutdown()
+        dispatch = service.require_run(run_id).latest_dispatch
+        assert (dispatch.state, dispatch.cancel_requested) == ("AWAITING_RESULTS", False)
+        assert outcome.dispatch_id not in CANCELS
+
+
+class TestTwoRequestsTogether:
+    """A dispatch that waits for results is nobody's: whoever cancels it
+    closes it. Of two who cancel at the same moment one does — the other
+    finds it taken and leaves it to that one. The runner's cancel(ctx), a
+    stop that must not come twice, is called once."""
+
+    def awaiting(self, polling) -> tuple[Service, str, Any]:
+        service = polling(mode="hands-off")
+        run_id = compose(service, "Auth-SSO", runner_id="polling")
+        SERVICES[run_id] = service
+        outcome = service.dispatch(run_id, "polling")
+        assert outcome.done.wait(30)
+        assert service.require_run(run_id).state == "AWAITING_RESULTS"
+        ENTERED[run_id], HELD[run_id] = threading.Event(), threading.Event()
+        return service, run_id, outcome
+
+    def cancel_twice(self, first: Service, second: Service, run_id: str) -> tuple[list[Any], str]:
+        """``first`` cancels and is held inside the runner's cancel(ctx);
+        ``second`` cancels meanwhile. Returns what the first got in the end
+        and what the second was answered while the first was at it."""
+        got: list[Any] = []
+
+        def cancel() -> None:
+            try:
+                got.append(first.cancel(run_id).state)
+            except Exception as exc:
+                got.append(exc)
+
+        thread = threading.Thread(target=cancel)
+        thread.start()
+        try:
+            assert ENTERED[run_id].wait(30), "the first cancel reached the runner"
+            answered = second.cancel(run_id).state
+        finally:
+            HELD[run_id].set()
+            thread.join(30)
+        return got, answered
+
+    def test_in_one_process(self, polling):
+        service, run_id, outcome = self.awaiting(polling)
+        got, answered = self.cancel_twice(service, service, run_id)
+        assert got == ["CANCELLED"] and answered == "AWAITING_RESULTS"
+        assert service.require_run(run_id).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"], "cancel(ctx) exactly once"
+
+    def test_in_two_processes(self, polling):
+        service, run_id, outcome = self.awaiting(polling)
+        with Service(load_config(str(service.config.path))) as other:   # stands for the other process
+            got, answered = self.cancel_twice(other, service, run_id)
+        assert got == ["CANCELLED"] and answered == "AWAITING_RESULTS"
+        assert service.require_run(run_id).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"], "cancel(ctx) exactly once"
+
+    def test_a_forced_cancel_takes_it_from_whoever_has_it(self, polling):
+        """``--force`` is the way out when the one who has the dispatch
+        cannot be reached: it stops the executor again and closes the
+        dispatch whatever the other does."""
+        service, run_id, outcome = self.awaiting(polling)
+        with Service(load_config(str(service.config.path))) as other:
+            entered = ENTERED[run_id]
+            got: list[Any] = []
+
+            def cancel() -> None:
+                try:
+                    got.append(other.cancel(run_id).state)
+                except Exception as exc:
+                    got.append(exc)
+
+            thread = threading.Thread(target=cancel)
+            thread.start()
+            try:
+                assert entered.wait(30)
+                # The first is held in cancel(ctx); the forced one must not be.
+                ENTERED.pop(run_id)
+                assert service.cancel(run_id, force=True).state == "CANCELLED"
+            finally:
+                HELD[run_id].set()
+                thread.join(30)
+        assert got == ["CANCELLED"], "the one it was taken from finds it cancelled, which is what it asked for"
+        assert service.require_run(run_id).state == "CANCELLED"
+        assert len(CANCELS.get(outcome.dispatch_id, [])) == 2, "the forced one stops the executor too"
+
+    def test_a_cancel_whose_process_went_away_is_taken_over(self, polling):
+        """The one who had claimed the dispatch is gone: the next cancel
+        closes it — a second stop of the executor, since nobody knows
+        whether the first arrived."""
+        service, run_id, outcome = self.awaiting(polling)
+        ENTERED.pop(run_id), HELD.pop(run_id)
+        ended = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                               capture_output=True, text=True, check=True)
+        mine = service.dispatcher.owner
+        host, _pid, rest = mine.split(":", 2)
+        gone = f"{host}:{int(ended.stdout)}:{rest}"   # a process of this machine that is over
+        service.store.update_dispatch(outcome.dispatch_id, owner=gone, cancel_requested=True)
+        assert service.cancel(run_id).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"]

@@ -262,6 +262,46 @@ class Ledger:
             if owner is None or current.owner == owner:
                 self._store.update_dispatch(dispatch_id, owner=None)
 
+    def release_unless_cancel_requested(self, dispatch_id: str, *, owner: str) -> bool:
+        """What ``release`` does for a dispatch its runner returned from —
+        unless a cancel was requested for it and it is still active: then it
+        stays ``owner``'s, who closes it. True when it was released (or is
+        not ``owner``'s to release), False when it was kept.
+
+        One decision, so that a cancel requested before it finds the
+        dispatch owned — and leaves it to its owner — and one requested
+        after it finds it free, and closes it itself (:meth:`claim`)."""
+        with self._decision():
+            current = self._store.get_dispatch(dispatch_id)
+            if current is None or current.owner != owner:
+                return True
+            if current.cancel_requested and current.state in lifecycle.ACTIVE_STATES:
+                return False
+            self._store.update_dispatch(dispatch_id, owner=None)
+            return True
+
+    def claim(
+        self, dispatch_id: str, *, owner: str, alive: Callable[[str], bool], force: bool = False
+    ) -> tuple[bool, DispatchRecord | None]:
+        """Make ``owner`` the one who closes an active dispatch nobody is
+        working on: one whose owner is none, or gone (``alive`` says no), or
+        — with ``force`` — another's whatever ``alive`` says. Returns whether
+        it is ``owner``'s now, and the record as it was found.
+
+        One decision: of two who would close the same dispatch — two
+        cancels at once, in one process or in two — one gets it. A dispatch
+        ``owner`` already holds is not claimed again."""
+        with self._decision():
+            current = self._store.get_dispatch(dispatch_id)
+            if current is None or current.state not in lifecycle.ACTIVE_STATES:
+                return False, current
+            if current.owner == owner:
+                return False, current
+            if current.owner and not force and alive(current.owner):
+                return False, current
+            self._store.update_dispatch(dispatch_id, owner=owner)
+            return True, current
+
     # -- internals ------------------------------------------------------------------
 
     @contextmanager
