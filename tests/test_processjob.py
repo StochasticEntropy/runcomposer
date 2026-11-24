@@ -8,7 +8,6 @@ tests/test_command_runner.py, tests/test_robot_pool.py) in the Windows job.
 from __future__ import annotations
 
 import multiprocessing
-import os
 import threading
 import time
 from pathlib import Path
@@ -156,11 +155,12 @@ class TestStartingInAJob:
 
 
 class FakeProcess:
-    """A worker process: ``sentinel`` becomes ready when it has ended."""
+    """A worker process: ``sentinel`` becomes ready when it has ended — a
+    pipe's receiving end, which ``multiprocessing``'s ``wait`` waits on on
+    every platform (a plain descriptor is no handle on Windows)."""
 
     def __init__(self) -> None:
-        self._read, self._write = os.pipe()
-        self.sentinel = self._read
+        self.sentinel, self._write = multiprocessing.Pipe(duplex=False)
         self.pid = 4040
         self.exitcode: int | None = None
         self.terminated = 0
@@ -168,7 +168,7 @@ class FakeProcess:
     def end(self) -> None:
         if self.exitcode is None:
             self.exitcode = 1
-            os.write(self._write, b"x")
+            self._write.send_bytes(b"x")
 
     def terminate(self) -> None:
         self.terminated += 1
