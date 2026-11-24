@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from runcomposer.sdk import STOP_FILE, WorkerOutcome, WorkerPayload, supervise_workers
+from runcomposer.sdk import ORPHAN_GRACE_S, STOP_FILE, WorkerOutcome, WorkerPayload, supervise_workers
 from runcomposer.testing import ConnectorHarness, FakeDispatchContext, check_runner
 
 from . import supervised_targets as targets
@@ -475,9 +475,11 @@ class TestAComposedRunner:
 SUPERVISOR = (
     "import sys\n"
     "sys.path.insert(0, sys.argv[2])\n"
-    "from runcomposer.sdk import WorkerPayload, supervise_workers\n"
+    "from runcomposer.sdk import ProcessJob, WorkerPayload, supervise_workers\n"
     "from tests import supervised_targets as targets\n"
     "if __name__ == '__main__':\n"
+    "    if sys.argv[3:] == ['no-copy']:  # the worker gets no copy of its job's handle\n"
+    "        ProcessJob.share_with = lambda self, pid: None\n"
     "    supervise_workers([WorkerPayload(shard='1', out_dir=sys.argv[1])], targets.starts_children)\n"
 )
 
@@ -522,26 +524,71 @@ class TestWhichProcesses:
 
 
 class TestTheSupervisorIsGone:
-    def test_its_worker_stops_itself_and_what_it_started(self, tmp_path):
-        """The supervising process is killed outright (no stop protocol can
-        run): the worker sees its lifeline close, asks its process group to
-        stop and kills what does not — the child that ignores the request
-        included. On Windows: asks, waits ``ORPHAN_GRACE_S``, terminates its
-        job through the handle it holds."""
+    """The supervising process is killed outright: no stop protocol can run.
+    Every time is measured in this process, from the moment the killed
+    supervisor is known to be gone."""
+
+    def supervised(self, tmp_path: Path, *extra: str) -> tuple[subprocess.Popen[bytes], int, dict[str, int]]:
         from .conftest import REPO
 
         out = tmp_path / "1"
-        supervisor = subprocess.Popen([sys.executable, "-c", SUPERVISOR, str(out), str(REPO)])
+        supervisor = subprocess.Popen([sys.executable, "-c", SUPERVISOR, str(out), str(REPO), *extra])
+        wait_until(lambda: (out / "running").exists(), timeout=60, what="the worker to run")
+        worker = int((out / "running").read_text(encoding="utf-8"))
+        children = {kind: int((out / f"child-{kind}.pid").read_text(encoding="utf-8")) for kind in ("plain", "stubborn")}
+        assert not process_gone(worker) and not any(process_gone(child) for child in children.values())
+        return supervisor, worker, children
+
+    @staticmethod
+    def kill(supervisor: subprocess.Popen[bytes]) -> float:
+        supervisor.kill()
+        supervisor.wait(timeout=30)
+        return time.monotonic()
+
+    @staticmethod
+    def still_there_after(pid: int, seconds: float) -> bool:
+        """Whether ``pid`` is still running ``seconds`` from now."""
+        end = time.monotonic() + seconds
+        wait_until(lambda: process_gone(pid) or time.monotonic() >= end, timeout=seconds + 30)
+        return not process_gone(pid)
+
+    def test_its_worker_stops_itself_and_what_it_started_after_the_grace(self, tmp_path):
+        """The worker sees its lifeline close, asks — its process group gets
+        the termination signal on POSIX — waits ``ORPHAN_GRACE_S`` and then
+        kills what is left: the child that ignores the request is there a
+        second after the supervisor is gone and gone after about the grace,
+        not at once. On Windows the worker ends its job through its own copy
+        of the handle, so both children live until then."""
+        supervisor, worker, children = self.supervised(tmp_path)
         try:
-            wait_until(lambda: (out / "running").exists(), timeout=60, what="the worker to run")
-            worker = int((out / "running").read_text(encoding="utf-8"))
-            children = [int((out / f"child-{kind}.pid").read_text(encoding="utf-8")) for kind in ("plain", "stubborn")]
-            assert not process_gone(worker) and not any(process_gone(child) for child in children)
-            supervisor.kill()
-            supervisor.wait(timeout=30)
-            wait_until(lambda: process_gone(worker), timeout=30, what="the worker to stop itself")
-            for child in children:
-                wait_until(lambda child=child: process_gone(child), timeout=30, what="the worker's child to end")
+            gone_since = self.kill(supervisor)
+            assert self.still_there_after(children["stubborn"], 1.0), "ended at once: no grace was given"
+            if os.name == "nt":
+                assert not process_gone(children["plain"]), "ended at once: no grace was given"
+            wait_until(lambda: process_gone(children["stubborn"]), timeout=30, what="the stubborn child to end")
+            took = time.monotonic() - gone_since
+            print(f"the stubborn child ended {took:.2f}s after the supervisor was gone (grace {ORPHAN_GRACE_S:g}s)")
+            assert took >= ORPHAN_GRACE_S - 1.5, took
+            for pid in (worker, children["plain"]):
+                wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"process {pid} to end")
+        finally:
+            if supervisor.poll() is None:
+                supervisor.kill()
+
+    @pytest.mark.skipif(os.name != "nt", reason="the job object, its handle copy and kill-on-close are Windows'")
+    def test_without_a_copy_of_the_handle_the_job_ends_at_once(self, tmp_path):
+        """The documented fallback: a worker that could not be given a copy
+        of its job's handle cannot wait the grace out — the supervisor's
+        handle was the last, and closing it with the supervisor ends the job
+        and everything in it at once."""
+        supervisor, worker, children = self.supervised(tmp_path, "no-copy")
+        try:
+            gone_since = self.kill(supervisor)
+            for pid in (worker, *children.values()):
+                wait_until(lambda pid=pid: process_gone(pid), timeout=30, what=f"process {pid} to end")
+            took = time.monotonic() - gone_since
+            print(f"the job ended {took:.2f}s after the supervisor was gone (grace {ORPHAN_GRACE_S:g}s)")
+            assert took < ORPHAN_GRACE_S - 1.5, took
         finally:
             if supervisor.poll() is None:
                 supervisor.kill()

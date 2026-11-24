@@ -1575,7 +1575,10 @@ all. The decisions, each with its reason:
   `ORPHAN_GRACE_S`, then terminates its own job — itself and everything it
   started. Should the worker die too, its copy closes with it and the job
   ends at once. Had the supervisor held the only handle, its death would
-  end the tree immediately, without the grace.
+  end the tree immediately, without the grace — which is what happens,
+  as the fallback, for a worker that could not be given a copy
+  (tests/test_worker_supervisor.py `TestTheSupervisorIsGone` measures
+  both: the grace with a copy, the end at once without).
 - *The stop protocol keeps its order*: the stop file, then the flag, then
   `grace_s` — a Robot toolkit worker raises the termination signal in its
   own process (`_stop_request_as_signal`) and writes its output within it —
@@ -1597,7 +1600,12 @@ all. The decisions, each with its reason:
 - *Nested jobs*: a hosted runner or a service manager may run everything
   in a job already; nested jobs work since Windows 8. Where an assignment
   is refused anyway, the process runs without a job — as before — and the
-  log says so once per process.
+  log says so once per process, with Windows' error code. A process that
+  is gone before it could be assigned (a worker that ended at once) is no
+  refusal: nothing is said, and the one warning stays for a real one.
+  `ProcessJob.start` kills and reaps its process and closes the job when
+  anything — an interrupt included — goes wrong between the suspended
+  start and the resume.
 - *No handle leaks into children*: the job is created without security
   attributes (not inheritable), the worker's copy is made not inheritable,
   and `subprocess` and `multiprocessing` start children without inherited

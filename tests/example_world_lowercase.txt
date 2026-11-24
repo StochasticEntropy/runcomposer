@@ -244,6 +244,7 @@ assertions
 asserts
 assets
 assigned
+assigning
 assigns
 assistive
 associated

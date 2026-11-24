@@ -97,7 +97,7 @@ jobs:
         # Windows: the job-object tests once more, each named in the log.
         if: runner.os == 'Windows'
         run: >-
-          python -m pytest -v tests/test_processjob.py
+          python -m pytest -v -rP tests/test_processjob.py
           tests/test_worker_supervisor.py::TestStopping tests/test_worker_supervisor.py::TestTheSupervisorIsGone
           tests/test_worker_supervisor.py::TestReaping tests/test_command_runner.py::TestWhatTheCommandStarted
 

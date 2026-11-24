@@ -20,7 +20,8 @@ holder closed it.
 A job created on a machine that refuses it — an assignment refused because
 the process is already in a job that allows no nesting — is not an error:
 the process runs without it, and :func:`warn_once` says so once per
-process.
+process, with Windows' error code. A process that is gone before it could
+be assigned (a worker that ended at once) is no refusal and is not said.
 
 Stdlib only.
 """
@@ -47,6 +48,10 @@ _PROCESS_SET_QUOTA = 0x0100
 _THREAD_SUSPEND_RESUME = 0x0002
 _DUPLICATE_SAME_ACCESS = 0x2
 _SNAPSHOT_THREADS = 0x4
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+#: What ``OpenProcess`` says for a process id no process has.
+_ERROR_INVALID_PARAMETER = 87
 #: ``CreateProcess`` flag: the first thread waits until resumed.
 CREATE_SUSPENDED = 0x4
 
@@ -71,18 +76,26 @@ class Kernel(Protocol):
         """Resume every thread of ``pid`` (started suspended)."""
         ...
 
+    def alive(self, pid: int) -> bool:
+        """Whether process ``pid`` still runs (it can be opened and has no
+        exit code yet)."""
+        ...
+
     def close(self, handle: int) -> None: ...
 
 
-_refusal_said = threading.Event()
+_said: set[str] = set()
+_said_lock = threading.Lock()
 
 
-def warn_once(message: str, say: Callable[[str], None] | None = None) -> None:
-    """``message`` as a warning — once per process, however many jobs are
-    refused."""
-    if _refusal_said.is_set():
-        return
-    _refusal_said.set()
+def warn_once(kind: str, message: str, say: Callable[[str], None] | None = None) -> None:
+    """``message`` as a warning — once per process for each ``kind`` (a job
+    that cannot be made, an assignment Windows refuses), however often it
+    happens."""
+    with _said_lock:
+        if kind in _said:
+            return
+        _said.add(kind)
     (say or log.warning)(message)
 
 
@@ -98,19 +111,26 @@ class ProcessJob:
         self._lock = threading.Lock()
         self.handle: int | None = self._kernel.create_job(kill_on_close)
         if self.handle is None:
-            warn_once("a job object could not be created: what processes start is not "
+            warn_once("create", "a job object could not be created: what processes start is not "
                       "stopped with them on this machine", say)
         #: Whether a process was assigned — what :meth:`terminate` can reach.
         self.holds = False
 
     def add(self, pid: int) -> bool:
         """Put process ``pid`` (and so everything it starts from now on)
-        into the job. False, said once, when Windows refuses."""
+        into the job. False when it cannot be: said once, with Windows' error
+        code, when Windows refuses a process that runs — not when the
+        process is simply gone already (a worker that ended before it was
+        assigned), which is nobody's refusal and leaves the one warning for
+        a real one."""
         if self.handle is None:
             return False
         error = self._kernel.assign(self.handle, pid)
         if error:
+            if error == _ERROR_INVALID_PARAMETER or not self._kernel.alive(pid):
+                return False  # no such process (any more): nothing to stop, nothing to say
             warn_once(
+                "refused",
                 f"a process could not be put into a job object (Windows error {error}; the process "
                 "may already be in a job that allows no other): what it starts is not stopped "
                 "with it", self._say,
@@ -159,7 +179,12 @@ class ProcessJob:
               **popen: Any) -> tuple[subprocess.Popen[Any], ProcessJob]:
         """``subprocess.Popen(args, **popen)`` in a job of its own: started
         suspended, put into the job, then resumed — so that nothing it
-        starts is started before it is in the job. Windows only."""
+        starts is started before it is in the job. Windows only.
+
+        Whatever goes wrong on the way — an exception, an interrupt
+        included — the process is killed and reaped and the job closed
+        before the exception goes on: nothing is left suspended, or running
+        outside its job."""
         job = cls(kill_on_close=kill_on_close, kernel=kernel, say=say)
         flags = int(popen.pop("creationflags", 0)) | CREATE_SUSPENDED
         try:
@@ -169,13 +194,15 @@ class ProcessJob:
             raise
         try:
             job.add(process.pid)
-        finally:
-            resumed = job._kernel.resume(process.pid)
-        if not resumed:  # never leave a process waiting for a resume that cannot come
-            process.kill()
-            process.wait()
-            job.close()
-            raise OSError(f"the process {process.pid} was started suspended and could not be resumed")
+            if not job._kernel.resume(process.pid):
+                raise OSError(f"the process {process.pid} was started suspended and could not be resumed")
+        except BaseException:
+            try:
+                process.kill()
+                process.wait()
+            finally:
+                job.close()
+            raise
         return process, job
 
 
@@ -226,6 +253,8 @@ class _Win32Kernel:
         k.OpenThread.restype = handle
         k.ResumeThread.argtypes = (handle,)
         k.ResumeThread.restype = dword
+        k.GetExitCodeProcess.argtypes = (handle, ctypes.POINTER(dword))
+        k.GetExitCodeProcess.restype = boolean
         self._k = k
 
     def create_job(self, kill_on_close: bool) -> int | None:
@@ -289,6 +318,20 @@ class _Win32Kernel:
         finally:
             self._k.CloseHandle(snapshot)
         return resumed
+
+    def alive(self, pid: int) -> bool:
+        from ctypes import wintypes
+
+        process = self._k.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not process:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not self._k.GetExitCodeProcess(process, self._ctypes.byref(code)):
+                return True  # it exists; its state cannot be read
+            return code.value == _STILL_ACTIVE
+        finally:
+            self._k.CloseHandle(process)
 
     def close(self, handle: int) -> None:
         self._k.CloseHandle(handle)

@@ -23,9 +23,9 @@ from runcomposer.core.supervise import STOP_FILE, WorkerPayload
 class FakeKernel:
     """Records every call; ``refuse`` makes assignments fail with that error."""
 
-    def __init__(self, *, create: bool = True, refuse: int = 0):
+    def __init__(self, *, create: bool = True, refuse: int = 0, gone: frozenset[int] = frozenset()):
         self.calls: list[tuple[Any, ...]] = []
-        self.create, self.refuse = create, refuse
+        self.create, self.refuse, self.gone = create, refuse, gone
         self.next_handle = 100
 
     def create_job(self, kill_on_close: bool) -> int | None:
@@ -37,7 +37,13 @@ class FakeKernel:
 
     def assign(self, job: int, pid: int) -> int:
         self.calls.append(("assign", job, pid))
+        if pid in self.gone:
+            return 5  # what assigning a process that has ended answers
         return self.refuse
+
+    def alive(self, pid: int) -> bool:
+        self.calls.append(("alive", pid))
+        return pid not in self.gone
 
     def terminate(self, job: int, exit_code: int) -> bool:
         self.calls.append(("terminate", job, exit_code))
@@ -60,9 +66,9 @@ class FakeKernel:
 
 @pytest.fixture(autouse=True)
 def fresh_warning():
-    processjob._refusal_said.clear()
+    processjob._said.clear()
     yield
-    processjob._refusal_said.clear()
+    processjob._said.clear()
 
 
 class TestAJob:
@@ -89,6 +95,27 @@ class TestAJob:
         assert first.share_with(9) is None and not first.terminate() and not second.terminate()
         assert len(said) == 1 and "Windows error 5" in said[0] and "not stopped with it" in said[0]
         assert "terminate" not in kernel.names() and "duplicate" not in kernel.names()
+
+    def test_a_process_gone_before_it_is_assigned_is_no_refusal_and_a_later_one_still_warns(self):
+        """A worker that ended at once cannot be assigned. That is nobody's
+        refusal: nothing is said, and the one warning is left for a real
+        refusal later — which says Windows' error code."""
+        kernel, said = FakeKernel(refuse=5, gone=frozenset({11})), []
+        assert not ProcessJob(kill_on_close=True, kernel=kernel, say=said.append).add(11)
+        assert said == []
+        assert not ProcessJob(kill_on_close=True, kernel=kernel, say=said.append).add(12)
+        assert len(said) == 1 and "Windows error 5" in said[0]
+
+    def test_a_process_id_no_process_has_is_no_refusal(self):
+        kernel, said = FakeKernel(refuse=87), []
+        assert not ProcessJob(kill_on_close=True, kernel=kernel, say=said.append).add(13)
+        assert said == [] and "alive" not in kernel.names()
+
+    def test_a_job_that_cannot_be_made_is_said_apart_from_a_refusal(self):
+        said: list[str] = []
+        ProcessJob(kill_on_close=True, kernel=FakeKernel(create=False), say=said.append)
+        ProcessJob(kill_on_close=True, kernel=FakeKernel(refuse=5), say=said.append).add(1)
+        assert len(said) == 2 and "could not be created" in said[0] and "Windows error 5" in said[1]
 
     def test_a_job_that_cannot_be_made_does_nothing_and_is_said_once(self):
         kernel, said = FakeKernel(create=False), []
@@ -142,6 +169,25 @@ class TestStartingInAJob:
         with pytest.raises(OSError, match="could not be resumed"):
             ProcessJob.start("hook", kernel=kernel)
         assert ended == ["kill", "wait"] and kernel.names()[-1] == "close"
+
+    @pytest.mark.parametrize("failure", [KeyboardInterrupt, RuntimeError], ids=["interrupt", "error"])
+    def test_anything_raised_on_the_way_ends_the_process_and_closes_the_job(self, monkeypatch, failure):
+        """Between the suspended start and the resume nothing may be left
+        behind: an interrupt while a hook is being started included."""
+        kernel, ended = FakeKernel(), []
+
+        def raising_assign(job: int, pid: int) -> int:
+            kernel.calls.append(("assign", job, pid))
+            raise failure("while assigning")
+
+        kernel.assign = raising_assign  # type: ignore[method-assign]
+        self.popen(monkeypatch, [])
+        monkeypatch.setattr(processjob.subprocess.Popen, "kill", lambda self: ended.append("kill"), raising=False)
+        monkeypatch.setattr(processjob.subprocess.Popen, "wait", lambda self: ended.append("wait"), raising=False)
+        with pytest.raises(failure, match="while assigning"):
+            ProcessJob.start("hook", kernel=kernel)
+        assert ended == ["kill", "wait"]
+        assert kernel.names()[-1] == "close" and "resume" not in kernel.names()
 
     def test_a_process_that_cannot_start_leaves_no_job_open(self, monkeypatch):
         kernel = FakeKernel()
@@ -271,7 +317,7 @@ class TestAJobForAWorker:
         kernel, said = FakeKernel(refuse=5), []
         monkeypatch.setattr(processjob, "_win32", lambda: kernel)
         assert supervise._job_for(31, said.append) is None
-        assert kernel.names() == ["create", "assign", "close"] and len(said) == 1
+        assert kernel.names() == ["create", "assign", "alive", "close"] and len(said) == 1
 
     def test_a_job_ends_its_processes_when_its_last_handle_closes(self, monkeypatch):
         kernel = FakeKernel()
