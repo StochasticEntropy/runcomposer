@@ -26,6 +26,11 @@ how it works, in one page.
   Recorded with version 0.1 — 0.2 rebuilt the interface, so the steps are
   still there but look different; the page says which ones moved.
 
+<!-- Until v0.2.0 is tagged: this paragraph goes at the tag. -->
+**0.2.0 is on `main` and not yet on PyPI.** `pip install runcomposer` installs
+0.1.7 today, the previous version with the previous interface; what this
+README describes is installed from a clone, as shown below.
+
 Version 0.2.0 — a reworked backbone: asynchronous dispatch with an observable
 lifecycle, one runner contract every executor implements, a conformance kit
 and a copy-to-start package for writing your own connector
@@ -36,8 +41,10 @@ reasoning behind it, or [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
 
 ## Quickstart
 
+<!-- Until v0.2.0 is tagged: at the tag the first two lines become pip install runcomposer. -->
 ```bash
-pip install runcomposer          # from a clone: pip install .
+git clone https://github.com/StochasticEntropy/runcomposer && cd runcomposer
+pip install .                    # until 0.2.0 is on PyPI
 
 runcomposer demo                 # seed the neutral web-shop demo end to end
 runcomposer run Checkout --runner demo --config runcomposer-demo/config.yaml
@@ -204,12 +211,14 @@ neutral template a private adopter package copies.
 
 Executing Robot Framework in-process needs one extra:
 
+<!-- Until v0.2.0 is tagged: at the tag this line becomes pip install "runcomposer[robot]". -->
 ```bash
-pip install "runcomposer[robot]"
+pip install ".[robot]"           # in the clone, until 0.2.0 is on PyPI
 ```
 
+<!-- Until v0.2.0 is tagged: at the tag this says pip install --no-deps runcomposer. -->
 A machine that only executes what runcomposer hands out — a build agent —
-can do with `pip install --no-deps runcomposer` (plus `robotframework` for
+can do with `pip install --no-deps .` from a clone (plus `robotframework` for
 the Robot toolkit): the SDK, the push clients and `runcomposer-exec` import
 without the reading and serving dependencies, and push over HTTPS to a
 server behind a private CA with a CA bundle (`--ca-bundle`,

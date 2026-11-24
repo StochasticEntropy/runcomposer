@@ -367,7 +367,6 @@ Arbeitsschritt
 Architektur
 Argumentation
 Art
-Artefakten
 Artefaktverzeichnisses
 Aus
 Ausdruck
@@ -633,7 +632,6 @@ UND
 Unvollständig
 Verbindung
 Vermutung
-Versionen
 Versuch
 Versuchszähler
 Vertrag

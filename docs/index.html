@@ -661,7 +661,8 @@
 
   <header class="masthead">
     <div class="stamp">
-      <span>v0.2.0</span><span>MIT</span><span>Python 3.10+</span><span>self-hosted</span>
+      <!-- Until v0.2.0 is tagged: at the tag this span reads v0.2.0 again. -->
+      <span>v0.2.0 on main, not yet on PyPI</span><span>MIT</span><span>Python 3.10+</span><span>self-hosted</span>
     </div>
     <h1>runcomposer<span class="dot">.</span></h1>
     <p class="thesis">The interface is a document, not a protocol.</p>
@@ -674,7 +675,7 @@
     </p>
     <div class="plate">
       <div class="plate-head"><b>try it</b><span>~30 seconds, no config</span></div>
-<pre><code><span class="c"># boots a fictional web-shop corpus and runs the whole loop</span>
+<pre><code><span class="c"># in a clone of the repository: boots a fictional web-shop corpus and runs the whole loop</span>
 pipx run --spec . runcomposer demo</code></pre>
     </div>
   </header>
@@ -1025,10 +1026,11 @@ runcomposer runs
         <span class="chip chip-pass">PASS</span>.
       </p>
       <p>
-        Per-item verdicts are <span class="chip chip-pass">PASS</span>
+        A verdict is <span class="chip chip-pass">PASS</span>
         <span class="chip chip-fail">FAIL</span> <span class="chip chip-skip">SKIP</span>
-        <span class="chip chip-skip">ERROR</span>, each with duration, message, artifacts, and an
-        attempt counter — so a retry inside a run is representable and flakiness is derivable
+        <span class="chip chip-skip">ERROR</span>, given per item and per shard that ran it — a run
+        that fans out over two partitions has two for every test — each with duration, message and an
+        attempt counter. So a retry inside a run is representable and flakiness is derivable
         rather than stored as a guess.
       </p>
     </div>
@@ -1171,9 +1173,12 @@ docker build -t runcomposer . &amp;&amp; docker run -p 8100:8100 runcomposer
 <span class="c"># executing Robot Framework in-process needs one extra</span>
 pip install <span class="v">".[robot]"</span></code></pre>
       </div>
+      <!-- Until v0.2.0 is tagged: at the tag this note says again that released versions are
+           on PyPI (pip install runcomposer). -->
       <p class="note">
-        Released versions are on PyPI (<code>pip install runcomposer</code>); every command on this
-        page also works from a clone, which is what it assumes. Each
+        <b>0.2.0 is not on PyPI yet.</b> Today <code>pip install runcomposer</code> installs 0.1.7,
+        the previous version with the previous interface. What this page describes comes from a
+        clone, with the lines above; every command on this page assumes one. Each
         <a href="https://github.com/StochasticEntropy/runcomposer/releases">release</a> carries the
         wheel, the sdist and the vendorable consumer.
       </p>
@@ -1233,6 +1238,8 @@ pip install <span class="v">".[robot]"</span></code></pre>
           <p>
             Wheel, sdist, and the vendorable single-file <code>runcomposer_exec.py</code> as its
             own download.
+            <!-- Until v0.2.0 is tagged: this sentence goes at the tag. -->
+            The latest is still 0.1.7.
           </p>
         </div>
         <div class="lane lane-exit">
