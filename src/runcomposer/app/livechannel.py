@@ -49,9 +49,14 @@ class FileLiveChannel:
     def _append(self, line: str) -> None:
         path = os.path.join(self.directory, f"live-{os.getpid()}.jsonl")
         # Opened per line: the line is on disk when this returns, and a worker
-        # that is killed mid-run has lost nothing it reported.
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        # that is killed mid-run has lost nothing it reported. A directory
+        # that is gone means the dispatch's context closed: nobody reads any
+        # more, and the line is dropped rather than failing the worker.
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except FileNotFoundError:
+            return
 
 
 class LiveTail:

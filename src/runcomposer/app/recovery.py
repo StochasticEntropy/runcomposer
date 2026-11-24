@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from runcomposer.core.model import DispatchRecord
 
+from .dispatching import remove_live_transport
 from .liveness import owner_alive
 from .redaction import log_failure
 
@@ -50,6 +51,9 @@ def recover(service: Service) -> list[DispatchRecord]:
     for dispatch in service.store.owned_dispatches():
         if dispatch.owner and owner_alive(dispatch.owner, mine):
             continue
+        # The process that would have closed its context is gone: what its
+        # workers left in the live channel goes now.
+        remove_live_transport(service.config, dispatch.run_id, dispatch.dispatch_id)
         owner = dispatch.owner or ""
         if dispatch.state in ("DISPATCHED", "RUNNING"):
             # Decided again inside the ledger's unit: another process
@@ -72,7 +76,27 @@ def recover(service: Service) -> list[DispatchRecord]:
                 stale.append(marked)
         else:
             service.ledger.release(dispatch.dispatch_id, owner=owner)
+    _sweep_live_transport(service, mine)
     return stale
+
+
+def _sweep_live_transport(service: Service, mine: str) -> None:
+    """Remove every worker live channel no living process reads any more:
+    one whose dispatch is gone or owned by nobody (its context closed, or
+    the process was killed after the dispatch was settled) or by a process
+    that is gone."""
+    from .dispatching import _LIVE_DIR
+
+    for root in (service.config.private_dir, service.config.artifact_dir):
+        try:
+            leftovers = sorted(root.glob(f"*/*/{_LIVE_DIR}"))
+        except OSError:
+            continue
+        for directory in leftovers:
+            dispatch = service.store.get_dispatch(directory.parent.name)
+            if dispatch is not None and dispatch.owner and owner_alive(dispatch.owner, mine):
+                continue  # still read by the process that executes it
+            remove_live_transport(service.config, directory.parent.parent.name, directory.parent.name)
 
 
 class PeriodicRecovery:

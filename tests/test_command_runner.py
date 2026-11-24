@@ -735,3 +735,25 @@ class TestSecretsInTheLog:
         assert log.startswith("key is ") and secret not in log
         recorded = [a for a in service.store.artifact_refs(run.id) if a.name.startswith("command.log")]
         assert recorded
+
+    @posix_only
+    def test_the_log_of_a_cancelled_shard_is_blanked_too(self, make_service, monkeypatch, tmp_path):
+        """A stopped shard is not recorded, but its output stays in the work
+        directory: with the secret blanked, as a finished shard's."""
+        secret = "shop-deploy-key-9f3e"
+        monkeypatch.setenv("SHOP_DEPLOY_KEY", secret)
+        printed = tmp_path / "printed"
+        waits = [PY, "-c", (
+            "import os, sys, time, pathlib; print('key is', os.environ['SHOP_KEY'], flush=True); "
+            f"pathlib.Path({str(printed)!r}).write_text('x'); time.sleep(120)"
+        )]
+        service = command_service(make_service, waits, env={"SHOP_KEY": "${env:SHOP_DEPLOY_KEY}"},
+                                  format="runcomposer-verdicts")
+        run_id = compose(service, "Payments-Cards", runner_id=RUNNER)
+        service.dispatch(run_id, RUNNER)
+        wait_until(printed.exists, what="the command to print the key")
+        service.cancel(run_id)
+        run = service.wait(run_id, timeout=60)
+        assert run.state == "CANCELLED" and service.dispatcher.join(timeout=30)
+        log = (shard_dir(service, run) / "command.log").read_text(encoding="utf-8")
+        assert log.startswith("key is ") and secret not in log

@@ -245,7 +245,10 @@ Filter grammar notes (deliberate, not inherited):
   one pattern (`Sprint 12`, a bare `regex:^Cart(V2)?$`: quote them). An
   empty or blank string and a `prefix:`/`regex:` with nothing after it are
   refused (`empty`). A filter nests at most `MAX_FILTER_DEPTH` (40) levels,
-  NOT and groups alike, in the AST and in the text (`filter-too-deep`). The
+  NOT and groups alike, in the AST and in the text (`filter-too-deep`), and
+  holds at most `MAX_FILTER_PATTERNS` (1000) patterns (`invalid-filter`,
+  counted before anything is matched: a filter that lists more tags wants
+  a `prefix:` or `regex:` pattern). The
   web UI's text editor and add field read the same strings with the same
   outcome, a catalog tag spelled like an expression included (`Cart AND
   Checkout` typed is two tags; the add field's list offers that tag as
@@ -1975,8 +1978,21 @@ Rules:
   secret. The links a runner records are stored as given, because a later
   `cancel` finds its executor through them — a runner must not put a secret
   into a link. The blanking covers what runcomposer itself records, logs
-  and answers; a file an executor produced — a log, a report, a result
-  file kept as an artifact — is served as it was written. An environment
+  and answers (what the store holds: the table below). The files under the
+  state directories hold text as follows. As written: a file an executor
+  or a runner produced — a log, a report, a result file kept as an
+  artifact, served as it was written; a pushed bundle while it is taken in,
+  and the copy of a refused one in the quarantine, kept as it was sent;
+  the hand-off documents (the run spec, its items and the marker), which
+  carry what the request composed and no configured option. Blanked:
+  `command.log` of the `command` runner, rewritten with the secrets blanked
+  when its shard ends — finished, failed, timed out or stopped; a server
+  killed mid-shard leaves it as the command wrote it. Not kept: the worker
+  live channel (`.live/` in the dispatch's private directory) is transport
+  — its lines are recorded through the one live write path as they are
+  read, and the directory is removed when the dispatch's context closes,
+  whichever way the dispatch ended, or by restart recovery when the
+  process that held it is gone (tests/test_live_transport.py). An environment
   value is text; an option the plugin's
   constructor annotates as `int`, `float` or `bool` (optionally `| None`)
   receives it converted — `true`/`yes`/`on`/`1` and `false`/`no`/`off`/`0`,
@@ -1984,6 +2000,26 @@ Rules:
   does not convert is a `ConfigError` naming the option and the variable,
   never quoting the value. Plugin *selection* is never read from the environment, and the file
   itself is chosen with `--config` only.
+
+  What the store holds, write by write — every writing member of the
+  `RunStore` protocol (tests/test_store_writes.py holds this table to the
+  protocol):
+
+  | Write | Text it holds | Blanked where, or why stored as given |
+  |---|---|---|
+  | `record_live_verdict` | a live status's message | `Ingestion.record_live`, the only caller |
+  | `record_delivery` | verdict messages | `Ingestion.record`, the one result write path |
+  | `append_event` | event data: log lines, warnings, refusal reasons | `EventBus.emit` (and its observer-failure path) |
+  | `update_dispatch` | `error`, `plan`; links, shards, groups, summary, state | `error` and `plan` in the ledger's moves; the rest identifiers, counts and states (links as given: `cancel` uses them) |
+  | `add_dispatch` | the runner id, the accepted per-run parameters | identifier; parameters are what the request sent |
+  | `create_run` | title, labels, selection | what the request sent (bounded: title, labels, body size) |
+  | `set_spec_document`, `set_dispatch_spec` | the run spec, with accepted per-run parameters | what the request composed; no configured option travels into it |
+  | `set_item_names` | the catalog's item names | catalog data, served by the catalog as it has them |
+  | `seed_durations` | item ids and durations | identifiers and numbers from a history file |
+  | `add_artifact_ref` | an artifact's name and path or URL | identifiers |
+  | `set_ingest_token` | a token's hash | a hash |
+  | `set_run_headline` | state, completion | states |
+  | `delete_run`, `delete_dispatch`, `prune_runs` | — | remove, write no text |
 - **Callables named in configuration.** Wherever a plugin option names a
   callable — a hook, a provider, a check — it takes `"pkg.mod:callable"` or
   `{call: "pkg.mod:callable", with: {…}}`; the `with:` mapping reaches the
@@ -2232,7 +2268,7 @@ with the connection closed. The executor pushes keep their own limit,
 (tests/test_api.py::TestErrorBody). Some errors carry fields of their
 own: `invalid-parameter` the `parameter`, the `problem` (one of
 `PARAMETER_PROBLEMS`: `unknown`, `required`, `type`, `choice`, `pattern`,
-`key-pattern`, `runner`) and, for a mapping, the `key`; `invalid-filter`
+`key-pattern`, `too-long`, `runner`) and, for a mapping, the `key`; `invalid-filter`
 the `path` of the node (keys and indices from the filter's root) and the
 `reason` (the message without where); `filter-syntax` — filter text
 that cannot be read — the `problem` (`empty`, `unexpected-end`,

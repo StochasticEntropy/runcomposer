@@ -41,6 +41,7 @@ import copy
 import json
 import logging
 import mimetypes
+import shutil
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -94,7 +95,21 @@ __all__ = [
 log = logging.getLogger("runcomposer.dispatch")
 
 
+#: Where worker processes leave live status for the tail to pick up: in the
+#: dispatch's private directory (never served), removed when the dispatch's
+#: context closes — the lines are transport, recorded (blanked) through the
+#: one write path as they are read, and nothing to keep once read.
 _LIVE_DIR = ".live"
+
+
+def remove_live_transport(config: Any, run_id: str, dispatch_id: str) -> None:
+    """Remove what is left of a dispatch's worker live channel — in the
+    private directory, and where 0.2 candidates before this one kept it, in
+    the work directory under ``core.artifact_dir``. For a dispatch whose
+    context closed without it (a process that was killed): restart
+    recovery."""
+    for root in (config.private_dir, config.artifact_dir):
+        shutil.rmtree(Path(root) / run_id / dispatch_id / _LIVE_DIR, ignore_errors=True)
 #: How often the store is asked whether another process requested a cancel.
 _CANCEL_POLL_S = 0.25
 #: How long settling a cancelled dispatch waits for the runner's cancel().
@@ -385,7 +400,7 @@ class _Context:
 
     def live_channel(self) -> FileLiveChannel:
         with self._lock:
-            directory = self.workdir / _LIVE_DIR
+            directory = self.private_dir / _LIVE_DIR
             directory.mkdir(exist_ok=True)
             if self._tail is None:
                 self._tail = LiveTail(directory)
@@ -552,7 +567,13 @@ class _Context:
         self._tail_stop.set()
         if self._tail_thread is not None:
             self._tail_thread.join(timeout=5)
+        # The last lines — written by workers that have ended by now — are
+        # read and recorded first; then the transport goes: what a worker
+        # wrote as given does not stay on this machine's disk.
         self._drain_live()
+        if self._tail is not None:
+            with self._live_lock:
+                shutil.rmtree(self._tail.directory, ignore_errors=True)
 
 
 class Outcome:

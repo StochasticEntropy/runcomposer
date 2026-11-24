@@ -206,11 +206,18 @@ class CommandRunner(RunnerBase):
                 if problem:
                     failures.append(problem)
 
+        def ended(payload: WorkerPayload, _pid: int, outcome: WorkerOutcome) -> None:
+            # A stopped shard never reaches `finished`: its output is not
+            # recorded, but it stays in the work directory — blanked too.
+            if outcome.status == "stopped":
+                _blank_secrets(ctx, Path(payload.out_dir) / "command.log")
+
         supervise_workers(
             payloads,
             _run_command,
             max_workers=self.max_parallel,
             on_done=finished,
+            on_end=ended,
             cancelled=lambda: ctx.cancelled,
             timeout_s=self.timeout_s,
         )

@@ -905,15 +905,21 @@ class TestLiveStatus:
     def test_without_the_listener_there_are_only_final_results(self, make_service, tmp_path):
         root = shop_suite(tmp_path, FIVE_TESTS, name="cart.robot")
         service = pool_service(make_service, root, live_status=False)
+        reported: list[str] = []
+        record_live = service.ingestion.record_live
+
+        def counting(run_id: str, dispatch_id: str, status: Any) -> None:
+            reported.append(status.item_id)
+            record_live(run_id, dispatch_id, status)
+
+        service.ingestion.record_live = counting  # type: ignore[method-assign]
         run = execute(service, "Cart")
         assert run.state == "COMPLETE"
         assert len(service.store.verdicts_for(run.id)) == 5
         # The channel carries the workers' log lines either way; what the
-        # option turns off is the per-test status.
+        # option turns off is the per-test status: none was reported.
         assert service.store.live_verdicts(run.id, run.latest_dispatch.dispatch_id) == []
-        lines = [line for file in (workdir(service, run) / ".live").glob("*.jsonl")
-                 for line in file.read_text(encoding="utf-8").splitlines()]
-        assert all('"log"' in line for line in lines)
+        assert reported == []
 
     def test_the_listener_reports_through_the_file_live_channel(self, tmp_path):
         """The listener needs no store: it writes to the picklable channel the
@@ -1263,13 +1269,23 @@ class TestHooksAndListeners:
         # Robot reads ``;`` between a listener's arguments too, and it is the one that
         # leaves a Windows path (``C:\\…``) whole.
         service = pool_service(make_service, root, listener=f"{listener_file};{seen}")
+        reported: list[str] = []
+        record_live = service.ingestion.record_live
+
+        def counting(run_id: str, dispatch_id: str, status: Any) -> None:
+            reported.append(status.item_id)
+            record_live(run_id, dispatch_id, status)
+
+        service.ingestion.record_live = counting  # type: ignore[method-assign]
         run = execute(service, "Cart")
         assert run.state == "COMPLETE"
         assert sorted(heard.read_text(encoding="utf-8") for heard in seen.iterdir()) == sorted(
             v.item_id.rsplit(".", 1)[1] for v in service.store.verdicts_for(run.id)
         )
-        # …next to runcomposer's own listener, not instead of it.
-        assert (workdir(service, run) / ".live").is_dir()
+        # …next to runcomposer's own listener, not instead of it: its live
+        # status arrived (and its transport is gone with the dispatch).
+        assert set(reported) == {v.item_id for v in service.store.verdicts_for(run.id)}
+        assert not (workdir(service, run) / ".live").exists()
 
 
 # -- the configured parser is honoured ------------------------------------------------
