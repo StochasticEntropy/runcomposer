@@ -556,7 +556,6 @@ certificates
 chance
 changing
 channel
-chapters
 character
 characters
 charge
@@ -1435,7 +1434,6 @@ freed
 frees
 freeze
 freezes
-freezing
 freshly
 friends
 friere

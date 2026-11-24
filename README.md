@@ -18,11 +18,13 @@ how it works, in one page.
 
 - **[The 69-second teaser](https://stochasticentropy.github.io/runcomposer/#watch)** —
   narrated: why precise selection is awkward, and what changes when the
-  selection becomes a document.
-- **[The 6-minute explainer](https://stochasticentropy.github.io/runcomposer/#watch)** —
-  seven chapters: the catalog, composing a selection, freezing it into a spec,
-  the document itself, the three ways to execute it, results returning from any
-  transport, and rerunning what failed.
+  selection becomes a document. Made with version 0.1; it shows the idea, not
+  the interface, and what it says still holds.
+- **[Someone using it](https://stochasticentropy.github.io/runcomposer/#watch)** —
+  four and a half minutes over the shoulder: picking tonight's tests area by
+  area, watching verdicts arrive, and rerunning the one test that failed.
+  Recorded with version 0.1 — 0.2 rebuilt the interface, so the steps are
+  still there but look different; the page says which ones moved.
 
 Version 0.2.0 — a reworked backbone: asynchronous dispatch with an observable
 lifecycle, one runner contract every executor implements, a conformance kit
