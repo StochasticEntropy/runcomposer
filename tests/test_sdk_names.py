@@ -61,3 +61,25 @@ def test_the_stand_in_exports_exactly_its_frozen_names():
 def test_the_guide_points_at_the_index():
     guide = (REPO / "docs" / "connectors.md").read_text(encoding="utf-8")
     assert "sdk-names.md" in guide
+
+
+def test_every_count_of_the_store_protocol_in_the_docs_is_the_codes():
+    """Where a document says how many members the ``RunStore`` protocol has,
+    the number is ``contract_members(RunStore)``'s — so it cannot drift."""
+    import re
+
+    from runcomposer.sdk import RunStore, contract_members
+
+    actual = len(contract_members(RunStore))
+    counted = re.compile(
+        r"RunStore`?\s+protocol[^.\n]{0,40}?\b(\d+)\b|protocol has (\d+) members|(\d+) members of the `?RunStore",
+        re.I,
+    )
+    found = []
+    for name in ("README.md", "ADOPTING.md", "DESIGN.md", "CHANGELOG.md", "CONTRIBUTING.md", "docs/connectors.md"):
+        path = REPO / name
+        if path.is_file():
+            for match in counted.finditer(path.read_text(encoding="utf-8")):
+                found.append((name, int(next(group for group in match.groups() if group))))
+    assert found, "the guide states the count"
+    assert [entry for entry in found if entry[1] != actual] == []

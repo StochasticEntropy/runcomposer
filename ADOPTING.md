@@ -244,7 +244,19 @@ changed. With a token the catalog is reloaded only when needed; with the
 (`POST /api/v1/catalog/reload`).
 
 Ships: `manifest` (JSON/YAML, only `id` + `tags` required), `robotframework`
-(walks `.robot` files, ids are longnames).
+(walks `.robot` files, ids are longnames). An item of a manifest may also
+carry `name` (what the UI, the run and its results call it — the id when
+absent), `hierarchy` (a list of the suites it sits in), `meta` (anything
+your runner reads from `Item.meta`) and `aliases` (other native names its
+results may use for it; one that collides with an id or another alias is
+refused at load). Only `id` and `tags` count for drift: renaming an item is
+none (`tests/test_manifest_fields.py`):
+
+```json
+{"items": [{"id": "shop.cart.add", "tags": ["Cart", "Smoke"],
+            "name": "Add an item to the cart", "hierarchy": ["Shop", "Cart"],
+            "meta": {"owner": "team-checkout"}, "aliases": ["Cart.Add Item"]}]}
+```
 
 ### `Runner` — how a spec gets executed
 

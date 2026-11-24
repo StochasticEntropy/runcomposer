@@ -909,7 +909,8 @@ ui:                            # selections people start from
     `:-default` is written in the file and is no secret.
   - *What is blanked.* Configured options never travel into a spec or an
     API response; where your plugin quotes one anyway, secrets are blanked
-    out of free text — messages, refusal reasons, errors, plan text and
+    out of free text — messages (a result's, a live status's from
+    `ctx.live` or a `/live` push, a log line's), refusal reasons, errors, plan text and
     notes, health details, error documents, log lines — and out of the
     string values of your health and plan `data`. Never out of identifiers:
     shard, group and runner names, item, run and dispatch ids, states, event
@@ -1850,7 +1851,13 @@ whatever executes inside the worker:
   worker's process group gets `SIGTERM`, so what the worker started ends
   too; after `grace_s` the group is terminated, after another `grace_s`
   killed, and whatever is left of it is killed before the worker is
-  reaped. Cancelled and never-started shards are not reported. On Windows
+  reaped. Cancelled and never-started shards are not reported: a stopped
+  shard never reaches `on_done`, so nothing partial can be delivered or
+  recorded from there. `on_end(payload, pid, outcome)` is told of it
+  (`outcome.status == "stopped"`), and `payload.out_dir` still holds what
+  the worker left — record from `on_end` what you want kept of a stopped
+  shard, a report it wrote, say, with `ctx.add_artifact`
+  (`tests/test_worker_supervisor.py::TestWhichProcesses::test_a_stopped_worker_is_told_to_on_end_but_not_to_on_done`). On Windows
   each worker runs in a job object of its own (`ProcessJob`), which holds
   everything it starts: `stop()` and `STOP_FILE` ask as everywhere, after
   `grace_s` the job is terminated — the worker and what it started,
@@ -1944,6 +1951,100 @@ real deployment and is cancelled there while a check hangs, keeping the
 shard that was delivered
 (`tests/test_worker_supervisor.py::TestAComposedRunner`); the supervisor on
 its own is pinned by the rest of that file.
+
+#### A file named by someone else
+
+A runner that keeps files under names it did not choose — an archived
+build file's name, the last segment of a URL, an item id made into a file
+name — must make sure each name is one file in its directory, on the
+machine that keeps it. The SDK has four helpers for that; which one depends
+on whose file system has to keep the name:
+
+- `local_name_problem(name)` — why *this* machine cannot keep `name` as one
+  file of a directory, or `None`: no separator of either kind, no `.` or
+  `..`, no drive, no control character, not too long — and on Windows also
+  no character or device name Windows refuses (`a:b.xml`, `nul.xml`) and no
+  trailing dot or space. For a name you store on the server you run on.
+- `child_path(directory, name)` — `directory / name`, or `ValueError` when
+  `local_name_problem` finds anything. Decided from the name alone; nothing
+  is opened or resolved.
+- `portable_name_problem(name)` — strict, and the same answer on every
+  platform: the Windows rules everywhere, and no invisible format
+  character (a zero-width space makes two names that read alike). For names
+  you author that must work on any executor.
+- `name_collision_key(name)` — the key under which two names may be one
+  file where case and Unicode normalization do not count (Windows, a
+  default macOS volume): `Results.json` and `results.json` share one. Use it
+  to say *beforehand* which names would clash. It cannot see everything a
+  file system does — Windows' 8.3 short names (`PROGRA~1`), NTFS's own case
+  table — so it is a warning, not the decision.
+
+The decision is the file system's, and the pattern is: check, join with
+`child_path`, create the file exclusively, so that a second name the file
+system keeps as the first is refused instead of overwriting it:
+
+```python
+from pathlib import Path
+
+from runcomposer.sdk import child_path
+
+
+def keep(directory: Path, name: str, content: bytes) -> Path:
+    """One downloaded file, kept under the name it came with."""
+    target = child_path(directory, name)   # ValueError: not one file name here
+    with open(target, "xb") as file:        # FileExistsError: that file is taken
+        file.write(content)
+    return target
+```
+
+A `ValueError` or `FileExistsError` from it fails what you are keeping the
+file for — the shard naming it, with that message — rather than writing
+somewhere else or over another file. This is how the `jenkins` runner keeps
+a build's archived files (`tests/test_guide_files_and_jobs.py`).
+
+#### A process you start yourself
+
+What a supervised worker starts is stopped with it — through its process
+group, and on Windows through the job object the supervisor puts each
+worker into — so a runner built on `supervise_workers` (or the Robot
+toolkit's `supervise`) needs nothing more. A process your plugin starts
+*itself*, outside a worker, is its own to stop, with everything it starts:
+
+- on Windows, `ProcessJob.start(args, kill_on_close=True, **popen)` starts
+  it suspended, puts it into a job object of its own, then lets it run —
+  nothing it starts can escape the job. `job.terminate()` ends it and what
+  it started; `job.close()` closes your handle, and with
+  `kill_on_close=True` the last handle closing ends them too, so the job
+  dies with your process. It returns `(process, job)`; wait on the process
+  as usual. `job.add(pid)` puts a process you started otherwise into the
+  job, `job.share_with(pid)` hands a process a handle of its own, and
+  `ProcessJob.adopt(handle)` is the job behind a handle you were given.
+  Where Windows refuses (a process already in a job that allows no other),
+  the process runs without one and that is said once in the log.
+- elsewhere a job object does not exist, and asking for one is an `OSError`
+  that says so: start the process with `start_new_session=True` and stop it
+  and what it started with `os.killpg(process.pid, signal.SIGTERM)` — its
+  process group.
+
+```python
+import os
+import signal
+import subprocess
+
+from runcomposer.sdk import ProcessJob
+
+
+def start_tool(args: list[str]) -> tuple[subprocess.Popen, object]:
+    """Start a helper process; the second value stops it and what it started."""
+    if os.name == "nt":
+        process, job = ProcessJob.start(args, kill_on_close=True)
+        return process, job.terminate
+    process = subprocess.Popen(args, start_new_session=True)
+    return process, lambda: os.killpg(process.pid, signal.SIGTERM)
+```
+
+(`tests/test_guide_files_and_jobs.py` runs this on the platform it is on;
+the Windows jobs of CI run the `ProcessJob` half.)
 
 ---
 

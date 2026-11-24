@@ -130,7 +130,8 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
   the commits your change adds to rule 8 (`commit-messages`).
 - New behaviour comes with a test. Bug fixes come with the test that would have
   caught it.
-- Update `CHANGELOG.md` under an `## Unreleased` heading.
+- Update `CHANGELOG.md` in the section of the next version — headed
+  `## <version> — unreleased` until it is released.
 - Docs that describe behaviour (`README.md`, `ADOPTING.md`, `DESIGN.md`, the
   homepage) get updated in the same PR as the behaviour.
 
@@ -138,6 +139,27 @@ The homepage is two hand-written pages, `docs/index.html` and its German
 counterpart `docs/index.de.html`. A change to one goes into the other in the
 same PR, and every statement, command and sample on them is held to the same
 rule as the other documents: it is true of the version on `main`.
+
+## Releasing
+
+A release is the version in `src/runcomposer/__init__.py`, its section in
+`CHANGELOG.md`, and a tag:
+
+1. In `CHANGELOG.md`, change the heading `## <version> — unreleased` to
+   `## <version> — <YYYY-MM-DD>`, the day of the release, and commit that.
+2. Tag that commit `v<version>` (`git tag v0.2.0`) and push the tag.
+
+The tag starts `.github/workflows/release.yml`: it refuses a tag that is
+not `v` + `__version__`; runs the lint, the type check and the suite;
+builds the wheel and the sdist once; installs that wheel into a clean
+environment and runs the demo, an export round trip and `serve` with it;
+then hands out those same files — a GitHub release whose notes are the
+version's `CHANGELOG.md` section (from its `## <version>` heading to the
+next `## `), with the single-file `runcomposer_exec.py` as an asset — and, while the
+repository variable `PYPI_PUBLISH` is `true`, the upload to PyPI. A
+version on PyPI cannot be replaced: what is published is permanent
+(`tests/test_release_notes.py` runs the workflow's extraction on this
+file).
 
 ## Good first contributions
 
