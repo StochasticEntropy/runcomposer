@@ -803,11 +803,17 @@ class JenkinsRunner(RunnerBase):
     def cancel(self, ctx: DispatchContext) -> None:
         """Stop the build behind this dispatch: the build itself when its URL
         is known, else whatever the queue item is by now — a running build
-        (also when Jenkins has forgotten the queue item) or a queued one."""
+        (also when Jenkins has forgotten the queue item) or a queued one.
+        A build is sent one stop, never a second — not by a retry, and not
+        when the take-back of a dispatch cancelled during its trigger or
+        before ``follow`` started reached it first: a second stop would
+        interrupt the job's own clean-up steps (``JenkinsClient.stop_build``)."""
         build_url, queue_url = ctx.links.get("build"), ctx.links.get("queue")
         if build_url:
-            self.client.stop_build(build_url)
-            ctx.log(f"jenkins: stop requested for {build_url}")
+            if self.client.stop_build(build_url):
+                ctx.log(f"jenkins: stop requested for {build_url}")
+            else:
+                ctx.log(f"jenkins: stop already requested for {build_url} — not sent again")
             return
         if not queue_url:
             ctx.log("jenkins: no queue location recorded — the build cannot be stopped from here",

@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from runcomposer.plugins.jenkins import JenkinsRunner
 from runcomposer.sdk import (
     ConfigError,
     DispatchCancelled,
@@ -52,6 +54,7 @@ from .test_jenkins import (
     RUNNER,
     Build,
     FakeJenkins,
+    closed_port,
     dispatch,
     events_of,
     jenkins_service,
@@ -555,7 +558,150 @@ class TestCancelBeyondTheQueueItem:
         assert run.state == "CANCELLED" and run.latest_dispatch.shards == ()
         wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build")
         assert jenkins.builds[(JOB, 1)].stop.is_set() or jenkins.queue[1].cancelled
+        assert len(jenkins.posts("/stop")) <= 1, "one stop, whoever reached the build"
         assert any("cancelled during the trigger" in e["message"] for e in events_of(service, run_id, "log"))
+
+
+#: What the runner below needs to cancel its own dispatch at the chosen moment.
+LATE_CANCEL: dict[str, Any] = {}
+
+
+class LateCancelRunner(JenkinsRunner):
+    """The `jenkins` runner, with a cancel landing in the one window where
+    two parts of it could each stop the build: after the hand-off recorded
+    the queue link (so the runner's ``cancel`` stops the build by it), and
+    before ``follow``'s first check (which takes a cancelled build back)."""
+
+    def _poll_and_deliver(self, ctx: DispatchContext, queue_url: str | None, shards: list[str]) -> None:
+        fake: FakeJenkins = LATE_CANCEL["jenkins"]
+        wait_until(lambda: (JOB, 1) in fake.builds, what="the build to run")
+        LATE_CANCEL["service"].cancel(ctx.run_id)  # the runner's cancel runs here
+        super()._poll_and_deliver(ctx, queue_url, shards)
+
+
+class TestOneStopPerBuild:
+    """A second stop ends what a job does after the first: its own clean-up
+    (a pipeline's ``post`` steps). So a build is sent one stop — never a
+    second, neither by the client's retry nor by a second way to the same
+    build."""
+
+    def running_build(self, jenkins: FakeJenkins, client: JenkinsClient) -> tuple[str, str]:
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        queue_url = client.trigger(JOB, {})
+        assert queue_url is not None
+        return queue_url, client.wait_for_build(JOB, queue_url, timeout_s=5, poll_interval_s=0.01)
+
+    def test_a_stop_that_timed_out_after_it_arrived_is_not_sent_again(self, jenkins):
+        client = JenkinsClient(jenkins.url, retries=3, retry_backoff_s=0.01, request_timeout_s=0.3)
+        _, build_url = self.running_build(jenkins, client)
+        stalled = jenkins.stalls["/stop"] = threading.Event()
+        with pytest.raises(JenkinsError, match="timed out"):
+            client.stop_build(build_url)
+        stalled.set()
+        wait_until(lambda: jenkins.builds[(JOB, 1)].stop.is_set(), what="the stop to take effect")
+        assert len(jenkins.posts("/stop")) == 1
+        assert client.stop_build(build_url) is False, "nor by a later call"
+        assert len(jenkins.posts("/stop")) == 1
+
+    def test_a_refused_connection_is_still_retried(self, jenkins, monkeypatch):
+        client = client_for(jenkins, retries=2)
+        _, build_url = self.running_build(jenkins, client)
+        send = client._opener.open
+        refused: list[str] = []
+
+        def refuse_the_first_stop(request: Any, timeout: float | None = None) -> Any:
+            if request.full_url.endswith("/stop") and not refused:
+                refused.append(request.full_url)
+                raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+            return send(request, timeout=timeout)
+
+        monkeypatch.setattr(client._opener, "open", refuse_the_first_stop)
+        assert client.stop_build(build_url) is True
+        assert refused == [f"{build_url}/stop"] and len(jenkins.posts("/stop")) == 1
+        assert jenkins.builds[(JOB, 1)].stop.is_set()
+
+    def test_a_server_that_refuses_every_connection_is_tried_as_often_as_configured(self):
+        client = JenkinsClient(f"http://127.0.0.1:{closed_port()}", retries=2, retry_backoff_s=0.01)
+        with pytest.raises(JenkinsError, match=r"after 3 attempt\(s\)"):
+            client.stop_build(f"{client.base_url}/job/{JOB}/1")
+
+    @pytest.mark.parametrize(("status", "sent"), [(503, 2), (429, 2), (502, 1), (504, 1)])
+    def test_only_an_answer_that_says_it_was_not_acted_on_is_retried(self, jenkins, status, sent):
+        """429 and 503 say the server did not act on the request; a gateway's
+        502 or 504 does not — the server behind it may have stopped the build."""
+        client = client_for(jenkins, retries=3)
+        _, build_url = self.running_build(jenkins, client)
+        jenkins.faults.append(("POST", "/stop", status))
+        if sent == 1:
+            with pytest.raises(JenkinsError) as caught:
+                client.stop_build(build_url)
+            assert caught.value.status == status
+        else:
+            assert client.stop_build(build_url) is True
+        assert len(jenkins.posts("/stop")) == sent
+
+    def test_follow_does_not_stop_a_build_its_runner_s_cancel_has_stopped(self, jenkins):
+        client = client_for(jenkins)
+        queue_url, build_url = self.running_build(jenkins, client)
+        assert client.cancel(JOB, queue_url) == f"stop requested for {build_url}"  # a runner's cancel
+
+        def cancelled() -> None:
+            raise DispatchCancelled("cancelled before the first check")
+
+        with pytest.raises(DispatchCancelled):
+            client.follow(JOB, queue_url, timeout_s=5, check=cancelled)  # its take-back
+        assert len(jenkins.posts("/stop")) == 1
+        assert client.cancel(JOB, queue_url) == f"stop already requested for {build_url} — not sent again"
+        assert len(jenkins.posts("/stop")) == 1
+
+    def test_a_cancel_between_the_hand_off_and_follow_sends_one_stop(self, make_service, jenkins):
+        """The runner's ``cancel`` stops the running build by the queue link,
+        and ``follow``'s first check then sees the cancelled dispatch and
+        takes the build back: two ways to one build, one stop."""
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        service = jenkins_service(
+            make_service, jenkins, module="tests.test_jenkins_toolkit:LateCancelRunner", **POLL
+        )
+        LATE_CANCEL.update(jenkins=jenkins, service=service)
+        try:
+            run_id = compose(service, "Payments-Cards", runner_id=RUNNER)
+            service.dispatch(run_id, RUNNER)
+            assert service.wait(run_id, timeout=30).state == "CANCELLED"
+        finally:
+            LATE_CANCEL.clear()
+        assert [s.path for s in jenkins.posts("/stop")] == [f"/job/{JOB}/1/stop"]
+        logs = [e["message"] for e in events_of(service, run_id, "log")]
+        assert f"jenkins: stop requested for {jenkins.url}/job/{JOB}/1" in logs
+        assert jenkins.gets(f"/job/{JOB}/1/api/json") == [], "follow took it back at its first check"
+
+    def test_two_cancels_at_once_send_one_stop(self, make_service, jenkins):
+        """Two cancel requests for a dispatch that awaits results — a double
+        click — both reach the runner's ``cancel`` before either has closed
+        the dispatch."""
+        jenkins.add_job(JOB, lambda build: build.stop.wait(30))
+        service = jenkins_service(make_service, jenkins)
+        run_id, _ = dispatch(service)
+        wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build to start")
+        stalled = jenkins.stalls["/stop"] = threading.Event()
+        answers: list[Any] = []
+
+        def first_cancel() -> None:
+            try:
+                answers.append(service.cancel(run_id))
+            except Exception as exc:
+                answers.append(exc)
+
+        first = threading.Thread(target=first_cancel)
+        first.start()
+        try:
+            wait_until(lambda: jenkins.posts("/stop"), what="the first stop to be in flight")
+            assert service.cancel(run_id).state == "CANCELLED"
+        finally:
+            stalled.set()
+            first.join(30)
+        assert len(jenkins.posts("/stop")) == 1
+        assert service.require_run(run_id).latest_dispatch.state == "CANCELLED"
+        assert any("not sent again" in e["message"] for e in events_of(service, run_id, "log"))
 
 
 # -- 3. the same, composed from the client ----------------------------------------------

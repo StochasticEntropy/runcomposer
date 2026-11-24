@@ -757,6 +757,21 @@ not exist or worked differently:
 
 ### Fixed
 
+- A Jenkins build could be sent a second stop, which ends what the job
+  runs after the first one — its own clean-up, a pipeline's `post` steps.
+  `JenkinsClient.stop_build` repeated a stop that timed out after it had
+  arrived (its bounded retry), and a cancel that came after the `jenkins`
+  runner had recorded the queue link but before `follow`'s first check was
+  answered twice: by the runner's `cancel`, by the link, and by `follow`
+  taking the build back; two cancels at once also sent two. A stop is now
+  sent again only when it provably did not take effect (a refused
+  connection, a `429` or `503` answer), and a client sends one stop per
+  build whoever asks: `stop_build` returns `False` and sends nothing for a
+  build it has stopped before, and `cancel(job, queue_url)` says so.
+  A trigger answered `502` or `504` by a gateway is no longer sent again
+  either: the server behind it may have queued the build
+  (`tests/test_jenkins_toolkit.py::TestOneStopPerBuild`,
+  `tests/test_jenkins.py::TestTrigger`).
 - Several processes opening a sqlite store that did not exist yet at the
   same moment — two servers, a server and a CLI command — could fail with
   `database is locked`: switching the new file to WAL does not wait on the

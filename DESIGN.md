@@ -1218,7 +1218,20 @@ build, also when Jenkins has already forgotten the queue item (it does so a
 few minutes after the build started; the build is then found by the queue
 id it records), or a queued item, which is cancelled. A cancel that arrives
 while the trigger is under way is handled by the runner itself: it takes the
-build back and the dispatch ends `CANCELLED`. A rejected trigger is a
+build back and the dispatch ends `CANCELLED`. A build is sent **one stop,
+never a second**: a second stop that arrives while the job runs its own
+clean-up (a pipeline's `post` steps) ends that clean-up too. So the stop is
+retried only when it provably did not take effect (a refused connection, a
+`429` or `503` answer — not a timeout, a dropped connection or a gateway's
+`502`/`504`), and the client sends one stop per build whoever asks — the
+runner's `cancel` and the take-back of `follow`, two cancels at once
+(`JenkinsClient.stop_build`; tests/test_jenkins_toolkit.py,
+`TestOneStopPerBuild`). A stop Jenkins loses — one that arrives while a
+pipeline is entering its `node` step can leave the build running — is not
+made good by another: the dispatch is `CANCELLED` all the same, results of
+that build are refused (`409`, `dispatch-cancelled`) and the build runs to
+its end; an execution that must stop asks runcomposer itself (§5, the
+dispatch's state). A rejected trigger is a
 refusal; a build that never finishes is a `FAILED` dispatch, and so, with
 `poll`, is a queue item somebody cancelled in Jenkins before it started.
 

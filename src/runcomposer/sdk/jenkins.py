@@ -8,15 +8,16 @@ covers what a runner needs from a Jenkins server and nothing else:
   the crumb request and the POST using it share cookies; an expired crumb is
   fetched again once;
 - **bounded retry** on transient errors (429, 502, 503, 504, a refused or
-  timed-out connection), with the one exception a trigger needs: it is
-  repeated only when the request provably did not take effect;
+  timed-out connection), with the exception a trigger and a stop need:
+  they are repeated only when the request provably did not take effect;
 - **TLS** verification with an optional CA bundle;
 - **trigger → queue item → build**: the build is identified through the queue
   item the trigger returns — never by "the latest build of the job", which
   may be somebody else's — and, once Jenkins has forgotten the queue item (it
   does a few minutes after the build started), by the queue id the build
   itself records;
-- **stop / cancel** of a build or a queued item, and ``follow`` — a build
+- **stop / cancel** of a build or a queued item — a build is sent one stop,
+  never a second (:meth:`JenkinsClient.stop_build`) —, and ``follow`` — a build
   from queue item to its end that is taken back when the dispatch is
   cancelled meanwhile, and that can ride out the server being away for a
   while (``outage_tolerance_s``: a restart, a proxy that drops connections);
@@ -50,6 +51,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +69,12 @@ __all__ = [
 ]
 
 _TRANSIENT = (429, 502, 503, 504)
+#: The transient answers that say the request was not acted on: too many
+#: requests, the server not ready. A gateway's 502 or 504 does not — the
+#: server behind it may have received the request.
+_NOT_ACTED_ON = (429, 503)
+#: How many builds a client remembers having sent a stop to.
+_STOPS_KEPT = 4096
 
 
 class JenkinsError(RuntimeError):
@@ -191,6 +199,9 @@ class JenkinsClient:
         self._crumb: tuple[str, str] | None = None
         self._crumb_known = False
         self._lock = threading.Lock()
+        #: The builds a stop was sent to (see :meth:`stop_build`), oldest first.
+        self._stopped: OrderedDict[str, None] = OrderedDict()
+        self._stops_lock = threading.Lock()
 
     # -- addresses ---------------------------------------------------------------------
 
@@ -500,7 +511,10 @@ class JenkinsClient:
         build would run on for a cancelled dispatch. After that it is called
         before every probe, where a cancellation has already been acted on
         by the runner's ``cancel`` (the link was there), and once more when
-        the build is over. A timeout leaves the build alone and raises
+        the build is over. The take-back stops a build through
+        :meth:`stop_build`: when the runner's ``cancel`` reached the same
+        build first — the cancel came after the link was recorded but before
+        this first check — no second stop is sent. A timeout leaves the build alone and raises
         :class:`JenkinsTimeout`; ``timeout_s`` applies to each of the two
         waits (to start, to finish). A queue item cancelled in Jenkins raises
         :class:`JenkinsQueueCancelled`.
@@ -543,13 +557,44 @@ class JenkinsClient:
 
     # -- stopping ------------------------------------------------------------------------------
 
-    def stop_build(self, build_url: str) -> None:
-        """Ask a running build to stop (it ends ``ABORTED``)."""
-        with self.request("POST", f"{build_url.rstrip('/')}/stop", data=b""):
+    def stop_build(self, build_url: str) -> bool:
+        """Ask a running build to stop (it ends ``ABORTED``) — once: returns
+        ``True`` when the stop request was sent, ``False`` when this client
+        had sent one to the build before and sends none again.
+
+        A second stop is not harmless. Jenkins answers the first by ending
+        the build's steps and running the job's own clean-up — a pipeline's
+        ``post`` steps; a second stop that arrives meanwhile ends the
+        clean-up as well, so it never finishes. So the stop is never
+        repeated: not by the retry (only a request that provably did not
+        take effect is sent again — a refused connection, a 429 or 503
+        answer; a timeout, a dropped connection or a gateway's 502 or 504
+        may mean it arrived), and not by a second caller — two
+        ways to one build in one process (a runner's ``cancel`` and
+        :meth:`follow` taking the build back, two cancels at once) send one
+        stop between them. A build counts as stopped from the moment its
+        stop request is sent, whether or not it was answered.
+
+        A stop can still be lost by the server: one that arrives while a
+        pipeline is entering a ``node`` step may leave the build running.
+        That is not a reason to send another — an execution that must not
+        run on after a cancel asks runcomposer whether its dispatch was
+        cancelled (``RemoteLiveChannel.cancel_requested``)."""
+        url = build_url.rstrip("/")
+        with self._stops_lock:
+            if url in self._stopped:
+                return False
+            self._stopped[url] = None
+            while len(self._stopped) > _STOPS_KEPT:
+                self._stopped.popitem(last=False)
+        with self.request("POST", f"{url}/stop", data=b"", retry_unsent_only=True):
             pass
+        return True
 
     def cancel_queue_item(self, queue_id: int) -> None:
-        """Take a build that has not started out of the queue."""
+        """Take a build that has not started out of the queue. With the
+        client's bounded retry: a cancel that reaches the queue twice is
+        harmless — the item is gone, or already cancelled."""
         with self.request(
             "POST", f"{self.base_url}/queue/cancelItem?id={int(queue_id)}", data=b""
         ):
@@ -559,15 +604,17 @@ class JenkinsClient:
         """Stop whatever the queue item is by now: the running build if it
         became one — found through the queue item, or by its queue id once
         the item expired — else the queued item. Returns what was done, for
-        a log line."""
+        a log line. A build is stopped through :meth:`stop_build`, so never
+        twice; taking an item out of the queue twice is harmless."""
         build_url = None
         try:
             build_url = self.locate_build(job, queue_url)
         except JenkinsError:
             pass  # a cancelled item, an unreachable server: try the queue below
         if build_url:
-            self.stop_build(build_url)
-            return f"stop requested for {build_url}"
+            if self.stop_build(build_url):
+                return f"stop requested for {build_url}"
+            return f"stop already requested for {build_url} — not sent again"
         queue_id = queue_id_of(queue_url)
         if queue_id is None:
             raise JenkinsError(f"{queue_url} is not a queue item URL — nothing to cancel")
@@ -659,7 +706,8 @@ class JenkinsClient:
         (use it as a context manager). ``retry_unsent_only`` is for requests
         that must not happen twice: they are repeated only when they provably
         did not take effect (connection refused, or an explicit "try later"
-        status) — a timeout after sending could mean it did."""
+        status: 429, 503) — a timeout after sending, a dropped connection or
+        a gateway's 502 or 504 could mean it did."""
         attempts = (self.retries if retry else 0) + 1
         last: Exception | None = None
         status: int | None = None
@@ -677,7 +725,9 @@ class JenkinsClient:
                         self._crumb_known = False
                     last, status = exc, exc.code
                     continue
-                if exc.code not in _TRANSIENT:
+                if exc.code not in _TRANSIENT or (
+                    retry_unsent_only and exc.code not in _NOT_ACTED_ON
+                ):
                     raise JenkinsError(
                         f"{exc.code} {exc.reason} for {method} {url}", status=exc.code
                     ) from None

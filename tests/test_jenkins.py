@@ -863,6 +863,17 @@ class TestTrigger:
         assert len(jenkins.triggers()) == 1
         assert service.require_run(run_id).dispatches == ()
 
+    @pytest.mark.parametrize("status", [502, 504])
+    def test_a_gateway_s_error_answer_is_not_sent_again(self, make_service, jenkins, status):
+        """A proxy's 502 or 504 does not say that the server behind it did
+        not queue the build: the trigger is not repeated."""
+        jenkins.faults.append(("POST", "/buildWithParameters", status))
+        service = jenkins_service(make_service, jenkins, retries=3)
+        run_id, outcome = dispatch(service)
+        assert "Jenkins trigger failed" in outcome.refusal and str(status) in outcome.refusal
+        assert len(jenkins.triggers()) == 1
+        assert service.require_run(run_id).dispatches == ()
+
     def test_a_server_error_is_a_refusal_with_its_status(self, make_service, jenkins):
         jenkins.faults.append(("POST", "/buildWithParameters", 500))
         service = jenkins_service(make_service, jenkins)
@@ -965,6 +976,31 @@ class TestCancel:
         assert any(
             "runner cancel failed" in w["message"] for w in events_of(service, run_id, "warning")
         )
+
+    def test_a_build_whose_stop_was_lost_runs_on_and_its_results_are_refused(self, live_server, jenkins, tmp_path):
+        """A stop Jenkins loses — the job here never looks at it — leaves the
+        build running. The run is cancelled in runcomposer all the same, no
+        second stop is sent, the build runs to its end, and the results it
+        pushes then are not taken in."""
+        pushes: list = []
+        release = threading.Event()
+        jenkins.add_job(JOB, consumer_job(tmp_path / "ws", pushes, release=release))
+        status, body = live_server.post(
+            "/api/v1/runs", {"selection": {"tag_filter": "Payments-Cards"}, "dispatch": {"runner": RUNNER}}
+        )
+        assert status == 201, body
+        run_id = body["run"]["id"]
+        wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build to start")
+        status, cancelled = live_server.post(f"/api/v1/runs/{run_id}/cancel", {})
+        assert status == 202 and cancelled["dispatch"]["state"] == "CANCELLED", cancelled
+        release.set()  # the build goes on as if no stop had come
+        wait_until(lambda: pushes, what="the build to push its results")
+        (status, refusal), = pushes
+        assert status == 409 and refusal["code"] == "dispatch-cancelled", refusal
+        run = live_server.get(f"/api/v1/runs/{run_id}")
+        assert run["state"] == "CANCELLED"
+        assert {v["status"] for v in run["verdicts"]} == {"MISSING"}, "nothing of the build was taken in"
+        assert [s.path for s in jenkins.posts("/stop")] == [f"/job/{JOB}/1/stop"]
 
 
 # -- health --------------------------------------------------------------------------------
