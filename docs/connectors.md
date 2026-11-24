@@ -221,7 +221,7 @@ A capability of your own is any other string: runcomposer passes it on in
 
 `parameters` are the **per-run options** whoever starts a run may set — a
 `Parameter` has `name`, `kind`, `label`, `help`, `default`, `choices`,
-`required`, `pattern` and `key_pattern`. Seven kinds:
+`required`, `pattern`, `key_pattern` and `max_length`. Seven kinds:
 
 | Kind | Value |
 |---|---|
@@ -246,6 +246,17 @@ parameter, before a run exists (`tests/test_api.py::…per_run_parameters`,
 refuses `{locale: de}`, saying that key `locale` does not match the key
 pattern — and is served with the declaration, `null` when not declared
 (`tests/test_parameter_refusals.py::TestKeyPattern`).
+
+**Values are bounded.** A per-run value is stored with the run and shown on
+its page, so it is no place for data: a `string` takes at most 1000
+characters, a `text` 100 000, each value of a `mapping` 1000; a `mapping`
+holds at most 100 names of at most 200 characters, and a `multi_choice`
+names each choice at most once. `max_length` sets another bound for
+a `string`, a `text` or a `mapping`'s values for one parameter
+(`Parameter("notes", kind="text", max_length=20_000)`; in a configured
+declaration `max_length: 20000`). A value over it is a `400
+invalid-parameter` with `problem: too-long`, naming the length, never
+quoting the value (`tests/test_parameter_refusals.py::TestTheReasonIsAField`).
 
 **A value only your runner can judge.** What a declaration cannot express —
 a region no build agent serves, a variable the suite must not be handed —
@@ -485,9 +496,15 @@ outside `LIVE_STATUSES`, is ignored
 process use `ctx.live_channel()`: a small picklable `LiveChannel` with the same
 `live` method and a `log(message, level)` whose lines land in the run's event
 stream like `ctx.log`'s. It carries no store — it appends to a file in
-`ctx.workdir` that the dispatching process tails — so it works with any
-`RunStore` (`tests/test_dispatch.py::TestLiveStatus`,
+`.live/` of the dispatch's private directory that the dispatching process
+tails — so it works with any `RunStore` (`tests/test_dispatch.py::TestLiveStatus`,
 `tests/test_runner_contract.py::TestRunningAndWorkerLogs::test_a_worker_process_logs_into_the_event_stream`).
+The files are transport: what is read from them is recorded with the
+deployment's secrets blanked, and the directory is removed when your
+`dispatch` has returned and the last lines are read — a line a worker
+writes after that is dropped (`tests/test_live_transport.py`). So the
+channel serves the workers your `dispatch` waits for, as
+`supervise_workers` does.
 
 **Artifacts, private files, log.** `ctx.workdir` is a directory for this
 dispatch under the artifact root, already created. A file there is **not**
@@ -1818,7 +1835,20 @@ delivers are in the reference format ([§4](#resultparser--native-artifacts-in-n
 every connector executes Robot Framework or triggers Jenkins.
 `supervise_workers` in `runcomposer.sdk` is the supervisor the Robot
 toolkit's `supervise` and the `command` runner are both built on, for
-whatever executes inside the worker:
+whatever executes inside the worker. Each shard is one `WorkerPayload`,
+picklable, since it travels to a spawned process:
+
+| Field | Default | What it is |
+|---|---|---|
+| `shard` | — | the name the shard's results are delivered under |
+| `out_dir` | — | the shard's own directory, created before the worker starts |
+| `item_ids` | `()` | the items the shard executes |
+| `lane` | `None` | shards of one lane never run at the same time, and run in the order given; `None` is a lane of its own |
+| `cwd` | `None` | the directory the worker changes into before `target` is called |
+| `env` | `{}` | set in the worker's environment before `target` is called, and inherited by what it starts |
+| `data` | `{}` | anything else the target needs — a live channel, a configured callable's name — picklable |
+
+(`tests/test_runner_options_docs.py` holds this table to the dataclass.)
 
 - one spawned process per shard; shards of one `lane` one after another,
   lanes side by side, at most `max_workers` at once;

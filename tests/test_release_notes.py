@@ -37,3 +37,23 @@ def test_the_workflow_finds_this_versions_section(tmp_path, heading_tail):
     assert notes.strip() and "\n## " not in notes
     assert notes.lstrip().startswith(changelog.split(heading.group(0), 1)[1].lstrip()[:60])
 
+
+
+def test_a_dated_version_leaves_no_until_tagged_marker():
+    """A version's heading carries a date only once every place that says
+    it is not released yet has been changed (CONTRIBUTING.md, the release
+    steps): "unreleased, with markers" and "with a date, without markers"
+    both pass."""
+    version = runcomposer.__version__
+    changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = re.search(rf"^## {re.escape(version)} — (.+)$", changelog, re.M)
+    assert heading, f"CHANGELOG.md has a section for {version}"
+    marker = f"Until v{version} is tagged"
+    # The pages a reader sees: the documents at the top and in docs/ (no
+    # git needed — a container or an sdist has none).
+    pages = [*REPO.glob("*.md"), *(REPO / "docs").glob("*.md"), *(REPO / "docs").glob("*.html")]
+    marked = sorted(
+        str(path.relative_to(REPO)) for path in pages if marker in path.read_text(encoding="utf-8")
+    )
+    if heading.group(1).strip() != "unreleased":
+        assert marked == [], f"{version} is dated, but these still say it is not released: {marked}"

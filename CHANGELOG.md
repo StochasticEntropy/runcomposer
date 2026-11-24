@@ -242,7 +242,7 @@ not exist or worked differently:
 - **The `command` runner** starts each shard's command in a supervised
   worker process: `timeout_s` counts from the worker's start, a stop also
   kills what the command left behind, its "command started" line comes
-  through the live channel (which creates `<workdir>/.live`), and a cancel
+  through the live channel, and a cancel
   that lands before the command starts runs nothing. **Robot workers** run
   in a session of their own, stop with a second `SIGTERM` after
   `grace_s`, then `SIGKILL` (about three times `grace_s` at worst), and
@@ -335,8 +335,17 @@ not exist or worked differently:
   push and kept the last of them.
 - **The rows of `GET /api/v1/runs` no longer carry `deliveries`** (0.1.7's
   did): a row is the run's headline, verdict counts, planned count,
-  duration and its `dispatches`. Read deliveries from the run detail,
-  `GET /api/v1/runs/{id}`.
+  duration and its `dispatches` — each without its `plan` and
+  `parameters`, which only the run detail carries (also in `runcomposer
+  runs --json`). Read deliveries, plans and per-run values from the run
+  detail, `GET /api/v1/runs/{id}`.
+- **Per-run values are bounded**: a `string` at most 1000 characters, a
+  `text` 100 000, a `mapping` 100 names of at most 200 characters with
+  values of at most 1000, a `multi_choice` each choice at most once — a
+  declaration's `max_length` changes the bound of one parameter. Beyond
+  it, `400 invalid-parameter` with the new `problem` `too-long`.
+- **A filter holds at most 1000 patterns** (`MAX_FILTER_PATTERNS`), text
+  and AST alike: `400 invalid-filter` beyond, before anything is matched.
 - **The compose and finalize answers carry no `deliveries` either** — the
   run detail does.
 - **`POST /runs/{id}/finalize` of a run nothing was dispatched for is a
@@ -966,7 +975,11 @@ not exist or worked differently:
   through its live channel), or an executor's `POST /runs/{id}/live`,
   showed it in `GET /runs/{id}`, `…/verdicts` and `runcomposer show`. Every
   live status is now stored through one write path that blanks its
-  message, like a result's.
+  message, like a result's. The worker live channel's files — what workers
+  wrote, as written — now live in the dispatch's private directory and are
+  removed when its context closes, or by restart recovery after a killed
+  server; they used to stay under `core.artifact_dir`. The `command`
+  runner's `command.log` of a stopped shard is blanked too.
 - A JSON request body had no size bound: one request carrying a very large number
   of labels made the runs list heavy for every reader. The JSON API reads a
   body under `core.api.max_body_mb` (default 10, `413 payload-too-large`

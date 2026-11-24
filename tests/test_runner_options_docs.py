@@ -56,3 +56,25 @@ def test_the_table_lists_every_constructor_option_with_its_default(runner, marke
         if name != "self"
     }
     assert table_after(marker) == options
+
+
+def test_the_worker_payload_table_lists_every_field_with_its_default():
+    """docs/connectors.md §9.2: one row per ``WorkerPayload`` field, in
+    order, with the dataclass's default (``—`` for a required field)."""
+    import dataclasses
+
+    from runcomposer.sdk import WorkerPayload
+
+    table = GUIDE.split("| Field | Default | What it is |", 1)[1].split("\n\n", 1)[0]
+    rows = re.findall(r"^\| `(\w+)` \| ([^|]+) \| ([^|]+) \|$", table, re.MULTILINE)
+
+    def default(field: dataclasses.Field) -> str:
+        if field.default is not dataclasses.MISSING:
+            return f"`{field.default!r}`"
+        if field.default_factory is not dataclasses.MISSING:
+            return f"`{field.default_factory()!r}`"
+        return "—"
+
+    expected = [(field.name, default(field)) for field in dataclasses.fields(WorkerPayload)]
+    assert [(name, cell.strip()) for name, cell, _what in rows] == expected
+    assert all(what.strip() for _name, _cell, what in rows)

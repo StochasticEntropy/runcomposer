@@ -145,9 +145,17 @@ rule as the other documents: it is true of the version on `main`.
 A release is the version in `src/runcomposer/__init__.py`, its section in
 `CHANGELOG.md`, and a tag:
 
-1. In `CHANGELOG.md`, change the heading `## <version> — unreleased` to
-   `## <version> — <YYYY-MM-DD>`, the day of the release, and commit that.
-2. Tag that commit `v<version>` (`git tag v0.2.0`) and push the tag.
+1. Find every place that speaks of the version as not yet released:
+   `git grep -n "Until v<version> is tagged"` (in `README.md`,
+   `docs/index.html` and `docs/index.de.html`). Each such comment says what
+   its place becomes at the tag — an install line that names the release,
+   a version badge, a sentence that goes. Make that change and remove the
+   comment, in both homepage languages alike.
+2. In `CHANGELOG.md`, change the heading `## <version> — unreleased` to
+   `## <version> — <YYYY-MM-DD>`, the day of the release, and commit both
+   steps together. `tests/test_release_notes.py` fails while the heading
+   carries a date and a marker is left, so the release cannot be half made.
+3. Tag that commit `v<version>` (`git tag v0.2.0`) and push the tag.
 
 The tag starts `.github/workflows/release.yml`: it refuses a tag that is
 not `v` + `__version__`; runs the lint, the type check and the suite;
