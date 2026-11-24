@@ -1616,8 +1616,9 @@ Jenkins has already forgotten the queue item, as it does minutes after the
 build started — and takes an item that is still queued out of the queue. A
 cancel that arrives while the trigger request is under way finds nothing to
 stop yet: the runner, back from the trigger, takes the build back itself, and
-the dispatch ends `CANCELLED`. Whichever way the build is reached, it is sent
-one stop (see the paragraph on stopping a build in §9.2). When Jenkins loses that stop, the run
+the dispatch ends `CANCELLED`. Whichever way the build is reached within the
+server's process, it is sent one stop (see the paragraph on stopping a build
+in §9.2, which also names what two processes can still do). When Jenkins loses that stop, the run
 is cancelled in runcomposer all the same: the dispatch is `CANCELLED`,
 results of that build are not taken in — a push of them is refused with
 `409` `dispatch-cancelled`, and with `poll` nothing is downloaded — and the
@@ -1719,7 +1720,7 @@ test's longname):
 | `JenkinsClient(base_url, *, user, api_token, verify_tls, ca_bundle, request_timeout_s, retries, retry_backoff_s)` | one server: a session whose crumb belongs to it, bounded retry on transient errors (a trigger or a stop is repeated only when it provably did not take effect: a refused connection, a 429 or 503 answer), TLS with an optional CA bundle; thread-safe |
 | `on_outage` on `follow` and the waits | `on_outage(answering, seconds)` is told of each change while a tolerant wait rides out an outage: `False` when the server first fails to answer, `True` on its first answer after (with how long nothing answered); the `jenkins` runner writes a line to the run's log at each (`tests/test_jenkins_followup.py::TestFollowingThroughAnOutage`) |
 | `trigger(job, parameters)`, `follow`, `build_of`, `locate_build`, `find_build`, `wait_for_build`, `wait_until_finished`, `wait`, `build_info` | trigger → queue item → build — never "the latest build of the job"; once the queue item is forgotten, by the queue id the build records. `follow(job, queue_url, timeout_s=…, check=…, on_build=…, outage_tolerance_s=None)` is the whole way from queue item to the finished build in one call, and takes the build back when the dispatch was cancelled before there was a link to stop it by. With `outage_tolerance_s` (also on the waits) it rides out a Jenkins that has not answered for up to that long, probing with single attempts; `timeout_s` applies to each of its two waits (to start, then to finish) and is not extended by an outage |
-| `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now. A build is sent one stop: `stop_build` returns `False` and sends nothing when this client has sent that build a stop before — however it is reached, by `cancel`, by `follow` taking the build back, by two cancels at once (below) |
+| `stop_build`, `cancel_queue_item`, `cancel(job, queue_url)` | stopping a build, or whatever a queue item is by now. Within one process a build is sent one stop: `stop_build` returns `False` and sends nothing when this client has sent that build a stop before — however it is reached, by `cancel`, by `follow` taking the build back, by two cancels at once (below, with what two processes can still do) |
 | `job_parameters(job)` | the names of the parameters a job declares, `None` when it declares none — what to compare a trigger's parameters with, since Jenkins drops an undeclared one silently |
 | `job_parameter_definitions(job)`, `JobParameter` | the same parameters with what the job declares of each: `name`, `kind` (`string`, `text`, `choice`, `boolean`, `password`, … — Jenkins's type without `ParameterDefinition`), `choices`, `default`, `description`; `definition.accepts(value)` says whether a trigger with that value starts a build (a `choice` parameter takes only what it lists) (`tests/test_jenkins_followup.py::TestDeclaredParameters`) |
 | `artifacts`, `download_artifact`, `download_build_file`, `download`, `get_json`, `request`, `version`, `job_exists`, `job_url` | results — archived artifacts and any URL below the build — and the plumbing |
@@ -1738,6 +1739,15 @@ answer; never after a timeout, a dropped connection or a gateway's `502` or
 its `cancel` by the recorded link, and `follow` taking back a build whose
 dispatch was cancelled before its first check — send one stop between them,
 and so do two cancels at once (`tests/test_jenkins_toolkit.py::TestOneStopPerBuild`).
+That holds within one process: what a client remembers is its own, and only
+while its process lives. Three ways to a second stop remain — two cancels of
+one dispatch from two processes at the same moment; `cancel --force` while
+the process executing the dispatch is alive and stops the build too; and a
+process that sent the stop and ended before the dispatch was recorded as
+cancelled, after which the next cancel, from another process, stops the
+build again. A stop the server provably did not act on (every attempt
+refused or answered `429`/`503`, a `4xx` answer, a server never reached) is
+not remembered, so a later call sends it.
 And a stop can be lost by the server: one that arrives while a pipeline is
 entering its `node` step may leave the build running. Do not answer that
 with another stop. An execution that must not run on after a cancel asks

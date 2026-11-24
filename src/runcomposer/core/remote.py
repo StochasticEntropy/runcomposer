@@ -330,6 +330,27 @@ def _streamed(pieces: Iterable[bytes | Path]) -> Iterable[bytes]:
             yield piece
 
 
+#: How much of a dispatch's state answer is read; the real one is far smaller.
+_STATE_ANSWER_LIMIT = 64 * 1024
+
+
+def _read_within(response: Any, seconds: float, limit: int) -> bytes | None:
+    """The answer's body — or ``None`` when it is longer than ``limit``
+    bytes, or not complete ``seconds`` after its first part was asked for (a
+    server that sends it a little at a time)."""
+    deadline = time.monotonic() + seconds
+    pieces: list[bytes] = []
+    size = 0
+    while True:
+        piece = response.read1(8192)
+        if not piece:
+            return b"".join(pieces)
+        size += len(piece)
+        if size > limit or time.monotonic() > deadline:
+            return None
+        pieces.append(piece)
+
+
 def _answer(raw: bytes) -> Any:
     """The server's JSON answer, or its text when it is not JSON."""
     text = raw.decode("utf-8", "replace")
@@ -415,8 +436,17 @@ class RemoteLiveChannel:
         dropped: a server that cannot be reached, a refusal (a wrong token,
         an unknown run or dispatch) or an answer that cannot be read is
         "not known" — ``False``. Without a ``dispatch_id`` there is nothing
-        to ask about: always ``False``. A request takes at most
-        ``timeout_s``."""
+        to ask about: always ``False``.
+
+        How long a call can take: each single wait on the server is at most
+        ``timeout_s`` — for the connection, and for every piece of the
+        answer. The answer's body is bounded as a whole: one that is not
+        complete ``timeout_s`` after it began, or is longer than 64 KiB, is
+        given up ("not known"). Its status line and headers are not — a
+        server that sends even those a few bytes at a time, each within
+        ``timeout_s``, holds the call for as long as it goes on; a server
+        that answers at all in the ordinary way does so in about
+        ``timeout_s`` or less."""
         if self._cancelled:
             return True
         if self.state_url is None:
@@ -432,9 +462,10 @@ class RemoteLiveChannel:
         request = urllib.request.Request(self.state_url, headers=headers, method="GET")
         try:
             with _open(request, self.timeout_s, self.ca_bundle, self.verify_tls) as response:
-                answer = _answer(response.read())
+                raw = _read_within(response, self.timeout_s, _STATE_ANSWER_LIMIT)
         except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             return False
+        answer = _answer(raw) if raw is not None else None
         if isinstance(answer, dict) and answer.get("stop") is True:
             self._cancelled = True
         return self._cancelled

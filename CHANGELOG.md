@@ -776,11 +776,18 @@ not exist or worked differently:
   answered twice: by the runner's `cancel`, by the link, and by `follow`
   taking the build back; two cancels at once also sent two. A stop is now
   sent again only when it provably did not take effect (a refused
-  connection, a `429` or `503` answer), and a client sends one stop per
-  build whoever asks: `stop_build` returns `False` and sends nothing for a
-  build it has stopped before, and `cancel(job, queue_url)` says so.
+  connection, a `429` or `503` answer), and within one process a client
+  sends one stop per build whoever asks: `stop_build` returns `False` and
+  sends nothing for a build it has stopped before, and
+  `cancel(job, queue_url)` says so. Two processes are not covered: two
+  cancels of one dispatch from two processes at the same moment,
+  `cancel --force` while the process executing the dispatch is alive, or a
+  cancel after a process that sent the stop ended before recording it, can
+  still send two.
   A trigger answered `502` or `504` by a gateway is no longer sent again
-  either: the server behind it may have queued the build
+  either: the server behind it may have queued the build, and the refusal
+  says so — as it does after a timeout or a dropped connection, and not
+  when the server was never reached or said no
   (`tests/test_jenkins_toolkit.py::TestOneStopPerBuild`,
   `tests/test_jenkins.py::TestTrigger`).
 - Several processes opening a sqlite store that did not exist yet at the

@@ -18,6 +18,8 @@ Three things are shown:
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 import threading
 import urllib.error
 from pathlib import Path
@@ -644,6 +646,93 @@ class TestOneStopPerBuild:
         assert jenkins.posts("/stop") == []
         assert client.stop_build(build_url) is True
         assert len(jenkins.posts("/stop")) == 1 and jenkins.builds[(JOB, 1)].stop.is_set()
+
+    @pytest.mark.parametrize("status", [502, 504])
+    def test_a_trigger_a_gateway_answered_says_the_build_may_be_queued(self, jenkins, status):
+        jenkins.add_job(JOB, lambda build: None)
+        client = client_for(jenkins, retries=2)
+        jenkins.faults.append(("POST", "/buildWithParameters", status))
+        with pytest.raises(JenkinsError, match="may have been queued all the same") as caught:
+            client.trigger(JOB, {})
+        assert caught.value.status == status and len(jenkins.triggers()) == 1
+
+    def test_a_trigger_that_timed_out_says_the_build_may_be_queued(self, jenkins):
+        jenkins.add_job(JOB, lambda build: None)
+        client = JenkinsClient(jenkins.url, retries=2, retry_backoff_s=0.01, request_timeout_s=0.3)
+        stalled = jenkins.stalls["/buildWithParameters"] = threading.Event()
+        try:
+            with pytest.raises(JenkinsError, match="may have been queued all the same"):
+                client.trigger(JOB, {})
+        finally:
+            stalled.set()
+        assert len(jenkins.triggers()) == 1
+
+    @pytest.mark.parametrize("status", [400, 403, 404, 500, 429, 503])
+    def test_a_trigger_the_server_answered_itself_does_not_say_so(self, jenkins, status):
+        """The server's own no, its own error, or "try later" until the
+        retries were used up: nothing says that a build was queued."""
+        jenkins.add_job(JOB, lambda build: None)
+        client = client_for(jenkins, retries=1)
+        jenkins.faults.extend([("POST", "/buildWithParameters", status)] * 3)
+        with pytest.raises(JenkinsError) as caught:
+            client.trigger(JOB, {})
+        assert caught.value.status == status and "may have been queued" not in str(caught.value)
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            ConnectionRefusedError(61, "Connection refused"),
+            socket.gaierror(8, "nodename nor servname provided, or not known"),
+            ssl.SSLCertVerificationError(1, "certificate verify failed"),
+            ssl.SSLError(1, "wrong version number"),
+        ],
+        ids=["refused", "name-not-found", "certificate-not-trusted", "no-tls-session"],
+    )
+    def test_a_trigger_that_never_reached_the_server_does_not_say_so(self, jenkins, monkeypatch, reason):
+        client = client_for(jenkins, retries=1)
+
+        def unreachable(request: Any, timeout: float | None = None) -> Any:
+            raise urllib.error.URLError(reason)
+
+        monkeypatch.setattr(client._opener, "open", unreachable)
+        with pytest.raises(JenkinsError) as caught:
+            client.trigger(JOB, {})
+        assert "may have been queued" not in str(caught.value)
+        assert jenkins.triggers() == []
+
+    @pytest.mark.parametrize(
+        "reason",
+        [socket.gaierror(8, "not known"), ssl.SSLCertVerificationError(1, "certificate verify failed")],
+        ids=["name-not-found", "certificate-not-trusted"],
+    )
+    def test_a_stop_to_a_server_never_reached_is_sent_by_a_later_call(self, jenkins, monkeypatch, reason):
+        client = client_for(jenkins, retries=1)
+        _, build_url = self.running_build(jenkins, client)
+        send = client._opener.open
+
+        def unreachable(request: Any, timeout: float | None = None) -> Any:
+            if request.full_url.endswith("/stop"):
+                raise urllib.error.URLError(reason)
+            return send(request, timeout=timeout)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(client._opener, "open", unreachable)
+            with pytest.raises(JenkinsError):
+                client.stop_build(build_url)
+        assert client.stop_build(build_url) is True and len(jenkins.posts("/stop")) == 1
+
+    def test_a_stop_the_server_said_no_to_is_sent_by_a_later_call(self, jenkins):
+        """A 4xx is the server's own no — the build was not stopped, so it
+        is not remembered as stopped."""
+        client = client_for(jenkins, retries=3)
+        _, build_url = self.running_build(jenkins, client)
+        jenkins.faults.append(("POST", "/stop", 404))
+        with pytest.raises(JenkinsError) as caught:
+            client.stop_build(build_url)
+        assert caught.value.status == 404 and len(jenkins.posts("/stop")) == 1
+        assert not jenkins.builds[(JOB, 1)].stop.is_set()
+        assert client.stop_build(build_url) is True
+        assert len(jenkins.posts("/stop")) == 2 and jenkins.builds[(JOB, 1)].stop.is_set()
 
     @pytest.mark.parametrize(("status", "sent"), [(503, 2), (429, 2), (502, 1), (504, 1)])
     def test_only_an_answer_that_says_it_was_not_acted_on_is_retried(self, jenkins, status, sent):

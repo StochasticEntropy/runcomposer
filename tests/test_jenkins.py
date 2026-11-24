@@ -871,6 +871,7 @@ class TestTrigger:
         service = jenkins_service(make_service, jenkins, retries=3)
         run_id, outcome = dispatch(service)
         assert "Jenkins trigger failed" in outcome.refusal and str(status) in outcome.refusal
+        assert "the build may have been queued all the same" in outcome.refusal
         assert len(jenkins.triggers()) == 1
         assert service.require_run(run_id).dispatches == ()
 

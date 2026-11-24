@@ -209,8 +209,9 @@ class FakeJenkins:
             build.stop.set()
         self.server.shutdown()
         self.server.server_close()
-        for thread in self._threads:
-            thread.join(timeout=10)
+        for thread in list(self._threads):
+            if thread.is_alive():  # one that start() has listed but not started yet is not joined
+                thread.join(timeout=10)
 
     # -- what tests arrange and read -------------------------------------------
 
@@ -270,8 +271,8 @@ class FakeJenkins:
             self.builds[(build.job, build.number)] = build
             item.build = build
         thread = threading.Thread(target=self._run, args=(build,), daemon=True)
-        self._threads.append(thread)
         thread.start()
+        self._threads.append(thread)
         return build
 
     def expire(self, number: int) -> None:

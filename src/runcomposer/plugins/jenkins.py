@@ -804,10 +804,12 @@ class JenkinsRunner(RunnerBase):
         """Stop the build behind this dispatch: the build itself when its URL
         is known, else whatever the queue item is by now — a running build
         (also when Jenkins has forgotten the queue item) or a queued one.
-        A build is sent one stop, never a second — not by a retry, and not
-        when the take-back of a dispatch cancelled during its trigger or
-        before ``follow`` started reached it first: a second stop would
-        interrupt the job's own clean-up steps (``JenkinsClient.stop_build``)."""
+        Within this process a build is sent one stop, never a second — not
+        by a retry, and not when the take-back of a dispatch cancelled
+        during its trigger or before ``follow`` started reached it first: a
+        second stop would interrupt the job's own clean-up steps
+        (``JenkinsClient.stop_build``, which also says what two processes
+        can still do)."""
         build_url, queue_url = ctx.links.get("build"), ctx.links.get("queue")
         if build_url:
             if self.client.stop_build(build_url):

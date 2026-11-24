@@ -16,6 +16,8 @@ import inspect
 import json
 import logging
 import pickle
+import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -65,12 +67,52 @@ def state_url(params: dict[str, str], dispatch_id: str | None = None) -> str:
     return f"{run_url}/dispatches/{dispatch_id or params['DISPATCH_ID']}/state"
 
 
+class Serving:
+    """A socket that answers every connection with ``answer(connection)`` —
+    for answers no real server gives."""
+
+    def __init__(self, answer: Any):
+        self.answer = answer
+        self.listening = socket.socket()
+        self.listening.bind(("127.0.0.1", 0))
+        self.listening.listen(8)
+        self.threads: list[threading.Thread] = []
+
+    def __enter__(self) -> str:
+        def accept() -> None:
+            while True:
+                try:
+                    connection, _ = self.listening.accept()
+                except OSError:
+                    return  # closed
+                thread = threading.Thread(target=self.answer, args=(connection,), daemon=True)
+                thread.start()
+                self.threads.append(thread)
+
+        self.accepting = threading.Thread(target=accept, daemon=True)
+        self.accepting.start()
+        return f"http://127.0.0.1:{self.listening.getsockname()[1]}"
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.listening.close()
+        self.accepting.join(5)
+        for thread in self.threads:
+            thread.join(5)
+
+
 @pytest.fixture()
 def awaiting(live_server, jenkins):
     """A dispatch in callback mode whose build runs until it is stopped."""
     jenkins.add_job(JOB, lambda build: build.stop.wait(30))
     run_id = dispatch_over_http(live_server)
-    return run_id, handed_out(live_server, jenkins)
+    params = handed_out(live_server, jenkins)
+    # The build exists before the dispatcher has written that it now waits
+    # for results: a test that writes a state itself must come after that.
+    wait_until(
+        lambda: live_server.service.store.get_dispatch(params["DISPATCH_ID"]).state == "AWAITING_RESULTS",
+        what="the dispatch to await its results",
+    )
+    return run_id, params
 
 
 class TestTheEndpoint:
@@ -96,6 +138,17 @@ class TestTheEndpoint:
         status, state = http("GET", state_url(params), params["INGEST_TOKEN"])
         assert status == 200
         assert (state["state"], state["cancel_requested"], state["stop"]) == ("AWAITING_RESULTS", True, True)
+
+    @pytest.mark.parametrize("state", ["DISPATCHED", "RUNNING", "AWAITING_RESULTS", "COMPLETE", "FAILED", "STALE"])
+    def test_only_a_cancel_says_stop(self, live_server, awaiting, state):
+        """A dispatch that is over for another reason — complete, failed,
+        left behind by its process — is not one to stop: its results may
+        still be pushed."""
+        _run_id, params = awaiting
+        live_server.service.store.update_dispatch(params["DISPATCH_ID"], state=state)
+        status, answer = http("GET", state_url(params), params["INGEST_TOKEN"])
+        assert status == 200
+        assert (answer["state"], answer["cancel_requested"], answer["stop"]) == (state, False, False)
 
     def test_it_is_refused_as_a_push_would_be(self, live_server, jenkins, awaiting):
         run_id, params = awaiting
@@ -265,6 +318,76 @@ class TestTheChannel:
         started = time.monotonic()
         assert channel.cancel_requested() is False and channel.cancel_requested() is False
         assert time.monotonic() - started < 10 and len(asked) == 2
+
+    def test_an_answer_that_arrives_a_little_at_a_time_is_given_up(self):
+        """Each part comes within ``timeout_s``, the whole never does: the
+        call ends about ``timeout_s`` after the answer began, not when the
+        server is done."""
+        done = threading.Event()
+
+        def trickle(connection: socket.socket) -> None:
+            with connection:
+                connection.recv(65536)
+                connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n")
+                try:
+                    for byte in b'{"stop": true' + b" " * 200 + b"}":
+                        if done.wait(0.1):
+                            return
+                        connection.sendall(bytes([byte]))
+                except OSError:
+                    pass  # the channel closed the connection
+
+        with Serving(trickle) as base:
+            channel = RemoteLiveChannel(
+                f"{base}/api/v1/runs/01RUN/results", "rct_trickle", dispatch_id="01DISPATCH",
+                timeout_s=0.5, cancel_check_interval_s=0,
+            )
+            started = time.monotonic()
+            try:
+                assert channel.cancel_requested() is False
+            finally:
+                done.set()
+            assert time.monotonic() - started < 5, "the whole answer would have taken 20 seconds"
+
+    def test_an_answer_far_too_long_is_not_read(self):
+        def flood(connection: socket.socket) -> None:
+            with connection:
+                connection.recv(65536)
+                body = b'{"stop": true, "padding": "' + b"x" * (1024 * 1024) + b'"}'
+                head = f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+                try:
+                    connection.sendall(head + body)
+                except OSError:
+                    pass  # the channel closed the connection before it was all sent
+
+        with Serving(flood) as base:
+            channel = RemoteLiveChannel(
+                f"{base}/api/v1/runs/01RUN/results", "rct_flood", dispatch_id="01DISPATCH",
+                timeout_s=5, cancel_check_interval_s=0,
+            )
+            assert channel.cancel_requested() is False
+
+    @pytest.mark.parametrize(("length", "read"), [(64 * 1024, True), (64 * 1024 + 1, False)])
+    def test_an_answer_of_64_kib_is_read_and_one_byte_more_is_not(self, length, read):
+        frame = b'{"stop": true, "padding": ""}'
+        body = b'{"stop": true, "padding": "' + b"x" * (length - len(frame)) + b'"}'
+        assert len(body) == length
+
+        def answer(connection: socket.socket) -> None:
+            with connection:
+                connection.recv(65536)
+                head = f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n\r\n".encode()
+                try:
+                    connection.sendall(head + body)
+                except OSError:
+                    pass  # the channel closed the connection before it was all sent
+
+        with Serving(answer) as base:
+            channel = RemoteLiveChannel(
+                f"{base}/api/v1/runs/01RUN/results", "rct_limit", dispatch_id="01DISPATCH",
+                timeout_s=5, cancel_check_interval_s=0,
+            )
+            assert channel.cancel_requested() is read
 
     def test_without_a_dispatch_id_nothing_is_asked(self, awaiting, asked):
         _run_id, params = awaiting

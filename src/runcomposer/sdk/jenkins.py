@@ -45,6 +45,7 @@ import gzip
 import http.client
 import http.cookiejar
 import json
+import socket
 import ssl
 import threading
 import time
@@ -85,9 +86,15 @@ class JenkinsError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None):
         super().__init__(message)
         self.status = status
-        #: Set by a request that must not happen twice when it gave up after
-        #: answers that all say it was not acted on (see ``request``).
+        #: Set by ``request`` when the server provably did not do what was
+        #: asked: it refused (a 4xx answer), it was never reached (its name
+        #: not found, its certificate not trusted), or a request that must
+        #: not happen twice gave up after answers that all said so.
         self._not_acted_on = False
+        #: Set by ``request`` for a request that must not happen twice and
+        #: was not repeated because it may have arrived: no answer after it
+        #: was sent (a timeout, a dropped connection), or a gateway's 502/504.
+        self._maybe_received = False
 
 
 class JenkinsQueueCancelled(JenkinsError):
@@ -282,12 +289,24 @@ class JenkinsClient:
         """Start a parameterized build; returns the queue item's URL (with a
         trailing slash), or ``None`` when the server did not say where it
         queued the build. Never repeated after the request may have been
-        received — a second build would be worse than an error."""
+        received — a second build would be worse than an error; the error
+        then says that the build may have been queued all the same (after a
+        timeout, a dropped connection, a gateway's 502 or 504 — not when
+        the server was never reached or said no)."""
         data = urllib.parse.urlencode(dict(parameters)).encode("utf-8")
-        with self.request(
-            "POST", f"{self.job_url(job)}/buildWithParameters", data=data, retry_unsent_only=True
-        ) as response:
-            location = response.headers.get("Location")
+        try:
+            with self.request(
+                "POST", f"{self.job_url(job)}/buildWithParameters", data=data, retry_unsent_only=True
+            ) as response:
+                location = response.headers.get("Location")
+        except JenkinsError as exc:
+            if not exc._maybe_received:
+                raise
+            # No answer after it was sent, or a gateway's: the server may have queued the build.
+            raise JenkinsError(
+                f"{exc} — not sent again: the build may have been queued all the same, look at the job",
+                status=exc.status,
+            ) from None
         return str(location).rstrip("/") + "/" if location else None
 
     def build_of(self, queue_url: str, *, retry: bool = True) -> str | None:
@@ -578,8 +597,19 @@ class JenkinsClient:
         stop between them. A build counts as stopped from the moment its
         stop request is sent, whether or not it was answered — except when
         the request provably never took effect (every attempt was refused or
-        answered 429 or 503): then the error goes on and a later call sends
-        the stop.
+        answered 429 or 503, the server said no with a 4xx, or it was never
+        reached: its name not found, its certificate not trusted): then the
+        error goes on and a later call sends the stop.
+
+        What a client remembers is its own, and only while its process
+        lives. One server process has one client per runner, so every way to
+        a build inside it is covered; two processes that stop the same build
+        are not. Three ways to a second stop remain: two cancels of one
+        dispatch from two processes at the same moment; a forced cancel
+        (``cancel --force``) while the process executing the dispatch is
+        alive and stops it too; and a process that sent the stop and ended
+        before the dispatch was recorded as cancelled — the next cancel,
+        from another process, stops the build again.
 
         A stop can still be lost by the server: one that arrives while a
         pipeline is entering a ``node`` step may leave the build running.
@@ -740,27 +770,39 @@ class JenkinsClient:
                 if exc.code not in _TRANSIENT or (
                     retry_unsent_only and exc.code not in _NOT_ACTED_ON
                 ):
-                    raise JenkinsError(
+                    refusal = JenkinsError(
                         f"{exc.code} {exc.reason} for {method} {url}", status=exc.code
-                    ) from None
+                    )
+                    # A 4xx is the server's own no: it did not do what was asked.
+                    refusal._not_acted_on = 400 <= exc.code < 500
+                    refusal._maybe_received = exc.code in _TRANSIENT  # here: a gateway's 502, 504
+                    raise refusal from None
                 last, status = exc, exc.code
             except urllib.error.URLError as exc:
                 refused = isinstance(exc.reason, ConnectionRefusedError)
                 if retry_unsent_only and not refused:
-                    raise JenkinsError(f"{exc.reason} for {method} {url}") from None
+                    unsent = JenkinsError(f"{exc.reason} for {method} {url}")
+                    # Never reached: no address for the name, or a certificate not trusted.
+                    unsent._not_acted_on = isinstance(
+                        exc.reason, (socket.gaierror, ssl.SSLCertVerificationError)
+                    )
+                    unsent._maybe_received = isinstance(exc.reason, (TimeoutError, ConnectionError))
+                    raise unsent from None
                 last, status = exc, None
             except TimeoutError as exc:
                 if retry_unsent_only:
-                    raise JenkinsError(f"timed out: {method} {url}") from None
+                    late = JenkinsError(f"timed out: {method} {url}")
+                    late._maybe_received = True
+                    raise late from None
                 last, status = exc, None
             except (http.client.HTTPException, ConnectionError) as exc:
                 # The connection was dropped after the request went out (a
                 # restarting server, a proxy): no answer — and, for a
                 # request that must not happen twice, maybe received.
                 if retry_unsent_only:
-                    raise JenkinsError(
-                        f"the connection was dropped: {method} {url} ({exc!r})"
-                    ) from None
+                    dropped = JenkinsError(f"the connection was dropped: {method} {url} ({exc!r})")
+                    dropped._maybe_received = True
+                    raise dropped from None
                 last, status = exc, None
             if attempt + 1 < attempts:
                 time.sleep(self.retry_backoff_s * (2**attempt))

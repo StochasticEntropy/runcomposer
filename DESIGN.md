@@ -1247,10 +1247,17 @@ never a second**: a second stop that arrives while the job runs its own
 clean-up (a pipeline's `post` steps) ends that clean-up too. So the stop is
 retried only when it provably did not take effect (a refused connection, a
 `429` or `503` answer — not a timeout, a dropped connection or a gateway's
-`502`/`504`), and the client sends one stop per build whoever asks — the
-runner's `cancel` and the take-back of `follow`, two cancels at once
-(`JenkinsClient.stop_build`; tests/test_jenkins_toolkit.py,
-`TestOneStopPerBuild`). A stop Jenkins loses — one that arrives while a
+`502`/`504`), and within one server process the client sends one stop per
+build whoever asks — the runner's `cancel` and the take-back of `follow`,
+two cancels at once (`JenkinsClient.stop_build`;
+tests/test_jenkins_toolkit.py, `TestOneStopPerBuild`). What a client
+remembers is its own, and only while its process lives, so two processes
+are not covered. Three ways to a second stop remain: two cancels of one
+dispatch from two processes at the same moment; `cancel --force` while the
+process executing the dispatch is alive and stops the build too; and a
+process that sent the stop and ended before the dispatch was recorded as
+cancelled — the next cancel, from another process, stops the build again.
+A stop Jenkins loses — one that arrives while a
 pipeline is entering its `node` step can leave the build running — is not
 made good by another: the dispatch is `CANCELLED` all the same, results of
 that build are refused (`409`, `dispatch-cancelled`) and the build runs to
