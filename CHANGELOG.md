@@ -787,7 +787,8 @@ not exist or worked differently:
   A trigger answered `502` or `504` by a gateway is no longer sent again
   either: the server behind it may have queued the build, and the refusal
   says so — as it does after a timeout or a dropped connection, and not
-  when the server was never reached or said no
+  when the server refused the connection or said no, its name was not
+  found or its certificate is not trusted
   (`tests/test_jenkins_toolkit.py::TestOneStopPerBuild`,
   `tests/test_jenkins.py::TestTrigger`).
 - Several processes opening a sqlite store that did not exist yet at the

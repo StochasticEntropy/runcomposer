@@ -87,9 +87,9 @@ class JenkinsError(RuntimeError):
         super().__init__(message)
         self.status = status
         #: Set by ``request`` when the server provably did not do what was
-        #: asked: it refused (a 4xx answer), it was never reached (its name
-        #: not found, its certificate not trusted), or a request that must
-        #: not happen twice gave up after answers that all said so.
+        #: asked: it refused (a 4xx answer), its name was not found or its
+        #: certificate not trusted, or a request that must not happen twice
+        #: gave up after answers that all said so.
         self._not_acted_on = False
         #: Set by ``request`` for a request that must not happen twice and
         #: was not repeated because it may have arrived: no answer after it
@@ -290,9 +290,11 @@ class JenkinsClient:
         trailing slash), or ``None`` when the server did not say where it
         queued the build. Never repeated after the request may have been
         received — a second build would be worse than an error; the error
-        then says that the build may have been queued all the same (after a
-        timeout, a dropped connection, a gateway's 502 or 504 — not when
-        the server was never reached or said no)."""
+        then says that the build may have been queued all the same: after a
+        timeout, a dropped connection, a gateway's 502 or 504 — not when the
+        server refused the connection or said no, its name was not found or
+        its certificate is not trusted. A timeout counts whenever it came,
+        while connecting too: the two cannot be told apart from here."""
         data = urllib.parse.urlencode(dict(parameters)).encode("utf-8")
         try:
             with self.request(
@@ -597,9 +599,11 @@ class JenkinsClient:
         stop between them. A build counts as stopped from the moment its
         stop request is sent, whether or not it was answered — except when
         the request provably never took effect (every attempt was refused or
-        answered 429 or 503, the server said no with a 4xx, or it was never
-        reached: its name not found, its certificate not trusted): then the
-        error goes on and a later call sends the stop.
+        answered 429 or 503, the server said no with a 4xx, its name was not
+        found, or its certificate is not trusted): then the error goes on
+        and a later call sends the stop. Anything else counts as sent — a
+        timeout whenever it came, while connecting too, since the two cannot
+        be told apart from here.
 
         What a client remembers is its own, and only while its process
         lives. One server process has one client per runner, so every way to
@@ -782,7 +786,9 @@ class JenkinsClient:
                 refused = isinstance(exc.reason, ConnectionRefusedError)
                 if retry_unsent_only and not refused:
                     unsent = JenkinsError(f"{exc.reason} for {method} {url}")
-                    # Never reached: no address for the name, or a certificate not trusted.
+                    # Provably not sent: no address for the name, or a certificate not
+                    # trusted. A timeout or a reset here may be one while connecting or
+                    # one while sending — the two look the same, so: maybe received.
                     unsent._not_acted_on = isinstance(
                         exc.reason, (socket.gaierror, ssl.SSLCertVerificationError)
                     )

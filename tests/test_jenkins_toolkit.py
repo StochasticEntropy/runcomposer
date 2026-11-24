@@ -17,6 +17,7 @@ Three things are shown:
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import ssl
@@ -581,6 +582,19 @@ class LateCancelRunner(JenkinsRunner):
         super()._poll_and_deliver(ctx, queue_url, shards)
 
 
+#: No answer once a request was on its way: it may have been received.
+MAYBE_RECEIVED = [
+    urllib.error.URLError(TimeoutError("timed out")),
+    urllib.error.URLError(ConnectionResetError(54, "Connection reset by peer")),
+    TimeoutError("timed out"),
+    ConnectionResetError(54, "Connection reset by peer"),
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+]
+MAYBE_RECEIVED_IDS = [
+    "timeout-on-the-way-out", "reset-on-the-way-out", "timeout-waiting", "reset-waiting", "closed-unanswered",
+]
+
+
 class TestOneStopPerBuild:
     """A second stop ends what a job does after the first: its own clean-up
     (a pipeline's ``post`` steps). So a build is sent one stop — never a
@@ -666,6 +680,43 @@ class TestOneStopPerBuild:
         finally:
             stalled.set()
         assert len(jenkins.triggers()) == 1
+
+    @pytest.mark.parametrize("failure", MAYBE_RECEIVED, ids=MAYBE_RECEIVED_IDS)
+    def test_a_trigger_without_an_answer_says_the_build_may_be_queued(self, jenkins, monkeypatch, failure):
+        """No answer once the request was on its way — a timeout counts
+        whenever it came, while connecting too: it cannot be told apart."""
+        client = client_for(jenkins, retries=2)
+        attempts: list[str] = []
+
+        send = client._opener.open
+
+        def unanswered(request: Any, timeout: float | None = None) -> Any:
+            if not request.full_url.endswith("/buildWithParameters"):
+                return send(request, timeout=timeout)
+            attempts.append(request.full_url)
+            raise failure
+
+        monkeypatch.setattr(client._opener, "open", unanswered)
+        with pytest.raises(JenkinsError, match="may have been queued all the same"):
+            client.trigger(JOB, {})
+        assert len(attempts) == 1, "and it is not sent again"
+
+    @pytest.mark.parametrize("failure", MAYBE_RECEIVED, ids=MAYBE_RECEIVED_IDS)
+    def test_a_stop_without_an_answer_counts_as_sent(self, jenkins, monkeypatch, failure):
+        client = client_for(jenkins, retries=2)
+        _, build_url = self.running_build(jenkins, client)
+        send = client._opener.open
+
+        def unanswered(request: Any, timeout: float | None = None) -> Any:
+            if request.full_url.endswith("/stop"):
+                raise failure
+            return send(request, timeout=timeout)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(client._opener, "open", unanswered)
+            with pytest.raises(JenkinsError):
+                client.stop_build(build_url)
+        assert client.stop_build(build_url) is False and jenkins.posts("/stop") == []
 
     @pytest.mark.parametrize("status", [400, 403, 404, 500, 429, 503])
     def test_a_trigger_the_server_answered_itself_does_not_say_so(self, jenkins, status):

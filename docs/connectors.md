@@ -1746,8 +1746,10 @@ the process executing the dispatch is alive and stops the build too; and a
 process that sent the stop and ended before the dispatch was recorded as
 cancelled, after which the next cancel, from another process, stops the
 build again. A stop the server provably did not act on (every attempt
-refused or answered `429`/`503`, a `4xx` answer, a server never reached) is
-not remembered, so a later call sends it.
+refused or answered `429`/`503`, a `4xx` answer, a server whose name was not
+found or whose certificate is not trusted) is not remembered, so a later
+call sends it; a timeout counts as sent whenever it came, while connecting
+too.
 And a stop can be lost by the server: one that arrives while a pipeline is
 entering its `node` step may leave the build running. Do not answer that
 with another stop. An execution that must not run on after a cancel asks
