@@ -1739,8 +1739,9 @@ answer; never after a timeout, a dropped connection or a gateway's `502` or
 its `cancel` by the recorded link, and `follow` taking back a build whose
 dispatch was cancelled before its first check — send one stop between them,
 and so do two cancels at once (`tests/test_jenkins_toolkit.py::TestOneStopPerBuild`).
-That holds within one process: what a client remembers is its own, and only
-while its process lives. Three ways to a second stop remain — two cancels of
+A stop is remembered for 60 minutes — a build number used again by a job
+that was deleted and created again is another build. That holds within one process: what a client
+remembers is its own, and only while its process lives. Three ways to a second stop remain — two cancels of
 one dispatch from two processes at the same moment; `cancel --force` while
 the process executing the dispatch is alive and stops the build too; and a
 process that sent the stop and ended before the dispatch was recorded as

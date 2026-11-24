@@ -768,6 +768,14 @@ not exist or worked differently:
 
 ### Fixed
 
+- A cancel that arrived while a dispatch was being settled — its runner
+  had handed off and returned, and the dispatch was about to wait for
+  results — told the runner (the executor was stopped) and then left the
+  dispatch in flight: `AWAITING_RESULTS` with a cancel requested, until
+  somebody cancelled again. The request is now read once more in the step
+  that takes the dispatch off the list of what executes, and the dispatch
+  is closed `CANCELLED`; the runner's `cancel(ctx)` is still called once
+  (`tests/test_cancel_paths.py::TestACancelWhileTheDispatchSettles`).
 - A Jenkins build could be sent a second stop, which ends what the job
   runs after the first one — its own clean-up, a pipeline's `post` steps.
   `JenkinsClient.stop_build` repeated a stop that timed out after it had
@@ -779,7 +787,9 @@ not exist or worked differently:
   connection, a `429` or `503` answer), and within one process a client
   sends one stop per build whoever asks: `stop_build` returns `False` and
   sends nothing for a build it has stopped before, and
-  `cancel(job, queue_url)` says so. Two processes are not covered: two
+  `cancel(job, queue_url)` says so. A stop is remembered for 60 minutes: a
+  build number used again by a job that was deleted and created again is
+  not taken for the build stopped before. Two processes are not covered: two
   cancels of one dispatch from two processes at the same moment,
   `cancel --force` while the process executing the dispatch is alive, or a
   cancel after a process that sent the stop ended before recording it, can

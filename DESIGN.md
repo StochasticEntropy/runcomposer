@@ -420,7 +420,15 @@ error text, and whatever was delivered until then is kept.
   its executor running (tests/test_cancel_paths.py). For a dispatch that only waits for
   results, the runner is asked to stop its executor through a context rebuilt
   from the stored record, and the dispatch is `CANCELLED` at once. A dispatch
-  still queued is cancelled without the runner ever starting.
+  still queued is cancelled without the runner ever starting. Between the
+  two lies the moment a dispatch is being settled — its runner has handed
+  off and returned, and the manager has already decided that it now waits
+  for results: a cancel that comes then still finds the dispatch executing
+  and tells its runner, so the request is read once more in the very step
+  that takes the dispatch off the list of what executes here, and the
+  dispatch is closed `CANCELLED` there. No cancel leaves a dispatch in
+  flight with its executor stopped (tests/test_cancel_paths.py,
+  `TestACancelWhileTheDispatchSettles`).
 - **Restart recovery.** While a runner executes, the dispatch names its owner
   (host, process id, a per-process token). At startup — `serve`, the
   dispatching CLI commands, and `doctor` — every `DISPATCHED`/`RUNNING`
@@ -1250,7 +1258,9 @@ retried only when it provably did not take effect (a refused connection, a
 `502`/`504`), and within one server process the client sends one stop per
 build whoever asks — the runner's `cancel` and the take-back of `follow`,
 two cancels at once (`JenkinsClient.stop_build`;
-tests/test_jenkins_toolkit.py, `TestOneStopPerBuild`). What a client
+tests/test_jenkins_toolkit.py, `TestOneStopPerBuild`). A stop is remembered for 60 minutes, so that a build
+number used again by a job that was deleted and created again is not taken
+for the build stopped before. What a client
 remembers is its own, and only while its process lives, so two processes
 are not covered. Three ways to a second stop remain: two cancels of one
 dispatch from two processes at the same moment; `cancel --force` while the

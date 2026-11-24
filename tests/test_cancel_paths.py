@@ -55,6 +55,8 @@ class PollingRunner(RunnerBase):
         ctx.declare(["1"])
         if self.mode == "gives-up":
             raise DispatchCancelled("the executor went away")
+        if self.mode == "hands-off":
+            return  # an executor elsewhere will push the results
         time.sleep(self.phase_s)
         deadline = time.monotonic() + 30
         while not ctx.cancelled and time.monotonic() < deadline:
@@ -186,3 +188,73 @@ class TestEveryOtherWayToEndCancelled:
         assert seen[0] is False
         assert service.require_run(run_id).state == "CANCELLED"
         assert CANCELS.get(outcome.dispatch_id) == ["RUNNING"]
+
+
+class TestACancelWhileTheDispatchSettles:
+    """The runner has handed off and returned; the manager decides how
+    the dispatch ends (here: it will wait for results). A cancel that comes
+    in that moment still finds the dispatch executing here — and must not be
+    left with a dispatch that stays in flight, its executor stopped."""
+
+    def settling(self, polling, monkeypatch, then: Any) -> tuple[Service, str, Any]:
+        """A dispatch of the hands-off runner; ``then(service, run_id)`` is
+        called once, in the manager's thread, after it has decided that the
+        dispatch was not cancelled and before it is done with it."""
+        service = polling(mode="hands-off")
+        run_id = compose(service, "Auth-SSO", runner_id="polling")
+        SERVICES[run_id] = service
+        recompute = service.ledger.recompute
+        called: list[str] = []
+
+        def recompute_then_cancel(dispatch_id: str, **options: Any) -> Any:
+            if not called:
+                called.append(dispatch_id)
+                then(service, run_id)
+            return recompute(dispatch_id, **options)
+
+        monkeypatch.setattr(service.ledger, "recompute", recompute_then_cancel)
+        outcome = service.dispatch(run_id, "polling")
+        assert outcome.done.wait(30) and called == [outcome.dispatch_id]
+        return service, run_id, outcome
+
+    def test_a_cancel_made_in_this_process_closes_it(self, polling, monkeypatch):
+        answers: list[str] = []
+        service, run_id, outcome = self.settling(
+            polling, monkeypatch, lambda service, run_id: answers.append(service.cancel(run_id).state)
+        )
+        dispatch = service.require_run(run_id).latest_dispatch
+        assert (dispatch.state, dispatch.error_code) == ("CANCELLED", "cancelled")
+        assert answers == ["RUNNING"], "the request found the dispatch still executing"
+        assert CANCELS.get(outcome.dispatch_id) == ["RUNNING"], "cancel(ctx) once, before it was closed"
+        assert outcome.dispatch_id not in service.dispatcher.active_dispatch_ids()
+
+    def test_a_request_another_process_wrote_closes_it(self, polling, monkeypatch):
+        """Only the flag in the store — nobody in this process was told."""
+
+        def write_the_flag(service: Service, run_id: str) -> None:
+            dispatch = service.require_run(run_id).latest_dispatch
+            service.store.update_dispatch(dispatch.dispatch_id, cancel_requested=True)
+
+        service, run_id, outcome = self.settling(polling, monkeypatch, write_the_flag)
+        assert service.require_run(run_id).state == "CANCELLED"
+        assert len(CANCELS.get(outcome.dispatch_id, [])) == 1, "cancel(ctx) exactly once"
+        assert outcome.dispatch_id not in service.dispatcher.active_dispatch_ids()
+
+    def test_a_cancel_after_it_is_settled_closes_it_itself(self, polling):
+        """The other side of the same moment: the dispatch is no longer
+        listed as executing, so the cancel closes it — and calls cancel(ctx)
+        once."""
+        service = polling(mode="hands-off")
+        run_id = compose(service, "Auth-SSO", runner_id="polling")
+        SERVICES[run_id] = service
+        outcome = service.dispatch(run_id, "polling")
+        assert outcome.done.wait(30)
+        assert service.require_run(run_id).state == "AWAITING_RESULTS"
+        assert service.cancel(run_id).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"]
+
+    def test_a_dispatch_nobody_cancelled_waits_for_its_results(self, polling, monkeypatch):
+        service, run_id, outcome = self.settling(polling, monkeypatch, lambda service, run_id: None)
+        assert service.require_run(run_id).state == "AWAITING_RESULTS"
+        assert outcome.dispatch_id not in CANCELS
+        assert outcome.dispatch_id not in service.dispatcher.active_dispatch_ids()

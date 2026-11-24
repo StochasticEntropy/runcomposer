@@ -17,6 +17,7 @@ Three things are shown:
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import socket
@@ -771,6 +772,30 @@ class TestOneStopPerBuild:
             with pytest.raises(JenkinsError):
                 client.stop_build(build_url)
         assert client.stop_build(build_url) is True and len(jenkins.posts("/stop")) == 1
+
+    def test_a_stop_is_remembered_for_60_minutes_not_for_ever(self, jenkins, monkeypatch):
+        """A build URL names another build once its job was deleted and
+        created again: the new build 1 must get its stop."""
+        from runcomposer.sdk import jenkins as toolkit
+
+        client = client_for(jenkins)
+        _, build_url = self.running_build(jenkins, client)
+        assert client.stop_build(build_url) is True and client.stop_build(build_url) is False
+        clock = toolkit.time.monotonic()
+        monkeypatch.setattr(toolkit.time, "monotonic", lambda: clock + 3599)
+        assert client.stop_build(build_url) is False, "within the 60 minutes: still the same build"
+        monkeypatch.setattr(toolkit.time, "monotonic", lambda: clock + 3601)
+        assert client.stop_build(build_url) is True, "after it: a build of that URL is stopped again"
+        assert len(jenkins.posts("/stop")) == 2
+
+    def test_no_more_than_4096_stops_are_remembered(self, jenkins, monkeypatch):
+        client = client_for(jenkins)
+        monkeypatch.setattr(client, "request", lambda *args, **options: contextlib.nullcontext())
+        for number in range(1, 4098):
+            assert client.stop_build(f"{jenkins.url}/job/{JOB}/{number}") is True
+        assert len(client._stopped) == 4096
+        assert client.stop_build(f"{jenkins.url}/job/{JOB}/4097") is False
+        assert client.stop_build(f"{jenkins.url}/job/{JOB}/1") is True, "the oldest was forgotten"
 
     def test_a_stop_the_server_said_no_to_is_sent_by_a_later_call(self, jenkins):
         """A 4xx is the server's own no — the build was not stopped, so it

@@ -74,8 +74,14 @@ _TRANSIENT = (429, 502, 503, 504)
 #: requests, the server not ready. A gateway's 502 or 504 does not — the
 #: server behind it may have received the request.
 _NOT_ACTED_ON = (429, 503)
-#: How many builds a client remembers having sent a stop to.
+#: How many builds a client remembers having sent a stop to, and for how
+#: long (seconds). What the memory guards against comes within seconds — a
+#: retry, a runner's cancel and a take-back, two cancels at once — while a
+#: job's own clean-up runs. A build URL does not name one build for ever: a
+#: job that is deleted and created again counts from 1 once more, and its new
+#: build must not find a stop remembered from the old one.
 _STOPS_KEPT = 4096
+_STOP_REMEMBERED_S = 3600.0
 
 
 class JenkinsError(RuntimeError):
@@ -209,8 +215,9 @@ class JenkinsClient:
         self._crumb: tuple[str, str] | None = None
         self._crumb_known = False
         self._lock = threading.Lock()
-        #: The builds a stop was sent to (see :meth:`stop_build`), oldest first.
-        self._stopped: OrderedDict[str, None] = OrderedDict()
+        #: The builds a stop was sent to and when (see :meth:`stop_build`),
+        #: oldest first.
+        self._stopped: OrderedDict[str, float] = OrderedDict()
         self._stops_lock = threading.Lock()
 
     # -- addresses ---------------------------------------------------------------------
@@ -605,6 +612,11 @@ class JenkinsClient:
         timeout whenever it came, while connecting too, since the two cannot
         be told apart from here.
 
+        A stop is remembered for 60 minutes — far longer than the seconds
+        in which a second one comes, and short enough that a build number
+        used again (a job deleted and created again counts from 1) is not
+        taken for the build stopped before.
+
         What a client remembers is its own, and only while its process
         lives. One server process has one client per runner, so every way to
         a build inside it is covered; two processes that stop the same build
@@ -622,9 +634,13 @@ class JenkinsClient:
         cancelled (``RemoteLiveChannel.cancel_requested``)."""
         url = build_url.rstrip("/")
         with self._stops_lock:
+            now = time.monotonic()
+            # Oldest first: forget what is over.
+            while self._stopped and now - next(iter(self._stopped.values())) >= _STOP_REMEMBERED_S:
+                self._stopped.popitem(last=False)
             if url in self._stopped:
                 return False
-            self._stopped[url] = None
+            self._stopped[url] = now
             while len(self._stopped) > _STOPS_KEPT:
                 self._stopped.popitem(last=False)
         try:

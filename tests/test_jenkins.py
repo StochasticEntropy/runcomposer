@@ -993,7 +993,13 @@ class TestCancel:
         run_id = body["run"]["id"]
         wait_until(lambda: (JOB, 1) in jenkins.builds, what="the build to start")
         status, cancelled = live_server.post(f"/api/v1/runs/{run_id}/cancel", {})
-        assert status == 202 and cancelled["dispatch"]["state"] == "CANCELLED", cancelled
+        assert status == 202, cancelled
+        # The build may have started before the dispatch was done being handed
+        # off: such a cancel is honoured by the thread that finishes it.
+        wait_until(
+            lambda: live_server.get(f"/api/v1/runs/{run_id}")["state"] == "CANCELLED",
+            what="the run to be cancelled",
+        )
         release.set()  # the build goes on as if no stop had come
         wait_until(lambda: pushes, what="the build to push its results")
         (status, refusal), = pushes

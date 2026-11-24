@@ -106,10 +106,13 @@ def awaiting(live_server, jenkins):
     jenkins.add_job(JOB, lambda build: build.stop.wait(30))
     run_id = dispatch_over_http(live_server)
     params = handed_out(live_server, jenkins)
-    # The build exists before the dispatcher has written that it now waits
-    # for results: a test that writes a state itself must come after that.
+    # The build exists before the dispatcher is done with the dispatch: a
+    # test that writes a state itself, or expects a cancel to close the
+    # dispatch at once, must come after that.
+    service = live_server.service
     wait_until(
-        lambda: live_server.service.store.get_dispatch(params["DISPATCH_ID"]).state == "AWAITING_RESULTS",
+        lambda: service.store.get_dispatch(params["DISPATCH_ID"]).state == "AWAITING_RESULTS"
+        and params["DISPATCH_ID"] not in service.dispatcher.active_dispatch_ids(),
         what="the dispatch to await its results",
     )
     return run_id, params

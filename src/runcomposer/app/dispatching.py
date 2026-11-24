@@ -874,12 +874,56 @@ class DispatchManager:
                 service.ledger.release(ctx.dispatch_id)
             except Exception as exc:
                 log_failure(log, f"releasing dispatch {ctx.dispatch_id} failed", exc, service.redact)
-            with self._lock:
-                self._active.pop(ctx.dispatch_id, None)
+            try:
+                self._leave(active)
+            except Exception as exc:
+                log_failure(log, f"closing dispatch {ctx.dispatch_id} failed", exc, service.redact)
+                with self._lock:
+                    self._active.pop(ctx.dispatch_id, None)
             ctx.handoff.set()
             active.outcome.done.set()
         if error is not None and not isinstance(error, Exception):
             raise error  # KeyboardInterrupt / SystemExit belong to the caller
+
+    def _leave(self, active: _Active) -> None:
+        """Take a settled dispatch off the list of what executes here —
+        unless a cancel was requested for it while it was being settled.
+
+        ``_settle`` decides how a dispatch ends from what it knows when it
+        starts. A cancel that comes after that still finds the dispatch
+        listed, tells its runner, and leaves the closing to this thread —
+        which has already decided, so the dispatch would stay in flight with
+        its executor stopped. The request is therefore read once more, in
+        the same step that takes the dispatch off the list: a cancel that
+        finds it listed is honoured here, and one that finds it gone closes
+        the dispatch itself (``_cancel_detached``). The runner's
+        ``cancel(ctx)`` is called once either way (``_signal``)."""
+        ctx = active.ctx
+        with self._lock:
+            dispatch = self._service.store.get_dispatch(ctx.dispatch_id)
+            late = (
+                dispatch is not None and dispatch.cancel_requested and dispatch.state in ACTIVE_STATES
+            )
+            if not late:
+                self._active.pop(ctx.dispatch_id, None)
+                return
+        try:
+            self._signal(active)
+            if not active.cancel_done.wait(_CANCEL_WAIT_S):
+                ctx.log(
+                    f"the runner's cancel() had not returned after {_CANCEL_WAIT_S:g}s — "
+                    "closing the dispatch as cancelled without waiting for it any longer",
+                    level="warning",
+                )
+            try:
+                self._service.ledger.move(
+                    ctx.dispatch_id, "CANCELLED", error="cancelled on request", error_code="cancelled"
+                )
+            except InvalidTransition:
+                pass  # its last results arrived meanwhile: complete is the answer
+        finally:
+            with self._lock:
+                self._active.pop(ctx.dispatch_id, None)
 
     def _settle(self, active: _Active, error: BaseException | None) -> None:
         ctx, ledger = active.ctx, self._service.ledger
