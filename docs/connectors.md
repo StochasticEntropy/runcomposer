@@ -604,10 +604,58 @@ as `X-Runcomposer-Token` or `Authorization: Bearer`:
 A token reports for its own dispatch only (`403` otherwise)
 (`tests/test_runner_contract.py::TestPushedProgress`).
 
+**Asking for a cancel.** When the run is cancelled, runcomposer calls the
+runner's `cancel(ctx)`, which stops the executor — a CI build's stop, say.
+That stop can be lost (a CI server may drop it), and a second one must not
+be sent (§9.2, on stopping a build). An execution that must not run on
+after a cancel therefore asks runcomposer, with the same token:
+`GET /api/v1/runs/{id}/dispatches/{dispatch_id}/state` → `{run_id,
+dispatch_id, state, cancel_requested, stop}` — `stop` is true once a cancel
+was requested or the dispatch was cancelled. It is authorized exactly like
+a push for that dispatch (`401`, `403`, `404` as above; a dispatch the run
+does not have is `404` `unknown-dispatch`) and, beyond the run record its
+authorization reads, reads one dispatch row, never the run's results —
+cheap to ask, unlike the run's page. On the
+channel the execution already holds it is `cancel_requested()`: it asks at
+most once per `cancel_check_interval_s` seconds (default 5) however often
+it is called, stays `True` once the server said `stop`, and answers `False`
+for whatever it cannot know — a server that cannot be reached, a refusal,
+no `dispatch_id` — without raising. A shard loop of the checkout suite,
+run by a CI job from what the `jenkins` runner handed it:
+
+```python
+import os
+
+from runcomposer.sdk import RemoteLiveChannel
+
+channel = RemoteLiveChannel(
+    os.environ["CALLBACK_URL"], os.environ["INGEST_TOKEN"],
+    dispatch_id=os.environ["DISPATCH_ID"], cancel_check_interval_s=10,
+)
+
+
+def checkout_suite(channel: RemoteLiveChannel, item_ids: list[str]) -> list[str]:
+    done = []
+    for item_id in item_ids:
+        if channel.cancel_requested():
+            channel.log("checkout suite: the run was cancelled — stopping", level="warning")
+            break
+        channel.live("1", item_id, "RUNNING")
+        done.append(item_id)  # … the test itself …
+        channel.live("1", item_id, "PASS")
+    return done
+```
+
+Workers started with `supervise` stop the same way:
+`supervise(payloads, max_workers=2, cancelled=channel.cancel_requested)`
+(`tests/test_dispatch_state.py` — the loop above as written, the
+interval, the refusals, an unreachable server).
+
 A runner does not format these URLs itself: `callback_urls(base, run_id,
 dispatch_id=None)` in the SDK returns them as a `CallbackUrls` — `run`,
-`results` (what a runner hands out as its callback URL), `live`, `log`, and
+`results` (what a runner hands out as its callback URL), `live`, `log`,
 `spec` (the document handed out for the dispatch, `GET`; `None` without a
+dispatch id) and `state` (the dispatch's state, above; `None` without a
 dispatch id) — under the deployment's base address, the address the
 executor reaches runcomposer by (a `callback_base` option such as
 `https://runcomposer.shop.example`; a base that already ends in `/api/v1`
@@ -616,9 +664,10 @@ is taken as it is). The reference `jenkins` runner makes its
 (`tests/test_callback_urls.py`). The client side ships
 in four forms (`tests/test_runner_contract.py::TestTheRemoteChannelAndTheConsumer`):
 `RemoteLiveChannel(callback_url, token, dispatch_id=…, ca_bundle=None,
-verify_tls=True)` in the SDK is a
+verify_tls=True, cancel_check_interval_s=5.0)` in the SDK is a
 `LiveChannel` over HTTP — best-effort: what cannot be pushed is counted in
-`failures`, never raised into the execution. It needs no closing: it holds
+`failures`, never raised into the execution; `cancel_requested()` asks
+whether the dispatch was cancelled (above). It needs no closing: it holds
 no connection, and each `live` or `log` call is one request, answered
 before the call returns
 (`tests/test_callback_urls.py::TestTheyAreTheEndpointsADeploymentAnswersOn`);

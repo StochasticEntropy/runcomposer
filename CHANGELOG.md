@@ -484,6 +484,17 @@ not exist or worked differently:
   authorized by the dispatch's ingest token. `RemoteLiveChannel` and
   `runcomposer.sdk.robot.RemoteLiveStatusListener` are the clients.
   `GET /runs/{id}/verdicts?status=RUNNING` selects what is executing now.
+- **An executor runcomposer did not start can ask whether its dispatch was
+  cancelled** — for a CI build whose stop the CI server lost:
+  `GET /api/v1/runs/{id}/dispatches/{dispatch_id}/state` →
+  `{run_id, dispatch_id, state, cancel_requested, stop}`, authorized like a
+  push with the dispatch's token and reading no results — the run record
+  and one dispatch row.
+  `RemoteLiveChannel.cancel_requested()` asks on the channel the execution
+  holds: at most once per `cancel_check_interval_s` (default 5 s), `True`
+  for good once the server says `stop`, `False` for whatever it cannot
+  know, never an exception — fit for `supervise(…, cancelled=…)`.
+  `CallbackUrls.state` is the URL (`tests/test_dispatch_state.py`).
 - **Shard groups**: `ctx.declare(…, groups={shard: label})`,
   `ctx.add_artifact(…, group=…)`; the run detail rolls results up per group
   (`groups`) next to the per-shard roll-up, and counts what is streaming per

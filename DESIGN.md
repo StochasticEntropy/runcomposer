@@ -648,7 +648,31 @@ for the envelope):
 
 Both name the dispatch their token is bound to; a token used for another
 dispatch is a `403`. Neither is a result: live status is dropped when the
-shard delivers, and only the results push completes anything. The client
+shard delivers, and only the results push completes anything.
+
+**Learning that the dispatch was cancelled.** A cancel stops an external
+executor through its runner (`cancel(ctx)` — a CI build's stop), and that
+stop can be lost: a CI server may drop one, and must not be sent a second
+(§6.2b). So the executor can ask, with the token it pushes with:
+
+- `GET /api/v1/runs/{id}/dispatches/{dispatch_id}/state` → `{run_id,
+  dispatch_id, state, cancel_requested, stop}`. `stop` is what it acts on:
+  true once a cancel was requested (recorded, the dispatch not yet closed)
+  or the dispatch is `CANCELLED`. Authorized exactly like a push for that
+  dispatch — unknown run `404`, no token `401`, a wrong one `403`, another
+  dispatch's token `403`, nothing asked when tokens are disabled — and a
+  dispatch the run does not have is `404` `unknown-dispatch`. Beyond the
+  run record its authorization reads, it reads one dispatch row — never
+  the run's verdicts or events — so polling it costs the same however many
+  results the run holds; the run's page (`GET /runs/{id}`) is not
+  meant for that.
+
+The client side is `RemoteLiveChannel.cancel_requested()`: at most one
+request per `cancel_check_interval_s` (5 s by default) however often it is
+called — fit to hand to `supervise(…, cancelled=…)` — `True` for good once
+the server said `stop`, and `False` for anything not known (unreachable,
+refused, unreadable), never an exception into the execution, as the
+channel treats a push it cannot make (tests/test_dispatch_state.py). The client
 side is `RemoteLiveChannel` in the SDK (a `LiveChannel` that POSTs),
 `runcomposer.sdk.robot.RemoteLiveStatusListener` for a Robot Framework agent
 (configured from `RUNCOMPOSER_CALLBACK_URL`, `RUNCOMPOSER_INGEST_TOKEN`,
@@ -1545,12 +1569,13 @@ plugin's own options that name a callable, in either spelling, §8), the
 filter's text form (`parse_filter_text`, `read_filter_string`,
 `quote_pattern`, `format_filter`, `FilterSyntaxError`, §3.1),
 `RemoteLiveChannel` and `push_results` (an executor's progress and its
-results bundle, pushed to the API — over HTTPS with `ca_bundle` /
+results bundle, pushed to the API, and whether its dispatch was cancelled
+— `cancel_requested()`, §5 — over HTTPS with `ca_bundle` /
 `verify_tls`; a refused push raises
 `ResultsPushRefused` with the status and the server's answer, §5; the
 scheme is compared without regard to case, no redirect is followed, a
 bundle is streamed), `callback_urls` / `CallbackUrls` (a run's results,
-live, log and document URLs under a deployment's base address), the closed
+live, log, document and dispatch-state URLs under a deployment's base address), the closed
 vocabularies `DISPATCH_ERROR_CODES` and `PARAMETER_PROBLEMS` (§4, §9) —
 plus `load_config` and `Service` for driving
 runcomposer from Python (compose → dispatch → wait → read, in one process).
@@ -2184,6 +2209,8 @@ POST   /api/v1/runs/{id}/dispatches/{dispatch_id}/token   # rotate the ingest to
 POST   /api/v1/runs/{id}/results          # ingestion push (multipart; token)
 POST   /api/v1/runs/{id}/live             # live status from an external executor (token, §5)
 POST   /api/v1/runs/{id}/log              # log lines from an external executor (token, §5)
+GET    /api/v1/runs/{id}/dispatches/{dispatch_id}/state   # should it stop: state,
+                                          #   cancel_requested, stop (token, §5)
 
 GET    /api/v1/quarantine
 POST   /api/v1/quarantine/{id}/attach     # bind to an existing run (logged)

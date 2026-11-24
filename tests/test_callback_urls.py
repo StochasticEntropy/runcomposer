@@ -10,6 +10,7 @@ served deployment really answers on.
 from __future__ import annotations
 
 import json
+import urllib.request
 
 import pytest
 
@@ -39,6 +40,7 @@ class TestTheUrls:
             live="https://runcomposer.shop.example/api/v1/runs/01RUN/live",
             log="https://runcomposer.shop.example/api/v1/runs/01RUN/log",
             spec="https://runcomposer.shop.example/api/v1/runs/01RUN/dispatches/01DISPATCH/spec",
+            state="https://runcomposer.shop.example/api/v1/runs/01RUN/dispatches/01DISPATCH/state",
         )
 
     def test_a_base_that_names_the_api_already_is_taken_as_it_is(self):
@@ -47,7 +49,8 @@ class TestTheUrls:
         )
 
     def test_without_a_dispatch_there_is_no_document_url(self):
-        assert callback_urls("http://localhost:8100", "01RUN").spec is None
+        urls = callback_urls("http://localhost:8100", "01RUN")
+        assert urls.spec is None and urls.state is None
 
     @pytest.mark.parametrize(("base", "run_id"), [("", "01RUN"), ("  ", "01RUN"), ("http://x", "")])
     def test_an_empty_base_or_run_id_is_refused(self, base, run_id):
@@ -104,6 +107,10 @@ class TestTheyAreTheEndpointsADeploymentAnswersOn:
             seen = handle.read()
             assert [s.status for s in seen.live] == ["RUNNING"] and "agent-1 started" in seen.logs()
             assert channel.failures == 0 and not hasattr(channel, "close")
+            asked = urllib.request.Request(urls.state, headers={"X-Runcomposer-Token": token})
+            with urllib.request.urlopen(asked, timeout=10) as response:
+                assert json.loads(response.read())["stop"] is False
+            assert channel.state_url == urls.state
 
             results = tmp_path / "results.json"
             results.write_text(json.dumps({

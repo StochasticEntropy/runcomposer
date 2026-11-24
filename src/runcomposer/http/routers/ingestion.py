@@ -1,8 +1,9 @@
 """Results in: the push endpoint, an external executor's progress, and the
 quarantine.
 
-The three routes an executor writes to — ``/results``, ``/live``, ``/log`` —
-are :class:`TokenFirstRoute` routes: the run and the ingest token are checked
+The routes an executor uses with its dispatch's token — ``/results``,
+``/live``, ``/log``, and the dispatch's ``/state`` it reads — are
+:class:`TokenFirstRoute` routes: the run and the ingest token are checked
 from the path and the headers before a single byte of the body is read, and
 the body is read under ``core.ingestion.max_upload_mb``, counted while it
 arrives.
@@ -300,6 +301,34 @@ def push_log(
     dispatch = _progress_dispatch(service, run_id, body.dispatch, bound_dispatch)
     result = service.ingestion.push_log(dispatch, [line.model_dump() for line in body.lines])
     return {"dispatch_id": dispatch.dispatch_id, **result}
+
+
+@_executor.get("/runs/{run_id}/dispatches/{dispatch_id}/state")
+def dispatch_state(
+    run_id: str,
+    dispatch_id: str,
+    bound_dispatch: str | None = Depends(ingest_dispatch),
+    service: Service = Depends(service_of),
+) -> dict[str, Any]:
+    """Whether an executor runcomposer did not start should stop: the
+    dispatch's ``state``, ``cancel_requested``, and ``stop`` — true once a
+    cancel was requested or the dispatch was cancelled. For an execution
+    whose stop may never have reached it (a CI server can lose one), read
+    with the token it pushes with.
+
+    Authorized exactly like a push for this dispatch: an unknown run is a
+    404, a missing token 401, a wrong one 403, another dispatch's token 403;
+    with tokens disabled, no token is asked for. A dispatch the run does not
+    have is a 404 (``unknown-dispatch``). Answers
+    ``{run_id, dispatch_id, state, cancel_requested, stop}``, reading the
+    run record (for the authorization) and one dispatch row — never the
+    run's verdicts or events."""
+    if bound_dispatch and dispatch_id != bound_dispatch:
+        raise Forbidden(
+            f"this token belongs to dispatch {bound_dispatch}, not to {dispatch_id} — "
+            "a dispatch's token asks about that dispatch only"
+        )
+    return service.ingestion.dispatch_state(run_id, dispatch_id)
 
 
 router.include_router(_executor)

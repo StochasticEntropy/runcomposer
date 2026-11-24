@@ -570,6 +570,26 @@ class Ingestion:
             raise Conflict(f"run {run_id} has no dispatch to report progress for")
         return dispatch
 
+    def dispatch_state(self, run_id: str, dispatch_id: str) -> dict[str, Any]:
+        """What an executor elsewhere is told about its own dispatch: its
+        ``state``, whether a cancel was requested (``cancel_requested``), and
+        ``stop`` — the two read for it: a cancel was requested, or the
+        dispatch was cancelled. One dispatch row is read, whatever the run
+        holds. A dispatch the run does not have is an unknown dispatch, as
+        for a progress push."""
+        dispatch = self._service.store.get_dispatch(dispatch_id)
+        if dispatch is None or dispatch.run_id != run_id:
+            raise IngestError(
+                f"unknown dispatch id {dispatch_id!r} for run {run_id}", reason="unknown-dispatch"
+            )
+        return {
+            "run_id": dispatch.run_id,
+            "dispatch_id": dispatch.dispatch_id,
+            "state": dispatch.state,
+            "cancel_requested": dispatch.cancel_requested,
+            "stop": dispatch.cancel_requested or dispatch.state == "CANCELLED",
+        }
+
     def push_live(
         self, dispatch: DispatchRecord, updates: Sequence[Mapping[str, Any]]
     ) -> dict[str, Any]:

@@ -1,12 +1,13 @@
 """Pushing to a runcomposer API from wherever the tests execute (DESIGN.md
 §5, §6.2): the client side of ``POST /runs/{id}/live``, ``POST
-/runs/{id}/log`` and ``POST /runs/{id}/results``.
+/runs/{id}/log``, ``POST /runs/{id}/results`` and ``GET
+/runs/{id}/dispatches/{dispatch_id}/state``.
 
 An external executor — a CI job, a remote agent — holds the ingest token of
 its dispatch. With it, and the run's callback URL, it can report which item
-is executing now and append log lines while its work is still under way
-(:class:`RemoteLiveChannel`), and push the results home as a bundle when it
-is done (:func:`push_results`).
+is executing now and append log lines while its work is still under way,
+ask whether its dispatch was cancelled (:class:`RemoteLiveChannel`), and
+push the results home as a bundle when it is done (:func:`push_results`).
 
 Stdlib only, so that a worker or an agent can use it with nothing installed
 but this package. Progress is best-effort by design: what cannot be pushed is
@@ -27,6 +28,8 @@ import functools
 import http.client
 import json
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -59,13 +62,16 @@ class CallbackUrls:
     where a bundle is pushed (``POST``, what a runner hands out as its
     callback URL); ``live`` and ``log`` — where live status and log lines
     are pushed; ``spec`` — the document handed out for the dispatch
-    (``GET``; ``None`` without a dispatch id)."""
+    (``GET``; ``None`` without a dispatch id); ``state`` — whether the
+    dispatch was cancelled (``GET`` with the token; ``None`` without a
+    dispatch id)."""
 
     run: str
     results: str
     live: str
     log: str
     spec: str | None = None
+    state: str | None = None
 
 
 def callback_urls(base: str, run_id: str, dispatch_id: str | None = None) -> CallbackUrls:
@@ -73,8 +79,9 @@ def callback_urls(base: str, run_id: str, dispatch_id: str | None = None) -> Cal
     address an executor elsewhere reaches this runcomposer by, such as a
     runner's ``callback_base`` option (``https://runcomposer.shop.example``;
     a base that already ends in ``/api/v1`` is taken as it is). With
-    ``dispatch_id``, ``spec`` is the document handed out for that dispatch.
-    Raises ``ValueError`` for an empty base or run id."""
+    ``dispatch_id``, ``spec`` is the document handed out for that dispatch
+    and ``state`` where that dispatch's state is read. Raises
+    ``ValueError`` for an empty base or run id."""
     root = str(base or "").strip().rstrip("/")
     if not root:
         raise ValueError("callback_urls needs the deployment's base address (callback_base)")
@@ -89,7 +96,12 @@ def callback_urls(base: str, run_id: str, dispatch_id: str | None = None) -> Cal
         live=f"{run}/live",
         log=f"{run}/log",
         spec=f"{run}/dispatches/{dispatch_id}/spec" if dispatch_id else None,
+        state=_state_url(run, dispatch_id) if dispatch_id else None,
     )
+
+
+def _state_url(run_url: str, dispatch_id: str) -> str:
+    return f"{run_url}/dispatches/{urllib.parse.quote(str(dispatch_id), safe='')}/state"
 
 
 def _run_url(callback_url: str) -> str:
@@ -331,7 +343,9 @@ class RemoteLiveChannel:
     """A ``LiveChannel`` over HTTP: ``live`` and ``log`` are POSTed to the
     run's API, authorized by the ingest token of the dispatch. ``failures``
     counts what could not be pushed — a certificate that cannot be verified
-    included; nothing is raised into the execution.
+    included; nothing is raised into the execution. With ``dispatch_id``,
+    :meth:`cancel_requested` asks whether the dispatch was cancelled, at
+    most once per ``cancel_check_interval_s`` seconds.
 
     Over HTTPS, ``ca_bundle`` is a file of the CA certificates to trust
     instead of the system's, and ``verify_tls=False`` skips the
@@ -339,7 +353,7 @@ class RemoteLiveChannel:
     certificate, is refused here (``FileNotFoundError``, ``ValueError``).
 
     Picklable — it travels into spawned workers: its state is strings,
-    numbers and a flag, and the TLS context is built in the process that
+    numbers and flags, and the TLS context is built in the process that
     pushes."""
 
     def __init__(
@@ -351,6 +365,7 @@ class RemoteLiveChannel:
         timeout_s: float = 5.0,
         ca_bundle: str | Path | None = None,
         verify_tls: bool = True,
+        cancel_check_interval_s: float = 5.0,
     ):
         self.live_url, self.log_url = progress_urls(callback_url)
         self.token = token
@@ -359,6 +374,70 @@ class RemoteLiveChannel:
         self.ca_bundle = _checked_ca_bundle(ca_bundle)
         self.verify_tls = bool(verify_tls)
         self.failures = 0
+        interval = float(cancel_check_interval_s)
+        if not interval >= 0:
+            raise ValueError(
+                f"cancel_check_interval_s is a number of seconds, 0 or more, got {cancel_check_interval_s!r}"
+            )
+        self.cancel_check_interval_s = interval
+        #: Where the dispatch's state is read; ``None`` without a dispatch id.
+        self.state_url = _state_url(_run_url(callback_url), dispatch_id) if dispatch_id else None
+        self._cancelled = False
+        self._asked_at: float | None = None
+        self._asking = threading.Lock()
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        del state["_asking"]
+        # A monotonic time of another process means nothing in this one.
+        state["_asked_at"] = None
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._asking = threading.Lock()
+
+    def cancel_requested(self) -> bool:
+        """Whether runcomposer says this dispatch should stop: a cancel was
+        requested for it, or it was cancelled (``GET
+        /runs/{id}/dispatches/{dispatch_id}/state``, its ``stop``). The way
+        an execution runcomposer did not start hears of a cancel whose stop
+        never reached it — a CI server can lose one.
+
+        Made to be called often — between two tests, or handed on as
+        ``supervise(…, cancelled=channel.cancel_requested)``: the server is
+        asked at most once per ``cancel_check_interval_s`` seconds (5 by
+        default; 0 asks at every call), and a call in between answers
+        ``False`` without a request. Once ``True`` it stays ``True``, and
+        nothing more is asked.
+
+        Never raises into the execution, as a push that cannot be made is
+        dropped: a server that cannot be reached, a refusal (a wrong token,
+        an unknown run or dispatch) or an answer that cannot be read is
+        "not known" — ``False``. Without a ``dispatch_id`` there is nothing
+        to ask about: always ``False``. A request takes at most
+        ``timeout_s``."""
+        if self._cancelled:
+            return True
+        if self.state_url is None:
+            return False
+        with self._asking:
+            now = time.monotonic()
+            if self._asked_at is not None and now - self._asked_at < self.cancel_check_interval_s:
+                return False
+            self._asked_at = now
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["X-Runcomposer-Token"] = self.token
+        request = urllib.request.Request(self.state_url, headers=headers, method="GET")
+        try:
+            with _open(request, self.timeout_s, self.ca_bundle, self.verify_tls) as response:
+                answer = _answer(response.read())
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+            return False
+        if isinstance(answer, dict) and answer.get("stop") is True:
+            self._cancelled = True
+        return self._cancelled
 
     def live(
         self, shard: str, item_id: str, status: str, *, duration_ms: int = 0, message: str = ""
