@@ -1221,6 +1221,20 @@ class DispatchManager:
                     return False
                 outcome.done.wait(remaining)
 
+    def _stop_if_listed(self, active: _Active) -> bool:
+        """Request the cancel of a dispatch executing here and signal it —
+        if it is still listed. The request is written in one step with the
+        look at the list: a dispatch released meanwhile only waits for
+        results, and that is not what a shutdown stops. True when it was
+        listed."""
+        with self._lock:
+            listed = self._active.get(active.ctx.dispatch_id) is active
+            if listed:
+                self._service.store.update_dispatch(active.ctx.dispatch_id, cancel_requested=True)
+        if listed:
+            self._signal(active)
+        return listed
+
     def shutdown(self, *, cancel: bool = True, timeout: float = 10.0) -> None:
         """Stop accepting work; ask what is executing to stop."""
         with self._lock:
@@ -1229,17 +1243,7 @@ class DispatchManager:
         if cancel:
             for active in actives:
                 try:
-                    # Requested and checked in one step with the list: a
-                    # dispatch released meanwhile only waits for results —
-                    # that is not what a shutdown stops.
-                    with self._lock:
-                        listed = self._active.get(active.ctx.dispatch_id) is active
-                        if listed:
-                            self._service.store.update_dispatch(
-                                active.ctx.dispatch_id, cancel_requested=True
-                            )
-                    if listed:
-                        self._signal(active)
+                    self._stop_if_listed(active)
                 except Exception as exc:
                     log_failure(
                         log, f"could not cancel dispatch {active.ctx.dispatch_id}", exc, self._service.redact

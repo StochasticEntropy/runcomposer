@@ -782,7 +782,12 @@ not exist or worked differently:
   two — each stopped the executor, and so did the watch on the store for a
   dispatch released a moment before the request came. Whoever closes a
   dispatch that is nobody's now claims it first, in one decision of the
-  store, and the other leaves it to that one; the watch tells only a
+  store, and the other leaves it to that one — it is answered `202` with
+  the dispatch as it is at that moment, still active, where it used to
+  get `CANCELLED` or a `409`. While the claim is held the dispatch has an
+  owner: it reads `executing: true`, and an export of the run is refused
+  as for any dispatch in flight. `--force` takes a dispatch whatever its
+  owner, this process included. The watch tells only a
   dispatch that is still listed. A shutdown no longer requests the cancel
   of a dispatch that was released meanwhile and only waits for results
   (`tests/test_cancel_paths.py::TestTwoRequestsTogether`).

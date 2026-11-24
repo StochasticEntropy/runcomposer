@@ -290,14 +290,14 @@ class Ledger:
 
         One decision: of two who would close the same dispatch — two
         cancels at once, in one process or in two — one gets it. A dispatch
-        ``owner`` already holds is not claimed again."""
+        ``owner`` already holds is not claimed again, except with ``force``:
+        the way out for a dispatch that names its owner but that nobody is
+        working on."""
         with self._decision():
             current = self._store.get_dispatch(dispatch_id)
             if current is None or current.state not in lifecycle.ACTIVE_STATES:
                 return False, current
-            if current.owner == owner:
-                return False, current
-            if current.owner and not force and alive(current.owner):
+            if current.owner and not force and (current.owner == owner or alive(current.owner)):
                 return False, current
             self._store.update_dispatch(dispatch_id, owner=owner)
             return True, current

@@ -312,15 +312,36 @@ class TestACancelWhileTheDispatchSettles:
         assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"], "cancel(ctx) exactly once"
 
     def test_a_shutdown_does_not_cancel_what_only_waits_for_results(self, polling):
+        """A shutdown stops what executes here. A dispatch it saw listed,
+        and that was released before its turn came, only waits for results
+        by then: no request is written for it and its runner is not told."""
         service = polling(mode="hands-off")
         run_id = compose(service, "Auth-SSO", runner_id="polling")
         SERVICES[run_id] = service
+        listed: list[Any] = []
+        release = service.ledger.release_unless_cancel_requested
+
+        def note_what_is_listed(dispatch_id: str, **options: Any) -> bool:
+            listed.append(service.dispatcher._active[dispatch_id])   # what a shutdown would hold
+            return release(dispatch_id, **options)
+
+        service.ledger.release_unless_cancel_requested = note_what_is_listed
         outcome = service.dispatch(run_id, "polling")
-        assert outcome.done.wait(30)
+        assert outcome.done.wait(30) and len(listed) == 1
+        assert service.dispatcher._stop_if_listed(listed[0]) is False
         service.dispatcher.shutdown()
         dispatch = service.require_run(run_id).latest_dispatch
         assert (dispatch.state, dispatch.cancel_requested) == ("AWAITING_RESULTS", False)
-        assert outcome.dispatch_id not in CANCELS
+        assert outcome.dispatch_id not in CANCELS and listed[0].cancel_sent is False
+
+    def test_a_shutdown_stops_what_executes_here(self, polling):
+        service = polling()
+        run_id, outcome = start(service)
+        service.dispatcher.shutdown()
+        assert outcome.done.wait(30)
+        dispatch = service.require_run(run_id).latest_dispatch
+        assert (dispatch.state, dispatch.cancel_requested) == ("CANCELLED", True)
+        assert CANCELS.get(outcome.dispatch_id) == ["RUNNING"]
 
 
 class TestTwoRequestsTogether:
@@ -404,6 +425,17 @@ class TestTwoRequestsTogether:
         assert got == ["CANCELLED"], "the one it was taken from finds it cancelled, which is what it asked for"
         assert service.require_run(run_id).state == "CANCELLED"
         assert len(CANCELS.get(outcome.dispatch_id, [])) == 2, "the forced one stops the executor too"
+
+    def test_force_closes_a_dispatch_that_names_this_process_and_nobody_works_on(self, polling):
+        """What a release that failed leaves behind: the dispatch names
+        this process as its owner, and nothing here executes it. A cancel
+        leaves it to its owner — nobody; ``--force`` is the way out."""
+        service, run_id, outcome = self.awaiting(polling)
+        ENTERED.pop(run_id), HELD.pop(run_id)
+        service.store.update_dispatch(outcome.dispatch_id, owner=service.dispatcher.owner)
+        assert service.cancel(run_id).state == "AWAITING_RESULTS" and outcome.dispatch_id not in CANCELS
+        assert service.cancel(run_id, force=True).state == "CANCELLED"
+        assert CANCELS.get(outcome.dispatch_id) == ["AWAITING_RESULTS"]
 
     def test_a_cancel_whose_process_went_away_is_taken_over(self, polling):
         """The one who had claimed the dispatch is gone: the next cancel
