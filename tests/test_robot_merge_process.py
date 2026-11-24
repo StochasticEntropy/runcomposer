@@ -31,7 +31,11 @@ class BlocksUntilReleased:
         self.marker = marker
 
     def visit_suite(self, suite) -> None:
-        Path(self.marker).write_text(str(os.getpid()), encoding="utf-8")
+        # Written whole or not at all: a stop that lands while the note is
+        # being made must not leave an empty file for the test to read.
+        noted = Path(self.marker + ".writing")
+        noted.write_text(str(os.getpid()), encoding="utf-8")
+        os.replace(noted, self.marker)
         deadline = time.monotonic() + 60
         while not Path(self.marker + ".release").exists() and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -54,14 +58,14 @@ class TestOneSupervisor:
         result = spawn_merge(
             MergePayload(outputs=tuple(two_outputs(tmp_path)), out_dir=str(tmp_path / "merged"),
                          rebot_options={"prerebotmodifier": [BlocksUntilReleased(str(marker))]}),
-            timeout_s=1.0,
+            timeout_s=3.0,  # long enough for the merge to have started on a busy machine
         )
         took = time.monotonic() - started
-        assert result.error == "the merge exceeded its timeout of 1s" and result.output is None
+        assert result.error == "the merge exceeded its timeout of 3s" and result.output is None
         pid = int(marker.read_text(encoding="utf-8"))
         assert process_gone(pid)
         # The first stop request ends a merge: no grace period is waited out.
-        assert took < 1.0 + 4.0, took
+        assert took < 3.0 + 4.0, took
 
     def test_a_cancelled_merge_is_stopped_at_once(self, tmp_path):
         marker = tmp_path / "merging"
