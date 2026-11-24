@@ -625,6 +625,26 @@ class TestOneStopPerBuild:
         with pytest.raises(JenkinsError, match=r"after 3 attempt\(s\)"):
             client.stop_build(f"{client.base_url}/job/{JOB}/1")
 
+    def test_a_stop_that_never_arrived_is_sent_by_a_later_call(self, jenkins, monkeypatch):
+        """Every attempt refused: the build was not stopped, so it is not
+        remembered as stopped — the next call sends the stop."""
+        client = client_for(jenkins, retries=1)
+        _, build_url = self.running_build(jenkins, client)
+        send = client._opener.open
+
+        def refuse_every_stop(request: Any, timeout: float | None = None) -> Any:
+            if request.full_url.endswith("/stop"):
+                raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+            return send(request, timeout=timeout)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(client._opener, "open", refuse_every_stop)
+            with pytest.raises(JenkinsError, match=r"after 2 attempt\(s\)"):
+                client.stop_build(build_url)
+        assert jenkins.posts("/stop") == []
+        assert client.stop_build(build_url) is True
+        assert len(jenkins.posts("/stop")) == 1 and jenkins.builds[(JOB, 1)].stop.is_set()
+
     @pytest.mark.parametrize(("status", "sent"), [(503, 2), (429, 2), (502, 1), (504, 1)])
     def test_only_an_answer_that_says_it_was_not_acted_on_is_retried(self, jenkins, status, sent):
         """429 and 503 say the server did not act on the request; a gateway's

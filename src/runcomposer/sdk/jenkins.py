@@ -85,6 +85,9 @@ class JenkinsError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None):
         super().__init__(message)
         self.status = status
+        #: Set by a request that must not happen twice when it gave up after
+        #: answers that all say it was not acted on (see ``request``).
+        self._not_acted_on = False
 
 
 class JenkinsQueueCancelled(JenkinsError):
@@ -573,7 +576,10 @@ class JenkinsClient:
         ways to one build in one process (a runner's ``cancel`` and
         :meth:`follow` taking the build back, two cancels at once) send one
         stop between them. A build counts as stopped from the moment its
-        stop request is sent, whether or not it was answered.
+        stop request is sent, whether or not it was answered — except when
+        the request provably never took effect (every attempt was refused or
+        answered 429 or 503): then the error goes on and a later call sends
+        the stop.
 
         A stop can still be lost by the server: one that arrives while a
         pipeline is entering a ``node`` step may leave the build running.
@@ -587,8 +593,14 @@ class JenkinsClient:
             self._stopped[url] = None
             while len(self._stopped) > _STOPS_KEPT:
                 self._stopped.popitem(last=False)
-        with self.request("POST", f"{url}/stop", data=b"", retry_unsent_only=True):
-            pass
+        try:
+            with self.request("POST", f"{url}/stop", data=b"", retry_unsent_only=True):
+                pass
+        except JenkinsError as exc:
+            if exc._not_acted_on:  # nothing reached the build: it was not stopped
+                with self._stops_lock:
+                    self._stopped.pop(url, None)
+            raise
         return True
 
     def cancel_queue_item(self, queue_id: int) -> None:
@@ -753,9 +765,12 @@ class JenkinsClient:
             if attempt + 1 < attempts:
                 time.sleep(self.retry_backoff_s * (2**attempt))
         reason = last.reason if isinstance(last, urllib.error.URLError) else last
-        raise JenkinsError(
+        error = JenkinsError(
             f"{reason} for {method} {url} (after {attempts} attempt(s))", status=status
         )
+        # Under retry_unsent_only every attempt that was repeated had said so.
+        error._not_acted_on = retry_unsent_only
+        raise error
 
 
 #: ``on_outage(answering, seconds)``: ``False`` when the server first stops
