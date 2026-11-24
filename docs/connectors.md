@@ -1842,7 +1842,8 @@ whatever executes inside the worker:
   held after its server died), so nothing of a dead
   dispatch executes beside the next one
   (`tests/test_worker_supervisor.py::TestTheSupervisorIsGone`; on Windows
-  the worker process ends, what it started is not reached);
+  the worker terminates its job object after the same grace, itself and
+  what it started included);
 - `cancelled()` and `timeout_s` stop a worker by the stop protocol:
   `stop()` becomes true, the file `STOP_FILE` (`.stop-requested`, exported
   by `runcomposer.sdk`) appears in `out_dir`, and the
@@ -1850,10 +1851,12 @@ whatever executes inside the worker:
   too; after `grace_s` the group is terminated, after another `grace_s`
   killed, and whatever is left of it is killed before the worker is
   reaped. Cancelled and never-started shards are not reported. On Windows
-  there are no process groups and no termination signal: `stop()` and
-  `STOP_FILE` ask as everywhere, then the worker process alone is ended
-  outright — no `SystemExit` to clean up on, and what it started is not
-  reached (see Known limits);
+  each worker runs in a job object of its own (`ProcessJob`), which holds
+  everything it starts: `stop()` and `STOP_FILE` ask as everywhere, after
+  `grace_s` the job is terminated — the worker and what it started,
+  outright: there is no signal to clean up on — and finally what is left
+  in it. A shard that ends on its own leaves nothing running in its job
+  there (DESIGN.md §6.6);
 - a payload or target that cannot be sent to a spawned process is refused
   with `TypeError` before anything starts.
 
@@ -2045,13 +2048,16 @@ Edges you should know:
 - **One instance owns a store.** The store refuses a second in-flight dispatch
   per run across processes, but runcomposer does not coordinate instances or
   queue across them (DESIGN.md §13).
-- **Windows** has no process groups and no termination signal to send.
-  What a worker, a `command` runner's command or a `pre_run_hooks`
-  command started is not stopped with it — after a stop, a timeout or the
-  end of the supervising process — and a worker that does not stop on the
-  request is ended outright, without `SystemExit` to clean up on. A
-  `robot-pool` worker watches the request itself and ends Robot's
-  execution gracefully, as the first signal does on POSIX. CI runs the
+- **Windows** has no termination signal to send: a worker that does not
+  stop on the request is ended outright with its job object, without
+  `SystemExit` to clean up on (a `robot-pool` worker watches the request
+  itself and ends Robot's execution gracefully, as the first signal does on
+  POSIX). What a worker, a `command` runner's command or a `pre_run_hooks`
+  command started is stopped with it through the job — unless Windows
+  refuses the job (a process already in a job that allows no nesting;
+  before Windows 8), which the log says once; then only the process itself
+  is stopped. A `command` observer's command that times out is ended alone,
+  on every platform. CI runs the
   whole suite there, with and without the robot extra, and a failure there
   fails the workflow (whether a merge waits for it is the repository's
   required-checks setting); the tests whose commands are POSIX shell skip

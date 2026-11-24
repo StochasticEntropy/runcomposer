@@ -393,6 +393,10 @@ not exist or worked differently:
   config with an end-to-end test for each of four ways to execute
   (`examples/robot-pool`, `examples/jenkins`, `examples/pytest-shop`,
   `examples/remote-agent`).
+- **`ProcessJob`** in the SDK: on Windows, a process and everything it
+  starts in one job object, terminated together — `ProcessJob.start(args,
+  **popen)` starts it suspended, assigns it, resumes it; the supervisor
+  runs every worker in one.
 - **File names named by someone else, in the SDK**: `child_path(directory,
   name)` (the file, or `ValueError` unless the name is one component this
   machine keeps — decided before anything is opened or resolved) and
@@ -874,6 +878,12 @@ not exist or worked differently:
 - `robot-pool`'s preview read "the other 1 weigh the mean" for a single
   item without history.
 - **Windows** (the CI job runs the whole suite there):
+  - what a worker, a `command` runner's command or a `pre_run_hooks`
+    command started was not stopped with it — after a cancel, a timeout or
+    the end of the supervising process. Each worker runs in a job object of
+    its own and each hook in one, which a stop terminates with everything
+    in it (`ProcessJob`, DESIGN.md §6.6); a shard that ends on its own
+    leaves nothing running in its job;
   - a pushed file name Windows cannot keep (`a"b`, `name:stream`, `CON`,
     `nul.txt`, `COM0`, a trailing dot or space) answered `500` on a Windows
     server; it is a `400` there (a Linux or macOS server keeps such a name,
@@ -1137,13 +1147,15 @@ Each written down with its reason in [docs/connectors.md](docs/connectors.md#10-
   application built without its bind address answers to every name too.
 - One instance owns a store: dispatching one run twice is refused across
   processes, but instances are not coordinated (`DESIGN.md` §13).
-- On Windows there are no process groups: what a worker, a `command`
-  runner's command or a `pre_run_hooks` command started is not stopped
-  with it, and a worker that does not stop on the request is ended outright
-  (no `SystemExit` to clean up on; a `robot-pool` worker does stop on the
-  request). The suite runs there in CI, with and without the robot extra,
-  and a failure there fails the workflow; the tests of a POSIX shell's
-  commands skip there, naming why.
+- On Windows a worker that does not stop on the request is ended outright
+  with its job object (no `SystemExit` to clean up on; a `robot-pool`
+  worker does stop on the request). Where Windows refuses a job object (a
+  process already in a job that allows no nesting), what a process started
+  is not stopped with it — said once in the log. A `command` observer's
+  command that times out is ended alone, on every platform. The suite runs
+  there in CI, with and without the robot extra, and a failure there fails
+  the workflow; the tests of a POSIX shell's commands skip there, naming
+  why.
 
 ## 0.1.7 — 2026-09-03
 

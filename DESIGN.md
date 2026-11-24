@@ -1304,7 +1304,7 @@ file is connected by configuration alone. Its `plan` names the shards and
 the items each would run. Each shard's command is started by a supervised
 worker process (`supervise_workers`, §6.6) in a process group of its own:
 a cancel, or `timeout_s` (counted from the worker's start), stops the
-command and whatever it started (on Windows the command alone, §6.6), and a cancel that lands before the
+command and whatever it started (on Windows through the worker's job object, §6.6), and a cancel that lands before the
 command starts runs nothing (tests/test_command_runner.py).
 
 **e) `demo`** — **simulated**. No test is run: verdicts derive from a seed
@@ -1556,14 +1556,65 @@ the supervisor holds open, and when that process is gone — a killed
 server, a killed foreground `run` — stops itself the same way, ask then
 kill, with what it started; so a dispatch after a restart never executes
 beside the workers of the one before it (tests/test_worker_supervisor.py
-`TestTheSupervisorIsGone`). Windows has no process groups and no signal
-to send: there the request is `stop()` and the file, then the worker
-process alone is terminated (no `SystemExit` to clean up on) and what it
-started is not reached — a known limit (docs/connectors.md); a Robot
-toolkit worker watches the request itself and raises the termination
-signal in its own process, so Robot ends its execution gracefully there
-too, and a merge ends at once (tests/test_robot_toolkit.py, run on
-Windows by CI). A payload or a function that
+`TestTheSupervisorIsGone`).
+
+*Windows: a job object per worker* (`ProcessJob`,
+`runcomposer/core/processjob.py`, `ctypes` only). Windows has no process
+groups and no signal to send; it has job objects — a process in a job
+takes everything it starts into the job, and terminating the job ends them
+all. The decisions, each with its reason:
+
+- *One job per worker, created by the supervisor with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the supervisor holds a handle and
+  hands the worker a copy* (`DuplicateHandle`). Kill-on-close makes a
+  holder's death count: whoever closes the last handle — reaping, or a
+  process dying — ends what is left in the job. The worker's copy keeps the
+  job alive when the supervisor dies, so the orphan path is the same as on
+  POSIX: the lifeline closes, the worker raises its stop flag (a Robot
+  toolkit worker turns it into a graceful end, below), waits
+  `ORPHAN_GRACE_S`, then terminates its own job — itself and everything it
+  started. Should the worker die too, its copy closes with it and the job
+  ends at once. Had the supervisor held the only handle, its death would
+  end the tree immediately, without the grace.
+- *The stop protocol keeps its order*: the stop file, then the flag, then
+  `grace_s` — a Robot toolkit worker raises the termination signal in its
+  own process (`_stop_request_as_signal`) and writes its output within it —
+  then `TerminateJobObject` (the worker and what it started; step 2), and
+  after the worker is gone the job once more (what it left behind, like the
+  final `killpg`). There is still no signal a worker could clean up on:
+  the termination is outright (`tests/test_worker_supervisor.py` keeps
+  that one test skipped there).
+- *No process starts outside the job.* A `multiprocessing` spawn child
+  cannot be created suspended, so the worker waits at a gate — the first
+  thing it does — until the supervisor has assigned it and sent the copy of
+  the handle (or `None`). A process started by a plugin with
+  `ProcessJob.start` (the `robot-pool` hooks) is created suspended
+  (`CREATE_SUSPENDED`), assigned, then resumed. Windows' spawn has no
+  resource tracker process to account for.
+- *Nested jobs*: a hosted runner or a service manager may run everything
+  in a job already; nested jobs work since Windows 8. Where an assignment
+  is refused anyway, the process runs without a job — as before — and the
+  log says so once per process.
+- *No handle leaks into children*: the job is created without security
+  attributes (not inheritable), the worker's copy is made not inheritable,
+  and `subprocess` and `multiprocessing` start children without inherited
+  handles — a child holding the handle would keep the job alive after its
+  holders closed it.
+- *One difference from POSIX, on purpose*: a shard that ends on its own
+  leaves nothing running on Windows — reaping closes the job's last handle
+  — while on POSIX what its worker left in the group keeps running. A
+  `pre_run_hooks` command's job has no kill-on-close: a hook that ends on
+  its own leaves what it started running, on every platform.
+
+The process tests (a grandchild gone after a cancel, after a timeout and
+after the supervising process was killed — tests/test_worker_supervisor.py,
+tests/test_command_runner.py `TestWhatTheCommandStarted`,
+tests/test_robot_pool.py) run on Windows in CI; the decisions themselves are
+tested with a stand-in for the Win32 calls on every platform
+(tests/test_processjob.py). A Robot toolkit worker watches the request
+itself and raises the termination signal in its own process, so Robot ends
+its execution gracefully on Windows too, and a merge ends at once
+(tests/test_robot_toolkit.py). A payload or a function that
 cannot be sent to a spawned process is refused before anything starts. The
 Robot toolkit's `supervise` and `spawn_merge` (one payload, the merge as
 its target) and the `command` runner are built on it — one implementation
