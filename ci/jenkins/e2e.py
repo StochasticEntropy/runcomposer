@@ -422,7 +422,9 @@ def main() -> int:
     jenkins = f"http://127.0.0.1:{jenkins_port}"
     workdir = Path(tempfile.mkdtemp(prefix="runcomposer-jenkins-e2e-"))
     server: subprocess.Popen[str] | None = None
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+    # A container left by an earlier run that was interrupted — with the
+    # volume the image declares for its home, or that stays behind.
+    subprocess.run(["docker", "rm", "-f", "-v", container], capture_output=True)
     say(f"docker run --name {container} {image} on {jenkins}")
     subprocess.run(["docker", "run", "-d", "--rm", "--name", container,
                     "--add-host", "host.docker.internal:host-gateway",
