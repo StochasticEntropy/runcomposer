@@ -491,6 +491,7 @@ Klammer
 Klammern
 Klick
 Knopf
+Knöpfe
 Kollege
 Kollegen
 Kommando
@@ -527,6 +528,7 @@ Mehr
 Meldung
 Meldungen
 Mensch
+Menü
 Minute
 Minuten
 Mitgespeichert

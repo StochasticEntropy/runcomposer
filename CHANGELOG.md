@@ -1065,6 +1065,14 @@ run-time dependencies.
 - Browser end-to-end tests (`npm run e2e`) drive the built UI against real
   servers; unit and component tests run under vitest; `npm run lint` is
   eslint plus the TypeScript check.
+- The homepage shows this interface: its screenshot and the social card
+  (`docs/og-card.png`, now without a version number) are taken from it.
+  Both videos were made with 0.1 and say so above the video, with what
+  differs in 0.2. The six-minute explainer, off the page since the hands-on
+  video took its place, is gone from `docs/`. The sample run spec carries
+  `materialized.at`, `deliver: "none"` and no token, as 0.2 writes it, and
+  only per-run values in its `runner` section; the German page says how
+  long the German videos really are.
 
 Known limits of the UI:
 

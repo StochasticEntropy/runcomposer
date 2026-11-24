@@ -16,7 +16,7 @@
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="runcomposer — the interface is a document, not a protocol. Beside the wordmark, a screenshot of the compose view listing thirteen matched Payments tests.">
+<meta property="og:image:alt" content="runcomposer — the interface is a document, not a protocol. Beside the wordmark, a screenshot of the compose view with the demo corpus, 17 Payments tests matched.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="runcomposer">
 <meta name="twitter:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
@@ -718,11 +718,15 @@ pipx run --spec . runcomposer demo</code></pre>
   <section>
     <div class="marker" id="watch">Watch</div>
     <div class="body">
-      <h2>Sixty seconds, if you'd rather see it</h2>
+      <h2>About a minute, if you'd rather see it</h2>
       <p>
         The same argument as the rest of this page, drawn out: the awkwardness of selecting
         precisely, what changes when the selection becomes a document, and where that document can
         travel afterwards.
+      </p>
+      <p class="note">
+        <b>Made with version 0.1.</b> It shows the idea, not the interface, and what it says still
+        holds for 0.2.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="teaser-poster.jpg" width="1920" height="1080">
@@ -735,10 +739,17 @@ pipx run --spec . runcomposer demo</code></pre>
 
       <h3>Or watch someone use it</h3>
       <p>
-        Four and a half minutes over the shoulder, in the actual interface: picking out tonight's
-        tests area by area, leaving the known-broken ones behind, watching verdicts arrive one at a
-        time until the run says complete — and the next morning, rerunning the single test that
-        failed. One idea about how it works underneath, at the point where the story needs it.
+        Four and a half minutes over the shoulder, in the interface of version 0.1: picking out
+        tonight's tests area by area, leaving the known-broken ones behind, watching verdicts arrive
+        one at a time until the run says complete — and the next morning, rerunning the single test
+        that failed. One idea about how it works underneath, at the point where the story needs it.
+      </p>
+      <p class="note">
+        <b>Recorded with version 0.1; 0.2 rebuilt the interface.</b> Everything the video does can
+        still be done, but it looks different and some steps moved: the areas are under
+        <i>Pick tags…</i> (and offered as buttons while nothing is selected), a group's AND or OR is
+        a menu, <i>Run</i> opens the run's own page, rerunning what failed is a button on that page
+        instead of a shortcut at the top, and the quarantine is called Inbox.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="walkthrough-poster.jpg" width="1920" height="1080">
@@ -843,6 +854,7 @@ pipx run --spec . runcomposer demo</code></pre>
       - <span class="k">not:</span> <span class="v">"prefix:Quarantine-"</span>
   <span class="s">materialized:</span>                        <span class="c"># THE authoritative executed set</span>
     <span class="k">item_ids:</span> [<span class="v">"Tests.Payments.Visa Payment Succeeds"</span>, <span class="v">"Tests.Payments.Declined Card Shows Error"</span>, <span class="v">…</span>]
+    <span class="k">at:</span> <span class="v">"2026-07-06T09:14:03Z"</span>
     <span class="k">count:</span> <span class="v">33</span>
 
 <span class="k">source:</span>
@@ -851,14 +863,13 @@ pipx run --spec . runcomposer demo</code></pre>
 
 <span class="k">results:</span>
   <span class="k">expect:</span> [{ <span class="k">format:</span> <span class="v">"robot-output-xml"</span> }]
-  <span class="k">deliver:</span> <span class="v">"api"</span>
-  <span class="k">token:</span> <span class="v">"rct_…"</span>                       <span class="c"># per-run ingest token</span>
+  <span class="k">shards:</span> <span class="v">1</span>
+  <span class="k">deliver:</span> <span class="v">"none"</span>                      <span class="c"># the ingest token travels beside the document, never in it</span>
 
 <span class="s">runner:</span>                                <span class="c"># the ONE open section — plugin's own vocabulary</span>
-  <span class="k">robot-pool:</span>
-    <span class="k">suite_root:</span> <span class="v">"tests/"</span>
+  <span class="k">robot-pool:</span>                          <span class="c"># per-run values for the runner configured under this id</span>
     <span class="k">partitions:</span> [<span class="v">"env1"</span>, <span class="v">"env2"</span>]
-    <span class="k">variables:</span> { <span class="k">STAGE:</span> <span class="v">"test"</span> }</code></pre>
+    <span class="k">allow_drift:</span> <span class="v">false</span></code></pre>
       </div>
 
       <p>

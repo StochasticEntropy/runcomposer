@@ -16,7 +16,7 @@
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="runcomposer — the interface is a document, not a protocol. Beside the wordmark, a screenshot of the compose view listing thirteen matched Payments tests.">
+<meta property="og:image:alt" content="runcomposer — the interface is a document, not a protocol. Beside the wordmark, a screenshot of the compose view with the demo corpus, 17 Payments tests matched.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="runcomposer">
 <meta name="twitter:description" content="The interface is a document, not a protocol. A tag-based test run composer and orchestrator.">
@@ -722,11 +722,15 @@ pipx run --spec . runcomposer demo</code></pre>
   <section>
     <div class="marker">Ansehen</div>
     <div class="body">
-      <h2>Sechzig Sekunden, wenn du lieber zusiehst</h2>
+      <h2>Gut eine Minute, wenn du lieber zusiehst</h2>
       <p>
         Dieselbe Argumentation wie auf dem Rest der Seite, nur in Bewegung: wie umständlich es ist,
         präzise auszuwählen; was sich ändert, sobald die Auswahl ein Dokument ist; und wohin dieses
         Dokument danach reisen kann.
+      </p>
+      <p class="note">
+        <b>Entstanden mit Version 0.1.</b> Eine Oberfläche kommt darin nicht vor, und was er sagt,
+        gilt auch für 0.2.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="teaser-de-poster.jpg" width="1920" height="1080">
@@ -735,15 +739,23 @@ pipx run --spec . runcomposer demo</code></pre>
           Your browser cannot play this video. <a href="teaser-de.mp4">Download it instead.</a>
         </video>
       </div>
-      <p class="watch-note">69 Sekunden, mit Sprecher</p>
+      <p class="watch-note">78 Sekunden, mit Sprecher</p>
 
       <h3>Oder zusehen, wie jemand damit arbeitet</h3>
       <p>
-        Viereinhalb Minuten über die Schulter, in der echten Oberfläche: die Tests für heute Nacht
-        Bereich für Bereich zusammensuchen, die bekannt kaputten liegen lassen, den Verdicts beim
-        Eintreffen zusehen, bis der Lauf sich abgeschlossen meldet — und am nächsten Morgen den
+        Gut fünf Minuten über die Schulter, in der Oberfläche von Version 0.1: die Tests für heute
+        Nacht Bereich für Bereich zusammensuchen, die bekannt kaputten liegen lassen, den Verdicts
+        beim Eintreffen zusehen, bis der Lauf sich abgeschlossen meldet — und am nächsten Morgen den
         einen Test, der fehlgeschlagen ist, noch einmal laufen lassen. Dazwischen ein Blick darauf,
         wie es darunter funktioniert, genau an der Stelle, an der die Geschichte ihn braucht.
+      </p>
+      <p class="note">
+        <b>Aufgenommen mit Version 0.1; 0.2 hat die Oberfläche neu gebaut.</b> Was darin zu sehen
+        ist, geht heute noch, sieht aber anders aus, und manche Schritte liegen an anderer Stelle:
+        Die Bereiche stehen unter <i>Tags auswählen…</i> (und als Knöpfe, während nichts ausgewählt
+        ist), UND oder ODER einer Gruppe wählst du in einem Menü, der Knopf zum Ausführen öffnet die
+        eigene Seite des Laufs, was fehlgeschlagen ist, wiederholt dort ein Knopf statt einer
+        Abkürzung oben, und die Quarantäne heißt jetzt Eingang.
       </p>
       <div class="player">
         <video controls preload="metadata" poster="walkthrough-de-poster.jpg" width="1920" height="1080">
@@ -752,7 +764,7 @@ pipx run --spec . runcomposer demo</code></pre>
           Your browser cannot play this video. <a href="walkthrough-de.mp4">Download it instead.</a>
         </video>
       </div>
-      <p class="watch-note">4 Minuten 36 Sekunden, mit Sprecher · Untertitel</p>
+      <p class="watch-note">5 Minuten 20 Sekunden, mit Sprecher · Untertitel</p>
     </div>
   </section>
 
@@ -851,6 +863,7 @@ pipx run --spec . runcomposer demo</code></pre>
       - <span class="k">not:</span> <span class="v">"prefix:Quarantine-"</span>
   <span class="s">materialized:</span>                        <span class="c"># THE authoritative executed set</span>
     <span class="k">item_ids:</span> [<span class="v">"Tests.Payments.Visa Payment Succeeds"</span>, <span class="v">"Tests.Payments.Declined Card Shows Error"</span>, <span class="v">…</span>]
+    <span class="k">at:</span> <span class="v">"2026-07-06T09:14:03Z"</span>
     <span class="k">count:</span> <span class="v">33</span>
 
 <span class="k">source:</span>
@@ -859,14 +872,13 @@ pipx run --spec . runcomposer demo</code></pre>
 
 <span class="k">results:</span>
   <span class="k">expect:</span> [{ <span class="k">format:</span> <span class="v">"robot-output-xml"</span> }]
-  <span class="k">deliver:</span> <span class="v">"api"</span>
-  <span class="k">token:</span> <span class="v">"rct_…"</span>                       <span class="c"># per-run ingest token</span>
+  <span class="k">shards:</span> <span class="v">1</span>
+  <span class="k">deliver:</span> <span class="v">"none"</span>                      <span class="c"># the ingest token travels beside the document, never in it</span>
 
 <span class="s">runner:</span>                                <span class="c"># the ONE open section — plugin's own vocabulary</span>
-  <span class="k">robot-pool:</span>
-    <span class="k">suite_root:</span> <span class="v">"tests/"</span>
+  <span class="k">robot-pool:</span>                          <span class="c"># per-run values for the runner configured under this id</span>
     <span class="k">partitions:</span> [<span class="v">"env1"</span>, <span class="v">"env2"</span>]
-    <span class="k">variables:</span> { <span class="k">STAGE:</span> <span class="v">"test"</span> }</code></pre>
+    <span class="k">allow_drift:</span> <span class="v">false</span></code></pre>
       </div>
 
       <p>
