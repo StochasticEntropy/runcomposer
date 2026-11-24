@@ -1584,10 +1584,13 @@ all. The decisions, each with its reason:
   final `killpg`). There is still no signal a worker could clean up on:
   the termination is outright (`tests/test_worker_supervisor.py` keeps
   that one test skipped there).
-- *No process starts outside the job.* A `multiprocessing` spawn child
-  cannot be created suspended, so the worker waits at a gate — the first
-  thing it does — until the supervisor has assigned it and sent the copy of
-  the handle (or `None`). A process started by a plugin with
+- *Nothing the worker's target starts is outside the job.* A
+  `multiprocessing` spawn child cannot be created suspended, so the worker
+  waits at a gate, before it calls its target, until the supervisor has
+  assigned it and sent the copy of the handle (or `None`). What runs before
+  that is the interpreter starting and the target's module being imported:
+  a module that starts a process when it is imported starts it outside the
+  job. A process started by a plugin with
   `ProcessJob.start` (the `robot-pool` hooks) is created suspended
   (`CREATE_SUSPENDED`), assigned, then resumed. Windows' spawn has no
   resource tracker process to account for.

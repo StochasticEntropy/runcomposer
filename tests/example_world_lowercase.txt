@@ -305,7 +305,6 @@ authenticates
 authenticating
 author
 authored
-authoring
 authoritative
 authority
 authorize
@@ -2841,7 +2840,6 @@ refused
 refuses
 refusing
 regard
-regenerate
 region
 regional
 registers

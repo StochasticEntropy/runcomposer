@@ -134,9 +134,10 @@ hold. [DESIGN.md](DESIGN.md) is the source of truth for all of them.
 - Docs that describe behaviour (`README.md`, `ADOPTING.md`, `DESIGN.md`, the
   homepage) get updated in the same PR as the behaviour.
 
-The homepage at `docs/index.html` is **generated** — do not hand-edit it. If you
-need to change it, say so in the issue and the maintainer will regenerate it from
-the authoring source.
+The homepage is two hand-written pages, `docs/index.html` and its German
+counterpart `docs/index.de.html`. A change to one goes into the other in the
+same PR, and every statement, command and sample on them is held to the same
+rule as the other documents: it is true of the version on `main`.
 
 ## Good first contributions
 
